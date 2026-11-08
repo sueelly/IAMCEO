@@ -113,7 +113,7 @@ async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabl
   const work = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-work-")));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const bus = new Bus();
   const store = new Store(openDb(config.dbPath), bus);
   const runner = new FakeRunner();
@@ -835,7 +835,7 @@ describe("일 목록·알림·자료·보관", () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-")));
     const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
     updateConfigFile({ accessCode: "code" }, env);
-    const config = { ...loadConfig(env), hosts: ["127.0.0.1"], hostsAuto: true };
+    const config = { ...loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" }), hosts: ["127.0.0.1"], hostsAuto: true };
     const bus = new Bus();
     const store = new Store(openDb(config.dbPath), bus);
     const orch = new Orchestrator({ config, store, runners: new Map() });

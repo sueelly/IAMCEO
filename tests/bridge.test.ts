@@ -36,7 +36,7 @@ beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "iamceo-bridge-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"], claudeBin: FAKE }, env);
-  config = loadConfig(env);
+  config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   bus = new Bus();
   store = new Store(openDb(config.dbPath), bus);
   logPath = join(home, "calls.jsonl");
@@ -262,7 +262,7 @@ describe("직접 띄운 CLI 의 ask", () => {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
-        env: { ...childEnv, IAMCEO_TEST: "1", IAMCEO_HOME: serverHome, IAMCEO_PORT: String(port), IAMCEO_HERDR_SOCKET: join(serverHome, "no.sock"), IAMCEO_CLAUDE_BIN: FAKE },
+        env: { ...childEnv, IAMCEO_TEST: "1", IAMCEO_HOME: serverHome, IAMCEO_PORT: String(port), IAMCEO_HERDR_SOCKET: join(serverHome, "no.sock"), IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: FAKE },
       });
       const end = Date.now() + 15_000;
       while (!(await fetch(`${base}/api/health`).then((r) => r.ok, () => false))) {

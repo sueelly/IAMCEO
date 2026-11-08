@@ -63,7 +63,7 @@ const serverEnv: Record<string, string> = {
   CLAUDE_CODE_ENTRYPOINT: "cli",
   CLAUDE_CODE_SSE_PORT: "1",
   IAMCEO_HOME: home,
-  IAMCEO_CLAUDE_BIN: wrapper,
+  IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: wrapper,
   IAMCEO_HERDR_SOCKET: join(out, "no-herdr.sock"),
   IAMCEO_TEST: "1",
   IAMCEO_E2E_CALLS: calls,

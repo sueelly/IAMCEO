@@ -9,6 +9,8 @@ export const DEFAULT_PORT = 7878;
 
 /** config.json 에 저장되는 값. accessCode 외에는 없으면 기본값을 쓴다. */
 export interface ConfigFile {
+  agentCli?: "claude" | "codex";
+  codexBin?: string;
   accessCode: string;
   port?: number;
   hosts?: string[];
@@ -17,6 +19,8 @@ export interface ConfigFile {
 }
 
 export interface Config {
+  agentCli?: "claude" | "codex";
+  codexBin?: string;
   home: string;
   configPath: string;
   dbPath: string;
@@ -109,7 +113,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     file = readConfigFile(configPath);
   }
 
+  const agentCli = env.IAMCEO_AGENT_CLI ?? file.agentCli ?? "codex";
+  if (agentCli !== "codex" && agentCli !== "claude") throw new Error("IAMCEO_AGENT_CLI 는 codex 또는 claude 여야 합니다");
   return {
+    agentCli,
+    codexBin: env.IAMCEO_CODEX_BIN || file.codexBin || "codex",
     home,
     configPath,
     dbPath: join(home, "iamceo.db"),

@@ -2,11 +2,12 @@
 // 실행 방식·권한·직급·숫자·맥 알림은 아래 저장 띠 하나로 함께 저장한다. 프로젝트는 줄마다 따로 고친다.
 import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { EFFORTS } from "@shared/types";
-import type { Backend, Bootstrap, Effort, HerdrInfo, PermissionMode, Project, ProjectSummary, Rank, Settings as SettingsT, SettingsPatch } from "@shared/types";
-import { BackendChoice, herdrLine, usableBackend } from "../components/BackendChoice";
+import type { Backend, Bootstrap, Effort, HerdrInfo, PermissionMode, Project, ProjectSummary, Rank, Ranks, Settings as SettingsT, SettingsPatch } from "@shared/types";
+import { BackendChoice, herdrLine } from "../components/BackendChoice";
 import { Badge, Modal } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
 import { api, errorText } from "../lib/api";
+import { agentLabel, effectiveAgentCli, providerRanks, suggestedModels, type AgentCli } from "../lib/agent";
 import { HQ_ID, applyLocal, logout, refresh, routeHash, savedDraftCount, useBootstrap, useRoute, useStore, useSummary } from "../lib/store";
 import "../styles/setup.css";
 
@@ -21,7 +22,6 @@ const RANKS: { rank: Rank; label: string; scope: string }[] = [
   { rank: "lead", label: "팀장", scope: "직원 세션" },
   { rank: "staff", label: "직원", scope: "서브에이전트" },
 ];
-const MODELS = ["fable", "opus", "sonnet", "haiku"];
 const CUSTOM = "custom";
 
 type NumberKey = "maxConcurrentTurns" | "compactAtPct" | "maxAwakeWorkers";
@@ -53,26 +53,29 @@ interface Draft {
   boardTidyHours?: number;
   numbers: Partial<Record<NumberKey, string>>;
   ranks: Partial<Record<Rank, RankDraft>>;
+  rankCli?: AgentCli;
 }
 const EMPTY_DRAFT: Draft = { numbers: {}, ranks: {} };
 
-const shownModel = (s: SettingsT, d: Draft, r: Rank): string | null => {
+const shownModel = (ranks: Ranks, d: Draft, r: Rank): string | null => {
   const m = d.ranks[r]?.model;
-  return m !== undefined ? m : s.ranks[r].model;
+  return m !== undefined ? m : ranks[r].model;
 };
-const shownEffort = (s: SettingsT, d: Draft, r: Rank): Effort | null => {
+const shownEffort = (ranks: Ranks, d: Draft, r: Rank): Effort | null => {
   const e = d.ranks[r]?.effort;
-  return e !== undefined ? e : s.ranks[r].effort;
+  return e !== undefined ? e : ranks[r].effort;
 };
-const isCustom = (s: SettingsT, d: Draft, r: Rank): boolean => {
-  const model = shownModel(s, d, r);
-  return d.ranks[r]?.custom ?? (model !== null && !MODELS.includes(model));
+const isCustom = (ranks: Ranks, d: Draft, r: Rank, models: readonly string[]): boolean => {
+  const model = shownModel(ranks, d, r);
+  return d.ranks[r]?.custom ?? (model !== null && !models.includes(model));
 };
 const numberText = (s: SettingsT, d: Draft, k: NumberKey): string => d.numbers[k] ?? String(s[k]);
 
 /** 서버 값과 달라진 칸만 모은다. 비었으면 고친 것이 없다. 값이 잘못되었으면 error. */
-function buildPatch(s: SettingsT, d: Draft): { patch: SettingsPatch; error: string | null } {
+function buildPatch(s: SettingsT, d: Draft, models: readonly string[], cli: AgentCli): { patch: SettingsPatch; error: string | null } {
   const patch: SettingsPatch = {};
+  const ranks = providerRanks(s, cli);
+  const rankKey = cli === "codex" ? "codexRanks" : "ranks";
   let error: string | null = null;
   if (d.backend !== undefined && d.backend !== s.backend) patch.backend = d.backend;
   if (d.permissionMode !== undefined && d.permissionMode !== s.permissionMode) patch.permissionMode = d.permissionMode;
@@ -85,13 +88,13 @@ function buildPatch(s: SettingsT, d: Draft): { patch: SettingsPatch; error: stri
     else if (v !== s[n.key]) patch[n.key] = v;
   }
   for (const { rank, label } of RANKS) {
-    const model = shownModel(s, d, rank)?.trim() ?? null;
-    const effort = shownEffort(s, d, rank);
-    if (isCustom(s, d, rank) && !model) error ??= `${label} 모델 이름을 넣어 주세요`;
+    const model = shownModel(ranks, d, rank)?.trim() ?? null;
+    const effort = shownEffort(ranks, d, rank);
+    if (isCustom(ranks, d, rank, models) && !model) error ??= `${label} 모델 이름을 넣어 주세요`;
     const change: { model?: string | null; effort?: Effort | null } = {};
-    if ((model || null) !== s.ranks[rank].model) change.model = model || null;
-    if (effort !== s.ranks[rank].effort) change.effort = effort;
-    if (Object.keys(change).length > 0) patch.ranks = { ...patch.ranks, [rank]: change };
+    if ((model || null) !== ranks[rank].model) change.model = model || null;
+    if (effort !== ranks[rank].effort) change.effort = effort;
+    if (Object.keys(change).length > 0) patch[rankKey] = { ...patch[rankKey], [rank]: change };
   }
   return { patch, error };
 }
@@ -113,7 +116,7 @@ function PermissionChoices({ value, onChange }: { value: PermissionMode; onChang
   );
 }
 
-function RankTable({ settings, overrides, draft, edit, onEnter }: { settings: SettingsT; overrides: Bootstrap["rankOverrides"]; draft: Draft; edit: (rank: Rank, patch: RankDraft) => void; onEnter: (e: KeyboardEvent) => void }) {
+function RankTable({ ranks, overrides, draft, edit, onEnter, models, cli }: { ranks: Ranks; overrides: Bootstrap["rankOverrides"]; draft: Draft; edit: (rank: Rank, patch: RankDraft) => void; onEnter: (e: KeyboardEvent) => void; models: readonly string[]; cli: AgentCli }) {
   return (
     <table className="st-ranks">
       <thead>
@@ -125,8 +128,8 @@ function RankTable({ settings, overrides, draft, edit, onEnter }: { settings: Se
       </thead>
       <tbody>
         {RANKS.map(({ rank, label, scope }) => {
-          const model = shownModel(settings, draft, rank);
-          const custom = isCustom(settings, draft, rank);
+          const model = shownModel(ranks, draft, rank);
+          const custom = isCustom(ranks, draft, rank, models);
           return (
             <tr key={rank} data-rank={rank}>
               <th scope="row">
@@ -150,7 +153,7 @@ function RankTable({ settings, overrides, draft, edit, onEnter }: { settings: Se
                     }}
                   >
                     <option value="">CLI 기본</option>
-                    {MODELS.map((m) => (
+                    {models.map((m) => (
                       <option key={m} value={m}>
                         {m}
                       </option>
@@ -178,9 +181,10 @@ function RankTable({ settings, overrides, draft, edit, onEnter }: { settings: Se
                   <select
                     className="input st-select"
                     aria-label={`${label} effort`}
-                    value={shownEffort(settings, draft, rank) ?? "high"}
-                    onChange={(e) => edit(rank, { effort: e.target.value as Effort })}
+                    value={shownEffort(ranks, draft, rank) ?? (cli === "codex" ? "" : "high")}
+                    onChange={(e) => edit(rank, { effort: (e.target.value || null) as Effort | null })}
                   >
+                    {cli === "codex" ? <option value="">CLI 기본</option> : null}
                     {EFFORTS.map((x) => (
                       <option key={x} value={x}>
                         {x}
@@ -458,7 +462,7 @@ function ConnectionPanel({ version, herdr, urls }: { version: string; herdr: Her
   );
 }
 
-function SettingsForm({ settings, overrides, herdr, projects, version, urls }: { settings: SettingsT; overrides: Bootstrap["rankOverrides"]; herdr: HerdrInfo; projects: ProjectSummary[]; version: string; urls: string[] }) {
+function SettingsForm({ settings, overrides, herdr, projects, version, urls, agentCli }: { settings: SettingsT; overrides: Bootstrap["rankOverrides"]; herdr: HerdrInfo; projects: ProjectSummary[]; version: string; urls: string[]; agentCli: AgentCli }) {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -481,15 +485,23 @@ function SettingsForm({ settings, overrides, herdr, projects, version, urls }: {
     setSaved(null);
     setError(null);
   };
-  const editRank = (rank: Rank, patch: RankDraft) => touch((d) => ({ ...d, ranks: { ...d.ranks, [rank]: { ...d.ranks[rank], ...patch } } }));
-
-  const backend = draft.backend ?? usableBackend(settings.backend, herdr);
+  const backend = draft.backend ?? settings.backend ?? "headless";
+  const rankCli = effectiveAgentCli(backend, agentCli);
+  const codex = rankCli === "codex";
+  const models = suggestedModels(rankCli);
+  const ranks = providerRanks(settings, rankCli);
+  // 실행 방식을 바꿔도 다른 CLI에서 쓰던 모델 초안이 섞이지 않는다.
+  const providerDraft = draft.rankCli === undefined || draft.rankCli === rankCli ? draft : { ...draft, ranks: {} };
+  const editRank = (rank: Rank, patch: RankDraft) => touch((d) => {
+    const previous = d.rankCli === undefined || d.rankCli === rankCli ? d.ranks : {};
+    return { ...d, rankCli, ranks: { ...previous, [rank]: { ...previous[rank], ...patch } } };
+  });
   const permission = draft.permissionMode ?? settings.permissionMode;
   const notify = draft.notifyMac ?? settings.notifyMac;
   const tidyHours = draft.boardTidyHours ?? settings.boardTidyHours;
   // API 로 다른 값을 넣었으면 그 값도 고를 수 있게 둔다.
   const tidyChoices = TIDY_CHOICES.some((c) => c.hours === tidyHours) ? TIDY_CHOICES : [...TIDY_CHOICES, { hours: tidyHours, label: `${tidyHours}시간` }].sort((a, b) => a.hours - b.hours);
-  const { patch, error: invalid } = buildPatch(settings, draft);
+  const { patch, error: invalid } = buildPatch(settings, providerDraft, models, rankCli);
   const dirty = Object.keys(patch).length > 0 || invalid !== null;
 
   const save = async () => {
@@ -524,7 +536,7 @@ function SettingsForm({ settings, overrides, herdr, projects, version, urls }: {
         <h2 id="st-backend" className="st-panel__title">
           실행 방식
         </h2>
-        <BackendChoice name="st-default-backend" value={backend} herdr={herdr} onChange={(b) => touch((d) => ({ ...d, backend: b }))} />
+        <BackendChoice name="st-default-backend" value={backend} herdr={herdr} agentCli={agentCli} onChange={(b) => touch((d) => ({ ...d, backend: b }))} />
         <p className="su-hint">일하는 직원이 없을 때만 바꿀 수 있습니다.</p>
       </Glass>
 
@@ -544,7 +556,8 @@ function SettingsForm({ settings, overrides, herdr, projects, version, urls }: {
         <h2 id="st-ranks" className="st-panel__title">
           직급별 모델·effort
         </h2>
-        <RankTable settings={settings} overrides={overrides} draft={draft} edit={editRank} onEnter={onEnter} />
+        <p className="su-hint">{agentLabel(rankCli)}의 직급 설정입니다. Claude와 Codex는 따로 저장합니다. 모델의 'CLI 기본'을 고르면 CLI 설정을 따릅니다.</p>
+        <RankTable ranks={ranks} overrides={overrides} draft={providerDraft} edit={editRank} onEnter={onEnter} models={models} cli={rankCli} />
       </Glass>
 
       <ProjectsPanel projects={projects} />
@@ -561,13 +574,14 @@ function SettingsForm({ settings, overrides, herdr, projects, version, urls }: {
                 <input
                   className="input t-tabular"
                   inputMode="numeric"
+                  disabled={codex && n.key === "compactAtPct"}
                   value={numberText(settings, draft, n.key)}
                   onChange={(e) => touch((d) => ({ ...d, numbers: { ...d.numbers, [n.key]: e.target.value } }))}
                   onKeyDown={onEnter}
                 />
                 <span aria-hidden="true">{n.unit}</span>
               </span>
-              <span className="su-hint">{n.hint}</span>
+              <span className="su-hint">{codex && n.key === "compactAtPct" ? "Codex exec에서는 명시적 압축을 지원하지 않습니다" : n.hint}</span>
             </label>
           ))}
           <label className="field">
@@ -636,7 +650,7 @@ export default function Settings() {
         </svg>
         {summary?.name ?? "본사"}
       </a>
-      {bootstrap ? <SettingsForm settings={bootstrap.settings} overrides={bootstrap.rankOverrides} herdr={bootstrap.herdr} projects={bootstrap.projects} version={bootstrap.version} urls={bootstrap.urls} /> : null}
+      {bootstrap ? <SettingsForm settings={bootstrap.settings} overrides={bootstrap.rankOverrides} herdr={bootstrap.herdr} projects={bootstrap.projects} version={bootstrap.version} urls={bootstrap.urls} agentCli={bootstrap.agentCli ?? "claude"} /> : null}
     </div>
   );
 }

@@ -96,7 +96,7 @@ async function setup(opts: { backend?: Backend | null; runnerEnabled?: boolean }
   const work = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-unified-work-")));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const bus = new Bus();
   const events: WsEvent[] = [];
   bus.subscribe((e) => events.push(e));

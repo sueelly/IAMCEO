@@ -408,7 +408,7 @@ describe("가져오기", () => {
     const home = newHome();
     const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
     updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
-    const config = loadConfig(env);
+    const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
     const bus = new Bus();
     const store = new Store(openDb(config.dbPath), bus);
     const calls: string[] = [];

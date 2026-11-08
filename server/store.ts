@@ -68,6 +68,7 @@ export type ProjectPatch = Partial<
 >;
 
 export interface NewMember {
+  cli?: Member["cli"];
   projectId: string;
   handle: string;
   name: string;
@@ -188,6 +189,7 @@ export const DEFAULT_SETTINGS: Settings = {
   backend: null,
   permissionMode: "bypassPermissions",
   ranks: DEFAULT_RANKS,
+  codexRanks: DEFAULT_RANKS,
   maxConcurrentTurns: 4,
   compactAtPct: 70,
   maxAwakeWorkers: 8,
@@ -486,6 +488,8 @@ export interface RunnerHealth {
 export class Store {
   private lastMessageMs = 0;
   private runnerHealth = new Map<Backend, RunnerHealth>();
+  private providerHealth = new Map<Member["cli"], RunnerHealth>();
+  private defaultCli: Member["cli"] = "claude";
   private lastConnections = new Map<string, string>();
 
   constructor(
@@ -543,17 +547,29 @@ export class Store {
     return this.row("SELECT 1 FROM members WHERE project_id = ? AND origin = 'manual' AND status NOT IN ('offline','asleep','error') LIMIT 1", projectId) !== null;
   }
 
-  private runnerUsable(runnerEnabled: boolean): boolean {
-    return runnerEnabled && (this.runnerHealth.get(this.effectiveBackend())?.ok ?? true);
+  setDefaultCli(cli: Member["cli"]): void { this.defaultCli = cli; }
+
+  setProviderHealth(cli: Member["cli"], health: RunnerHealth): boolean {
+    const before = this.providerHealth.get(cli);
+    this.providerHealth.set(cli, health);
+    const changed = (before?.ok ?? true) !== health.ok || (before?.detail ?? null) !== (health.detail ?? null);
+    if (changed) this.emitProjects();
+    return changed;
+  }
+
+  private runnerUsable(runnerEnabled: boolean, cli?: Member["cli"]): boolean {
+    const health = this.effectiveBackend() === "headless" && cli ? this.providerHealth.get(cli) ?? this.runnerHealth.get("headless") : this.runnerHealth.get(this.effectiveBackend());
+    return runnerEnabled && (health?.ok ?? true);
   }
 
   private connectionOf(id: string, runnerEnabled: boolean, archived: boolean): ProjectConnection {
     if (archived) return { ok: false, reason: "archived", detail: "보관된 프로젝트입니다. 보관함에서 꺼내면 쓸 수 있습니다" };
-    if (this.runnerUsable(runnerEnabled) || this.hasLiveManual(id)) return { ok: true, reason: null, detail: null };
+    const cli = this.getConductor(id)?.cli ?? this.defaultCli;
+    if (this.runnerUsable(runnerEnabled, cli) || this.hasLiveManual(id)) return { ok: true, reason: null, detail: null };
     if (!runnerEnabled) return { ok: false, reason: "runner_off", detail: "AI가 아직 연결되지 않았습니다. 총괄을 시작하거나 기존 세션을 편입하세요" };
     const backend = this.effectiveBackend();
-    const health = this.runnerHealth.get(backend);
-    return { ok: false, reason: "backend_down", detail: `${backend === "herdr" ? "herdr" : "claude"}에 연결할 수 없습니다. 연결되면 쓸 수 있습니다${health?.detail ? ` (${health.detail})` : ""}` };
+    const health = backend === "headless" ? this.providerHealth.get(cli) ?? this.runnerHealth.get(backend) : this.runnerHealth.get(backend);
+    return { ok: false, reason: "backend_down", detail: `${backend === "herdr" ? "herdr" : cli}에 연결할 수 없습니다. 연결되면 쓸 수 있습니다${health?.detail ? ` (${health.detail})` : ""}` };
   }
 
   private projectFrom(r: Row): Project {
@@ -566,8 +582,8 @@ export class Store {
    */
   requireReachable(projectId: string, target: Member | null): void {
     const project = this.requireProject(projectId);
+    if (!project.archived && this.runnerUsable(project.runnerEnabled, target?.cli ?? this.getConductor(projectId)?.cli ?? this.defaultCli)) return;
     if (!project.connection.ok) throw new ApiError(409, project.connection.detail ?? "연결되어야 쓸 수 있습니다");
-    if (this.runnerUsable(project.runnerEnabled)) return;
     if (target?.origin === "manual" && !["offline", "asleep", "error"].includes(target.status)) return;
     throw new ApiError(409, "실행기가 연결되지 않아 직접 띄운 세션에게만 보낼 수 있습니다. 받을 세션을 @로 골라 주세요");
   }
@@ -815,8 +831,8 @@ export class Store {
     const id = newId("m_");
     const at = nowIso();
     this.run(
-      `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.projectId,
       input.handle,
@@ -833,6 +849,7 @@ export class Store {
       `tk_${newId("")}${newId("")}`,
       at,
       at,
+      input.cli ?? "claude",
     );
     const member = this.requireMember(id);
     this.bus.emit({ type: "member", member });
@@ -1555,6 +1572,7 @@ export class Store {
     }
     // 나중에 생긴 직급이 저장값에 없어도 칸은 늘 있어야 한다.
     settings.ranks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...DEFAULT_RANKS[rank], ...settings.ranks[rank] }])) as Settings["ranks"];
+    settings.codexRanks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...DEFAULT_RANKS[rank], ...settings.codexRanks?.[rank] }])) as Settings["ranks"];
     return settings;
   }
 
@@ -1563,6 +1581,9 @@ export class Store {
     const next: Record<string, unknown> = { ...patch };
     if (patch.ranks) {
       next.ranks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...before.ranks[rank], ...patch.ranks![rank] }]));
+    }
+    if (patch.codexRanks) {
+      next.codexRanks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...before.codexRanks?.[rank], ...patch.codexRanks![rank] }]));
     }
     this.db.transaction(() => {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {

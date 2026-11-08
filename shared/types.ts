@@ -63,7 +63,7 @@ export interface Member {
   origin: MemberOrigin;
   /** 편입으로 들어온 세션. 다시 열어 origin 이 runner 가 되어도 남는다. 편입 해제의 근거다. */
   wasAdopted: boolean;
-  cli: "claude";
+  cli: "claude" | "codex";
   /** 이 직원의 세션을 다루는 실행기. 띄울 때 기억한다. 세션이 없으면 null(다음에 띄울 때 전역 설정을 따른다). */
   backend: Backend | null;
   /** null 이면 직급 기본(Settings.ranks) */
@@ -247,6 +247,8 @@ export interface Settings {
   backend: Backend | null;
   permissionMode: PermissionMode;
   ranks: Ranks;
+  /** Separate Codex defaults; absent in historical data means CLI defaults. */
+  codexRanks?: Ranks;
   maxConcurrentTurns: number;
   compactAtPct: number; // 기본 70
   maxAwakeWorkers: number; // 기본 8
@@ -260,6 +262,8 @@ export interface HerdrInfo { installed: boolean; running: boolean; version: stri
 export interface LiveAgent { paneId: string; name: string | null; agent: string | null; status: string; cwd: string | null; sessionId: string | null; workspaceId: string | null; tabId: string | null; adopted: boolean }
 
 export interface Bootstrap {
+  /** Default provider for new managed sessions; existing sessions retain their provider. */
+  agentCli?: "claude" | "codex";
   version: string;
   settings: Settings;
   projects: ProjectSummary[];
@@ -306,7 +310,7 @@ export type WsEvent =
 export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean }
 export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean }
 /** PUT /api/settings. ranks 는 고친 칸만 보내도 된다(나머지 유지). */
-export type SettingsPatch = Partial<Omit<Settings, "ranks">> & { ranks?: Partial<Record<Rank, Partial<RankConfig>>> };
+export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks">> & { ranks?: Partial<Record<Rank, Partial<RankConfig>>>; codexRanks?: Partial<Record<Rank, Partial<RankConfig>>> };
 /** PATCH /api/members/:id. null 이면 직급 기본으로 돌아간다. */
 export interface PatchMemberReq { modelOverride?: string | null; effortOverride?: Effort | null }
 export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[] }
@@ -342,8 +346,8 @@ export function memberRank(kind: MemberKind): Exclude<Rank, "staff"> {
 }
 
 /** 이 직원이 써야 할 값. 직원별 지정이 직급 기본을 이긴다. */
-export function memberConfig(m: Pick<Member, "kind" | "modelOverride" | "effortOverride">, ranks: Ranks): RankConfig {
-  const rank = ranks[memberRank(m.kind)];
+export function memberConfig(m: Pick<Member, "kind" | "modelOverride" | "effortOverride"> & Partial<Pick<Member, "cli">>, ranks: Ranks, codexRanks: Ranks = DEFAULT_RANKS): RankConfig {
+  const rank = (m.cli === "codex" ? codexRanks : ranks)[memberRank(m.kind)];
   return { model: m.modelOverride ?? rank.model, effort: m.effortOverride ?? rank.effort };
 }
 

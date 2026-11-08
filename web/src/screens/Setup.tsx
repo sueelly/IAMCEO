@@ -5,6 +5,7 @@ import { HERDR_INSTALL, herdrLine } from "../components/BackendChoice";
 import { Badge, copyText } from "../components/ui";
 import { Glass, GlassButton, LocalLight, glassClass } from "../glass";
 import { api, errorText } from "../lib/api";
+import { agentLabel, type AgentCli } from "../lib/agent";
 import { applyLocal, login, reconnectNow, refresh, useBootstrap, useStore } from "../lib/store";
 import "../styles/setup.css";
 
@@ -141,14 +142,17 @@ function BackendCard({
 
 const recommended = (h: HerdrInfo): boolean => h.installed && (!h.running || h.compatible);
 
-function ChoiceStep({ herdr }: { herdr: HerdrInfo }) {
+function ChoiceStep({ herdr, agentCli }: { herdr: HerdrInfo; agentCli: AgentCli }) {
   const offline = useStore((s) => s.connection === "offline");
   const [picked, setPicked] = useState<Backend | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // herdr 를 설치하고 '다시 확인'하면 고른 적 없는 기본값도 따라 바뀐다
-  const fallback: Backend = recommended(herdr) ? "herdr" : "headless";
-  const chosen: Backend = picked === "herdr" && !herdr.installed ? "headless" : (picked ?? fallback);
+  const codex = agentCli === "codex";
+  const herdrAvailable = herdr.installed && !codex;
+  const recommendHerdr = !codex && recommended(herdr);
+  const fallback: Backend = recommendHerdr ? "herdr" : "headless";
+  const chosen: Backend = picked === "herdr" && !herdrAvailable ? "headless" : (picked ?? fallback);
 
   const start = async () => {
     setBusy(true);
@@ -167,7 +171,7 @@ function ChoiceStep({ herdr }: { herdr: HerdrInfo }) {
       <header className="su-choice__head">
         <p className="su-brand">IAMCEO</p>
         <h1 className="su-title">직원을 어떻게 돌릴까요?</h1>
-        <p className="su-lead">화면·규칙·도구는 어느 쪽이든 같고, 나중에 설정에서 바꿀 수 있습니다.</p>
+        <p className="su-lead">{codex ? "Codex CLI가 herdr 없이 세션을 이어 가며 일합니다." : "화면·규칙·도구는 어느 쪽이든 같고, 나중에 설정에서 바꿀 수 있습니다."}</p>
       </header>
       {offline ? (
         <div className="offline-band" role="status">
@@ -182,22 +186,22 @@ function ChoiceStep({ herdr }: { herdr: HerdrInfo }) {
           value="herdr"
           chosen={chosen}
           onChoose={setPicked}
-          disabled={!herdr.installed}
+          disabled={!herdrAvailable}
           kicker="herdr와 함께"
           title="직원 = herdr 칸"
-          badge={recommended(herdr) ? "권장" : undefined}
-          status={herdrLine(herdr)}
-          statusWarn={!herdr.running || !herdr.compatible}
+          badge={recommendHerdr ? "권장" : undefined}
+          status={codex ? "Claude Code 전용 · Codex는 herdr 없이 실행" : herdrLine(herdr)}
+          statusWarn={!codex && (!herdr.running || !herdr.compatible)}
           points={["터미널을 보고 바로 칠 수 있다", "herdr가 일함·대기·승인 대기를 직접 감지", "일하는 중에도 칸에 바로 입력", "이미 돌고 있는 세션을 팀에 편입", "herdr의 폰 앱·세션 유지를 그대로 쓴다"]}
           needs="herdr 설치"
         >
-          {!herdr.installed ? <InstallGuide /> : null}
-          {herdr.installed && !herdr.running ? (
+          {!codex && !herdr.installed ? <InstallGuide /> : null}
+          {!codex && herdr.installed && !herdr.running ? (
             <p className="su-hint su-card__note" data-tone="warn">
               herdr가 꺼져 있습니다. 직원을 띄우기 전에 켜 두세요.
             </p>
           ) : null}
-          {herdr.warning ? (
+          {!codex && herdr.warning ? (
             <p className="su-hint su-card__note" data-tone="warn">
               {herdr.warning}
             </p>
@@ -209,8 +213,10 @@ function ChoiceStep({ herdr }: { herdr: HerdrInfo }) {
           onChoose={setPicked}
           kicker="herdr 없이"
           title="직원 = 이어지는 세션"
-          points={["입력이 오면 세션을 이어 턴 시작, 끝나면 대기", "턴의 시작·끝으로 상태 판단", "일하는 중에 보낸 말은 대기했다가 전달", "직원 화면에서 실시간 활동을 본다", "터미널로 만지려면 쉴 때 claude --resume"]}
-          needs="AI CLI만"
+          badge={!recommendHerdr ? "권장" : undefined}
+          status={agentLabel(agentCli)}
+          points={["입력이 오면 세션을 이어 턴 시작, 끝나면 대기", "턴의 시작·끝으로 상태 판단", "일하는 중에 보낸 말은 대기했다가 전달", "직원 화면에서 실시간 활동을 본다", codex ? "터미널로 열려면 먼저 잠재운 뒤 codex resume" : "터미널로 만지려면 쉴 때 claude --resume"]}
+          needs={`${agentLabel(agentCli)} 설치·로그인`}
         />
       </div>
       {error ? (
@@ -234,7 +240,7 @@ export default function Setup() {
     <main className="su">
       <LocalLight tone="violet" x="50%" y="24%" size="min(1000px, 150%)" aspect={0.6} strength={0.42} />
       <LocalLight tone="orchid" x="72%" y="88%" size="min(800px, 120%)" aspect={0.6} strength={0.28} />
-      <div className="su__scroll">{needCode || !bootstrap ? <CodeStep /> : <ChoiceStep herdr={bootstrap.herdr} />}</div>
+      <div className="su__scroll">{needCode || !bootstrap ? <CodeStep /> : <ChoiceStep herdr={bootstrap.herdr} agentCli={bootstrap.agentCli ?? "claude"} />}</div>
     </main>
   );
 }

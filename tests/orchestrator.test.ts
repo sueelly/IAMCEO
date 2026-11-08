@@ -71,7 +71,7 @@ async function setup(opts: { home?: string; directives?: string; timings?: Parti
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "iamceo-orch-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: FAKE }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const bus = new Bus();
   const store = new Store(openDb(config.dbPath), bus);
   const logPath = join(home, "calls.jsonl");
@@ -815,7 +815,7 @@ function scripted(timings: Partial<OrchestratorTimings> = {}) {
   const home = mkdtempSync(join(tmpdir(), "iamceo-script-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const store = new Store(openDb(config.dbPath), new Bus());
   const runner = new ScriptedRunner();
   const orch = new Orchestrator({

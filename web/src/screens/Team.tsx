@@ -7,6 +7,7 @@ import ConnectGate, { isGateRejection, useGate } from "../components/ConnectGate
 import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
 import { Glass, GlassButton, cx } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
+import { agentLabel, memberResumeCommand, providerRanks, suggestedModels, supportsCompact } from "../lib/agent";
 import { applyLocal, findMember, loadActivity, navigate, newId, refresh, routeHash, sendMessage, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
 import "../styles/team.css";
 
@@ -36,8 +37,6 @@ const DELIVERY_LABEL = { queued: "전달 대기", delivering: "전달 중", held
 
 /** 작은따옴표 안에서는 작은따옴표만 끊어 넣으면 어떤 경로도 안전하다. 안전한 글자뿐이면 그대로 둔다. */
 const shellQuote = (s: string) => (/^[A-Za-z0-9_\-./:=@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
-// sessionId 도 인용한다: 붙여 넣는 곳은 대표의 셸이다.
-const resumeCommand = (m: Member) => `cd ${shellQuote(m.cwd)} && claude --resume ${shellQuote(m.sessionId ?? "")}`;
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
 function useAction() {
@@ -322,9 +321,9 @@ function AdoptForm({ onClose, project }: { onClose: () => void; project: Project
 
 // ---- 카드 ----
 
-function ContextMeter({ pct, compactAt }: { pct: number; compactAt: number }) {
+function ContextMeter({ pct, compactAt, compactSupported }: { pct: number; compactAt: number; compactSupported: boolean }) {
   const value = Math.round(pct);
-  const due = value >= compactAt;
+  const due = compactSupported && value >= compactAt;
   return (
     <span className="tm-ctx" data-due={due ? "" : undefined}>
       <i className="tm-ctx__bar" aria-hidden="true">
@@ -354,6 +353,7 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
   return (
     <dl className="tm-facts">
       {extra}
+      <Row label="CLI">{agentLabel(m.cli)}</Row>
       {/* 턴이 끝나도 now 는 남는다. 쉬는 직원의 글은 지금 하는 일이 아니다. */}
       {m.status === "idle" || m.status === "asleep" || m.status === "offline" ? (
         m.now ? <Row label="마지막 일">{m.now}</Row> : <Row label="지금"><span className="ink-3">맡은 일 없음</span></Row>
@@ -364,7 +364,7 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
       {m.queuedCount > 0 ? <Row label="대기열"><span className="t-tabular">{m.queuedCount}건</span></Row> : null}
       {m.contextPct !== null ? (
         <Row label="문맥">
-          <ContextMeter pct={m.contextPct} compactAt={compactAt} />
+          <ContextMeter pct={m.contextPct} compactAt={compactAt} compactSupported={supportsCompact(m)} />
         </Row>
       ) : null}
       {openAsks > 0 ? (
@@ -664,33 +664,53 @@ function CopyCommand({ m }: { m: Member }) {
   return (
     <div className="tm-copy">
       <p className="tm-label">터미널로 열기</p>
-      <CopyBox command={resumeCommand(m)} label="터미널로 열기 명령 복사" onCopied={() => setCopied(true)} />
+      <CopyBox command={memberResumeCommand(m)} label="터미널로 열기 명령 복사" onCopied={() => setCopied(true)} />
       {copied && running ? <p className="tm-note tm-note--left">지금 도는 세션입니다. 두 곳에서 함께 쓰면 꼬이니 먼저 잠재우고 여세요.</p> : null}
     </div>
   );
 }
 
-const MODELS = ["fable", "opus", "sonnet", "haiku"];
+const CUSTOM_MODEL = "custom";
 
-/** 직원별 모델·effort. 기본은 직급 값이고, 고르는 대로 저장한다. 세션에는 쉴 때 들어간다. */
+/** 직원별 모델·effort. 기본은 직급 값이고, 직접 쓴 모델은 적용 버튼으로 저장한다. 세션에는 쉴 때 들어간다. */
 function MemberConfig({ m }: { m: Member }) {
-  const rank = useBootstrap()?.settings.ranks[memberRank(m.kind)];
+  const settings = useBootstrap()?.settings;
+  const rank = settings ? providerRanks(settings, m.cli)[memberRank(m.kind)] : undefined;
   const { busy, error, run } = useAction();
+  const [customModel, setCustomModel] = useState<string | null>(null);
   const save = (patch: { modelOverride?: string | null; effortOverride?: Effort | null }) =>
     run("config", async () => applyLocal({ type: "member", member: await api.patchMember(m.id, patch) }));
-  const models = m.modelOverride && !MODELS.includes(m.modelOverride) ? [...MODELS, m.modelOverride] : MODELS;
+  const models = suggestedModels(m.cli);
+  const custom = customModel !== null || (m.modelOverride !== null && !models.includes(m.modelOverride));
+  const modelName = customModel ?? m.modelOverride ?? "";
+  const saveCustom = (e: FormEvent) => {
+    e.preventDefault();
+    const model = modelName.trim();
+    if (!model || busy !== null) return;
+    void run("config", async () => {
+      applyLocal({ type: "member", member: await api.patchMember(m.id, { modelOverride: model }) });
+      setCustomModel(null);
+    });
+  };
   const base = (v: string | null | undefined) => `직급 기본값${v ? ` (${v})` : ""}`;
   return (
     <div className="tm-config">
       <p className="tm-label">모델 · effort</p>
       <div className="tm-config__row">
-        <select className="input tm-select" aria-label="모델" disabled={busy !== null} value={m.modelOverride ?? ""} onChange={(e) => save({ modelOverride: e.target.value || null })}>
+        <select className="input tm-select" aria-label="모델" disabled={busy !== null} value={custom ? CUSTOM_MODEL : (m.modelOverride ?? "")} onChange={(e) => {
+          if (e.target.value === CUSTOM_MODEL) setCustomModel(m.modelOverride ?? "");
+          else {
+            setCustomModel(null);
+            void save({ modelOverride: e.target.value || null });
+          }
+        }}>
           <option value="">{base(rank?.model)}</option>
           {models.map((x) => (
             <option key={x} value={x}>
               {x}
             </option>
           ))}
+          <option value={CUSTOM_MODEL}>직접 입력</option>
         </select>
         <select className="input tm-select" aria-label="effort" disabled={busy !== null} value={m.effortOverride ?? ""} onChange={(e) => save({ effortOverride: (e.target.value || null) as Effort | null })}>
           <option value="">{base(rank?.effort)}</option>
@@ -701,6 +721,14 @@ function MemberConfig({ m }: { m: Member }) {
           ))}
         </select>
       </div>
+      {custom ? (
+        <form className="tm-config__row" onSubmit={saveCustom}>
+          <input className="input t-code" aria-label="직원 모델 이름" placeholder="모델 이름" value={modelName} disabled={busy !== null} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(e) => setCustomModel(e.target.value)} />
+          <GlassButton variant="glass" size="m" type="submit" disabled={busy !== null || !modelName.trim() || modelName.trim() === m.modelOverride}>
+            {busy === "config" ? "적용하는 중" : "모델 적용"}
+          </GlassButton>
+        </form>
+      ) : null}
       {m.origin === "adopted" ? <p className="tm-note tm-note--left">넘겨받은 세션은 다시 열 때 적용됩니다.</p> : null}
       <ErrorLine>{error}</ErrorLine>
     </div>
@@ -768,6 +796,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks, onReleased }: { m: 
   const manual = m.origin === "manual";
   const asleep = m.status === "asleep" || m.status === "offline";
   const canRelease = m.wasAdopted && m.kind === "worker";
+  const compactSupported = supportsCompact(m);
 
   const memberAct = (key: string, call: (id: string) => Promise<Member>, done?: string) =>
     run(key, async () => {
@@ -832,7 +861,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks, onReleased }: { m: 
               <GlassButton
                 variant="glass"
                 size="m"
-                disabled={busy !== null || !m.sessionId}
+                disabled={busy !== null || !m.sessionId || !compactSupported}
                 onClick={() => memberAct("compact", api.compact, m.status === "working" ? "압축을 예약했습니다. 지금 턴이 끝나면 실행합니다." : "압축을 요청했습니다.")}
               >
                 {busy === "compact" ? "요청하는 중" : "압축"}
@@ -879,6 +908,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks, onReleased }: { m: 
           {canRelease ? <ReleaseButton m={m} onReleased={onReleased} /> : null}
         </div>
       )}
+      {!manual && !compactSupported ? <p className="tm-note tm-note--left">Codex exec에서는 명시적 압축을 지원하지 않습니다.</p> : null}
       <ErrorLine>{error ?? (sleepRefused && !asleep ? `${sleepRefused}. 그래도 재우면 돌던 턴이 끊기고 대기열은 깨울 때까지 멈춥니다.` : null)}</ErrorLine>
       {notice ? (
         <p className="tm-note tm-note--left" role="status">

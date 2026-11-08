@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-A desk for running several Claude Code sessions as a team. You start a server on your own computer, then give work and answer questions from a browser through five screens: Home, Inbox, Team, Conversation and Files. You do not have to keep watching a terminal, and it works from a phone.
+A desk for running several AI CLI sessions as a team. New sessions use Codex CLI by default; Claude Code remains available. You start a server on your own computer, then give work and answer questions from a browser through five screens: Home, Inbox, Team, Conversation and Files. You do not have to keep watching a terminal, and it works from a phone.
 
 - **Home**: what you need to do today. Your to-dos (one line each, an arrow unfolds the details), pending decisions, team status, what the AI does next, recent reports and files, and a **지금 판 정리** (tidy board now) button
 - **Inbox**: two sides, to decide and decided. Picking an option does not send it; you press confirm. Sessions stopped at a permission prompt show at the top under **승인 대기** (awaiting approval) with the prompt text, and you approve or reject them with the same pick-then-confirm (herdr only; folder trust and other menus are cleared in the terminal). Cards the AI closed show as "닫힘 · reason" (closed) and can be reopened
@@ -14,15 +14,16 @@ A project that is not connected (no lead and the runner is off, the backend is d
 
 You talk to the lead. The lead hands work to workers. See the [operating model](docs/operating-model.md) for the rules and the [architecture](docs/architecture.md) for the structure. Both are in Korean, as is the app's interface.
 
-Status: 0.1.0, early. Claude Code only. macOS only (Apple Silicon and Intel). The interface is in Korean.
+Status: 0.1.0, early. This branch (`codex/main-codex`) runs Codex headlessly. The separate `codex/native-codex` branch provides interactive sessions in the native app. macOS only (Apple Silicon and Intel). The web interface is in Korean.
 
 ## Requirements
 
 | Item | Needed | Version run |
 |---|---|---|
 | macOS | Yes (Apple Silicon or Intel) | Darwin 27 |
-| Claude Code (`claude`, logged in) | Yes | 2.1.316 |
-| herdr | Optional | 0.9.3 (protocol 22) |
+| Codex CLI (`codex`, logged in) | Default provider | |
+| Claude Code (`claude`, logged in) | For the Claude fallback | 2.1.316 |
+| herdr | Optional, Claude only | 0.9.3 (protocol 22) |
 | Tailscale | For phone access | |
 
 [Bun](https://bun.sh) is needed only to build from source.
@@ -72,8 +73,11 @@ Data stays in `~/.iamceo`. Delete that folder to remove everything: projects, th
 
 ## First run
 
+Install Codex CLI and sign in on the server computer with `codex login` ([official authentication guide](https://learn.chatgpt.com/docs/auth)). IAMCEO uses that CLI login.
+
 ```sh
-iamceo setup              # asks for backend, port and access range. Enter takes the default
+codex login status       # check the CLI login before starting IAMCEO
+iamceo setup --backend headless  # Codex runs without herdr
 iamceo service install    # starts the server now and at every login, restarts it if it dies. Default port 7878
 iamceo open               # shows the addresses and the access code
 ```
@@ -96,20 +100,24 @@ iamceo setup --backend headless --port 7878 --hosts local
 
 Check state with `iamceo status`. It tells you if the server is off.
 
+To use Claude for new sessions, start the server with `IAMCEO_AGENT_CLI=claude iamceo serve`. For a service, supply `IAMCEO_AGENT_CLI=claude` when installing it. Existing Claude sessions retain their provider. Override the Codex executable with `IAMCEO_CODEX_BIN=/absolute/path/to/codex`.
+
+A saved herdr backend continues to use Claude. To switch it to Codex, select headless in Settings and save.
+
 ## With herdr or without
 
-Chosen once for the whole server. Roles, rules, tools and screens are the same. What differs is where a session runs.
+Codex uses `headless`. With `IAMCEO_AGENT_CLI=claude`, either backend is available; choose once for the whole server.
 
-| | With herdr (`herdr`) | Without (`headless`) |
+| | With herdr (`herdr`, Claude only) | Without (`headless`) |
 |---|---|---|
-| A worker is | One herdr pane | One `claude -p --resume` turn per input |
+| A worker is | One herdr pane | One Codex `exec --json` turn per input, resuming the saved session; Claude uses `claude -p --resume` |
 | Watch and type in a terminal | Yes | No |
 | Terminal contents on the Team screen | Yes | No |
-| Approval prompts | Appear in the pane and show as "at approval prompt" on screen. Approve or reject from the Inbox or Team screen, or clear them in the pane | Not shown (`--permission-prompts none`) |
+| Approval prompts | Appear in the pane and show as "at approval prompt" on screen. Approve or reject from the Inbox or Team screen, or clear them in the pane | No interactive approval prompt |
 | Take over a running session as a worker | Yes | No |
-| Setup | Install (`brew install herdr`) and run herdr | None |
+| Setup | Install (`brew install herdr`) and run herdr, select Claude | Install and log in to the selected CLI |
 
-**Choose herdr if you want to touch the terminal yourself, headless if the screens are enough.** You can switch in Settings, but only while no session is working.
+Headless is the Codex default. For Claude, choose herdr if you want to type into a live terminal. You can switch in Settings, but only while no session is working. To open a headless session in a terminal, put the worker to sleep first, then copy its provider-specific resume command from Team.
 
 Notes for herdr:
 
@@ -197,6 +205,8 @@ Logs are in `~/.iamceo/logs/`. The plist records the executable path and the `IA
 | `accessCode` | | Generated on first run |
 | `port` | `IAMCEO_PORT` | 7878 |
 | `hosts` | | 127.0.0.1 + Tailscale address |
+| `agentCli` | `IAMCEO_AGENT_CLI` | `codex` (`claude` for the fallback) |
+| `codexBin` | `IAMCEO_CODEX_BIN` | `codex` |
 | `claudeBin` | `IAMCEO_CLAUDE_BIN` | `claude` |
 | `herdrSocket` | `IAMCEO_HERDR_SOCKET` | `~/.config/herdr/herdr.sock` |
 
@@ -206,8 +216,8 @@ There is one Settings screen and it applies to every project. Nothing is set per
 
 - Backend
 - Three permission modes: bypass (`bypassPermissions`, default), auto (`auto`), approve everything (`default`). Headless applies them from the next turn, herdr when the pane is next opened
-- Model and effort per rank: manager (lead and HQ AI), team lead (worker sessions), staff (subagents). Unset means the CLI default. One worker can override them in its detail view on the Team screen
-- Concurrent turns (4), awake worker limit (8), auto compact threshold (70% of context), Mac notifications
+- Model and effort per rank: manager (lead and HQ AI), team lead (worker sessions), staff (subagents). Claude and Codex ranks are saved separately; Codex starts with CLI defaults and does not inherit saved Claude model names. Settings shows the provider for the selected backend. One worker can override its provider's ranks in its detail view on the Team screen
+- Concurrent turns (4), awake worker limit (8), auto compact threshold (70% of context, Claude only), Mac notifications
 - Board tidy interval (off, 3 hours, 6 hours, 12 hours, daily; default 6 hours)
 
 ## Board tidy
@@ -249,7 +259,8 @@ The lead (the HQ AI for HQ) keeps the inbox, your to-dos, the work board and the
 ## Known limits
 
 - **It is not a sandbox.** Sessions run as your OS user. The server's file tools refuse secret folders, `.env` and private keys, but they cannot stop a session's Bash. The `bypassPermissions` mode leaves this risk fully exposed.
-- Claude Code only. Codex and Gemini CLI do not work.
+- Codex CLI is the default; Claude Code is available through `IAMCEO_AGENT_CLI=claude`. herdr adoption and manual `join` remain Claude only. Gemini CLI is unsupported.
+- Codex `exec` does not support explicit compact requests, so manual compact and IAMCEO's automatic compact threshold are disabled for Codex. This branch has no live Codex terminal; use the separate `codex/native-codex` branch for interactive sessions.
 - macOS only. Release binaries are built for macOS, and the launchd service, HEIC conversion (`sips`) and Mac notifications are macOS features.
 - The Intel (`darwin-x64`) binary is built but has not been run on an Intel Mac yet.
 - The interface is Korean and dark mode only. There is no iOS app, only the web screens.

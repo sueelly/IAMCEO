@@ -96,7 +96,7 @@ const DUMP = {
 function childEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(HERDR_|CLAUDE|IAMCEO_)/.test(k)) env[k] = v;
-  return { ...env, HOME: USER_HOME, IAMCEO_TEST: "1", IAMCEO_HOME: HOME, IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(WORK, "none.sock"), FAKE_CLAUDE_LOG: FAKE_LOG, FAKE_CLAUDE_SCRIPT: join(WORK, "script.json"), ...extra };
+  return { ...env, HOME: USER_HOME, IAMCEO_TEST: "1", IAMCEO_HOME: HOME, IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(WORK, "none.sock"), FAKE_CLAUDE_LOG: FAKE_LOG, FAKE_CLAUDE_SCRIPT: join(WORK, "script.json"), ...extra };
 }
 
 let server: ReturnType<typeof Bun.spawn>;

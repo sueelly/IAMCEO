@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Claude Code 세션 여러 개를 팀처럼 부리는 창구다. 내 컴퓨터에 서버를 켜고, 브라우저에서 홈·결재함·팀·대화·자료 다섯 화면으로 일을 시키고 답한다. 터미널을 계속 보고 있지 않아도 되고, 폰에서도 된다.
+AI CLI 세션 여러 개를 팀처럼 부리는 창구다. 새 세션은 Codex CLI로 시작하고, Claude Code도 선택할 수 있다. 내 컴퓨터에 서버를 켜고, 브라우저에서 홈·결재함·팀·대화·자료 다섯 화면으로 일을 시키고 답한다. 터미널을 계속 보고 있지 않아도 되고, 폰에서도 된다.
 
 - **홈**: 오늘 내가 뭘 하면 되나. 내가 할 일(한 줄씩, 화살표로 펼침), 결재 대기, 팀 상태, AI가 곧 할 일, 최근 보고·자료, 지금 판 정리 버튼
 - **결재함**: 결재할 항목과 결재된 항목 두 쪽. 선택지를 고른 뒤 확인을 눌러야 나간다. 승인 창 앞에서 멈춘 세션은 맨 위 '승인 대기'에 창 내용과 함께 보이고, 같은 두 단계로 승인·거절한다(herdr. 폴더 신뢰 창 등은 터미널에서). AI 가 닫은 카드는 '닫힘 · 이유'로 보이고 다시 열 수 있다
@@ -14,15 +14,16 @@ Claude Code 세션 여러 개를 팀처럼 부리는 창구다. 내 컴퓨터에
 
 말은 총괄에게 하고, 일은 총괄이 직원에게 맡긴다. 자세한 규칙은 [운영 모델](docs/operating-model.md), 구조는 [아키텍처](docs/architecture.md)를 본다.
 
-상태: 0.1.0 초기판. Claude Code 전용. macOS 전용(Apple Silicon·Intel). 화면은 한국어다.
+상태: 0.1.0 초기판. 이 브랜치(`codex/main-codex`)는 Codex를 headless로 돌린다. 별도 `codex/native-codex` 브랜치는 네이티브 앱에서 대화형 세션을 제공한다. macOS 전용(Apple Silicon·Intel). 웹 화면은 한국어다.
 
 ## 준비물
 
 | 항목 | 필요 여부 | 돌려 본 버전 |
 |---|---|---|
 | macOS | 필수(Apple Silicon·Intel) | Darwin 27 |
-| Claude Code(`claude`, 로그인 완료) | 필수 | 2.1.316 |
-| herdr | 선택 | 0.9.3(프로토콜 22) |
+| Codex CLI(`codex`, 로그인 완료) | 기본 실행기 | |
+| Claude Code(`claude`, 로그인 완료) | Claude를 선택할 때 | 2.1.316 |
+| herdr | 선택, Claude 전용 | 0.9.3(프로토콜 22) |
 | Tailscale | 폰 접속 때 | |
 
 [Bun](https://bun.sh) 은 소스에서 빌드할 때만 필요하다.
@@ -72,8 +73,11 @@ rm ~/.local/bin/iamceo     # IAMCEO_INSTALL_DIR 를 썼으면 그 폴더의 파�
 
 ## 첫 실행
 
+서버 컴퓨터에 Codex CLI를 설치하고 `codex login`으로 로그인한다([공식 인증 안내](https://learn.chatgpt.com/docs/auth)). IAMCEO는 이 CLI 로그인을 사용한다.
+
 ```sh
-iamceo setup              # 실행 방식·포트·접근 범위를 묻는다. 엔터를 치면 기본값
+codex login status       # IAMCEO를 켜기 전에 CLI 로그인 확인
+iamceo setup --backend headless  # Codex는 herdr 없이 실행
 iamceo service install    # 서버를 지금 켜고, 로그인할 때마다 켜고, 죽으면 다시 켠다. 기본 포트 7878
 iamceo open               # 주소와 접속 코드를 본다
 ```
@@ -96,20 +100,24 @@ iamceo setup --backend headless --port 7878 --hosts local
 
 상태 확인은 `iamceo status`. 서버가 꺼져 있으면 그렇게 알려 준다.
 
+새 세션을 Claude로 띄우려면 `IAMCEO_AGENT_CLI=claude iamceo serve`로 서버를 켠다. 서비스로 돌릴 때는 등록 명령에 `IAMCEO_AGENT_CLI=claude`를 붙인다. 기존 Claude 세션은 그대로 Claude로 이어진다. Codex 실행 파일이 다른 곳에 있으면 `IAMCEO_CODEX_BIN=/절대/경로/codex`로 지정한다.
+
+저장된 실행 방식이 herdr면 계속 Claude를 쓴다. Codex로 바꾸려면 설정에서 'herdr 없이'를 고르고 저장한다.
+
 ## herdr 함께 / herdr 없이
 
-서버 전체에서 하나를 고른다. 역할·규칙·도구·화면은 같고, 세션이 도는 곳이 다르다.
+Codex는 `headless`로 실행한다. `IAMCEO_AGENT_CLI=claude`를 쓰면 두 방식 중 서버 전체에서 하나를 고른다.
 
-| | herdr 함께 (`herdr`) | herdr 없이 (`headless`) |
+| | herdr 함께 (`herdr`, Claude 전용) | herdr 없이 (`headless`) |
 |---|---|---|
-| 직원은 | herdr 칸 하나 | 입력이 올 때마다 `claude -p --resume` 한 턴 |
+| 직원은 | herdr 칸 하나 | 입력마다 Codex `exec --json` 한 턴, 저장된 세션을 이어 간다. Claude는 `claude -p --resume` |
 | 터미널에서 보고 치기 | 된다 | 안 된다 |
 | 팀 화면의 터미널 내용 | 보인다 | 없다 |
-| 승인 창 | 칸에 뜨고, 화면에 "승인 창 앞"으로 표시. 결재함·팀 화면에서 승인·거절하거나 칸에서 풀어 준다 | 띄우지 않는다(`--permission-prompts none`) |
+| 승인 창 | 칸에 뜨고, 화면에 "승인 창 앞"으로 표시. 결재함·팀 화면에서 승인·거절하거나 칸에서 풀어 준다 | 대화형 승인 창 없음 |
 | 떠 있는 세션을 직원으로 받기(기존 세션 편입) | 된다 | 안 된다 |
-| 준비 | herdr 설치(`brew install herdr`)와 실행 | 없음 |
+| 준비 | herdr 설치(`brew install herdr`)·실행, Claude 선택 | 선택한 CLI 설치·로그인 |
 
-**터미널에 직접 손댈 일이 있으면 herdr, 화면만 쓸 거면 headless** 로 고른다. 일하는 세션이 없을 때만 설정에서 바꿀 수 있다.
+Codex의 기본 방식은 headless다. Claude를 쓰면서 터미널에 직접 입력하려면 herdr를 고른다. 일하는 세션이 없을 때만 설정에서 바꿀 수 있다. headless 세션을 터미널로 열려면 먼저 직원을 잠재운 뒤 팀 화면에서 해당 CLI의 이어 열기 명령을 복사한다.
 
 herdr 쪽 주의:
 
@@ -197,6 +205,8 @@ iamceo service uninstall           # 해제. 데이터는 남는다
 | `accessCode` | | 첫 실행 때 생성 |
 | `port` | `IAMCEO_PORT` | 7878 |
 | `hosts` | | 127.0.0.1 + Tailscale 주소 |
+| `agentCli` | `IAMCEO_AGENT_CLI` | `codex` (Claude를 쓰려면 `claude`) |
+| `codexBin` | `IAMCEO_CODEX_BIN` | `codex` |
 | `claudeBin` | `IAMCEO_CLAUDE_BIN` | `claude` |
 | `herdrSocket` | `IAMCEO_HERDR_SOCKET` | `~/.config/herdr/herdr.sock` |
 
@@ -206,8 +216,8 @@ iamceo service uninstall           # 해제. 데이터는 남는다
 
 - 실행 방식
 - 권한 모드 3종: 바이패스(`bypassPermissions`, 기본), 오토(`auto`), 모두 승인(`default`). headless 는 다음 턴부터, herdr 는 칸을 새로 열 때부터 적용된다
-- 직급별 모델·effort: 부장(총괄·본사 AI), 팀장(직원 세션), 직원(서브에이전트). 안 고르면 CLI 기본값이다. 팀 화면의 직원 상세에서 그 직원만 덮어쓸 수 있다
-- 동시 턴 수(4), 깨어 있는 직원 상한(8), 자동 압축 기준(문맥 70%), 맥 알림
+- 직급별 모델·effort: 부장(총괄·본사 AI), 팀장(직원 세션), 직원(서브에이전트). Claude와 Codex는 따로 저장하며, Codex는 기존 Claude 모델 이름을 물려받지 않고 CLI 기본값으로 시작한다. 설정에서는 고른 실행 방식의 CLI를 보여 준다. 팀 화면의 직원 상세에서 그 CLI의 직급 값을 직원별로 덮어쓸 수 있다
+- 동시 턴 수(4), 깨어 있는 직원 상한(8), 자동 압축 기준(문맥 70%, Claude만 적용), 맥 알림
 - 판 정리 주기(끔·3시간·6시간·12시간·매일, 기본 6시간)
 
 ## 판 정리
@@ -249,7 +259,8 @@ iamceo service uninstall           # 해제. 데이터는 남는다
 ## 알려진 한계
 
 - **격리가 아니다.** 세션은 내 OS 사용자로 돈다. 서버의 파일 도구는 비밀 폴더·`.env`·개인 키를 거부하지만, 세션의 Bash 까지 막지는 못한다. 권한 모드를 `bypassPermissions` 로 두면 이 위험이 그대로 드러난다.
-- Claude Code 만 된다. Codex·Gemini CLI 는 안 된다.
+- 기본은 Codex CLI이고, `IAMCEO_AGENT_CLI=claude`로 Claude Code를 쓸 수 있다. herdr 기존 세션 편입과 수동 `join`은 Claude만 된다. Gemini CLI는 지원하지 않는다.
+- Codex `exec`는 명시적 압축 요청을 지원하지 않아 수동 압축과 IAMCEO의 자동 압축 기준이 적용되지 않는다. 이 브랜치에는 실시간 Codex 터미널이 없다. 대화형 세션은 별도 `codex/native-codex` 브랜치를 쓴다.
 - macOS 전용이다. 릴리스 빌드본이 macOS 용이고, launchd 등록, HEIC 변환(`sips`), 맥 알림도 macOS 기능이다.
 - Intel 용(`darwin-x64`) 실행 파일은 만들기만 했고 Intel 맥에서 돌려 본 적은 아직 없다.
 - 다크 모드만 있다. iOS 앱은 없다. 웹 화면뿐이다.

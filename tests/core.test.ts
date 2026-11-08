@@ -35,13 +35,13 @@ describe("config", () => {
   test("접속 코드를 만들어 저장하고 다시 읽으면 같다. 파일은 본인만 읽는다", () => {
     const home = tempDir();
     const env = { IAMCEO_HOME: home };
-    const a = loadConfig(env);
+    const a = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
     expect(a.accessCode.length).toBe(16);
     expect(a.home).toBe(home);
     expect(a.dbPath).toBe(join(home, "iamceo.db"));
     expect(existsSync(a.uploadsDir)).toBe(true);
     expect(statSync(a.configPath).mode & 0o777).toBe(0o600);
-    expect(loadConfig(env).accessCode).toBe(a.accessCode);
+    expect(loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" }).accessCode).toBe(a.accessCode);
   });
 
   test("환경 변수가 파일보다 우선하고 $HERDR_SOCKET_PATH 는 무시한다", () => {
@@ -49,7 +49,7 @@ describe("config", () => {
     updateConfigFile({ accessCode: "abc", port: 1234, claudeBin: "/x/claude", herdrSocket: "/x/sock", hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
     const fromFile = loadConfig({ IAMCEO_HOME: home, HERDR_SOCKET_PATH: "/live/sock" });
     expect(fromFile).toMatchObject({ accessCode: "abc", port: 1234, claudeBin: "/x/claude", herdrSocket: "/x/sock", hosts: ["127.0.0.1"] });
-    const fromEnv = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0", IAMCEO_CLAUDE_BIN: "/y/claude", IAMCEO_HERDR_SOCKET: "/y/sock" });
+    const fromEnv = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0", IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: "/y/claude", IAMCEO_HERDR_SOCKET: "/y/sock" });
     expect(fromEnv).toMatchObject({ port: 0, claudeBin: "/y/claude", herdrSocket: "/y/sock" });
   });
 
@@ -390,7 +390,7 @@ describe("store", () => {
 
   test("설정: 기본값, 일부만 고치기, 다시 열어도 유지, 방송", () => {
     const { store: s, bus, db, events: ev } = makeStore();
-    expect(s.getSettings()).toEqual({ backend: null, permissionMode: "bypassPermissions", ranks: DEFAULT_RANKS, maxConcurrentTurns: 4, compactAtPct: 70, maxAwakeWorkers: 8, notifyMac: false, boardTidyHours: 6 });
+    expect(s.getSettings()).toEqual({ backend: null, permissionMode: "bypassPermissions", ranks: DEFAULT_RANKS, codexRanks: DEFAULT_RANKS, maxConcurrentTurns: 4, compactAtPct: 70, maxAwakeWorkers: 8, notifyMac: false, boardTidyHours: 6 });
     expect(s.patchSettings({ compactAtPct: 60 }).compactAtPct).toBe(60);
     expect(ev.at(-1)).toMatchObject({ type: "settings" });
     expect(new Store(db, bus).getSettings().compactAtPct).toBe(60);

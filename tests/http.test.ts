@@ -20,7 +20,7 @@ function makeConfig(hosts: string[] = ["127.0.0.1"]): Config {
   const home = mkdtempSync(join(tmpdir(), "iamceo-http-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts }, env);
-  return loadConfig(env);
+  return loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
 }
 
 /** 호출을 기록하는 가짜 Orchestrator. 실제 세션은 전혀 없다. */

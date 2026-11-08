@@ -47,7 +47,7 @@ import type {
   WorkItem,
   WorkSec,
 } from "../shared/types.ts";
-import { adoptRefusal, memberConfig } from "../shared/types.ts";
+import { adoptRefusal, DEFAULT_RANKS, memberConfig } from "../shared/types.ts";
 import type { Config } from "./config.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
@@ -286,7 +286,7 @@ const MAX_TURN_ERROR_ATTEMPTS = 3;
 const SWITCH_SETTLE_MS = 5000;
 
 export interface OrchestratorDeps {
-  config: Pick<Config, "home" | "rolesDir" | "port">;
+  config: Pick<Config, "home" | "rolesDir" | "port"> & Partial<Pick<Config, "agentCli">>;
   store: Store;
   runners: Map<Backend, Runner>;
   herdr?: HerdrQueries;
@@ -425,7 +425,7 @@ const WAKE_POST_KINDS = new Set<string>(["완료", "막힘", "질문"]);
 /** 실제 실행기로 조립한다. herdr 는 설정의 소켓만 쓴다. */
 export function createOrchestrator(config: Config, store: Store): Orchestrator {
   const runners = new Map<Backend, Runner>([
-    ["headless", new HeadlessRunner({ claudeBin: config.claudeBin, runDir: join(config.home, "run"), inboxDir: config.inboxDir })],
+    ["headless", new HeadlessRunner({ claudeBin: config.claudeBin, codexBin: config.codexBin, defaultCli: config.agentCli, runDir: join(config.home, "run"), inboxDir: config.inboxDir })],
     ["herdr", new HerdrRunner({ socketPath: config.herdrSocket }, { inboxDir: config.inboxDir })],
   ]);
   const herdr: HerdrQueries = { info: () => detectHerdr(config.herdrSocket), agents: () => listAgents(config.herdrSocket), inspect: (a) => inspectPane(config.herdrSocket, a) };
@@ -476,6 +476,7 @@ export class Orchestrator implements OrchestratorApi {
   constructor(deps: OrchestratorDeps) {
     this.store = deps.store;
     this.config = deps.config;
+    this.store.setDefaultCli(deps.config.agentCli ?? "claude");
     this.runners = deps.runners;
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
     this.herdr = deps.herdr ?? null;
@@ -645,8 +646,18 @@ export class Orchestrator implements OrchestratorApi {
   private async probeHealth(): Promise<void> {
     const backend = this.store.effectiveBackend();
     const runner = this.runners.get(backend);
-    const state = runner ? await runner.available().catch((e: Error) => ({ ok: false, detail: e.message })) : { ok: false, detail: "실행기가 없습니다" };
-    if (this.closed || !this.store.setRunnerHealth(backend, { ok: state.ok, detail: state.ok ? null : state.detail })) return;
+    let providerChanged = false;
+    let state: { ok: boolean; detail?: string };
+    if (backend === "headless" && runner) {
+      const states = await Promise.all((["claude", "codex"] as const).map(async cli => {
+        const health = await runner.available(cli).catch((e: Error) => ({ ok: false, detail: e.message }));
+        providerChanged = this.store.setProviderHealth(cli, { ok: health.ok, detail: health.ok ? null : health.detail }) || providerChanged;
+        return health;
+      }));
+      state = states.find(s => s.ok) ?? states[this.config.agentCli === "codex" ? 1 : 0];
+    } else state = runner ? await runner.available().catch((e: Error) => ({ ok: false, detail: e.message })) : { ok: false, detail: "실행기가 없습니다" };
+    const changed = this.store.setRunnerHealth(backend, { ok: state.ok, detail: state.ok ? null : state.detail });
+    if (this.closed || (!changed && !providerChanged)) return;
     await this.broadcastHerdr();
     if (!state.ok) return;
     for (const id of new Set(this.store.listUndelivered().map((d) => d.memberId))) void this.pump(id);
@@ -957,7 +968,7 @@ export class Orchestrator implements OrchestratorApi {
       if (e.code === "down" || e.code === "closed") return;
     }
     // 시간 초과 등은 실행기가 살아 있으면 칸도 살아 있을 수 있다.
-    const health = await this.runners.get(this.backendOf(member))?.available().catch(() => ({ ok: false }));
+    const health = await this.runners.get(this.backendOf(member))?.available(member.cli).catch(() => ({ ok: false }));
     if (health?.ok) throw refusal;
   }
 
@@ -1009,7 +1020,7 @@ export class Orchestrator implements OrchestratorApi {
     const backend = this.store.effectiveBackend();
     const runner = this.runners.get(backend);
     if (!runner) throw new ApiError(503, `실행기가 없습니다: ${backend}`);
-    const available = await runner.available();
+    const available = await runner.available(this.store.getConductor(projectId)?.cli ?? (backend === "herdr" ? "claude" : this.config.agentCli ?? "claude"));
     if (!available.ok) throw new ApiError(503, available.detail ?? "실행기를 쓸 수 없습니다");
     if (!project.runnerEnabled) this.store.patchProject(projectId, { runnerEnabled: true });
     const conductor = await this.ensureConductor(projectId);
@@ -1567,7 +1578,8 @@ export class Orchestrator implements OrchestratorApi {
   /** 명부에 올리고 세션을 띄우기 시작한다. 끝나기 전에는 pump 가 건너뛰고, 끝나면 다시 민다. */
   private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string }): { member: Member; ready: Promise<void> } {
     this.requireNotSwitching(); // 옮기는 명단에 없는 칸이 옛 실행기에 남는다.
-    const member = this.store.createMember({ projectId: project.id, ...input, origin: "runner", status: "idle" });
+    const cli = this.store.effectiveBackend() === "herdr" ? "claude" : this.config.agentCli ?? "claude";
+    const member = this.store.createMember({ projectId: project.id, ...input, cli, origin: "runner", status: "idle" });
     if (!project.runnerEnabled) return { member, ready: Promise.resolve() };
     const rt = this.runtime(member.id);
     const ready = (async () => {
@@ -1688,6 +1700,7 @@ export class Orchestrator implements OrchestratorApi {
   /** team_compact·화면 압축. 일하는 중이면 끊지 않고 끝난 뒤로 미룬다. */
   async compactMember(memberId: string, focus?: string): Promise<Member> {
     const member = this.store.requireMember(memberId);
+    if (member.cli === "codex") throw new ApiError(409, "Codex headless에서는 직접 압축을 지원하지 않습니다");
     if (member.origin === "manual") throw new ApiError(400, "직접 띄운 세션은 압축할 수 없습니다");
     if (!member.sessionId) throw new ApiError(400, "아직 세션이 없습니다");
     if (member.status === "asleep") throw new ApiError(409, "잠든 직원은 압축할 수 없습니다");
@@ -1891,7 +1904,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   roster(projectId: string): RosterEntry[] {
-    const { ranks } = this.store.getSettings();
+    const { ranks, codexRanks = DEFAULT_RANKS } = this.store.getSettings();
     return this.store.listMembers(projectId).map((m) => ({
       handle: m.handle,
       name: m.name,
@@ -1906,9 +1919,9 @@ export class Orchestrator implements OrchestratorApi {
       subagents: m.subagents,
       parallel: m.parallel,
       updatedAt: m.updatedAt,
-      ...memberConfig(m, ranks),
-      subagentModel: ranks.staff.model,
-      subagentEffort: ranks.staff.effort,
+      ...memberConfig(m, ranks, codexRanks),
+      subagentModel: (m.cli === "codex" ? codexRanks : ranks).staff.model,
+      subagentEffort: m.cli === "codex" ? null : ranks.staff.effort,
     }));
   }
 
@@ -2285,7 +2298,7 @@ export class Orchestrator implements OrchestratorApi {
     }
 
     const compactAt = this.store.getSettings().compactAtPct;
-    const autoCompact = hasWake && !rt.skipCompact && member.contextPct !== null && member.contextPct >= compactAt;
+    const autoCompact = member.cli !== "codex" && hasWake && !rt.skipCompact && member.contextPct !== null && member.contextPct >= compactAt;
     if (rt.compactRequest !== null || autoCompact) {
       await this.beginCompact(member, project, runner, rt, rt.compactRequest ?? this.compactFocus(member));
       return;
@@ -2334,9 +2347,10 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 이 직원의 세션에 들어가 있어야 할 설정. */
   private desiredConfig(member: Member): AppliedConfig {
-    const { ranks } = this.store.getSettings();
-    const { model, effort } = memberConfig(member, ranks);
-    return { model, effort, staffModel: ranks.staff.model, staffEffort: ranks.staff.effort };
+    const { ranks, codexRanks = DEFAULT_RANKS } = this.store.getSettings();
+    const { model, effort } = memberConfig(member, ranks, codexRanks);
+    const staff = (member.cli === "codex" ? codexRanks : ranks).staff;
+    return { model, effort, staffModel: staff.model, staffEffort: member.cli === "codex" ? null : staff.effort };
   }
 
   /** 서버가 띄운 세션이 지금 설정과 다른가. 넘겨받은 세션은 대표가 쓰던 칸이라 스스로 닫지 않는다(깨울 때 맞춰진다). 잠든 세션은 깨울 때 맞춰진다. */
@@ -3007,8 +3021,10 @@ export class Orchestrator implements OrchestratorApi {
       cwd: member.cwd,
       sessionId: member.sessionId,
       paneId: member.paneId,
-      ...memberConfig(member, settings.ranks),
-      subagentModel: settings.ranks.staff.model,
+      cli: member.cli,
+      parallel: member.parallel,
+      ...memberConfig(member, settings.ranks, settings.codexRanks),
+      subagentModel: (member.cli === "codex" ? settings.codexRanks ?? DEFAULT_RANKS : settings.ranks).staff.model,
       permissionMode: settings.permissionMode,
       kind: member.kind,
       origin: member.origin,
@@ -3018,7 +3034,8 @@ export class Orchestrator implements OrchestratorApi {
   private rulesFor(member: Member, project: Project): string {
     const conductor = this.store.getConductor(project.id);
     const staffEffort = this.store.getSettings().ranks.staff.effort;
-    return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "" }, this.config.rolesDir);
+    const rules = renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: member.cli !== "codex" && staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "" }, this.config.rolesDir);
+    return member.cli === "codex" ? `${rules.replaceAll("ultracode", "Codex multi_agent")}\n- 실행기는 Codex다. 대표에게 물을 때 request_user_input 대신 IAMCEO의 ask 도구를 쓴다. status·post·file·ask는 연결된 iamceo MCP 도구다.\n- 병렬이 켜진 경우에만 Codex 서브에이전트를 활용한다. /effort ultracode 같은 Claude 명령은 쓰지 않는다.\n` : rules;
   }
 
   /** 시스템 프롬프트·MCP 설정 파일을 쓴다. MCP 설정에 멤버 토큰이 들어가 본인만 읽게 한다. */

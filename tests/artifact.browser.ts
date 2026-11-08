@@ -20,7 +20,7 @@ beforeAll(async () => {
   const home = mkdtempSync(join(tmpdir(), "iamceo-artifact-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "비밀접속코드", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const bus = new Bus();
   const store = new Store(openDb(config.dbPath), bus);
   orch = new Orchestrator({ config, store, runners: new Map() });

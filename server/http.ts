@@ -181,6 +181,7 @@ const SettingsSchema = z
     backend,
     permissionMode,
     ranks: z.object({ manager: rankPatch, lead: rankPatch, staff: rankPatch }).partial().strict(),
+    codexRanks: z.object({ manager: rankPatch, lead: rankPatch, staff: rankPatch }).partial().strict(),
     maxConcurrentTurns: z.number().int().min(1).max(64),
     compactAtPct: z.number().int().min(1).max(100),
     maxAwakeWorkers: z.number().int().min(1).max(256),
@@ -347,6 +348,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[]): Route[] {
       const rankOverrides = { manager: 0, lead: 0 };
       for (const m of store.listAllMembers()) if (m.origin !== "manual" && (m.modelOverride || m.effortOverride)) rankOverrides[memberRank(m.kind)]++;
       const body: Bootstrap = {
+        agentCli: config.agentCli ?? "claude",
         version: VERSION,
         settings: store.getSettings(),
         projects: store.projectSummaries(),

@@ -132,7 +132,7 @@ function spawnServer(cmd: string[], home: string, listen: number, extra: Record<
     env: childEnv({
       IAMCEO_HOME: home,
       IAMCEO_PORT: String(listen),
-      IAMCEO_CLAUDE_BIN: FAKE,
+      IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: FAKE,
       IAMCEO_HERDR_SOCKET: join(home, "no-herdr.sock"),
       FAKE_CLAUDE_LOG: FAKE_LOG,
       FAKE_CLAUDE_SCRIPT: join(WORK, "script.json"),
@@ -869,7 +869,7 @@ describe("컴파일 실행 파일", () => {
       stdin: "ignore",
       stdout: "inherit",
       stderr: "inherit",
-      env: childEnv({ IAMCEO_HOME: home, IAMCEO_PORT: String(listen), IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(home, "no-herdr.sock"), FAKE_CLAUDE_LOG: join(WORK, "fake-bin.log"), FAKE_CLAUDE_SCRIPT: join(WORK, "script.json") }),
+      env: childEnv({ IAMCEO_HOME: home, IAMCEO_PORT: String(listen), IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(home, "no-herdr.sock"), FAKE_CLAUDE_LOG: join(WORK, "fake-bin.log"), FAKE_CLAUDE_SCRIPT: join(WORK, "script.json") }),
     });
     await waitHealthy(url, proc);
   }, 120_000);

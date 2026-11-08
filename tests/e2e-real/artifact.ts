@@ -49,7 +49,7 @@ for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(HER
 const server = Bun.spawn({
   cmd: [process.execPath, join(ROOT, "bin", "iamceo.ts"), "serve"],
   cwd: ROOT,
-  env: { ...env, IAMCEO_HOME: home, IAMCEO_CLAUDE_BIN: wrapper, IAMCEO_HERDR_SOCKET: join(out, "no-herdr.sock"), IAMCEO_TEST: "1", IAMCEO_E2E_CALLS: calls, IAMCEO_E2E_REAL_CLAUDE: REAL_CLAUDE },
+  env: { ...env, IAMCEO_HOME: home, IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: wrapper, IAMCEO_HERDR_SOCKET: join(out, "no-herdr.sock"), IAMCEO_TEST: "1", IAMCEO_E2E_CALLS: calls, IAMCEO_E2E_REAL_CLAUDE: REAL_CLAUDE },
   stdin: "ignore",
   stdout: Bun.file(join(out, "server.out")),
   stderr: Bun.file(join(out, "server.err")),

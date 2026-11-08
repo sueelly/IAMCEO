@@ -9,6 +9,8 @@ export type ApprovalAnswer =
   | { ok: false; reason: "not_blocked" | "unrecognized" | "changed" | "no_option" | "no_effect" | "gone"; current?: ApprovalPrompt | null };
 
 export interface RunnerMember {
+  cli?: "claude" | "codex";
+  parallel?: boolean;
   id: string;
   projectId: string;
   handle: string;
@@ -67,7 +69,7 @@ export type RunnerEvent =
 
 export interface Runner {
   readonly kind: Backend;
-  available(): Promise<{ ok: boolean; detail?: string }>;
+  available(cli?: "claude" | "codex"): Promise<{ ok: boolean; detail?: string }>;
   /** 세션을 만들거나 이어서 연다. headless 는 sessionId 만 정한다. */
   start(m: RunnerMember, o: StartOpts): Promise<{ sessionId: string | null; paneId: string | null; tabId?: string | null; rejoined?: boolean }>;
   /** 턴을 시작한다(글 넣기). 한 직원당 동시에 한 턴. */

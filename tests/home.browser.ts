@@ -24,7 +24,7 @@ const STRIP = /^(HERDR_.*|CLAUDECODE|CLAUDE_CODE_.*)$/;
 function env(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !STRIP.test(k)) out[k] = v;
-  return { ...out, IAMCEO_HOME: HOME, IAMCEO_TEST: "1", IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(WORK, "none.sock"), FAKE_CLAUDE_LOG: join(WORK, "fake.jsonl"), FAKE_CLAUDE_SESSIONS: join(WORK, "sessions"), ...extra };
+  return { ...out, IAMCEO_HOME: HOME, IAMCEO_TEST: "1", IAMCEO_AGENT_CLI: "claude", IAMCEO_CLAUDE_BIN: FAKE, IAMCEO_HERDR_SOCKET: join(WORK, "none.sock"), FAKE_CLAUDE_LOG: join(WORK, "fake.jsonl"), FAKE_CLAUDE_SESSIONS: join(WORK, "sessions"), ...extra };
 }
 
 let server: ReturnType<typeof Bun.spawn> | null = null;

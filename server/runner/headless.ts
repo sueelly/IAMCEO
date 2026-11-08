@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { cleanText, SESSION_ID_RE } from "../text.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "./types.ts";
+import { buildCodexInvocation, CodexStreamParser } from "./codex.ts";
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
 // 뒤쪽 변수들은 서버를 Claude Code 안에서 띄웠을 때 바깥 세션의 신원·설정이 새는 것을 막는다.
@@ -285,7 +286,7 @@ export class HeadlessRunner implements Runner {
   private readonly timings: HeadlessTimings;
 
   constructor(
-    private readonly config: { claudeBin: string; runDir?: string; inboxDir?: string },
+    private readonly config: { claudeBin: string; codexBin?: string; defaultCli?: "claude" | "codex"; runDir?: string; inboxDir?: string },
     deps: { env?: Record<string, string | undefined>; timings?: Partial<HeadlessTimings> } = {},
   ) {
     this.env = childEnv(deps.env ?? process.env);
@@ -301,9 +302,10 @@ export class HeadlessRunner implements Runner {
     for (const listener of this.listeners) listener(e);
   }
 
-  async available(): Promise<{ ok: boolean; detail?: string }> {
-    const found = this.config.claudeBin.includes("/") ? existsSync(this.config.claudeBin) : Bun.which(this.config.claudeBin, { PATH: this.env.PATH ?? "" }) !== null;
-    return found ? { ok: true } : { ok: false, detail: `claude 실행 파일을 찾지 못했습니다: ${this.config.claudeBin}` };
+  async available(cli = this.config.defaultCli ?? "claude"): Promise<{ ok: boolean; detail?: string }> {
+    const bin = cli === "codex" ? this.config.codexBin ?? "codex" : this.config.claudeBin;
+    const found = bin.includes("/") ? existsSync(bin) : Bun.which(bin, { PATH: this.env.PATH ?? "" }) !== null;
+    return found ? { ok: true } : { ok: false, detail: `${cli} 실행 파일을 찾지 못했습니다: ${bin}` };
   }
 
   private sessionFor(m: RunnerMember, resume: boolean): SessionState {
@@ -317,7 +319,8 @@ export class HeadlessRunner implements Runner {
 
   async start(m: RunnerMember, o: StartOpts): Promise<{ sessionId: string | null; paneId: string | null }> {
     if (!m.sessionId) this.sessions.delete(m.id);
-    return { sessionId: this.sessionFor(m, o.resume).sessionId, paneId: null };
+    const session = this.sessionFor(m, o.resume);
+    return { sessionId: m.cli === "codex" && !session.established ? null : session.sessionId, paneId: null };
   }
 
   async send(m: RunnerMember, text: string, o: StartOpts): Promise<SendResult> {
@@ -325,11 +328,13 @@ export class HeadlessRunner implements Runner {
   }
 
   async compact(m: RunnerMember, focus: string, o: StartOpts): Promise<SendResult> {
+    if (m.cli === "codex") return { ok: false, reason: "error", detail: "Codex headless에서는 직접 압축을 지원하지 않습니다", retryable: false };
     // 슬래시 명령은 한 줄이어야 한다. 줄이 나뉘면 일반 입력이 된다.
     return this.launch(m, `/compact ${claudeInput(focus).replace(/\s+/g, " ").trim()}`.trimEnd(), o, "compact").result;
   }
 
   async setParallel(m: RunnerMember, on: boolean, o: StartOpts): Promise<SendResult> {
+    if (m.cli === "codex") return { ok: true };
     const started = this.launch(m, `/effort ultracode ${on ? "on" : "off"}`, o, "control");
     return started.result.ok ? (this.live.get(m.id)?.done ?? started.result) : started.result;
   }
@@ -384,7 +389,7 @@ export class HeadlessRunner implements Runner {
     for (const name of readdirSync(dir)) {
       if (!name.endsWith(".turn.json")) continue;
       const file = join(dir, name);
-      let record: { pid?: unknown; sessionId?: unknown };
+      let record: { pid?: unknown; sessionId?: unknown; commandHash?: string };
       try {
         record = JSON.parse(readFileSync(file, "utf8"));
       } catch {
@@ -395,7 +400,7 @@ export class HeadlessRunner implements Runner {
       if (typeof pid === "number" && typeof sessionId === "string" && isAlive(pid)) {
         const command = commandOf(pid);
         // pid 는 재사용된다. 이 세션의 claude -p 가 아니면 절대 건드리지 않는다.
-        if (command.includes(sessionId) && command.includes("--output-format")) {
+        if ((command.includes(sessionId) && command.includes("--output-format")) || (record.commandHash && command.includes("--json") && createHash("sha256").update(command).digest("hex") === record.commandHash)) {
           console.warn(`서버가 강제로 꺼진 뒤 남은 세션 프로세스를 끝냅니다: pid ${pid}, 세션 ${sessionId}`);
           await this.killTree(pid);
         }
@@ -421,13 +426,14 @@ export class HeadlessRunner implements Runner {
     if (tree.some(isAlive)) signal("SIGKILL");
   }
 
-  private recordTurn(memberId: string, pid: number, sessionId: string): string | null {
+  private recordTurn(memberId: string, pid: number, sessionId: string, codex = false): string | null {
     const dir = this.config.runDir;
     if (!dir) return null;
     try {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const file = join(dir, `${memberId}.turn.json`);
-      writeFileSync(file, JSON.stringify({ pid, sessionId }), { mode: 0o600 });
+      const command = codex ? commandOf(pid) : "";
+      writeFileSync(file, JSON.stringify({ pid, sessionId, ...(command ? { commandHash: createHash("sha256").update(command).digest("hex") } : {}) }), { mode: 0o600 });
       return file;
     } catch (e) {
       console.warn("턴 기록을 남기지 못했습니다:", (e as Error).message);
@@ -452,7 +458,8 @@ export class HeadlessRunner implements Runner {
 
     const hadSession = !!m.sessionId;
     const session = this.sessionFor(m, o.resume);
-    if (!hadSession) this.emit({ type: "session", memberId: m.id, sessionId: session.sessionId });
+    const codex = m.cli === "codex";
+    if (!hadSession && !codex) this.emit({ type: "session", memberId: m.id, sessionId: session.sessionId });
     const member = { ...m, sessionId: session.sessionId };
 
     let inbox: string | undefined;
@@ -461,12 +468,15 @@ export class HeadlessRunner implements Runner {
       mkdirSync(inbox, { recursive: true, mode: 0o700 });
     }
 
+    let invocation: { args: string[]; env: Record<string, string> };
+    try { invocation = codex ? buildCodexInvocation(member, o, session.established, inbox) : { args: buildClaudeArgs(member, o, session.established, inbox), env: subagentEnv(member.subagentModel) }; }
+    catch (error) { return { result: { ok: false, reason: "error", detail: (error as Error).message, retryable: false } }; }
     let proc: Subprocess<Uint8Array, "pipe", "pipe">;
     try {
       proc = Bun.spawn({
-        cmd: [this.config.claudeBin, ...buildClaudeArgs(member, o, session.established, inbox)],
+        cmd: [codex ? this.config.codexBin ?? "codex" : this.config.claudeBin, ...invocation.args],
         cwd: m.cwd,
-        env: { ...this.env, ...subagentEnv(member.subagentModel) },
+        env: { ...this.env, ...invocation.env },
         // 다 쓰면 Bun 이 닫는다. 열어 두면 claude -p 가 입력을 3초 기다린다.
         stdin: new TextEncoder().encode(claudeInput(text)),
         stdout: "pipe",
@@ -476,16 +486,16 @@ export class HeadlessRunner implements Runner {
       const message = (e as Error).message;
       // 인자가 너무 긴 것은 실행기 장애가 아니다. '연결 불가'로 두면 그 직원의 대기열 전체가 영구 보류된다.
       if (/E2BIG|argument list too long/i.test(message)) return { result: { ok: false, reason: "error", detail: `실행 인자가 너무 깁니다: ${message}`, retryable: false } };
-      return { result: { ok: false, reason: "down", detail: `claude 를 실행하지 못했습니다: ${message}`, retryable: true } };
+      return { result: { ok: false, reason: "down", detail: `${codex ? "codex" : "claude"} 를 실행하지 못했습니다: ${message}`, retryable: true } };
     }
 
     let settle!: (r: SendResult) => void;
     const done = new Promise<SendResult>((resolve) => (settle = resolve));
-    const turn: LiveTurn = { mode, proc, stopping: false, pidFile: this.recordTurn(m.id, proc.pid, session.sessionId), timers: new Set(), done };
+    const turn: LiveTurn = { mode, proc, stopping: false, pidFile: this.recordTurn(m.id, proc.pid, session.sessionId, codex), timers: new Set(), done };
     this.live.set(m.id, turn);
     if (mode !== "control") this.emit({ type: "status", memberId: m.id, status: "working" });
 
-    const parser = new StreamParser(m.id, (e) => this.emit(e), {
+    const parser = codex ? new CodexStreamParser(m.id, (e) => this.emit(e)) : new StreamParser(m.id, (e) => this.emit(e), {
       reportContext: mode === "work",
       contextWindow: session.contextWindow,
       // 압축 턴은 프로세스가 끝난 뒤에야 다음 글을 받을 수 있어 끝에서 알린다.
@@ -520,7 +530,7 @@ export class HeadlessRunner implements Runner {
     return { result: { ok: true } };
   }
 
-  private async watch(turn: LiveTurn, parser: StreamParser): Promise<{ stderrTail: string; exitCode: number }> {
+  private async watch(turn: LiveTurn, parser: StreamParser | CodexStreamParser): Promise<{ stderrTail: string; exitCode: number }> {
     const onLine = (line: string) => {
       const hadResult = parser.result !== null;
       parser.feed(line);
@@ -540,8 +550,8 @@ export class HeadlessRunner implements Runner {
     this.later(turn, this.timings.termToKillMs, () => turn.proc.kill("SIGKILL"));
   }
 
-  private finishTurn(memberId: string, turn: LiveTurn, parser: StreamParser, stderrTail: string, exitCode: number): SendResult {
-    const failure = (): string => stderrTail.trim() || `claude 가 결과 없이 끝났습니다(종료 코드 ${exitCode})`;
+  private finishTurn(memberId: string, turn: LiveTurn, parser: StreamParser | CodexStreamParser, stderrTail: string, exitCode: number): SendResult {
+    const failure = (): string => stderrTail.trim() || `CLI 가 결과 없이 끝났습니다(종료 코드 ${exitCode})`;
     const result = parser.result;
     if (turn.mode === "control") {
       if (result && !result.isError) return { ok: true };

@@ -18,7 +18,7 @@ const { Store } = await import("../../server/store.ts");
 
 const env = { IAMCEO_HOME: join(home, ".iamceo"), IAMCEO_PORT: "0" };
 updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
-const config = loadConfig(env);
+const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
 const store = new Store(openDb(config.dbPath), new Bus());
 const orch = new Orchestrator({ config, store, runners: new Map() });
 const root = store.createMember({ projectId: "hq", handle: "root", name: "본사 AI", kind: "root", origin: "runner", status: "idle" });

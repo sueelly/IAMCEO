@@ -82,7 +82,7 @@ async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabl
   const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-gate-")));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
-  const config = loadConfig(env);
+  const config = loadConfig({ ...env, IAMCEO_AGENT_CLI: "claude" });
   const bus = new Bus();
   const store = new Store(openDb(config.dbPath), bus);
   const runner = new Fake();

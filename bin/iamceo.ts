@@ -106,7 +106,7 @@ async function serve(): Promise<void> {
   ]);
   const bus = new Bus();
   const store = new Store(openDb(config.dbPath), bus);
-  store.fillRankEfforts(savedClaudeEffort());
+  if (config.agentCli === "claude") store.fillRankEfforts(savedClaudeEffort());
   const orch = createOrchestrator(config, store);
   let server: Awaited<ReturnType<typeof startServer>>;
   try {
@@ -181,7 +181,9 @@ async function setup(args: string[]): Promise<void> {
   const herdr = await detectHerdr(config.herdrSocket);
   const herdrLine = herdr.running ? `실행 중(${herdr.version ?? "버전 모름"})` : herdr.installed ? "설치됨, 꺼져 있음" : "없음";
   console.log(`데이터 폴더: ${config.home}\nherdr: ${herdrLine}${herdr.warning ? ` (${herdr.warning})` : ""}`);
-  if (!Bun.which("claude")) console.log("claude 명령을 찾지 못했습니다. 직원을 띄우려면 Claude Code 가 필요합니다.");
+  const provider = config.agentCli ?? "codex";
+  const executable = provider === "codex" ? config.codexBin ?? "codex" : config.claudeBin;
+  if (!Bun.which(executable)) console.log(`${provider} 명령을 찾지 못했습니다. CLI 설치와 로그인을 확인하세요.`);
 
   const db = openDb(config.dbPath);
   const store = new Store(db, new Bus());
@@ -189,7 +191,7 @@ async function setup(args: string[]): Promise<void> {
   const reader = lineReader();
   try {
     console.log("직원을 돌리는 방식:\n  herdr     직원 = herdr 칸. 터미널을 보고 바로 칠 수 있다\n  headless  herdr 없이. 입력이 오면 세션을 이어 턴을 돌린다");
-    const chosen = values.backend ?? (await reader.ask("실행 방식", current ?? (herdr.installed ? "herdr" : "headless")));
+    const chosen = values.backend ?? (await reader.ask("실행 방식", current ?? (provider === "claude" && herdr.installed ? "herdr" : "headless")));
     if (chosen !== "herdr" && chosen !== "headless") throw new CliError(`실행 방식은 herdr 또는 headless 입니다: ${chosen}`);
     const portText = values.port ?? (await reader.ask("포트", String(config.port || DEFAULT_PORT)));
     const port = Number(portText);
