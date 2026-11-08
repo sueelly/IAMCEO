@@ -30,6 +30,8 @@ export interface Project {
   id: string; // 'hq' 는 본사
   name: string;
   isHq: boolean;
+  /** Stored chief provider; older servers omit it and retain their historical Claude default. */
+  chiefCli?: CliProvider;
   cwd: string;
   /** false 면 메시지를 저장만 하고 어떤 세션도 띄우거나 깨우지 않는다(가져온 프로젝트 기본값). */
   runnerEnabled: boolean;

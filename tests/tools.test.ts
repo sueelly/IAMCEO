@@ -132,7 +132,7 @@ test("team_add and config writes accept catalog models/null and reject unlisted 
   // Updates to the same fake CLI cache immediately affect both tool/config writes.
   writeFileSync(join(f.home, "claude", ".claude.json"), JSON.stringify({ additionalModelOptionsCache: [{ value: "claude-fable-5-1[1m]", label: "Fable" }] }));
   for (const model of ["fable", "claude-fable-5-1[1m]"]) {
-    const added = await f.call(f.lead, "team_add", { name: model === "fable" ? "추가 별칭" : "추가 전체 이름", handle: model === "fable" ? "fable-short" : "fable-full", role: "시험", model });
+    const added = await f.call(f.lead, "team_add", { name: model === "fable" ? "추가 별칭" : "추가 전체 이름", handle: model === "fable" ? "fable-short" : "fable-full", role: "시험", cli: "claude", model });
     expect(added.isError, added.text).toBeUndefined();
     expect((await f.orch.updateSettings({ ranks: { lead: { model } } })).ranks.lead.model).toBe(model);
   }

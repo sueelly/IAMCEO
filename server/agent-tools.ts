@@ -361,7 +361,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       name: oneLine(40).describe("화면 이름: 맡은 일(예: 결제 연동). 사람 이름은 쓰지 않는다. 한국어, 프로젝트 안에서 유일, 한 줄. 같은 역할이 더 필요하면 뒤에 2, 3"),
       role: oneLine(300).describe("맡을 역할(한 줄)"),
-      cli: z.enum(["claude", "codex"]).optional().describe("직원이 쓸 CLI, 기본 claude"),
+      cli: z.enum(["claude", "codex"]).optional().describe("직원이 쓸 CLI. 생략하면 총괄의 CLI, 총괄이 없으면 프로젝트의 선택을 따른다(새 프로젝트 기본 Codex)"),
       model: z.string().nullable().optional().describe("서버 모델 목록의 값. null이면 직급 기본값"),
       handle: z.string().optional().describe("영문 소문자 핸들"),
       cwd: z.string().optional().describe("작업 폴더. 기본은 프로젝트 폴더. 프로젝트 폴더 안이어야 한다. 밖이 꼭 필요하면 ask 로 묻고, 대표가 그 경로를 쓴 글을 user_quote 에 싣는다"),
@@ -478,7 +478,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       cwd: text.describe("이미 있는 프로젝트 폴더"),
       goal: z.string().optional().describe("프로젝트 목표. 대표의 말 그대로"),
       start_conductor: z.boolean().optional().describe("총괄을 바로 띄운다"),
-      chief_cli: z.enum(["claude", "codex"]).optional(),
+      chief_cli: z.enum(["claude", "codex"]).optional().describe("총괄이 쓸 CLI. 생략하면 Codex"),
     }),
     async (orch, member, a) => {
       const cwd = expandPath(a.cwd, member.cwd);

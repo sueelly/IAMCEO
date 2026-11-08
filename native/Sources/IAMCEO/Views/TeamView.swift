@@ -1798,7 +1798,7 @@ struct NewMemberView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var role = ""
-    @State private var provider = "claude"
+    @State private var provider = "codex"
     @State private var model = ""
     @State private var failure: String?
     @FocusState private var focus: NewMemberField?
@@ -1829,6 +1829,7 @@ struct NewMemberView: View {
             addButton.controlSize(.regular).keyboardShortcut(.defaultAction)
         }
         .interactiveDismissDisabled(busy)
+        .onAppear { provider = store.defaultMemberCLI }
     }
 
     private var addButton: some View {
@@ -1850,8 +1851,8 @@ struct NewMemberView: View {
             VStack(alignment: .leading, spacing: 6) {
                 fieldLabel("AI CLI")
                 Picker("AI CLI", selection: $provider) {
-                    Text(providerOption("claude")).tag("claude")
                     Text(providerOption("codex")).tag("codex")
+                    Text(providerOption("claude")).tag("claude")
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()

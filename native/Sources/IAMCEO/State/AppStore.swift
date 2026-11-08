@@ -1172,15 +1172,18 @@ final class AppStore: ProjectManagementStore {
         await refreshWriteContext()
         return false
     }
-    @discardableResult func createProject(name: String, cwd: String, goal: String = "", provider: String = "claude") async -> Bool {
+    @discardableResult func createProject(name: String, cwd: String, goal: String = "", provider: String = "codex") async -> Bool {
         let req = CreateProjectRequest(name: name, cwd: cwd, goal: goal, startConductor: true, chiefCli: provider)
         let result: Project? = await mutate("create-project") { api in try await api.send("/api/projects", body: req, timeout: 150) }
         if let result { await selectProject(id: result.id) }
         return result != nil
     }
-    @discardableResult func createMember(name: String, role: String = "", provider: String = "claude", model: String? = nil) async -> Bool {
+    var defaultMemberCLI: String {
+        state?.defaultMemberCLI ?? "codex"
+    }
+    @discardableResult func createMember(name: String, role: String = "", provider: String? = nil, model: String? = nil) async -> Bool {
         guard let projectID = selectedProjectID else { return false }
-        let req = CreateMemberRequest(name: name, role: role, cli: provider, modelOverride: model)
+        let req = CreateMemberRequest(name: name, role: role, cli: provider ?? defaultMemberCLI, modelOverride: model)
         let result: Member? = await mutate("create-member") { api in try await api.send("/api/projects/\(APIClient.segment(projectID))/members", body: req, timeout: 150) }
         return result != nil
     }

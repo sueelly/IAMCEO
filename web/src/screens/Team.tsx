@@ -93,10 +93,12 @@ function StartPanel({ project, hasMembers }: { project: Project; hasMembers: boo
 }
 
 function CreateMember({ project }: { project: Project }) {
+  const members = useProject()?.members ?? [];
+  const inheritedCli = members.find(member => member.kind === "conductor" || member.kind === "root")?.cli ?? project.chiefCli ?? "claude";
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
-  const [cli, setCli] = useState<CliProvider>("claude");
+  const [cli, setCli] = useState<CliProvider>(inheritedCli);
   const [model, setModel] = useState("");
   const { busy, error, run, setError } = useAction();
   const diagnostics = useRuntime();
@@ -116,7 +118,7 @@ function CreateMember({ project }: { project: Project }) {
   };
   return (
     <div className="tm-adopt-entry">
-      <GlassButton variant="glass" size="m" onClick={() => { setError(null); setOpen(true); }}>직원 추가</GlassButton>
+      <GlassButton variant="glass" size="m" onClick={() => { setError(null); setCli(inheritedCli); setOpen(true); }}>직원 추가</GlassButton>
       <Overlay open={open} onClose={() => { if (!busy) setOpen(false); }} title="직원 추가">
         <form className="form" onSubmit={submit}>
           <label className="field"><span className="field__label">이름</span><input className="input" value={name} disabled={!!busy} onChange={(e) => setName(e.target.value)} placeholder="개발 담당" data-autofocus="" /></label>

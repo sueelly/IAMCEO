@@ -1471,8 +1471,7 @@ export class Orchestrator implements OrchestratorApi {
   // ---- REST 겉면 ----
   async createProject(req: CreateProjectReq): Promise<Project> {
     const goal = req.goal?.trim();
-    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null });
-    this.store.setChiefCli(project.id, req.chiefCli ?? "claude");
+    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null, chiefCli: req.chiefCli });
     if (req.startConductor) {
       const conductor = await this.ensureConductor(project.id);
       if (goal) await this.deliver({ projectId: project.id, memberId: conductor.id, kind: "system", text: formatSystem(`프로젝트 목표: ${guardLines(goal)}`) });
@@ -2257,7 +2256,7 @@ export class Orchestrator implements OrchestratorApi {
     const placeholder = [req.handle, req.name]
       .map((ref) => (ref ? this.store.findMember(projectId, ref) : null))
       .find((m) => m && m.origin === "adopted" && m.kind === kind && m.status === "offline" && !m.paneId && !m.sessionId);
-    const placed = { status: "idle", backend: "herdr", cwd: live.cwd ?? project.cwd, sessionId: live.sessionId, paneId: req.paneId } as const;
+    const placed = { cli: "claude", status: "idle", backend: "herdr", cwd: live.cwd ?? project.cwd, sessionId: live.sessionId, paneId: req.paneId } as const;
     let member: Member | undefined;
     try {
       member = placeholder
@@ -2474,8 +2473,9 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async addMember(projectId: string, input: NewMemberInput): Promise<{ member: Member; assigned: AssignResult | null }> {
-    this.models.requireModel(input.cli ?? "claude", input.modelOverride);
     const project = this.store.requireProject(projectId);
+    const cli = input.cli ?? this.store.defaultMemberCli(projectId);
+    this.models.requireModel(cli, input.modelOverride);
     if (!project.runnerEnabled) throw new ApiError(409, "이 프로젝트는 실행이 꺼져 있습니다");
     const name = input.name.trim();
     if (!name) throw new ApiError(400, "이름이 필요합니다");
@@ -2486,7 +2486,7 @@ export class Orchestrator implements OrchestratorApi {
       handle: input.handle ?? this.deriveHandle(projectId, name),
       name,
       role: input.role ?? "",
-      cli: input.cli ?? "claude",
+      cli,
       modelOverride: input.modelOverride,
       cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
     }), ({ member }) => {

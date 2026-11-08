@@ -29,6 +29,8 @@ struct Project: Codable, Sendable, Identifiable {
     var id: String = ""
     var name: String = ""
     var isHq: Bool = false
+    /// Older servers omit this field and used Claude for project chiefs.
+    var chiefCli: String = "claude"
     var cwd: String = ""
     var runnerEnabled: Bool = false
     var now: String = ""
@@ -45,6 +47,7 @@ extension Project {
         id = try c.decode(String.self, forKey: ModelKey("id"))
         name = try c.decodeIfPresent(String.self, forKey: ModelKey("name")) ?? ""
         isHq = try c.decodeIfPresent(Bool.self, forKey: ModelKey("isHq")) ?? false
+        chiefCli = try c.decodeIfPresent(String.self, forKey: ModelKey("chiefCli")) ?? "claude"
         cwd = try c.decodeIfPresent(String.self, forKey: ModelKey("cwd")) ?? ""
         runnerEnabled = try c.decodeIfPresent(Bool.self, forKey: ModelKey("runnerEnabled")) ?? false
         now = try c.decodeIfPresent(String.self, forKey: ModelKey("now")) ?? ""
@@ -522,6 +525,10 @@ struct ProjectState: Codable, Sendable {
     var messages: [Message] = []
     var files: [FileDoc] = []
     var deliveryNotices: DeliveryNotices? = nil
+
+    var defaultMemberCLI: String {
+        members.first { $0.kind == "conductor" || $0.kind == "root" }?.cli ?? project.chiefCli
+    }
 }
 extension ProjectState {
     init(from decoder: Decoder) throws {

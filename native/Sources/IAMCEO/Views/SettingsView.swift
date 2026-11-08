@@ -1955,7 +1955,7 @@ struct NewProjectView: View {
     /// Set when the folder came from "GitHub에서 가져오기", so the chosen-folder tile can say where it came from.
     @State private var clonedRepository: String?
     @State private var legacyFolderInput = false
-    @State private var provider = "claude"
+    @State private var provider = "codex"
     @State private var working = false
     @State private var error: String?
     /// The daemon keeps a project whose conductor failed to start; retrying "만들기" would make a second one.
@@ -2058,7 +2058,7 @@ struct NewProjectView: View {
                     }
                 }
                 SetupField("총괄 AI CLI") {
-                    SettingsSegments(options: ["claude", "codex"].map { SettingsSegments.Option(id: $0, title: providerLabel($0)) },
+                    SettingsSegments(options: ["codex", "claude"].map { SettingsSegments.Option(id: $0, title: providerLabel($0)) },
                                      selection: provider, label: "총괄 AI CLI", fill: true) { provider = $0 }
                 }
             }

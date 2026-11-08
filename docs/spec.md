@@ -50,6 +50,8 @@ MCP stdio ── iamceo mcp /agent/* ──┘             │
 
 `projects.chief_cli`는 총괄 제공자 기본값, `members.cli`는 멤버 제공자다. `members.session_generation`과 `member_session_history`는 CLI/backend/native session/pane/적용 설정·교체 이유·시각을 보관한다. native sessionId와 core paneId는 별개이며 Codex sessionId는 모르면 null이다. 이 소스의 새 실행 backend는 core이고 기존 backend 값은 이력·명시적 전환 판단에 남긴다. 라이브 backend를 자동 변경하지 않는다. lifecycle/execution journal, terminal lease, operation receipt, domain revision, delivery recovery/dispatch, member context, push outbox·120초 보고 그룹도 DB에 영속화한다.
 
+새 프로젝트·새 본사의 총괄은 Codex가 기본이다. `chiefCli`를 명시하면 그 선택을 저장하고 `Project.chiefCli`로 돌려준다(구형 서버는 이 필드를 생략하며 Claude로 해석한다). 새 직원의 `cli`를 생략하면 현재 총괄의 CLI, 총괄이 없으면 저장된 프로젝트 선택을 따른다. 명시한 Claude 선택은 유지한다. 과거 마이그레이션의 Claude 기본값과 기존 CLI·세션 이력은 바꾸지 않으며 모델은 해당 CLI·저장된 사용자 설정의 기본값을 쓴다.
+
 기존 DB의 버전을 올리기 전에 `VACUUM INTO`로 `<db>.pre-v<version>-<time>-<random>.bak`을 만들고 mode 600을 건다. committed WAL도 포함하는 독립 SQLite snapshot이며 백업 실패 시 마이그레이션을 중단한다. 원본의 대화·업무·토큰을 비우거나 새 DB로 바꾸지 않는다.
 
 직원 `Member.lastActiveAt`(`members.last_active_at`)은 CLI 활동 `turn_start`·`turn_end`·`tool`·`tool_result`의 최신 `at`(ISO UTC, 없으면 null)이며, 상태 패치의 `updatedAt`과 독립적으로 저장하고 활동마다 직원 변경 알림을 추가하지 않는다.

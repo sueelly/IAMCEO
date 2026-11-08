@@ -271,6 +271,7 @@ function toProject(r: Row, connection: ProjectConnection): Project {
     id: r.id,
     name: r.name,
     isHq: !!r.is_hq,
+    chiefCli: r.chief_cli === "codex" ? "codex" : "claude",
     cwd: r.cwd,
     runnerEnabled: !!r.runner_enabled,
     now: r.now,
@@ -754,6 +755,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.row("SELECT chief_cli FROM projects WHERE id = ?", projectId)?.chief_cli === "codex" ? "codex" : "claude";
   }
 
+  defaultMemberCli(projectId: string): CliProvider {
+    return this.getConductor(projectId)?.cli ?? this.chiefCli(projectId);
+  }
+
   setChiefCli(projectId: string, cli: CliProvider): void {
     this.requireProject(projectId);
     this.run("UPDATE projects SET chief_cli = ? WHERE id = ?", cli, projectId);
@@ -893,8 +898,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = input.id ?? newId("p_");
       const now = input.now ?? "";
       this.run(
-        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.name,
         id === "hq" ? 1 : 0,
@@ -905,8 +910,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         at,
         input.creationGoal ?? null,
+        input.chiefCli ?? "codex",
       );
-      if (input.chiefCli) this.setChiefCli(id, input.chiefCli);
       const project = this.requireProject(id);
       this.emit({ type: "project", project });
       this.emitProjects();
@@ -1107,7 +1112,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         `tk_${newId("")}${newId("")}`,
         at,
         at,
-        input.cli ?? "claude",
+        input.cli ?? this.defaultMemberCli(input.projectId),
         input.modelOverride ?? null,
       );
       const member = this.requireMember(id);

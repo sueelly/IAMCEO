@@ -1027,6 +1027,8 @@ async function handleJoin(req: Request, { config, store }: ServerContext): Promi
     role: body.role ?? "",
     kind: "worker",
     origin: "manual",
+    // The legacy join contract and CLI instructions register Claude sessions.
+    cli: "claude",
     status: "idle",
     cwd: cwd ?? undefined,
     sessionId: body.sessionId ?? null,
