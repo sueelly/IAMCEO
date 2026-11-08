@@ -40,3 +40,7 @@ Ruling: Keep historical SQL defaults unchanged and write Codex only at creation 
 Ruling: Legacy `/agent/join` and herdr adoption are known-Claude contracts, so explicitly label their existing sessions Claude instead of applying defaults intended for newly spawned workers.
 
 Ruling: Leave SDK compatibility outside this provider change; independent Foundation-only checks verify the new native model logic, while full application compilation requires a compatible Xcode/SDK.
+
+## Upstream refresh — 2026-11-09
+
+Merged origin/native-redesign at da472a7 (five new commits since 9fddbb8). Preserved Codex creation/inheritance while incorporating delegation acknowledgements, native attachment fixes, documentation refresh and iPhone table layout. Resolved the addMember conflict by combining the new assignedBy transaction with the existing resolved provider/model validation. Verification: 329 safe tests across ten explicit files passed, TypeScript passed, and all ten changed native source files passed Swift syntax parsing. Full native application build remains subject to the previously reported SDK constraints.
