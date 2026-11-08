@@ -43,7 +43,7 @@ Closing either app leaves host work running. The Mac must remain awake; sleep, p
 
 ## Agent operation
 
-- Chief defaults to Claude; choose Codex at project creation or change an idle member. Leads choose their providers independently.
+- New project and headquarters chiefs default to Codex; choose Claude at project creation or change an idle member. New leads inherit their chief's provider unless explicitly selected. Existing Claude projects and sessions keep their provider.
 - Official CLI tools, settings and authentication remain in use. IAMCEO adds invocation-scoped instructions and an MCP bridge, not a replacement model API.
 - Provider changes create a fresh session with task handoff. Member/task/decision history remains; hidden model context and provider caches do not transfer. Working sessions and uncertain deliveries block switching. Failed starts show a recoverable error.
 - Claude native parallel mode and Codex subagent configuration/instructions are supported as distinct provider capabilities.
