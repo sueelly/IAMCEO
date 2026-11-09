@@ -54,13 +54,23 @@
 - [x] Wire strict write helpers at user review boundaries; retain explicit legacy compatibility and no automatic action replay.
 - [x] Run typecheck and safe regression suite, build standalone CLI/web bundle, test browser login/socket/visibility/reconnect/history/submission on a fake isolated daemon.
 - [x] Request a fresh whole-diff review; fix material findings with regression tests.
-- [ ] Commit changes, back up 7881 trial, gracefully reconnect its daemon with the same data/config and verify authenticated HTTPS/readiness and preserved core PID/Codex identities. Document actual checks/limits.
+- [x] Commit changes, back up 7881 trial, gracefully reconnect its daemon with the same data/config and verify authenticated HTTPS/readiness and preserved core PID/Codex identities. Document actual checks/limits.
 
 ## Verification before trial refresh
 
 - `bun run typecheck`: passed on the final source.
-- Isolated safe regression: 441 passed, 0 failed, 3618 assertions across19 files. Real-herdr/full unfiltered suite intentionally excluded.
-- Actual headless Chromium mobile viewport: 6 passed, covering240-message gap plus a reconnect live-row race, lost acknowledgement+reload without duplicate POST, explicit conflict re-review/save, another tab editing during uncertain send, employee-detail direct send recovery, and access-code rotation preserving draft/attempt.
-- Standalone Bun CLI/web bundle compiled and `--version` returned0.1.0.
-- One independent review identified4 P2 findings; each fixed with RED→GREEN coverage in one fix wave. No deferred minors. Actual iPhone/Safari device behavior is not verified.
+- Isolated safe regression: 441 passed, 0 failed, 3618 assertions across 19 files. Real-herdr/full unfiltered suite intentionally excluded.
+- Actual headless Chromium mobile viewport: 6 passed, covering a 240-message gap plus a reconnect live-row race, lost acknowledgement+reload without duplicate POST, explicit conflict re-review/save, another tab editing during uncertain send, employee-detail direct send recovery, and access-code rotation preserving draft/attempt.
+- Standalone Bun CLI/web bundle compiled and `--version` returned 0.1.0.
+- One independent review identified 4 P2 findings; each fixed with RED→GREEN coverage in one fix wave. No deferred minors. Actual iPhone/Safari device behavior is not verified.
 - Online SQLite integrity-checked backup and an executable rollback build prepared outside the checkout.
+
+## Trial delivery
+
+Feature commit: `02b54e8` on `codex/native-codex`. The existing 7881 trial was backed up with online SQLite integrity verification, then its HTTP daemon was gracefully reconnected to the same home/config. Schema remains25. All six existing core CLI PIDs and member session/pane identities were preserved; all three projects and existing files remained present. An executable of the previous code was prepared for rollback and was not needed.
+
+Authenticated loopback API and Tailscale HTTPS both returned200. A fresh headless Chromium mobile viewport logged in through the actual HTTPS origin, received the protocol2 WSS hello and rendered the input with zero page errors. This live verification made no model writes. Physical iPhone/Safari acceptance remains unverified. The old 7879 headless comparison stayed unchanged and authenticated successfully.
+
+The independent review's four P2 findings were fixed: page-proven history anchors prevent a reconnect live row concealing a gap; non-destructive session invalidation retains drafts on401; member-detail direct sends use the same durable journal; immutable per-ID attempt records prevent stale tabs overwriting or resurrecting attempts. Fresh reproductions and the final safe suite/browser flows passed. No deferred minors.
+
+Implementation decisions: keep the two requested branch variants separate; use a separate test browser because the configured browser plugin service could not load; reconnect only the web daemon while preserving active core holders, accepting a brief API reconnect. These choices were validated as described above. Native UI redesign, push notifications and real-device Safari behavior are outside this change.
