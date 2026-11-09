@@ -33,10 +33,11 @@ func officeStateLabel(_ member: Member) -> String {
     MemberStatusInfo.isUncertain(member) ? MemberStatusInfo(member).label : officeStateLabel(member.status)
 }
 
-/// The office's state colour: the body colour of a resident in that state (its base tone), so the header legend and
-/// the nameplate dots match what the scene shows. nil for states nobody is drawn in (offline, unknown).
+/// The office's state colour: the body colour of a resident in that state (its shade tone, which still reads on the
+/// light plate where the paler base tone would not), so the header legend and the nameplate dots match what the scene
+/// shows. nil for states nobody is drawn in (offline, unknown).
 private func officeStateColor(_ status: String) -> Color? {
-    guard let ramp = OfficeArt.states[status], let i = OfficeArt.stateRoles.firstIndex(of: "b"), ramp.indices.contains(i)
+    guard let ramp = OfficeArt.states[status], let i = OfficeArt.stateRoles.firstIndex(of: "s"), ramp.indices.contains(i)
     else { return nil }
     return Color(hex: ramp[i])
 }
@@ -50,7 +51,7 @@ private struct OfficeStateDot: View {
         if let color = officeStateColor(status) {
             Circle().fill(color).frame(width: size, height: size)
         } else {
-            Circle().strokeBorder(MemberStatusInfo(status).tone.color, lineWidth: size > 5 ? 1.4 : 1).frame(width: size, height: size)
+            Circle().strokeBorder(MemberStatusInfo(status).tone.dot, lineWidth: size > 5 ? 1.4 : 1).frame(width: size, height: size)
         }
     }
 }
@@ -381,10 +382,19 @@ struct OfficeView: View {
         return ZStack(alignment: .topLeading) {
             ForEach(marks(map: map)) { mark in
                 let shape = RoundedRectangle(cornerRadius: isMac ? 10 : 8, style: .continuous)
-                shape.fill(CE.accent.opacity(mark.strong ? 0.15 : 0.10))
-                    .overlay { shape.strokeBorder(CE.accent.opacity(mark.strong ? 0.5 : 0.35), lineWidth: 1) }
-                    .frame(width: mark.rect.width * p, height: mark.rect.height * p)
-                    .offset(x: mark.rect.minX * p, y: mark.rect.minY * p)
+                // Light glass selection, as the 지금 list's selected row (mockup --sel-bg / --sel-ring); hover and
+                // focus take the quieter violet soft surface (--soft / --soft-ring).
+                Group {
+                    if mark.strong {
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.strokeBorder(CE.selectedRing, lineWidth: 1) }
+                    } else {
+                        shape.fill(CE.soft)
+                            .overlay { shape.strokeBorder(CE.softRing, lineWidth: 1) }
+                    }
+                }
+                .frame(width: mark.rect.width * p, height: mark.rect.height * p)
+                .offset(x: mark.rect.minX * p, y: mark.rect.minY * p)
             }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -756,7 +766,7 @@ private struct OfficeFloorDots: View {
                 }
                 y += step
             }
-            ctx.fill(dots, with: .color(Color.white.opacity(0.045)))
+            ctx.fill(dots, with: .color(CE.wash(0.07)))
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -806,11 +816,12 @@ private struct OfficeNameplate: View {
                     if member.kind != "worker", !member.name.contains(rankName(member.kind)) {
                         Text(rankName(member.kind)).font(.system(size: 10, weight: .bold)).foregroundStyle(CE.accent)
                             .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(CE.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                            .background(CE.violet.opacity(0.13), in: RoundedRectangle(cornerRadius: 3.5, style: .continuous))
                             .fixedSize()
                     }
                 }
-                .opacity(away ? 0.78 : 1)
+                // 0.85, not lower: the dimmed name and rank stay at 4.5:1 on the light tag.
+                .opacity(away ? 0.85 : 1)
                 if let delivery, delivery.needsOwnerCount > 0 {
                     ViewThatFits(in: .horizontal) {
                         Text("전달 확인 \(DeliveryInfo.badgeCount(delivery.needsOwnerCount))")
@@ -820,27 +831,29 @@ private struct OfficeNameplate: View {
                 }
                 if counted { count }
             } else {
-                Text("새 팀장 자리").font(.system(size: 12, weight: .semibold)).foregroundStyle(CE.ink3).lineLimit(1)
+                Text("새 팀장 자리").font(.system(size: 12, weight: .semibold)).foregroundStyle(CE.ink2).lineLimit(1)
                     .opacity(0.78)
             }
         }
         // The count capsule sits as far in from the trailing edge as from the top and bottom.
         .padding(.leading, 6).padding(.trailing, counted ? 3 : 6).padding(.vertical, 3)
-        .background(Color(hex: 0x0E0A1F).opacity(away ? 0.25 : 0.5), in: shape)
+        // A small white tag on the light floor (an empty seat: a dashed ink outline only).
+        .background(Color.white.opacity(member == nil ? 0.4 : (away ? 0.6 : 0.88)), in: shape)
         .overlay {
             if member == nil {
-                shape.strokeBorder(Color.white.opacity(0.125), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                shape.strokeBorder(CE.wash(0.2), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             } else {
-                shape.strokeBorder(Color.white.opacity(away ? 0.04 : 0.09), lineWidth: 1)
+                shape.strokeBorder(CE.wash(away ? 0.06 : 0.1), lineWidth: 1)
             }
         }
     }
 
-    /// Decisions waiting for the CEO (결재): an app-style count capsule in the attention colour.
+    /// Decisions waiting for the CEO (결재): an app-style count capsule in the attention colour, white digits
+    /// (about 5.4:1 on the text-strength attention fill).
     private var count: some View {
         Text(decisions > 9 ? "9+" : "\(decisions)")
             .font(.system(size: 10, weight: .bold)).monospacedDigit()
-            .foregroundStyle(Color(hex: 0x2B1708))
+            .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .frame(minWidth: 14, minHeight: 14)
             .background(CE.attention, in: Capsule())
@@ -917,7 +930,7 @@ private struct OfficeBench: View {
                 if count > 0 {
                     Text(count > 9 ? "9+" : "\(count)")
                         .font(.system(size: 10, weight: .bold)).monospacedDigit()
-                        .foregroundStyle(Color(hex: 0x2B1708))
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 4)
                         .frame(minWidth: 14, minHeight: 14)
                         .background(CE.attention, in: Capsule())
@@ -925,8 +938,8 @@ private struct OfficeBench: View {
             }
             .fixedSize()
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(Color(hex: 0x0E0A1F).opacity(0.3), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 1) }
+            .background(Color.white.opacity(0.7), in: shape)
+            .overlay { shape.strokeBorder(CE.wash(0.08), lineWidth: 1) }
             .frame(minHeight: isMac ? nil : 44)
             .contentShape(Rectangle())
         }
@@ -974,8 +987,8 @@ private struct OfficeMessageBox: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(minHeight: isMac ? 44 : 52)
-            .background(Color.white.opacity(0.04), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 1) }
+            .background(Color.white.opacity(0.55), in: shape)
+            .overlay { shape.strokeBorder(CE.line, lineWidth: 1) }
             .contentShape(shape)
         }
         .buttonStyle(.plain)

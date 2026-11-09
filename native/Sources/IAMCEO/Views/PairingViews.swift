@@ -83,6 +83,7 @@ struct MacPairingSheet: View {
                             .frame(width: Self.qrSide, height: Self.qrSide)
                             .padding(14)
                             .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(CE.line) }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("iPhone 연결 QR 코드")
                     } else {
@@ -122,7 +123,7 @@ struct MacPairingSheet: View {
         inner()
             .frame(width: Self.qrSide, height: Self.qrSide)
             .padding(14)
-            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(CE.line) }
     }
 
@@ -137,7 +138,7 @@ struct MacPairingSheet: View {
         .font(CEFont.meta.weight(.medium))
         .foregroundStyle(left > 0 ? CE.ink2 : CE.attention)
         .padding(.horizontal, 10).frame(height: 24)
-        .background(Color.white.opacity(0.06), in: Capsule())
+        .background(CE.wash(0.05), in: Capsule())
         .overlay { Capsule().strokeBorder(CE.line) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(left > 0 ? "\(left / 60)분 \(left % 60)초 동안 한 번 쓸 수 있습니다" : "QR 시간이 지났습니다")
@@ -159,7 +160,7 @@ struct MacPairingSheet: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+        .background(CE.wash(0.025), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.line) }
     }
 

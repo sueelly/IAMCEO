@@ -16,7 +16,7 @@ struct ComposerAcceptedMessage {
     let messageID: String
 }
 
-/// The one instruction surface (web Composer): a dark glass panel with a meta row (target chip, attachment chips,
+/// The one instruction surface (web Composer): a light glass panel with a meta row (target chip, attachment chips,
 /// hints), an error line, and the input row (paperclip, text, round send button).
 /// Used docked under every destination (Mac, iPhone) and inline in 대화.
 /// Drafts and attachments are keyed by project + target, so switching either never sends a draft to someone else.
@@ -146,7 +146,7 @@ struct ComposerBar: View {
         .overlay {
             // Focus belongs to the whole panel (web): violet outline; a dashed one while a file is dragged over it.
             if dropTargeted {
-                shape.strokeBorder(CE.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                shape.strokeBorder(CE.focus, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
             } else if focused {
                 shape.strokeBorder(CE.violet.opacity(0.85), lineWidth: 1.5)
             }
@@ -269,7 +269,7 @@ struct ComposerBar: View {
             }
     }
 
-    /// Web target chip: "총괄"/"본사 AI" quiet; a worker is "@이름" in white on violet. Mac opens the web's recipient
+    /// Web target chip: "총괄"/"본사 AI" quiet; a worker is "@이름" in link violet on the soft violet pill (mockup .to). Mac opens the web's recipient
     /// list (name, @handle · role, status); iPhone keeps the system menu with the same lines.
     @ViewBuilder private var targetChip: some View {
         let direct = recipient != nil && !missingTarget
@@ -312,10 +312,10 @@ struct ComposerBar: View {
                 Text(label).font(CEFont.meta.weight(.semibold)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 8.5, weight: .bold))
             }
-            .foregroundStyle(direct ? Color.white : missingTarget ? CE.danger : CE.ink2)
+            .foregroundStyle(direct ? CE.accent : missingTarget ? CE.danger : CE.ink2)
             .padding(.horizontal, 10).frame(height: 28)
-            .background(direct ? CE.violet.opacity(0.42) : Color.white.opacity(0.08), in: Capsule())
-            .overlay { Capsule().strokeBorder(direct ? CE.violet.opacity(0.95) : missingTarget ? CE.danger.opacity(0.6) : Color.white.opacity(0.1)) }
+            .background(direct ? CE.soft : CE.wash(0.05), in: Capsule())
+            .overlay { Capsule().strokeBorder(direct ? CE.softRing : missingTarget ? CE.danger.opacity(0.6) : CE.line) }
             .frame(maxWidth: 220)
             .frame(height: 44)
             .contentShape(Rectangle())
@@ -348,8 +348,8 @@ struct ComposerBar: View {
         .font(CEFont.meta.weight(.medium))
         .foregroundStyle(CE.ink)
         .padding(.leading, 9).frame(height: 28)
-        .background(Color.white.opacity(0.08), in: Capsule())
-        .overlay { Capsule().strokeBorder(Color.white.opacity(0.1)) }
+        .background(CE.wash(0.05), in: Capsule())
+        .overlay { Capsule().strokeBorder(CE.line) }
         .help(file.name)
     }
 
@@ -363,8 +363,8 @@ struct ComposerBar: View {
         .font(CEFont.meta.weight(.medium))
         .foregroundStyle(CE.ink)
         .padding(.horizontal, 9).frame(height: 28)
-        .background(Color.white.opacity(0.08), in: Capsule())
-        .overlay { Capsule().strokeBorder(Color.white.opacity(0.1)) }
+        .background(CE.wash(0.05), in: Capsule())
+        .overlay { Capsule().strokeBorder(CE.line) }
         .accessibilityElement(children: .combine)
     }
 
@@ -458,7 +458,7 @@ struct ComposerBar: View {
                 .id(key)
                 .overlay(alignment: .topLeading) {
                     if draftText.isEmpty {
-                        Text(placeholder).font(.system(size: 15)).foregroundStyle(CE.ink2)
+                        Text(placeholder).font(.system(size: 15)).foregroundStyle(CE.ink3)
                             .allowsHitTesting(false)
                     }
                 }
@@ -466,7 +466,7 @@ struct ComposerBar: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .disabled(store.isDemo)
             #else
-            TextField("\(recipientName)에게 보낼 글", text: text, prompt: Text(placeholder).foregroundStyle(CE.ink2), axis: .vertical)
+            TextField("\(recipientName)에게 보낼 글", text: text, prompt: Text(placeholder).foregroundStyle(CE.ink3), axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(isMac ? .system(size: 15) : CEFont.body)
                 // web .cmp__input: 22pt lines (15px text + 4pt leading); 7 lines ≈ the web's 168pt cap.
@@ -683,7 +683,7 @@ struct ComposerBar: View {
 
 }
 
-/// Web ghost icon button (paperclip, .gbtn--ghost): ink-2 and no fill; ink-1 on white .07 when hovered.
+/// Web ghost icon button (paperclip, .gbtn--ghost): ink-2 and no fill; ink-1 on an ink .05 wash when hovered.
 private struct ComposerGhostStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { GhostBody(configuration: configuration) }
     private struct GhostBody: View {
@@ -695,7 +695,7 @@ private struct ComposerGhostStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(!isEnabled ? CE.ink3.opacity(0.6) : lit ? CE.ink : CE.ink2)
                 .background {
-                    Circle().fill(Color.white.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.11 : hovering ? 0.07 : 0))
+                    Circle().fill(CE.wash(!isEnabled ? 0 : configuration.isPressed ? 0.09 : hovering ? 0.05 : 0))
                 }
                 .animation(.linear(duration: 0.16), value: lit)
                 .contentShape(Circle())
@@ -704,9 +704,10 @@ private struct ComposerGhostStyle: ButtonStyle {
     }
 }
 
-/// Web primary 44pt round send button (.gbtn--primary): violet gradient, a glossy top half, a lilac glow along the
-/// bottom, a deep violet shadow and a dark arrow shadow; hover brightens, press shrinks to .97. Nothing to send: the
-/// same violet circle at 40%, so it keeps its identity (web :disabled opacity .4).
+/// Web primary 44pt round send button (mockup .send): violet gradient #8668FC → #5C36EA, a glossy top half, a lilac
+/// glow along the bottom, a lit top edge (inset white .55), a soft violet shadow below (0 6px 14px -6px violet .7) and
+/// a dark arrow shadow; hover brightens, press shrinks to .97. Nothing to send: the same violet circle at 40%, so it
+/// keeps its identity (web :disabled opacity .4).
 private struct ComposerSendStyle: ButtonStyle {
     let active: Bool
     func makeBody(configuration: Configuration) -> some View { SendBody(configuration: configuration, active: active) }
@@ -731,9 +732,14 @@ private struct ComposerSendStyle: ButtonStyle {
                             Circle().fill(LinearGradient(colors: [.clear, Color(red: 222 / 255, green: 208 / 255, blue: 1).opacity(0.35)],
                                                          startPoint: .center, endPoint: .bottom))
                         }
-                        .overlay { GlassRim(shape: Circle()) }
-                        .shadow(color: CE.violet.opacity(active ? 0.6 : 0), radius: 12, y: 8)
-                        .shadow(color: Color(red: 16 / 255, green: 6 / 255, blue: 52 / 255).opacity(active ? 0.55 : 0), radius: 3, y: 2)
+                        .overlay {
+                            // inset 0 1px .5px white .55: the lit top edge
+                            Circle().strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
+                                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .clear, location: 0.3)],
+                                                     startPoint: .top, endPoint: .bottom))
+                        }
+                        .shadow(color: CE.violet.opacity(active ? 0.5 : 0), radius: 7, y: 6)
+                        .shadow(color: CE.shadowNear.opacity(active ? 0.22 : 0), radius: 2, y: 2)
                 }
                 .brightness(active && hovering && !configuration.isPressed ? 0.06 : 0)
                 .opacity(active ? 1 : 0.4)
@@ -746,8 +752,9 @@ private struct ComposerSendStyle: ButtonStyle {
     }
 }
 
-/// Web .cmp-chip--target: 28pt capsule. Quiet: ink-2 on white .08, ink-1 on white .13 when hovered. A worker:
-/// white on violet .42 with a violet ring. A removed target: danger text and ring.
+/// Web .cmp-chip--target: 28pt capsule. Quiet: ink-2 on an ink .05 wash, ink-1 on ink .08 when hovered. A worker
+/// (mockup .to): link violet on the soft violet pill and ring, a little deeper when hovered. A removed target: danger
+/// text and ring.
 private struct TargetChipStyle: ButtonStyle {
     let direct: Bool
     let missing: Bool
@@ -763,11 +770,11 @@ private struct TargetChipStyle: ButtonStyle {
         var body: some View {
             let lit = isEnabled && (hovering || configuration.isPressed)
             configuration.label
-                .foregroundStyle(direct ? Color.white : missing ? CE.danger : lit ? CE.ink : CE.ink2)
+                .foregroundStyle(direct ? CE.accent : missing ? CE.danger : lit ? CE.ink : CE.ink2)
                 .padding(.horizontal, 10).frame(height: 28)
-                .background(direct ? CE.violet.opacity(lit ? 0.52 : 0.42) : Color.white.opacity(lit ? 0.13 : 0.08), in: Capsule())
+                .background(direct ? CE.violet.opacity(lit ? 0.12 : 0.07) : CE.wash(lit ? 0.08 : 0.05), in: Capsule())
                 .overlay {
-                    Capsule().strokeBorder(direct ? CE.violet.opacity(0.95) : missing ? CE.danger.opacity(0.6) : Color.white.opacity(0.1))
+                    Capsule().strokeBorder(direct ? CE.softRing : missing ? CE.danger.opacity(0.6) : CE.line)
                 }
                 .frame(maxWidth: 220)
                 .animation(.linear(duration: 0.12), value: lit)
@@ -777,7 +784,7 @@ private struct TargetChipStyle: ButtonStyle {
     }
 }
 
-/// Web .cmp-chip__x: a 28pt round × in ink-2; ink-1 on white .10 when hovered.
+/// Web .cmp-chip__x: a 28pt round × in ink-2; ink-1 on an ink .07 wash when hovered.
 private struct ChipRemoveStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { RemoveBody(configuration: configuration) }
     private struct RemoveBody: View {
@@ -788,7 +795,7 @@ private struct ChipRemoveStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(lit ? CE.ink : CE.ink2)
                 .frame(width: 28, height: 28)
-                .background(Color.white.opacity(configuration.isPressed ? 0.14 : hovering ? 0.1 : 0), in: Circle())
+                .background(CE.wash(configuration.isPressed ? 0.1 : hovering ? 0.07 : 0), in: Circle())
                 .contentShape(Circle())
                 .onHover { hovering = $0 }
         }
@@ -806,8 +813,9 @@ private struct ComposerTargetEntry: Identifiable {
 }
 
 #if os(macOS)
-/// Web .cmp-menu: a dark list (rgb 18 14 38 / .98, padding 6) of 48pt rows, radius 12: name 14.5/600, "@handle ·
-/// role" 12.5 ink-2, status dot and label on the right; the hovered or keyboard row is violet .3. ↑↓ move,
+/// Web .cmp-menu: a light list (white .98, padding 6) of 48pt rows, radius 12: name 14.5/600, "@handle ·
+/// role" 12.5 ink-2, status dot and label on the right; the hovered or keyboard row is the selected violet gradient
+/// (violet .16 → .10 in a violet .3 ring). ↑↓ move,
 /// Return/Tab pick, Esc closes. Scrolls past 292pt.
 private struct ComposerTargetMenu: View {
     let entries: [ComposerTargetEntry]
@@ -833,7 +841,7 @@ private struct ComposerTargetMenu: View {
             }
         }
         .frame(width: 340)
-        .background(Color(red: 18 / 255, green: 14 / 255, blue: 38 / 255).opacity(0.98))
+        .background(Color.white.opacity(0.98))
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
@@ -883,7 +891,12 @@ private struct ComposerTargetMenu: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
-            .background(position == active ? CE.violet.opacity(0.3) : Color.clear, in: shape)
+            .background {
+                if position == active {
+                    shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                        .overlay { shape.strokeBorder(CE.selectedRing) }
+                }
+            }
             .contentShape(shape)
         }
         .buttonStyle(.plain)
@@ -917,7 +930,7 @@ private struct ComposerChipThumb: View {
             if let image {
                 image.resizable().scaledToFill()
             } else {
-                Circle().fill(Color.white.opacity(0.1))
+                Circle().fill(CE.wash(0.08))
                 Image(systemName: "photo").font(.system(size: 9, weight: .semibold)).foregroundStyle(CE.ink2)
             }
         }

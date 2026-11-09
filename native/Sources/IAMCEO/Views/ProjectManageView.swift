@@ -189,14 +189,14 @@ struct ProjectManageView: View {
                 }
                 .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 3)
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                    if index > 0 { Rectangle().fill(CE.attention.opacity(0.14)).frame(height: 1).padding(.leading, 16) }
+                    if index > 0 { Rectangle().fill(CE.attentionDot.opacity(0.22)).frame(height: 1).padding(.leading, 16) }
                     blockerRow(row)
                 }
             }
             .padding(.bottom, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CE.attention.opacity(0.07), in: shape)
-            .overlay { shape.strokeBorder(CE.attention.opacity(0.22)) }
+            .background(CE.attentionDot.opacity(0.1), in: shape)
+            .overlay { shape.strokeBorder(CE.attentionDot.opacity(0.3)) }
         }
     }
 

@@ -195,7 +195,7 @@ struct FilesView: View {
                                 } label: {
                                     FileRow(file: file, openDecisions: counts[file.id] ?? 0, selected: selected)
                                 }
-                                // web .fl-row: radius 15, hover white .06, the selected row is the rail's violet drop.
+                                // web .fl-row: radius 15, a faint hover wash, the selected row is the light violet selection.
                                 .buttonStyle(RowButtonStyle(selected: selected, radius: 15))
                                 .id(file.id)
                             }
@@ -323,7 +323,7 @@ struct FilesView: View {
         }
     }
 
-    /// Web .fl-chip: quiet capsule that lightens on hover; the chosen one is a violet drop with white text.
+    /// Web .fl-chip: quiet capsule that takes a violet wash on hover; the chosen one is the light violet selection.
     private func chip(_ value: String?, title: String, count: Int) -> some View {
         let on = activeKind == value
         return Button { kind = value } label: {
@@ -402,7 +402,7 @@ private struct FileRow: View {
     }
 }
 
-/// Web .fl-row__thumb: the file's first picture, 52pt square, cover, on a dark well.
+/// Web .fl-row__thumb: the file's first picture, 52pt square, cover, on a faint ink well (ink .06, hairline ring).
 private struct RowThumb: View {
     @Environment(AppStore.self) private var store
     let attachment: Attachment
@@ -410,7 +410,7 @@ private struct RowThumb: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        shape.fill(CE.bgDeep.opacity(0.5))
+        shape.fill(CE.wash(0.06))
             .frame(width: 52, height: 52)
             .overlay {
                 if let thumb {
@@ -420,6 +420,7 @@ private struct RowThumb: View {
                 }
             }
             .clipShape(shape)
+            .overlay { shape.strokeBorder(CE.line) }
             .task(id: attachment.id) { await loadThumb() }
             .accessibilityHidden(true)
     }
@@ -697,7 +698,7 @@ private struct FileReaderContent: View {
 
     // MARK: Path (web .fl-path)
 
-    /// Web .fl-path: the whole path wraps (12.5 mono at 1.45) beside a 복사 button that lightens on hover.
+    /// Web .fl-path: the whole path wraps (12.5 mono at 1.45) beside a 복사 button that takes a faint wash on hover.
     private func pathBox(_ path: String) -> some View {
         HStack(spacing: 4) {
             Text(path)
@@ -719,7 +720,7 @@ private struct FileReaderContent: View {
                     .padding(.horizontal, 8)
                     .frame(minWidth: 52, minHeight: isMac ? 36 : 44)
             }
-            .buttonStyle(HoverFillStyle(radius: 10, hover: 0.08))
+            .buttonStyle(HoverFillStyle(radius: 10, hover: 0.05))
             .accessibilityLabel(copiedPath ? "원본 경로를 복사함" : "원본 경로 복사")
         }
         .padding(.leading, 12).padding(.trailing, 4)
@@ -807,7 +808,8 @@ private struct FileReaderContent: View {
     }
 }
 
-/// Web .fl-kind: 11.5/600 label on a 6pt rounded fill, about 19 tall; artifacts are violet.
+/// Web .fl-kind: 11.5/600 ink label on a 6pt rounded soft violet fill (violet .07, .16 ring), about 19 tall;
+/// artifacts are the violet fill (#6D4DF2) with white text.
 private struct KindTag: View {
     let kind: String
     var body: some View {
@@ -816,7 +818,8 @@ private struct KindTag: View {
             .foregroundStyle(kind == "artifact" ? Color.white : CE.ink)
             .padding(.horizontal, 7)
             .frame(minHeight: 19)
-            .background(kind == "artifact" ? CE.violet.opacity(0.45) : Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(kind == "artifact" ? CE.accentFill : CE.soft, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(kind == "artifact" ? Color.clear : CE.softRing) }
             .fixedSize()
     }
 }
@@ -846,7 +849,7 @@ private struct LinkChip: View {
             .font(isMac ? .system(size: 13, weight: .medium) : CEFont.secondary.weight(.medium))
             .padding(.horizontal, 12)
         }
-        // Same family as the filter chips and viewer buttons on this screen: 30 tall, lightens on hover.
+        // Same family as the filter chips and viewer buttons on this screen: 30 tall, a violet wash on hover.
         .buttonStyle(LinkChipStyle(highlighted: highlighted))
         .fixedSize()
         .help("\(help) · \(title)")
@@ -953,8 +956,10 @@ private struct CodeLines {
 
 /// web .vw-code ol: 12.5 mono at line-height 1.6.
 private let codeLeading = CELeading.spacing(12.5, 1.6)
-/// web .vw-code li::before: the line-number column's own dark strip.
-private let codeGutterFill = Color(hex: 0x0A0817)
+/// web .vw-code li::before: the line-number column's own strip (a faint ink wash on the light code well).
+private let codeGutterFill = CE.wash(0.035)
+/// The artifact kit's light page colour (shared/artifact-kit.ts body #FBFAFE), drawn behind the transparent web view.
+private let artifactPageFill = Color(hex: 0xFBFAFE)
 
 /// Web CodeViewer: a bar (line count · 줄바꿈 · 복사 · 받기), then the source with a fixed line-number column.
 private struct CodeBlock: View {
@@ -968,7 +973,7 @@ private struct CodeBlock: View {
     @State private var prepared: CodeLines?
     /// Height of each drawn code chunk, so the fixed number column stays level with it.
     @State private var chunkHeights: [Int: CGFloat] = [:]
-    /// Width of the number column in the wrapped layout (for its dark strip).
+    /// Width of the number column in the wrapped layout (for its strip).
     @State private var gutterWidth: CGFloat = 0
 
     /// Phone wraps by default; desk scrolls sideways.
@@ -978,7 +983,7 @@ private struct CodeBlock: View {
         let model = prepared ?? (text.utf8.count <= 200_000 ? CodeLines(text) : nil)
         VStack(alignment: .leading, spacing: 8) {
             ViewerBar(text: model.map(countLine) ?? "") {
-                // Web .vw-btn: quiet rounded buttons; 줄바꿈 is a toggle drawn as a violet drop when on.
+                // Web .vw-btn: quiet rounded buttons; 줄바꿈 is a toggle drawn as the light violet selection when on.
                 Button("줄바꿈") { wrapChoice = !wrap }
                     .buttonStyle(ViewerButtonStyle(on: wrap))
                     .accessibilityAddTraits(wrap ? .isSelected : [])
@@ -1211,16 +1216,16 @@ private struct TableBlock: View {
         }
         .frame(height: tall ? cap : nil)
         .scrollBounceBehavior(.basedOnSize)
-        .background(CE.bgDeep.opacity(0.5))
+        .background(Color.white.opacity(0.86))
         .clipShape(shape)
-        .overlay { shape.strokeBorder(CE.line) }
+        .overlay { shape.strokeBorder(CE.lineStrong) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             if abs(boxWidth - width) > 0.5 { boxWidth = width }
         }
     }
 
-    /// web th button: 13/650 ink-1 on #1a1533, a hairline below, and an always-reserved slot for the sort arrow so
-    /// the column does not jump when it is sorted.
+    /// web th button: 13/650 ink-1 on soft violet over white (opaque, it stays pinned), a hairline below, and an
+    /// always-reserved slot for the sort arrow so the column does not jump when it is sorted.
     private func headerRow(_ table: ParsedTable, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
             ForEach(table.header.indices, id: \.self) { index in
@@ -1244,14 +1249,15 @@ private struct TableBlock: View {
                     .frame(width: widths[index])
                     .frame(minHeight: isMac ? 40 : 44)
                 }
-                .buttonStyle(HoverFillStyle(radius: 0, hover: 0.06))
+                .buttonStyle(HoverFillStyle(radius: 0, hover: 0.05))
                 .help("눌러서 정렬")
                 .accessibilityLabel("\(title) 열 정렬")
                 .accessibilityValue(sorted == nil ? "" : sorted == true ? "오름차순" : "내림차순")
             }
         }
-        .background(Color(hex: 0x1A1533))
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.white.opacity(0.14)).frame(height: 1) }
+        .background(CE.soft)
+        .background(Color.white)
+        .overlay(alignment: .bottom) { Rectangle().fill(CE.lineStrong).frame(height: 1) }
     }
 
     /// Header tap cycles ascending → descending → original order. Empty cells always sink.
@@ -1281,7 +1287,7 @@ private struct TableBlock: View {
     }
 }
 
-/// One table row (web td: padding 8 12, top-aligned, wraps; numbers right-aligned in tabular digits; row hover .03).
+/// One table row (web td: padding 8 12, top-aligned, wraps; numbers right-aligned in tabular digits; row hover ink .05).
 private struct TableRowView: View {
     let cells: [String]
     let widths: [CGFloat]
@@ -1298,7 +1304,7 @@ private struct TableRowView: View {
                     .frame(width: widths[column], alignment: number ? .topTrailing : .topLeading)
             }
         }
-        .background(Color.white.opacity(hovering ? 0.03 : 0))
+        .background(CE.wash(hovering ? 0.05 : 0))
         .overlay(alignment: .bottom) { if !last { Rectangle().fill(CE.line).frame(height: 1) } }
         .onHover { hovering = $0 }
     }
@@ -1531,7 +1537,7 @@ private struct ArtifactViewer: View {
         SandboxedHTML(html: artifact.html, rule: artifact.rule, title: file.title, height: $pageHeight)
             .frame(maxWidth: .infinity)
             .frame(height: pageHeight > 0 ? max(pageHeight, 120) : 520)
-            .background(CE.bg)
+            .background(artifactPageFill)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(CE.line) }
             .accessibilityLabel("\(file.title) 미리보기")
@@ -1579,6 +1585,7 @@ private struct ArtifactFullView: View {
     private func sheet(width: CGFloat) -> some View {
         CESheet(title.isEmpty ? "제목 없는 자료" : title, icon: "macwindow", width: width, scrolls: false) {
             SandboxedHTML(html: artifact.html, rule: artifact.rule, title: title)
+                .background(artifactPageFill)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(CE.line) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1686,7 +1693,7 @@ private struct AttachmentView: View {
                 .contentShape(Rectangle())
         } else {
             ZStack {
-                shape.fill(Color.white.opacity(0.04))
+                shape.fill(CE.wash(0.04))
                 if loading {
                     ProgressView().controlSize(.small)
                 } else if let error {
@@ -1729,7 +1736,7 @@ private struct AttachmentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .background(CE.wash(0.04), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             if let error {
                 Label(error, systemImage: "exclamationmark.circle")
@@ -1883,8 +1890,8 @@ private struct AttachmentGroup: View {
     private func tileHeight(_ count: Int) -> CGFloat { wide ? 220 : count == 1 ? 200 : 124 }
 }
 
-/// Web .atv-thumb / .vw-gallery__item: a cover-cropped picture on a dark well, radius 12, a ring that brightens on
-/// hover. A click opens Quick Look.
+/// Web .atv-thumb / .vw-gallery__item: a cover-cropped picture on a faint ink well, radius 12, a hairline that turns
+/// violet on hover. A click opens Quick Look.
 private struct AttachmentThumb: View {
     @Environment(AppStore.self) private var store
     let attachment: Attachment
@@ -1924,7 +1931,7 @@ private struct AttachmentThumb: View {
                     }
                 }
                 .clipShape(shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(hovering ? 0.28 : 0.1)) }
+                .overlay { shape.strokeBorder(hovering ? CE.violet.opacity(0.4) : CE.line) }
                 .contentShape(shape)
                 .animation(.linear(duration: 0.12), value: hovering)
         }
@@ -1944,9 +1951,9 @@ private struct AttachmentThumb: View {
 
     @ViewBuilder private func well(_ shape: RoundedRectangle) -> some View {
         if let height {
-            shape.fill(CE.bgDeep.opacity(0.5)).frame(maxWidth: .infinity).frame(height: height)
+            shape.fill(CE.wash(0.05)).frame(maxWidth: .infinity).frame(height: height)
         } else {
-            shape.fill(CE.bgDeep.opacity(0.5)).aspectRatio(4 / 3, contentMode: .fit).frame(maxWidth: .infinity)
+            shape.fill(CE.wash(0.05)).aspectRatio(4 / 3, contentMode: .fit).frame(maxWidth: .infinity)
         }
     }
 
@@ -1961,7 +1968,7 @@ private struct AttachmentThumb: View {
     }
 }
 
-/// Web .atv-file: name and size on a quiet rounded chip that lightens on hover. A click opens the original in Quick
+/// Web .atv-file: name and size on a quiet white rounded chip that takes a soft violet wash on hover. A click opens the original in Quick
 /// Look; the context menu saves or shares it.
 private struct AttachmentChip: View {
     @Environment(AppStore.self) private var store
@@ -1994,8 +2001,9 @@ private struct AttachmentChip: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 6)
             .frame(minHeight: isMac ? 36 : 44)
-            .background(Color.white.opacity(hovering ? 0.13 : 0.07), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+            .background(hovering ? CE.violet.opacity(0.12) : CE.soft, in: shape)
+            .background(Color.white.opacity(0.7), in: shape)
+            .overlay { shape.strokeBorder(CE.softRing) }
             .contentShape(shape)
             .animation(.linear(duration: 0.12), value: hovering)
         }
@@ -2033,7 +2041,7 @@ private struct ImageGallery: View {
     }
 }
 
-/// Web .vw-gallery[data-single]: one picture centred on a dark full-width tile, up to about 68% of the view tall, then
+/// Web .vw-gallery[data-single]: one picture centred on a faint ink full-width tile, up to about 68% of the view tall, then
 /// a bar with its name · size and 받기 / 공유.
 private struct SingleImage: View {
     @Environment(AppStore.self) private var store
@@ -2076,9 +2084,9 @@ private struct SingleImage: View {
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 120)
-                .background(CE.bgDeep.opacity(0.5))
+                .background(CE.wash(0.05))
                 .clipShape(shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(hovering ? 0.28 : 0.1)) }
+                .overlay { shape.strokeBorder(hovering ? CE.violet.opacity(0.4) : CE.line) }
                 .contentShape(shape)
                 .animation(.linear(duration: 0.12), value: hovering)
             }
@@ -2190,8 +2198,8 @@ private struct FileCard: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(Color.white.opacity(0.05), in: shape)
-        .overlay { shape.strokeBorder(CE.line) }
+        .background(Color.white.opacity(0.86), in: shape)
+        .overlay { shape.strokeBorder(CE.wash(0.06)) }
         .quickLookPreview($preview)
     }
 
@@ -2210,7 +2218,7 @@ private struct FileCard: View {
     }
 }
 
-/// Web PdfViewer: a bar (name · size, 열기, 받기), then the pages in a frame min(78% of the view, 900) tall on #2a2838.
+/// Web PdfViewer: a bar (name · size, 열기, 받기), then the pages in a frame min(78% of the view, 900) tall on a faint ink well (ink .06).
 private struct PDFBlock: View {
     @Environment(AppStore.self) private var store
     @Environment(\.readerViewport) private var viewport
@@ -2238,7 +2246,7 @@ private struct PDFBlock: View {
                 PDFPreview(url: url)
                     .frame(maxWidth: .infinity)
                     .frame(height: viewportLimit(viewport, 0.95, cap: 900, floor: 360))
-                    .background(Color(hex: 0x2A2838))
+                    .background(CE.wash(0.06))
                     .clipShape(shape)
                     .overlay { shape.strokeBorder(CE.line) }
                     .accessibilityLabel("\(attachment.displayName) 미리보기")
@@ -2258,7 +2266,7 @@ private struct PDFBlock: View {
     }
 }
 
-/// Web MediaViewer: video full width up to min(68% of the view, 720) on black, or an audio strip, then a bar with the
+/// Web MediaViewer: video full width up to min(68% of the view, 720) on an ink (#17132B) letterbox, or an audio strip, then a bar with the
 /// name · size and 받기.
 private struct MediaBlock: View {
     @Environment(AppStore.self) private var store
@@ -2286,7 +2294,7 @@ private struct MediaBlock: View {
                 VideoPlayer(player: player)
                     .frame(maxWidth: .infinity)
                     .frame(height: videoHeight)
-                    .background(Color.black)
+                    .background(CE.ink)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .accessibilityLabel("\(attachment.displayName) 영상")
             } else if let audio {
@@ -2395,7 +2403,8 @@ private struct AudioStrip: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(CE.ink)
                     .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.1), in: Circle())
+                    .background(CE.soft, in: Circle())
+                    .overlay { Circle().strokeBorder(CE.softRing) }
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
@@ -2411,8 +2420,8 @@ private struct AudioStrip: View {
         }
         .padding(.leading, 2).padding(.trailing, 14)
         .frame(minHeight: 48)
-        .background(Color.white.opacity(0.05), in: shape)
-        .overlay { shape.strokeBorder(CE.line) }
+        .background(Color.white.opacity(0.86), in: shape)
+        .overlay { shape.strokeBorder(CE.wash(0.06)) }
     }
 
     private func clock(_ seconds: Double) -> String {
@@ -2651,21 +2660,23 @@ private struct ChipFlow: Layout {
 }
 
 private extension View {
-    /// Quiet surface for attachment tiles and cards (shared with Chat and Inbox). Not glass.
+    /// Quiet surface for attachment tiles and cards (shared with Chat and Inbox): white .7 with a hairline. Not glass.
     func fileInset(radius: CGFloat = CERadius.control) -> some View {
-        background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CE.line) }
     }
 
-    /// Deep well for source-like blocks in the reader (web .fl-path, .vw-code__scroll: rgb(5 4 11 / .5)). Not glass.
+    /// Well for source-like blocks in the reader (web .fl-path, .vw-code__scroll: --pre-bg ink .04 over white; here
+    /// white at `opacity` under an ink .04 wash). Not glass.
     func recessed(radius: CGFloat = CERadius.control, opacity: Double = 0.5) -> some View {
-        background(CE.bgDeep.opacity(opacity), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        background(CE.wash(0.04), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .background(CE.bgDeep.opacity(opacity), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CE.line) }
     }
 }
 
-/// Web .vw-btn: rounded button in a viewer bar (Mac 34 tall, 13.5/600, radius 11, white .07 → .13 on hover);
-/// `on` draws a toggle that is on as a violet drop.
+/// Web .vw-btn: rounded button in a viewer bar (Mac 34 tall, 13.5/600, radius 11, white → white .8 with a soft violet
+/// ring and a small lift; violet .12 wash on hover); `on` draws a toggle that is on as the light violet selection.
 private struct ViewerButtonStyle: ButtonStyle {
     var on = false
     func makeBody(configuration: Configuration) -> some View { ViewerBody(configuration: configuration, on: on) }
@@ -2679,26 +2690,34 @@ private struct ViewerButtonStyle: ButtonStyle {
             configuration.label
                 .font(isMac ? .system(size: 13.5, weight: .semibold) : CEFont.secondary.weight(.semibold))
                 .lineLimit(1)
-                .foregroundStyle(!isEnabled ? CE.ink3 : on ? Color.white : CE.ink)
+                .foregroundStyle(!isEnabled ? CE.ink3 : on ? CE.accent : CE.ink)
                 .padding(.horizontal, 13)
                 .frame(height: 34)
-                .background(on ? CE.violet.opacity(0.42) : Color.white.opacity(fill), in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+                .background { surface(shape) }
+                .overlay { shape.strokeBorder(on ? CE.selectedRing : CE.softRing) }
                 // iPhone: 44pt touch target around the 34pt button.
                 .padding(.vertical, isMac ? 0 : 5)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
                 .animation(.linear(duration: 0.12), value: hovering)
         }
-        private var fill: Double {
-            guard isEnabled else { return 0.04 }
-            return configuration.isPressed ? 0.16 : hovering ? 0.13 : 0.07
+        @ViewBuilder private func surface(_ shape: RoundedRectangle) -> some View {
+            if on {
+                shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+            } else if !isEnabled {
+                shape.fill(Color.white.opacity(0.35))
+            } else {
+                shape.fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                    .overlay { shape.fill(CE.violet.opacity(washOpacity)) }
+                    .shadow(color: CE.shadowNear.opacity(0.14), radius: 5, y: 4)
+            }
         }
+        private var washOpacity: Double { configuration.isPressed ? 0.16 : hovering ? 0.12 : 0 }
     }
 }
 
-/// Web .fl-chip: Mac 36 tall (web 44), 13.5/550, quiet capsule that lightens on hover (white .10, ink-1); the chosen
-/// one is a violet drop with white text and a white .16 ring.
+/// Web .fl-chip: Mac 36 tall (web 44), 13.5/550, a white .55 capsule with an ink .14 ring that takes a violet .12
+/// wash on hover (ink-1); the chosen one is the light violet selection with accent text.
 private struct FilterChipStyle: ButtonStyle {
     let on: Bool
     func makeBody(configuration: Configuration) -> some View { ChipBody(configuration: configuration, on: on) }
@@ -2709,21 +2728,31 @@ private struct FilterChipStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .font(isMac ? .system(size: 13.5, weight: .medium) : CEFont.note.weight(.medium))
-                .foregroundStyle(on ? Color.white : hovering ? CE.ink : CE.ink2)
+                .foregroundStyle(on ? CE.accent : hovering ? CE.ink : CE.ink2)
                 .padding(.horizontal, 13)
                 .frame(height: isMac ? 36 : 34)
-                .background(on ? CE.violet.opacity(0.42) : Color.white.opacity(configuration.isPressed ? 0.13 : hovering ? 0.10 : 0.05), in: Capsule())
-                .overlay { Capsule().strokeBorder(on ? Color.white.opacity(0.16) : CE.line) }
+                .background { surface }
+                .overlay { Capsule().strokeBorder(on ? CE.selectedRing : CE.lineStrong) }
                 // iPhone: 44pt touch target around the 34pt capsule.
                 .padding(.vertical, isMac ? 0 : 5)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
                 .animation(.linear(duration: 0.12), value: hovering)
         }
+        @ViewBuilder private var surface: some View {
+            if on {
+                Capsule().fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+            } else {
+                let wash = configuration.isPressed ? 0.16 : hovering ? 0.12 : 0
+                Capsule().fill(Color.white.opacity(0.55))
+                    .overlay { Capsule().fill(CE.violet.opacity(wash)) }
+            }
+        }
     }
 }
 
-/// The reader's link chips (결재 · 대화): Mac 30 tall capsules that lighten on hover; an open decision is violet.
+/// The reader's link chips (결재 · 대화): Mac 30 tall white capsules that take a violet wash on hover; an open
+/// decision is the light violet selection.
 private struct LinkChipStyle: ButtonStyle {
     let highlighted: Bool
     func makeBody(configuration: Configuration) -> some View { LinkBody(configuration: configuration, highlighted: highlighted) }
@@ -2735,15 +2764,15 @@ private struct LinkChipStyle: ButtonStyle {
             configuration.label
                 .frame(height: isMac ? 30 : 34)
                 .background(fill, in: Capsule())
-                .overlay { Capsule().strokeBorder(highlighted ? CE.violet.opacity(0.55) : CE.line) }
+                .overlay { Capsule().strokeBorder(highlighted ? CE.selectedRing : CE.lineStrong) }
                 .padding(.vertical, isMac ? 0 : 5)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
                 .animation(.linear(duration: 0.12), value: hovering)
         }
         private var fill: Color {
-            if highlighted { return CE.violet.opacity(configuration.isPressed ? 0.42 : hovering ? 0.36 : 0.28) }
-            return Color.white.opacity(configuration.isPressed ? 0.13 : hovering ? 0.10 : 0.05)
+            if highlighted { return CE.violet.opacity(configuration.isPressed ? 0.24 : hovering ? 0.2 : 0.14) }
+            return configuration.isPressed ? CE.violet.opacity(0.16) : hovering ? CE.violet.opacity(0.12) : Color.white.opacity(0.55)
         }
     }
 }
@@ -2751,7 +2780,7 @@ private struct LinkChipStyle: ButtonStyle {
 /// Text-only control that gets a faint rounded fill on hover (web .fl-path__copy, table header buttons).
 private struct HoverFillStyle: ButtonStyle {
     var radius: CGFloat = 10
-    var hover: Double = 0.08
+    var hover: Double = 0.05
     func makeBody(configuration: Configuration) -> some View { HoverBody(configuration: configuration, radius: radius, hover: hover) }
     private struct HoverBody: View {
         let configuration: ButtonStyleConfiguration
@@ -2761,7 +2790,7 @@ private struct HoverFillStyle: ButtonStyle {
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
             configuration.label
-                .background(Color.white.opacity(configuration.isPressed ? hover + 0.05 : hovering ? hover : 0), in: shape)
+                .background(CE.wash(configuration.isPressed ? hover + 0.04 : hovering ? hover : 0), in: shape)
                 .contentShape(shape)
                 .onHover { hovering = $0 }
         }
@@ -2901,7 +2930,7 @@ private final class ArtifactWebView: WKWebView {
     }
 }
 
-/// Requires the compiled block layer before loading any artifact HTML. The page gets the web's artifact kit (dark page,
+/// Requires the compiled block layer before loading any artifact HTML. The page gets the web's artifact kit (light page,
 /// type scale, cards, grids, callouts) under the same protected policy; page scripts stay off.
 @MainActor
 private func makeArtifactWebView(html: String, title: String?, rule: WKContentRuleList, delegate: ArtifactNavigationDelegate,
@@ -2915,7 +2944,7 @@ private func makeArtifactWebView(html: String, title: String?, rule: WKContentRu
     view.measurer = delegate
     view.navigationDelegate = delegate
     view.uiDelegate = delegate
-    // No white flash before the kit's dark page paints.
+    // Transparent until the kit's light page (#FBFAFE) paints; the SwiftUI frame behind it is the same colour.
     #if os(macOS)
     view.setValue(false, forKey: "drawsBackground")
     #else

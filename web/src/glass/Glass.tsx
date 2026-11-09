@@ -2,7 +2,7 @@
 // <Glass level="regular" as="section" className="p-8">…</Glass>
 //   level    thin(메뉴바·칩·알약) | regular(터미널·FAQ·세그먼트·설치 카드, 기본) | thick(히어로 팝오버·기능 무대 베젤)
 //   radius   모서리(px 숫자 또는 CSS 길이) — 기본은 단계 값(thin 999 · regular 22 · thick 30)
-//   tint     글 많은 판의 대비 보험(짙은 바닥색 .38)
+//   tint     글 많은 판의 대비 보험(흰 채움 --tint-text 를 더한다)
 //   specular 포인터 스페큘러(pointer:fine · 감속 아님일 때만 움직인다)
 //   refract  가장자리 굴절(데스크톱 Chromium 만, 나머지는 blur 폴백). true 또는 { band, scale, aberration, rimBlur }.
 //            한 화면에 동시에 보이는 굴절 판은 셋까지(상단 탭 물방울 · 입력칸 정도) — 다른 판에는 켜지 말 것.

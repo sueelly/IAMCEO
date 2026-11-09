@@ -5,7 +5,7 @@ import AppKit
 import UIKit
 #endif
 
-// Connection and New project share the web's setup look (web/src/styles/setup.css): labelled dark input wells in a
+// Connection and New project share the web's setup look (web/src/styles/setup.css): labelled white input wells in a
 // glass card. Settings is a list of System Settings rows (title and one quiet hint left, the control right) grouped in
 // cards, in four parts, with a sticky glass save bar.
 
@@ -76,16 +76,16 @@ private enum SetupMetrics {
 }
 
 extension View {
-    /// A small dark well for a value typed inside a settings row (a number): web .input at row height, accent ring
-    /// while focused.
+    /// A small white well for a value typed inside a settings row (a number): mockup --field (white .9, ink .12 ring)
+    /// at row height, a violet focus ring while focused.
     func settingsWell(focused: Bool = false) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return self.textFieldStyle(.plain)
             .padding(.horizontal, 11)
             .frame(height: SetupMetrics.rowControlHeight)
-            .background(CE.bgDeep.opacity(0.5), in: shape)
+            .background(Color.white.opacity(0.9), in: shape)
             .overlay {
-                shape.strokeBorder(focused ? CE.accent.opacity(0.85) : Color.white.opacity(0.12), lineWidth: focused ? 1.5 : 1)
+                shape.strokeBorder(focused ? CE.focus.opacity(0.85) : CE.wash(0.12), lineWidth: focused ? 1.5 : 1)
             }
     }
 
@@ -253,8 +253,8 @@ struct SettingsRefreshButton: View {
             }
             .foregroundStyle(isEnabled ? CE.ink2 : CE.ink3)
             .frame(width: 26, height: 26)
-            .background(Color.white.opacity(isEnabled ? 0.07 : 0.03), in: Circle())
-            .overlay { Circle().strokeBorder(Color.white.opacity(0.07)) }
+            .background(CE.wash(isEnabled ? 0.05 : 0.025), in: Circle())
+            .overlay { Circle().strokeBorder(CE.line) }
             .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
             .contentShape(Rectangle())
         }
@@ -287,7 +287,7 @@ private struct SettingsSegments: View {
                 Button { onSelect(option.id) } label: {
                     Text(option.title)
                         .font(.system(size: isMac ? (fill ? 14 : 13.5) : 14, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? Color.white : CE.ink2)
+                        .foregroundStyle(selected ? CE.accent : CE.ink2)
                         .lineLimit(1)
                         .padding(.horizontal, isMac ? 14 : 12)
                         .frame(maxWidth: stretch ? .infinity : nil)
@@ -312,7 +312,7 @@ private struct SettingsSegments: View {
 
 /// A choice of a few options that each need a line of explanation (권한): equal tiles side by side on Mac, stacked on
 /// iPhone (web .st-perms / .choice: radius 13, padding 11/13, 14/600 title with an optional badge, 12.5 ink-2 line;
-/// the chosen tile is violet .24 with a 1.5pt violet ring).
+/// the chosen tile is the light violet selection with a 1.5pt violet ring).
 private struct SettingsChoiceTiles: View {
     struct Option: Identifiable {
         let id: String
@@ -363,8 +363,8 @@ private struct SettingsChoiceTiles: View {
     }
 }
 
-/// A picked option among several (web .choice): white .04 with a white .1 ring, white .06 on hover; picked: violet .24
-/// with a 1.5pt violet .9 ring.
+/// A picked option among several (mockup .opt): violet .07 with a violet .16 ring, a little more violet on hover;
+/// picked (mockup .opt.rec): the violet .16 → .10 selection with a 1.5pt #7A5BFF ring.
 private struct ChoiceTileStyle: ButtonStyle {
     var selected = false
     var radius: CGFloat = 13
@@ -379,13 +379,20 @@ private struct ChoiceTileStyle: ButtonStyle {
         @State private var hovering = false
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-            let idle = configuration.isPressed ? 0.09 : hovering && isEnabled ? 0.065 : 0.04
+            let idle = configuration.isPressed ? 0.12 : hovering && isEnabled ? 0.1 : 0.07
+            let ring: Color = selected ? CE.focus : hovering && isEnabled ? CE.violet.opacity(0.26) : CE.softRing
             configuration.label
                 .contentShape(shape)
-                .background(selected ? CE.violet.opacity(configuration.isPressed ? 0.3 : 0.24) : Color.white.opacity(idle), in: shape)
+                .background {
+                    if selected {
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.fill(CE.violet.opacity(configuration.isPressed ? 0.06 : 0)) }
+                    } else {
+                        shape.fill(CE.violet.opacity(idle))
+                    }
+                }
                 .overlay {
-                    shape.strokeBorder(selected ? CE.violet.opacity(0.9) : Color.white.opacity(hovering && isEnabled ? 0.16 : 0.1),
-                                       lineWidth: selected ? 1.5 : 1)
+                    shape.strokeBorder(ring, lineWidth: selected ? 1.5 : 1)
                 }
                 .opacity(isEnabled ? 1 : 0.6)
                 .onHover { hovering = $0 }
@@ -438,8 +445,8 @@ private struct SetupSelectLabel: View {
         }
         .padding(.leading, compact ? 11 : 13).padding(.trailing, compact ? 11 : 13)
         .frame(maxWidth: .infinity, minHeight: compact ? SetupMetrics.rowControlHeight : SetupMetrics.inputHeight)
-        .background(CE.bgDeep.opacity(0.5), in: shape)
-        .overlay { shape.strokeBorder(Color.white.opacity(0.12)) }
+        .background(Color.white.opacity(0.9), in: shape)
+        .overlay { shape.strokeBorder(CE.wash(0.12)) }
         .contentShape(shape)
     }
 }
@@ -514,7 +521,7 @@ private struct SetupBrand: View {
     }
 }
 
-/// The command chip on the connection screen: brightens under the pointer, gives a little when pressed.
+/// The command chip on the connection screen: deepens a touch under the pointer (light chip), gives a little when pressed.
 private struct CopyChipStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { ChipBody(configuration: configuration) }
     private struct ChipBody: View {
@@ -522,7 +529,7 @@ private struct CopyChipStyle: ButtonStyle {
         @State private var hovering = false
         var body: some View {
             configuration.label
-                .brightness(hovering ? 0.05 : 0)
+                .brightness(hovering ? -0.03 : 0)
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
                 .onHover { hovering = $0 }
@@ -530,9 +537,9 @@ private struct CopyChipStyle: ButtonStyle {
     }
 }
 
-/// web `.glass--thick` with the setup panel tint (rgb(14 10 32 / .66)): radius 30, a 1.5pt rim and the deep
-/// two-layer shadow (`0 44px 100px -34px` dark .9, `0 34px 90px -44px` violet .42), cut out of the card so the
-/// see-through inside stays clear. Reduce Transparency: the solid plate.
+/// web `.glass--thick` in the light glass (dense white 84% → 64%): radius 30, a 1.5pt rim and a soft two-layer
+/// shadow (violet-ink .22 and violet .22, after the mockup --g-shadow), cut out of the card so the see-through
+/// inside stays clear. Reduce Transparency: the solid plate.
 private struct ThickCardSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
@@ -545,8 +552,8 @@ private struct ThickCardSurface: ViewModifier {
                 .overlay { CardRim(shape: shape, width: 1.5) }
                 .background {
                     ZStack {
-                        shape.inset(by: 34).fill(Color(red: 4 / 255, green: 2 / 255, blue: 14 / 255).opacity(0.9)).offset(y: 44).blur(radius: 50)
-                        shape.inset(by: 44).fill(CE.violet.opacity(0.42)).offset(y: 34).blur(radius: 45)
+                        shape.inset(by: 34).fill(CE.shadowFar.opacity(0.22)).offset(y: 44).blur(radius: 50)
+                        shape.inset(by: 44).fill(CE.violet.opacity(0.22)).offset(y: 34).blur(radius: 45)
                     }
                     .overlay { shape.fill(Color.black).blendMode(.destinationOut) }
                     .compositingGroup()
@@ -638,17 +645,17 @@ struct ConnectionView: View {
         #endif
     }
 
-    /// Web Setup LocalLight: violet glow above the card, orchid low right.
+    /// Web Setup LocalLight: a pale violet glow above the card, orchid low right (light aurora strengths).
     private var localLight: some View {
         GeometryReader { geo in
             let width = min(1000, geo.size.width * 1.5)
             ZStack {
                 Rectangle()
-                    .fill(EllipticalGradient(colors: [CE.violet.opacity(0.36), CE.violet.opacity(0.12), .clear]))
+                    .fill(EllipticalGradient(colors: [CE.violet.opacity(0.2), CE.violet.opacity(0.08), .clear]))
                     .frame(width: width, height: width * 0.6)
                     .position(x: geo.size.width * 0.5, y: geo.size.height * 0.24)
                 Rectangle()
-                    .fill(EllipticalGradient(colors: [CE.orchid.opacity(0.22), CE.orchid.opacity(0.07), .clear]))
+                    .fill(EllipticalGradient(colors: [CE.orchid.opacity(0.14), CE.orchid.opacity(0.05), .clear]))
                     .frame(width: width * 0.8, height: width * 0.48)
                     .position(x: geo.size.width * 0.72, y: geo.size.height * 0.88)
             }
@@ -835,8 +842,8 @@ struct ConnectionView: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(minHeight: 30)
-                .background(Color.white.opacity(0.08), in: Capsule())
-                .overlay { Capsule().strokeBorder(CE.line) }
+                .background(CE.soft, in: Capsule())
+                .overlay { Capsule().strokeBorder(CE.softRing) }
                 .frame(minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
             }
@@ -1058,7 +1065,7 @@ struct SettingsView: View {
         .frame(width: 196)
         .frame(maxHeight: .infinity, alignment: .top)
         .background {
-            Color.black.opacity(0.24)
+            Color.white.opacity(0.42)
                 .overlay(alignment: .trailing) { Rectangle().fill(CE.line).frame(width: 1) }
                 .ignoresSafeArea()
         }
@@ -1181,8 +1188,8 @@ struct SettingsView: View {
     /// Unsaved edits in that part; red when one of them cannot be saved as is.
     private func unsavedDot(_ item: SettingsSection) -> some View {
         let invalid = hasInvalidEdit(item)
-        return Circle().fill(invalid ? CE.danger : CE.accent).frame(width: 7, height: 7)
-            .shadow(color: (invalid ? CE.danger : CE.violet).opacity(0.7), radius: 4)
+        return Circle().fill(invalid ? CE.error : CE.violet).frame(width: 7, height: 7)
+            .shadow(color: (invalid ? CE.error : CE.violet).opacity(0.7), radius: 4)
             .help(invalid ? "고쳐야 저장할 수 있는 변경이 있습니다" : "저장하지 않은 변경이 있습니다")
             .accessibilityHidden(true)
     }
@@ -1639,12 +1646,12 @@ struct SettingsView: View {
             .frame(maxWidth: isMac ? 320 : .infinity, alignment: isMac ? .trailing : .leading)
     }
 
-    /// "폰에서는 Tailscale 주소(100.으로 시작)로 …": the command as a code chip (mono on a faint white fill).
+    /// "폰에서는 Tailscale 주소(100.으로 시작)로 …": the command as a code chip (mono on a faint violet fill).
     private var reachHint: AttributedString {
         var command = AttributedString("\u{00A0}iamceo setup --hosts lan\u{00A0}")
         command.font = SetupFont.code
         command.foregroundColor = CE.ink
-        command.backgroundColor = Color.white.opacity(0.08)
+        command.backgroundColor = CE.soft
         return AttributedString("폰에서는 Tailscale 주소(100.으로 시작)로 들어옵니다. 같은 망의 기기까지 열려면 서버 컴퓨터에서 ")
             + command + AttributedString(" 뒤 서버를 다시 켭니다.")
     }
@@ -1726,7 +1733,7 @@ struct SettingsView: View {
             }
             .padding(.leading, isMac ? 18 : 14).padding(.trailing, 8).padding(.vertical, 8)
             .frame(minHeight: isMac ? 60 : 56)
-            .glassChrome(RoundedRectangle(cornerRadius: CERadius.plate, style: .continuous), tint: Color(red: 16 / 255, green: 11 / 255, blue: 38 / 255).opacity(0.86))
+            .glassChrome(RoundedRectangle(cornerRadius: CERadius.plate, style: .continuous))
             .frame(maxWidth: 880)
             .padding(.horizontal, isMac ? 24 : 16).padding(.top, CESpace.s).padding(.bottom, CESpace.m)
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1834,7 +1841,8 @@ struct SettingsView: View {
 }
 
 #if os(macOS)
-/// The settings sidebar item: the main window rail's row (hover tint, violet gradient when chosen).
+/// The settings sidebar item: the main window rail's row (mockup .pj: a faint violet wash on hover; chosen: the light
+/// violet gradient, violet .16 → .10, inside a violet .3 ring).
 private struct SettingsNavStyle: ButtonStyle {
     var selected = false
     func makeBody(configuration: Configuration) -> some View { NavBody(configuration: configuration, selected: selected) }
@@ -1849,14 +1857,12 @@ private struct SettingsNavStyle: ButtonStyle {
                 .contentShape(shape)
                 .background {
                     if selected {
-                        shape.fill(LinearGradient(colors: [CE.violet.opacity(0.32), CE.violet.opacity(0.2)], startPoint: .top, endPoint: .bottom))
-                            .overlay {
-                                shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.32), Color.white.opacity(0.05)], startPoint: .top, endPoint: .bottom), lineWidth: 1)
-                            }
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.strokeBorder(CE.selectedRing, lineWidth: 1) }
                     } else if configuration.isPressed {
-                        shape.fill(Color.white.opacity(0.09))
+                        shape.fill(CE.violet.opacity(0.09))
                     } else if hovering {
-                        shape.fill(Color.white.opacity(0.06))
+                        shape.fill(CE.violet.opacity(0.05))
                     }
                 }
                 .onHover { hovering = $0 }
@@ -2106,8 +2112,8 @@ struct NewProjectView: View {
             .accessibilityLabel("폴더 바꾸기")
         }
         .padding(.leading, 12).padding(.trailing, 10).padding(.vertical, 10)
-        .background(Color.white.opacity(0.04), in: shape)
-        .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+        .background(CE.soft, in: shape)
+        .overlay { shape.strokeBorder(CE.softRing) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("선택한 폴더: " + cwd)
     }
@@ -2166,7 +2172,8 @@ struct NewProjectView: View {
     }
 }
 
-/// The label of a menu that should look like a small quiet button (web .gbtn--glass .gbtn--s: 32 tall, 13.5/600).
+/// The label of a menu that should look like a small quiet button (web .gbtn--glass .gbtn--s: 32 tall, 13.5/600;
+/// light: mockup .btn--g, white → white .8 inside a violet .16 ring, a faint violet wash on hover).
 /// Menus draw their own label, so the capsule is drawn here instead of through a button style.
 private struct QuietMenuLabel: View {
     let title: String
@@ -2179,9 +2186,16 @@ private struct QuietMenuLabel: View {
             .foregroundStyle(isEnabled ? CE.ink : CE.ink3)
             .padding(.horizontal, 14)
             .frame(minHeight: isMac ? 32 : 38)
-            .background(LinearGradient(colors: [Color.white.opacity(hovering && isEnabled ? 0.16 : 0.10), Color.white.opacity(hovering && isEnabled ? 0.06 : 0.03)],
-                                       startPoint: .top, endPoint: .bottom), in: Capsule())
-            .overlay { if isEnabled { GlassRim(shape: Capsule()) } else { Capsule().strokeBorder(CE.line) } }
+            .background {
+                if isEnabled {
+                    Capsule().fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                        .overlay { Capsule().fill(CE.violet.opacity(hovering ? 0.05 : 0)) }
+                } else {
+                    Capsule().fill(Color.white.opacity(0.35))
+                }
+            }
+            .overlay { Capsule().strokeBorder(isEnabled ? CE.softRing : CE.line) }
+            .shadow(color: CE.shadowNear.opacity(isEnabled ? 0.16 : 0), radius: 6, y: 5)
             .frame(minHeight: isMac ? nil : 44)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
@@ -2231,8 +2245,8 @@ private struct FolderSourceTileStyle: ButtonStyle {
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
             configuration.label
-                .background(Color.white.opacity(configuration.isPressed ? 0.09 : hovering && isEnabled ? 0.065 : 0.04), in: shape)
-                .overlay { shape.strokeBorder(hovering && isEnabled ? CE.violet.opacity(0.55) : Color.white.opacity(0.1), lineWidth: hovering && isEnabled ? 1.25 : 1) }
+                .background(CE.violet.opacity(configuration.isPressed ? 0.12 : hovering && isEnabled ? 0.1 : 0.07), in: shape)
+                .overlay { shape.strokeBorder(hovering && isEnabled ? CE.violet.opacity(0.55) : CE.softRing, lineWidth: hovering && isEnabled ? 1.25 : 1) }
                 .scaleEffect(configuration.isPressed ? 0.985 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
                 .opacity(isEnabled ? 1 : 0.5)

@@ -474,7 +474,7 @@ extension OfficeMap {
             shade.fill(Int(r.minX), Int(r.minY) + 1, Int(r.width), max(0, Int(r.height) - 2), OfficePalette.shadowSolid)
         }
         map.shadows = shade.art()
-        map.shadows.opacity = 0.28
+        map.shadows.opacity = 0.18
 
         // Walk lattice.
         var lattice = OfficeWalkGrid()

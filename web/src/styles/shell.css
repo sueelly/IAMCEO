@@ -2,7 +2,7 @@
 
 /* ── 틀 ── */
 .shell { --top-h:0px; --bottom-h:0px; position:relative; isolation:isolate; height:var(--app-h); overflow:clip; }
-/* 본문 판은 왼쪽 패널 밑까지 전체 폭이다: 위아래 짙은 띠와 빛이 패널 경계에서 끊겨 세로 솔기가 생기지 않게 */
+/* 본문 판은 왼쪽 패널 밑까지 전체 폭이다: 위아래 띠와 빛이 패널 경계에서 끊겨 세로 솔기가 생기지 않게 */
 .shell--desk { --rail-space:296px; }
 .shell__stage { position:absolute; inset:0; isolation:isolate; overflow:clip; }
 .shell--desk .shell__body { left:var(--rail-space); }
@@ -11,22 +11,22 @@
 /* 아래 44px: 맨 끝까지 내려도 마지막 줄이 입력칸 위 띠에 흐려지지 않게 */
 .shell__column { width:min(100%, 880px); min-height:100%; margin-inline:auto; padding:8px 24px 44px; }
 
-/* 위아래 판 뒤의 짙은 띠: 지나가는 본문 글이 탭·입력칸 옆에서 부딪혀 보이지 않게 한다(mask 는 안쪽 유리의 backdrop root 가 되어 못 쓴다) */
+/* 위아래 판 뒤의 바탕색 띠: 지나가는 본문 글이 탭·입력칸 옆에서 부딪혀 보이지 않게 한다(mask 는 안쪽 유리의 backdrop root 가 되어 못 쓴다) */
 .shell__top, .shell__bottom { position:absolute; left:0; right:0; z-index:2; pointer-events:none; }
 .shell__top > *, .shell__bottom > * { pointer-events:auto; }
 .shell__top { top:0; }
 .shell__bottom { bottom:0; }
 .shell__top::before { content:""; position:absolute; inset:0 0 -40px; z-index:-1; pointer-events:none; opacity:0; transition:opacity 180ms linear;
-  background:linear-gradient(180deg, rgb(9 7 19 / .985) calc(100% - 44px), rgb(9 7 19 / .6) calc(100% - 22px), rgb(9 7 19 / 0)); }
+  background:linear-gradient(180deg, rgb(var(--band-rgb) / .94) calc(100% - 44px), rgb(var(--band-rgb) / .6) calc(100% - 22px), rgb(var(--band-rgb) / 0)); }
 /* 위쪽 띠는 글이 올라왔을 때만: 맨 위에서는 바탕 빛이 유리 뒤로 그대로 비치게 */
 .shell[data-scrolled] .shell__top::before { opacity:1; }
 /* 띠만으로는 지나가는 글이 비쳐 겹쳐 읽힌다. 유리가 아닌 글자 줄에만 받침을 깐다 */
-.shell[data-scrolled] .shell__headline, .shell[data-scrolled] .ph-now { background:rgb(9 7 19 / .86); box-shadow:0 0 0 4px rgb(9 7 19 / .86); border-radius:6px; -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
+.shell[data-scrolled] .shell__headline, .shell[data-scrolled] .ph-now { background:rgb(var(--band-rgb) / .9); box-shadow:0 0 0 4px rgb(var(--band-rgb) / .9); border-radius:6px; -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
 .shell__bottom::before { content:""; position:absolute; inset:-64px 0 0; z-index:-1; pointer-events:none;
-  background:linear-gradient(0deg, rgb(9 7 19 / .985) calc(100% - 72px), rgb(9 7 19 / .72) calc(100% - 46px), rgb(9 7 19 / .26) calc(100% - 20px), rgb(9 7 19 / 0)); }
-/* 짙은 띠가 바탕 빛을 가리니 입력칸·아래 탭 유리 뒤에 빛을 다시 둔다 */
+  background:linear-gradient(0deg, rgb(var(--band-rgb) / .94) calc(100% - 72px), rgb(var(--band-rgb) / .72) calc(100% - 46px), rgb(var(--band-rgb) / .26) calc(100% - 20px), rgb(var(--band-rgb) / 0)); }
+/* 띠가 바탕 빛을 가리니 입력칸·아래 탭 유리 뒤에 옅은 빛을 다시 둔다 */
 .shell__bottom::after { content:""; position:absolute; z-index:-1; left:calc(var(--rail-space, 0px) + (100% - var(--rail-space, 0px)) / 2); bottom:-30px; width:min(760px, 110%); height:calc(100% + 30px); translate:-50% 0; border-radius:50%; pointer-events:none;
-  background:radial-gradient(closest-side, rgb(var(--violet-rgb) / .3), rgb(var(--violet-rgb) / .12) 55%, rgb(var(--violet-rgb) / 0)); }
+  background:radial-gradient(closest-side, rgb(var(--violet-rgb) / .16), rgb(var(--violet-rgb) / .06) 55%, rgb(var(--violet-rgb) / 0)); }
 
 /* 데스크톱: 제목 | 탭 | 빈칸. 탭은 언제나 가운데 */
 .shell--desk .shell__top { display:grid; grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr); align-items:center; column-gap:20px; padding:12px 24px 12px calc(var(--rail-space) + 24px); }
@@ -55,10 +55,10 @@
 .pj-list { display:flex; flex-direction:column; gap:2px; }
 .pj-heading { padding:14px 12px 6px; font-size:12px; font-weight:600; color:var(--ink-3); }
 .pj { position:relative; display:flex; align-items:center; gap:10px; width:100%; min-height:48px; padding:7px 12px; border-radius:13px; text-align:left;
-  transition:background-color 120ms linear, color 120ms linear; color:var(--ink-1); }
-.pj:hover { background:rgb(255 255 255 / .06); }
-.pj[aria-current] { background:linear-gradient(180deg, rgb(var(--violet-rgb) / .32), rgb(var(--violet-rgb) / .2));
-  box-shadow:inset 0 1px .5px -.5px rgb(255 255 255 / .45), inset 0 0 0 1px rgb(255 255 255 / .05); }
+  transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out), color 120ms linear; color:var(--ink-1); }
+/* 누를 수 있는 줄: 올리면 불투명 흰 판으로 떠오른다. 터치 기기에서 hover 가 남지 않게 (hover:hover) 안에서만 */
+@media (hover:hover) { .pj:not([aria-current]):hover { background:var(--row-hover); box-shadow:var(--row-lift); } }
+.pj[aria-current] { background:var(--sel-bg); box-shadow:var(--sel-ring); }
 .pj__main { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
 .pj__name { font-size:14.5px; font-weight:600; line-height:1.3; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pj__sub { font-size:12px; line-height:1.3; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -68,18 +68,19 @@
 .pj--foot:hover, .pj--foot[aria-current] { color:var(--ink-1); }
 
 .conn { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; line-height:1; color:var(--ink-2); white-space:nowrap; }
-.conn i { width:7px; height:7px; border-radius:50%; background:var(--warn); }
-.conn[data-state="online"] i { background:var(--ok); box-shadow:0 0 8px rgb(var(--ok-rgb) / .7); }
-.conn[data-state="offline"] i { background:var(--danger); }
+.conn i { width:7px; height:7px; border-radius:50%; background:var(--warn-dot); }
+.conn[data-state="online"] i { background:var(--ok-dot); box-shadow:0 0 6px rgb(var(--ok-rgb) / .55); }
+.conn[data-state="offline"] i { background:var(--danger-dot); }
 .conn[data-state="offline"] { color:var(--danger); }
 
-/* ── 연결 끊김 띠 ── 유리 아닌 짙은 경고 판: 어떤 빛 위에서도 읽혀야 한다 */
+/* ── 연결 끊김 띠 ── 유리 아닌 옅은 주황 경고 판: 흰 받침에 진한 글자라 어떤 빛 위에서도 읽힌다 */
 .offline-band { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 8px 8px 14px; border-radius:12px;
-  background:rgb(58 28 16 / .94); box-shadow:inset 0 0 0 1px rgb(var(--warn-rgb) / .34), 0 8px 24px -12px rgb(4 2 14 / .8);
-  color:#FFE3BC; font-size:13.5px; line-height:1.35; }
+  background:linear-gradient(rgb(var(--warn-rgb) / .14), rgb(var(--warn-rgb) / .14)), rgb(255 255 255 / .92);
+  box-shadow:inset 0 0 0 1px rgb(var(--warn-rgb) / .4), 0 8px 24px -14px rgb(70 46 180 / .25);
+  color:var(--warn); font-size:13.5px; line-height:1.35; }
 .offline-band__retry::after { content:""; position:absolute; inset:-6px 0; }
-.offline-band__retry { position:relative; flex:none; min-height:32px; padding:0 12px; border-radius:999px; background:rgb(255 255 255 / .1); font-size:13px; font-weight:600; color:#FFF3E2; }
-.offline-band__retry:hover { background:rgb(255 255 255 / .17); }
+.offline-band__retry { position:relative; flex:none; min-height:32px; padding:0 12px; border-radius:999px; background:#fff; box-shadow:inset 0 0 0 1px rgb(var(--warn-rgb) / .45), var(--lift); font-size:13px; font-weight:600; color:var(--warn); }
+.offline-band__retry:hover { background:linear-gradient(rgb(var(--warn-rgb) / .1), rgb(var(--warn-rgb) / .1)), #fff; }
 
 .gtabs__label { display:inline-flex; align-items:center; gap:6px; }
 .gtabs__count { min-width:18px; height:18px; padding:0 5px; border-radius:999px; background:var(--accent-fill); color:#fff; font-size:11.5px; font-weight:700; line-height:18px; text-align:center; letter-spacing:0; }
@@ -96,6 +97,8 @@
 .shell--phone .gtabs__count { position:absolute; left:100%; bottom:calc(100% - 3px); margin-left:-3px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
 @media (max-width:359.98px) { .shell--phone .gtabs__link { font-size:13.5px; } }
 .shell--phone .shell__column { padding:6px calc(var(--safe-r) + 14px) 44px calc(var(--safe-l) + 14px); }
+/* 상단 바는 불투명(아래로 지나가는 글이 비치지 않게) */
+.glass.ph-head { --g-tint:transparent; --g-glint:0; --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); }
 .ph-head { --g-r:18px; display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:46px; padding:1px 14px 1px 1px; }
 .ph-switch { display:inline-flex; align-items:center; gap:8px; min-width:0; min-height:44px; padding:0 8px 0 13px; border-radius:17px;
   font-size:16px; font-weight:650; letter-spacing:-.015em; }
@@ -112,29 +115,31 @@
 .splash { display:grid; place-items:center; height:var(--app-h); color:var(--ink-2); font-size:14px; }
 
 /* ── 상태 점 · 배지 ── */
-/* 상태 색은 여기 한 곳에서 정한다(spec §10). 일함 보라 · 내 답 기다림 주황 · 대기 회색 · 승인 창 앞 빨강 계열 · 잠듦 흐림 · 오류 빨강. 어느 화면이든 점과 글자가 같다. */
-.status { --st:var(--st-idle); display:inline-flex; align-items:center; gap:6px; font-size:12.5px; line-height:1.2; color:var(--st); white-space:nowrap; }
+/* 상태 색은 여기 한 곳에서 정한다(spec §10). 일함 보라 · 내 답 기다림 주황 · 대기 회색 · 승인 창 앞 빨강 계열 · 잠듦 흐림 · 오류 빨강.
+   점(--st)은 밝은 색, 글자(--st-tx)는 같은 색의 진한 단계다. 흰 판 위에서 글자 대비 4.5 이상. 어느 화면이든 같다. */
+.status { --st:var(--st-idle); --st-tx:var(--tx-idle); display:inline-flex; align-items:center; gap:6px; font-size:12.5px; line-height:1.2; color:var(--st-tx); white-space:nowrap; }
 .status__dot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--st); }
-.status[data-status="idle"] { --st:var(--st-idle); }
-.status[data-status="working"] { --st:var(--st-work); }
-.status[data-status="working"] .status__dot { box-shadow:0 0 8px rgb(var(--violet-rgb) / .95); animation:status-pulse 1.8s ease-in-out infinite; }
-.status[data-status="waiting"] { --st:var(--st-wait); }
-.status[data-status="waiting"] .status__dot { box-shadow:0 0 8px rgb(255 176 112 / .7); }
-.status[data-status="blocked"] { --st:var(--st-block); }
-.status[data-status="blocked"] .status__dot { box-shadow:0 0 8px rgb(255 138 128 / .75); }
-.status[data-status="error"] { --st:var(--st-error); }
-.status[data-status="asleep"], .status[data-status="offline"] { --st:var(--st-asleep); }
+.status[data-status="idle"] { --st:var(--st-idle); --st-tx:var(--tx-idle); }
+.status[data-status="working"] { --st:var(--st-work); --st-tx:var(--tx-work); }
+.status[data-status="working"] .status__dot { box-shadow:0 0 8px rgb(var(--violet-rgb) / .7); animation:status-pulse 1.8s ease-in-out infinite; }
+.status[data-status="waiting"] { --st:var(--st-wait); --st-tx:var(--tx-wait); }
+.status[data-status="waiting"] .status__dot { box-shadow:0 0 8px rgb(var(--warn-rgb) / .6); }
+.status[data-status="blocked"] { --st:var(--st-block); --st-tx:var(--tx-block); }
+.status[data-status="blocked"] .status__dot { box-shadow:0 0 8px rgb(var(--danger-rgb) / .6); }
+.status[data-status="error"] { --st:var(--st-error); --st-tx:var(--tx-error); }
+.status[data-status="asleep"], .status[data-status="offline"] { --st:var(--st-asleep); --st-tx:var(--tx-asleep); }
 .status[data-status="asleep"] .status__dot, .status[data-status="offline"] .status__dot { background:transparent; box-shadow:inset 0 0 0 1.5px var(--st-asleep); }
-@keyframes status-pulse { 50% { box-shadow:0 0 3px rgb(var(--violet-rgb) / .4); } }
+@keyframes status-pulse { 50% { box-shadow:0 0 3px rgb(var(--violet-rgb) / .3); } }
 @media (prefers-reduced-motion: reduce) { .status[data-status="working"] .status__dot { animation:none; } }
 
 .badge { display:inline-flex; align-items:center; justify-content:center; flex:none; min-width:20px; height:20px; padding:0 7px; border-radius:999px; font-size:12px; font-weight:650; line-height:1; white-space:nowrap;
-  background:rgb(255 255 255 / .1); color:var(--ink-1); }
+  background:var(--soft); color:var(--ink-1); }
+.badge[data-tone="neutral"] { box-shadow:var(--soft-ring); }
 .badge[data-tone="accent"] { background:var(--accent-fill); color:#fff; }
-.badge[data-tone="ok"] { background:rgb(var(--ok-rgb) / .16); color:var(--ok); }
-.badge[data-tone="warn"] { background:rgb(var(--warn-rgb) / .16); color:var(--warn); }
-/* 고른 줄의 보라 위에서도 읽히게 짙은 바닥을 깐다 */
-.badge[data-tone="danger"] { background:linear-gradient(rgb(var(--danger-rgb) / .16), rgb(var(--danger-rgb) / .16)), rgb(9 7 19 / .72); color:var(--danger); }
+/* 색 배지는 옅은 색 바닥 + 진한 글자. 고른 줄의 보라 위에서도 대비가 떨어지지 않게 흰 받침을 깐다 */
+.badge[data-tone="ok"] { background:linear-gradient(rgb(var(--ok-rgb) / .13), rgb(var(--ok-rgb) / .13)), rgb(255 255 255 / .9); color:var(--ok); }
+.badge[data-tone="warn"] { background:linear-gradient(rgb(var(--warn-rgb) / .13), rgb(var(--warn-rgb) / .13)), rgb(255 255 255 / .9); color:var(--warn); }
+.badge[data-tone="danger"] { background:linear-gradient(rgb(var(--danger-rgb) / .13), rgb(var(--danger-rgb) / .13)), rgb(255 255 255 / .9); color:var(--danger); }
 
 /* ── 빈 화면 ── */
 .empty { padding:64px 16px; text-align:center; }
@@ -151,32 +156,35 @@
 .md ul, .md ol { padding-left:1.35em; }
 .md ul { list-style:disc; } .md ol { list-style:decimal; }
 .md li + li { margin-top:.25em; }
-.md a { color:var(--focus); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
-.md code { font-family:var(--font-code); font-size:.9em; padding:.1em .35em; border-radius:6px; background:rgb(255 255 255 / .08); }
-.md pre { padding:12px 14px; border-radius:12px; background:rgb(5 4 11 / .55); overflow-x:auto; box-shadow:inset 0 0 0 1px var(--line); }
+.md a { color:var(--link); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+.md code { font-family:var(--font-code); font-size:.9em; padding:.1em .35em; border-radius:6px; background:var(--code-bg); }
+.md pre { padding:12px 14px; border-radius:12px; background:var(--pre-bg); overflow-x:auto; box-shadow:inset 0 0 0 1px var(--line); }
 .md pre code { padding:0; background:none; font-size:13px; line-height:1.55; }
-.md blockquote { margin:0; padding-left:12px; border-left:2px solid rgb(var(--violet-rgb) / .7); color:var(--ink-2); }
+.md blockquote { margin:0; padding-left:12px; border-left:2px solid rgb(var(--violet-rgb) / .55); color:var(--ink-2); }
 .md img { border-radius:10px; }
 .md hr { border:0; border-top:1px solid var(--line); }
 .md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; font-size:.93em; }
 /* 본문의 overflow-wrap:anywhere 를 물려받으면 넓은 표가 스크롤 대신 글자 단위로 찌그러진다 */
 .md th, .md td { padding:6px 10px; border:1px solid var(--line); text-align:left; overflow-wrap:normal; min-width:4em; }
-.md th { font-weight:600; background:rgb(255 255 255 / .04); }
+.md th { font-weight:600; background:var(--soft); }
 
 /* ── 대화 상자 ── .glass 를 안쪽 판에 두어 dialog 자체의 위치 지정과 부딪히지 않게 한다 */
 .dialog:focus-visible { outline:0; }
 .dialog { padding:0; margin:0; border:0; background:none; color:inherit; max-width:none; max-height:none; overflow:visible; }
-.dialog::backdrop { background:rgb(5 4 11 / .55); }
+/* ::backdrop 이 변수를 이어받지 못하는 브라우저가 있어 값을 같이 적는다 */
+.dialog::backdrop { background:var(--scrim, rgb(23 19 43 / .28)); }
 /* 행 높이를 잠가야 안쪽 판의 max-height:100% 가 먹는다. auto 행이면 판이 내용만큼 자라 화면 밖으로 나간다. */
 .dialog--modal[open] { position:fixed; inset:0; display:grid; grid-template-rows:minmax(0, 1fr); place-items:center; width:100%; height:100%; padding:20px; }
 .dialog--sheet[open] { position:fixed; inset:0; display:flex; align-items:flex-end; width:100%; height:100%; padding:calc(var(--safe-t) + 48px) 8px calc(var(--safe-b) + 8px); }
 /* 격자 칸의 %는 내용에 따라 풀릴 때가 있어(place-items:center) 화면 높이로 직접 막는다. 아니면 긴 내용의 판이 화면 밖으로 나가 머리줄·닫기 버튼을 잃는다. */
-.dialog__panel { --g-tint:rgb(14 10 32 / .72); --g-r:26px; display:flex; flex-direction:column; width:min(100%, 480px); max-height:calc(var(--app-h) - 40px); padding:2px; }
+/* 대화 상자·시트는 위에 뜨는 판이라 뒤(탭 바·본문)가 비치지 않게 거의 불투명 */
+.glass.dialog__panel { --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); --g-glint:0; }
+.dialog__panel { --g-tint:var(--tint-strong); --g-r:26px; display:flex; flex-direction:column; width:min(100%, 480px); max-height:calc(var(--app-h) - 40px); padding:2px; }
 .dialog--sheet .dialog__panel { width:min(100%, 560px); margin-inline:auto; max-height:min(100%, 76vh); }
 .dialog__head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 8px 6px 18px; }
 .dialog__title { font-size:16px; font-weight:650; letter-spacing:-.012em; }
 .dialog__close { display:grid; place-items:center; width:44px; height:44px; border-radius:50%; color:var(--ink-2); }
-.dialog__close:hover { background:rgb(255 255 255 / .08); color:var(--ink-1); }
+.dialog__close:hover { background:var(--hover); color:var(--ink-1); }
 .dialog__body { flex:1; min-height:0; overflow-y:auto; padding:6px 14px 14px; }
 .dialog__foot { display:flex; justify-content:flex-end; gap:8px; padding:6px 14px 14px; }
 @media (prefers-reduced-motion: no-preference) {
@@ -190,16 +198,16 @@
 .form { display:flex; flex-direction:column; gap:14px; padding:0 4px 2px; }
 .field { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; border:0; min-width:0; }
 .field__label { padding:0; font-size:13px; font-weight:600; color:var(--ink-2); }
-.input { width:100%; min-height:44px; padding:10px 13px; border:0; border-radius:12px; outline-offset:1px; background:rgb(5 4 11 / .5); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .12); }
+.input { width:100%; min-height:44px; padding:10px 13px; border:0; border-radius:12px; outline-offset:1px; background:var(--field); box-shadow:var(--field-ring); }
 .input::placeholder { color:var(--ink-3); }
 textarea.input { resize:vertical; line-height:1.5; }
 .choice-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:8px; }
 .choice { position:relative; display:flex; flex-direction:column; gap:3px; padding:11px 13px; border-radius:13px; cursor:pointer; font-size:14px; font-weight:600;
-  background:rgb(255 255 255 / .04); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:background-color 120ms linear, box-shadow 120ms linear; }
+  background:var(--btn-soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear, box-shadow 120ms linear; }
 .choice small { font-size:12.5px; font-weight:400; line-height:1.4; color:var(--ink-2); }
 .choice input { position:absolute; opacity:0; inset:0; margin:0; cursor:inherit; }
 .choice:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:2px; }
-.choice[data-on] { background:rgb(var(--violet-rgb) / .24); box-shadow:inset 0 0 0 1.5px rgb(var(--violet-rgb) / .9); }
+.choice[data-on] { background:var(--btn-sel); box-shadow:var(--pick-ring); }
 .choice[data-off] { cursor:default; color:var(--ink-3); }
 .choice[data-off] small { color:var(--ink-3); }
 .form__error { font-size:13.5px; color:var(--danger); }

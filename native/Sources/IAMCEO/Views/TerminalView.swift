@@ -80,9 +80,11 @@ struct TerminalView: View {
                     .allowsHitTesting(!missingTerminal)
                     .accessibilityHidden(missingTerminal)
                     .overlay { if missingTerminal { sleepingTerminal } }
-                    .background(Color(red: 11/255, green: 9/255, blue: 24/255))
+                    // The terminal canvas stays dark on purpose (TerminalScreenPalette: CLI colours are tuned for a dark
+                    // terminal); the sleeping-member notice that replaces it sits on a light field well instead.
+                    .background(missingTerminal ? Color.white.opacity(0.9) : TerminalScreenPalette.background)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(CE.line) }
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(missingTerminal ? CE.wash(0.12) : CE.line) }
                 if let notice = session.notice {
                     // web .tm-note: 13.5 at line-height 1.5.
                     Text(TerminalPresentation.message(notice)).font(CEFont.note).foregroundStyle(CE.attention)

@@ -1,7 +1,7 @@
 // 앱 틀: 프로젝트 목록 · 유리 탭 · 연결 끊김 띠 · 입력칸 자리. 데스크톱(≥1024)은 왼쪽 패널 + 위 탭, 그보다 좁으면 위 제목 + 아래 탭.
 // 본문은 유리 탭·입력칸 밑으로 지나가며 스크롤한다(유리가 진짜로 비치도록). 그만큼의 여백은 --top-h · --bottom-h 로 잰다.
 // 본문 스크롤 요소에는 data-scroll-root 가 있다(대화 화면의 맨 아래 붙이기 등).
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ProjectSummary } from "@shared/types";
 import { Glass, GlassTabs, LocalLight, type GlassTab } from "../glass";
 import {
@@ -281,7 +281,7 @@ function DesktopShell({ onAdd }: { onAdd: () => void }) {
   const now = route.settings || route.tab === "team" || route.tab === "home" ? "" : plainNow(summary?.now ?? "");
   return (
     <div className="shell shell--desk">
-      <Glass as="aside" level="regular" tint className="rail" aria-label="프로젝트 목록">
+      <Glass as="aside" level="regular" className="rail" aria-label="프로젝트 목록">
         <div className="rail__brand">
           <BrandMark />
           IAMCEO
@@ -295,7 +295,7 @@ function DesktopShell({ onAdd }: { onAdd: () => void }) {
         </div>
       </Glass>
       <main className="shell__stage">
-        <LocalLight tone="violet" x="60%" y="0%" size="min(980px, 80%)" aspect={0.42} strength={0.34} />
+        <LocalLight tone="violet" x="60%" y="0%" size="min(980px, 80%)" aspect={0.42} strength={0.18} />
         <LocalLight tone="orchid" x="66%" y="100%" size="min(860px, 70%)" aspect={0.38} strength={0.28} />
         <Scroller />
         <div ref={topRef} className="shell__top">
@@ -332,7 +332,7 @@ function PhoneShell({ onAdd }: { onAdd: () => void }) {
       <LocalLight tone="orchid" x="86%" y="0%" size="110%" aspect={0.5} strength={0.2} />
       <Scroller />
       <div ref={topRef} className="shell__top">
-        <Glass as="header" level="thin" className="ph-head" style={{ "--g-tint": "rgb(16 11 38 / .55)" } as CSSProperties}>
+        <Glass as="header" level="thin" className="ph-head">
           <button type="button" className="ph-switch" aria-haspopup="dialog" aria-expanded={sheet} onClick={() => setSheet(true)}>
             <span className="ph-switch__name">{title}</span>
             {elsewhere > 0 ? (
@@ -375,8 +375,8 @@ function BrandMark() {
     <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" className="brand-mark">
       <defs>
         <linearGradient id="brand-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#CDBEFF" />
-          <stop offset="1" stopColor="#7A5BFF" />
+          <stop offset="0" stopColor="#8668FC" />
+          <stop offset="1" stopColor="#B35CFF" />
         </linearGradient>
       </defs>
       <rect x="1" y="5" width="18" height="10" rx="5" fill="url(#brand-g)" />

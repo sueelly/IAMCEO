@@ -30,8 +30,9 @@ extension EnvironmentValues {
     }
 }
 
-/// A content card in the web glass style (.glass .glass--regular + `.hm-card` tint): a dark see-through tint over the
-/// aurora, radius 22, bright rim, soft violet shadow. Cards nested inside a card become quiet fills.
+/// A content card in the light glass style (mockup `.g`): white glass 74% → 52% over the light aurora, radius 22, a rim
+/// lit white at the top left and violet/ice at the bottom right, a soft violet shadow. Cards nested inside a card become
+/// quiet fills.
 struct Plate<Content: View>: View {
     @Environment(\.ceInsideGlass) private var insideGlass
     var padding: CGFloat = CESpace.l
@@ -47,8 +48,8 @@ struct Plate<Content: View>: View {
             .environment(\.ceInsideGlass, true)
         if insideGlass {
             inner
-                .background(raised ? CE.violet.opacity(0.14) : Color.white.opacity(0.035), in: shape)
-                .overlay { shape.strokeBorder(raised ? CE.violet.opacity(0.35) : CE.line) }
+                .background(raised ? CE.violet.opacity(0.1) : Color.white.opacity(0.55), in: shape)
+                .overlay { shape.strokeBorder(raised ? CE.selectedRing : CE.line) }
         } else {
             // Same surface on every OS version: no Liquid Glass and no material under a card (see `cardGlass`);
             // Reduce Transparency gets the solid plate there.
@@ -72,26 +73,22 @@ extension View {
 // MARK: - Card glass (web `.glass.glass--regular` + `.hm-card` tint)
 
 extension View {
-    /// The web card surface for a box of content: a dark see-through tint over the aurora, a faint white top-down
-    /// gradient, a crisp bright rim and a shadow that falls outside the card only. No Liquid Glass and no material:
-    /// both brighten and grey whatever sits behind them, which reads as fog on the dark aurora.
-    /// Reduce Transparency: the solid plate.
+    /// The light card surface for a box of content: white glass 74% → 52% (mockup `--g-bg`), the inset depth of
+    /// `--g-depth`, the rim and a soft violet shadow outside the card only. No Liquid Glass and no material: the static
+    /// aurora behind a card needs no blur. Reduce Transparency: the solid plate.
     func cardGlass<S: InsettableShape>(_ shape: S, raised: Bool = false) -> some View {
         modifier(CardGlass(shape: shape, raised: raised))
     }
 
-    /// The card surface for a box that floats over scrolling content (the composer): the same dark tint, gradient and
-    /// rim drawn on top of glass, so what passes beneath is blurred instead of showing through sharp. The tint over
-    /// the glass cancels the glass's own lift, so the panel is as dark as a card.
+    /// The card surface for a box that floats over scrolling content (the composer): the same white glass, depth and
+    /// rim drawn on top of the system blur, so what passes beneath is blurred instead of showing through sharp.
     func glassPanel<S: InsettableShape>(_ shape: S) -> some View {
         modifier(GlassPanel(shape: shape))
     }
 
     /// The card surface in a capsule, for a pill of controls (the Mac destination tabs, the inbox segment pill): the
-    /// card's dark see-through tint, gradient, depth and rim, no Liquid Glass. `.regular` glass lifts and greys these
-    /// into the same haze the cards had; the web draws them as `.glass` with a dark violet tint (`.gtabs`
-    /// rgb(24 16 56 / .5), `.ibx-seg` rgb(16 11 38 / .55)). No card shadow: the web's −24px spread leaves none under
-    /// a pill. Put `TabDrop` behind the selected item. Reduce Transparency: the solid plate.
+    /// card's white glass, depth and rim (mockup `.tabs.g`). No card shadow under a pill. Put `TabDrop` behind the
+    /// selected item. Reduce Transparency: the solid plate. `tint` is kept for callers; the light glass ignores it.
     func cardPill(tint: Double = 0.55) -> some View {
         modifier(CardPill(tint: tint))
     }
@@ -102,7 +99,7 @@ private struct CardPill: ViewModifier {
     let tint: Double
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(CE.plateRaisedSolid, in: Capsule()).overlay { Capsule().strokeBorder(CE.lineStrong) }
+            content.background(CE.plateSolid, in: Capsule()).overlay { Capsule().strokeBorder(CE.lineStrong) }
         } else {
             content
                 .background { CardGlassFill(shape: Capsule(), tint: tint) }
@@ -111,31 +108,24 @@ private struct CardPill: ViewModifier {
     }
 }
 
-/// Web `.gtabs__drop`: the selected tab of a `cardPill`. A clear violet-lit drop (a light violet wash under the white
-/// top-down gradient, the card rim) with the web's violet glow around it (`0 6px 18px -6px violet .75`,
-/// `0 0 16px -2px violet .45`). The glow is cut out of the drop, so it lights the pill around it and never fogs the
-/// label. Draw it behind the label; with `matchedGeometryEffect` it slides from item to item.
+/// Mockup `.tabs span.on`: the selected tab of a `cardPill`. A white drop (white → white .86) with a violet glow under
+/// it (`0 6px 16px -6px violet .55`) and a violet .22 ring; the label on it is `CE.accent`. The glow is cut out of the
+/// drop, so it lights the pill around it. Draw it behind the label; with `matchedGeometryEffect` it slides.
 struct TabDrop: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var body: some View {
         let shape = Capsule()
         Group {
             if reduceTransparency {
-                shape.fill(CE.violet.opacity(0.34)).overlay { shape.strokeBorder(CE.lineStrong) }
+                shape.fill(Color.white).overlay { shape.strokeBorder(CE.selectedRing) }
             } else {
-                ZStack {
-                    shape.fill(CE.violet.opacity(0.2))
-                    shape.fill(LinearGradient(stops: [.init(color: .white.opacity(0.13), location: 0), .init(color: .white.opacity(0.05), location: 0.62)], startPoint: .top, endPoint: .bottom))
-                }
-                .overlay { CardRim(shape: shape, width: 1) }
-                .background {
-                    ZStack {
-                        shape.inset(by: 6).fill(CE.violet.opacity(0.75)).offset(y: 6).blur(radius: 9)
-                        shape.inset(by: 2).fill(CE.violet.opacity(0.45)).blur(radius: 8)
+                shape.fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.86)], startPoint: .top, endPoint: .bottom))
+                    .overlay { shape.strokeBorder(CE.violet.opacity(0.22)) }
+                    .background {
+                        shape.inset(by: 6).fill(CE.violet.opacity(0.55)).offset(y: 6).blur(radius: 8)
+                            .overlay { shape.fill(Color.black).blendMode(.destinationOut) }
+                            .compositingGroup()
                     }
-                    .overlay { shape.fill(Color.black).blendMode(.destinationOut) }
-                    .compositingGroup()
-                }
             }
         }
         .allowsHitTesting(false)
@@ -162,12 +152,11 @@ private struct CardGlass<S: InsettableShape>: ViewModifier {
 private struct GlassPanel<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let shape: S
-    /// The card tint is drawn over the glass, so it has to cancel the glass's lift (≈ +35 per channel on the dark
-    /// aurora): at 0.72 the panel lands on the web composer's colour (rgb ≈ 27 25 49) instead of a lighter grey.
+    /// Over the blur the white is a little denser, so text on the composer reads as on a card.
     private static var tint: Double { 0.72 }
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(CE.plateRaisedSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
+            content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
         } else if #available(macOS 26.0, iOS 26.0, *) {
             content
                 .background { CardGlassFill(shape: shape, tint: Self.tint) }
@@ -184,39 +173,31 @@ private struct GlassPanel<S: InsettableShape>: ViewModifier {
     }
 }
 
-/// Inside of the card: tint, top-down white gradient and the inset depth of web `--g-depth` (inner dark edge, top
-/// highlight line, faint top and bottom glows).
+/// Inside of the card (mockup `--g-bg` + `--g-depth`): white 74% → 52% top-down, a crisp white top highlight, a white
+/// .55 inner ring and a faint violet glow rising from the bottom edge. `raised` adds a light violet wash.
 struct CardGlassFill<S: InsettableShape>: View {
     let shape: S
     var raised = false
-    /// Opacity of `CE.cardTint`. Cards 0.55 (raised 0.5 under a violet wash); the glass panel more, to cancel its glass.
+    /// Denser white for panels drawn over a blur or holding long text (≥ 0.66 → white 84% → 64%); nil = the card.
     var tint: Double? = nil
-    private static var edgeDark: Color { Color(red: 6 / 255, green: 3 / 255, blue: 20 / 255) }
     var body: some View {
+        let dense = (tint ?? 0) >= 0.66
         ZStack {
-            shape.fill(CE.cardTint.opacity(tint ?? (raised ? 0.5 : 0.55)))
-            if raised { shape.fill(CE.violet.opacity(0.16)) }
-            // background: linear-gradient(180deg, white .045, white .012 62%)
-            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(0.045), location: 0), .init(color: .white.opacity(0.012), location: 0.62)], startPoint: .top, endPoint: .bottom))
-            // ::after: linear-gradient(180deg, white .035, transparent 22%)
-            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(0.035), location: 0), .init(color: .white.opacity(0), location: 0.22)], startPoint: .top, endPoint: .bottom))
-            // inset 0 0 7px 1px rgb(6 3 20 / .22): dark inner edge, as three stacked bands (≈ .12 → .08 → .045 from the
-            // edge in, gone by 6.5pt). Not an inner shadow: SwiftUI scales an inner shadow by its fill's alpha, so on
-            // this see-through card it draws nothing. Not a blur either: that is one more offscreen pass per card.
-            shape.strokeBorder(Self.edgeDark.opacity(0.045), lineWidth: 6.5)
-            shape.strokeBorder(Self.edgeDark.opacity(0.04), lineWidth: 3)
-            shape.strokeBorder(Self.edgeDark.opacity(0.045), lineWidth: 1.25)
-            // inset 0 1px .5px -.5px white .6: a half-point highlight along the whole top edge (under the rim, which
-            // fades out towards the right), tapering away down the corners like the CSS one.
-            shape.strokeBorder(Color.white.opacity(0.6), lineWidth: 0.5)
+            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(dense ? 0.84 : 0.74), location: 0),
+                                              .init(color: .white.opacity(dense ? 0.64 : 0.52), location: 0.62)],
+                                      startPoint: .top, endPoint: .bottom))
+            if raised { shape.fill(CE.violet.opacity(0.08)) }
+            // inset 0 0 0 1px white .55
+            shape.strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
+            // inset 0 1px 0 white 1: the top highlight, tapering away down the corners
+            shape.strokeBorder(Color.white, lineWidth: 1)
                 .mask(alignment: .top) {
                     LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 11)
                 }
-            // inset 0 14px 26px -18px white .1 / inset 0 -12px 22px -16px white .06: faint top and bottom glows
+            // inset 0 -10px 22px -16px violet .14: a faint violet light along the bottom
             VStack(spacing: 0) {
-                LinearGradient(colors: [.white.opacity(0.035), .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 18)
                 Spacer(minLength: 0)
-                LinearGradient(colors: [.white.opacity(0), .white.opacity(0.022)], startPoint: .top, endPoint: .bottom).frame(height: 14)
+                LinearGradient(colors: [CE.violet.opacity(0), CE.violet.opacity(0.06)], startPoint: .top, endPoint: .bottom).frame(height: 14)
             }
             .clipShape(shape)
         }
@@ -224,43 +205,38 @@ struct CardGlassFill<S: InsettableShape>: View {
     }
 }
 
-/// Web `.glass::before`: a 1.25pt rim lit from the top left (white .95 → .42 → 0), a softer left light, an ice/lilac
-/// glow at the bottom right, over a 7% white base ring.
+/// Mockup `--rim`: a 1.2pt rim lit white from the top left (white 1 → .6 → 0), a violet → ice glow at the bottom
+/// right, over a violet .1 base ring.
 struct CardRim<S: InsettableShape>: View {
     let shape: S
-    var width: CGFloat = 1.25
+    var width: CGFloat = 1.2
     var body: some View {
         ZStack {
-            shape.strokeBorder(Color.white.opacity(0.07), lineWidth: width)
+            shape.strokeBorder(CE.violet.opacity(0.1), lineWidth: width)
             shape.strokeBorder(EllipticalGradient(stops: [
-                .init(color: CE.ice.opacity(0.34), location: 0),
-                .init(color: Color(red: 196 / 255, green: 168 / 255, blue: 1).opacity(0.16), location: 0.38),
-                .init(color: .white.opacity(0), location: 0.68),
-            ], center: .bottomTrailing, startRadiusFraction: 0, endRadiusFraction: 0.56), lineWidth: width)
+                .init(color: CE.violet.opacity(0.38), location: 0),
+                .init(color: CE.ice.opacity(0.3), location: 0.4 / 0.7),
+                .init(color: CE.ice.opacity(0), location: 1),
+            ], center: .bottomTrailing, startRadiusFraction: 0, endRadiusFraction: 0.58), lineWidth: width)
             shape.strokeBorder(EllipticalGradient(stops: [
-                .init(color: .white.opacity(0.6), location: 0),
-                .init(color: .white.opacity(0), location: 0.62),
-            ], center: UnitPoint(x: 0, y: 0.12), startRadiusFraction: 0, endRadiusFraction: 0.49), lineWidth: width)
-            shape.strokeBorder(EllipticalGradient(stops: [
-                .init(color: .white.opacity(0.95), location: 0),
-                .init(color: .white.opacity(0.42), location: 0.34),
-                .init(color: .white.opacity(0), location: 0.68),
-            ], center: UnitPoint(x: 0.34, y: 0), startRadiusFraction: 0, endRadiusFraction: 0.6), lineWidth: width)
+                .init(color: .white, location: 0),
+                .init(color: .white.opacity(0.6), location: 0.5),
+                .init(color: .white.opacity(0), location: 1),
+            ], center: UnitPoint(x: 0.34, y: 0), startRadiusFraction: 0, endRadiusFraction: 0.62), lineWidth: width)
         }
         .allowsHitTesting(false)
     }
 }
 
-/// Web `--g-shadow`: `0 24px 60px -24px rgb(4 2 14 / .8), 0 22px 56px -30px violet / .32`. Drawn from a caster inset
-/// by the (negative) spread and cut out of the card's own area, so it never darkens the see-through inside the way a
-/// SwiftUI `.shadow` on the card would (and text casts nothing).
+/// Mockup `--g-shadow`: `0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .30)`. Drawn from a
+/// caster inset by the (negative) spread and cut out of the card's own area, so it never tints the see-through inside.
 struct CardShadow<S: InsettableShape>: View {
     let shape: S
     var raised = false
     var body: some View {
         ZStack {
-            shape.inset(by: 24).fill(Color(red: 4 / 255, green: 2 / 255, blue: 14 / 255).opacity(0.8)).offset(y: 24).blur(radius: 30)
-            shape.inset(by: 30).fill(CE.violet.opacity(raised ? 0.42 : 0.32)).offset(y: 22).blur(radius: 28)
+            shape.fill(CE.shadowNear.opacity(0.06)).offset(y: 1).blur(radius: 1)
+            shape.inset(by: 22).fill(CE.shadowFar.opacity(raised ? 0.38 : 0.30)).offset(y: 18).blur(radius: 22)
         }
         .overlay { shape.fill(Color.black).blendMode(.destinationOut) }
         .compositingGroup()
@@ -313,10 +289,10 @@ struct Tag: View {
         #else
         .font(CEFont.caption.weight(.semibold))
         #endif
-        .foregroundStyle(tone == .neutral ? CE.ink : tone.color)
+        .foregroundStyle(tone == .neutral ? CE.ink2 : tone.color)
         .padding(.horizontal, 7)
         .frame(minWidth: 20, minHeight: 20)
-        .background((tone == .neutral ? Color.white : tone.color).opacity(tone == .neutral ? 0.1 : 0.16), in: Capsule())
+        .background(tone == .neutral ? CE.wash(0.06) : tone.dot.opacity(0.13), in: Capsule())
         .fixedSize()
     }
 }
@@ -331,15 +307,15 @@ struct StatusDot: View {
     var body: some View {
         Group {
             if tone == .dim {
-                Circle().strokeBorder(tone.color, lineWidth: 1.4).frame(width: size, height: size)
+                Circle().strokeBorder(tone.dot, lineWidth: 1.4).frame(width: size, height: size)
             } else {
-                Circle().fill(tone.color).frame(width: size, height: size)
-                    .shadow(color: [.attention, .approval, .live].contains(tone) ? tone.color.opacity(0.8) : .clear, radius: 4)
+                Circle().fill(tone.dot).frame(width: size, height: size)
+                    .shadow(color: [.attention, .approval, .live].contains(tone) ? tone.dot.opacity(0.7) : .clear, radius: 4)
             }
         }
         .background {
             if pulsing && !reduceMotion {
-                Circle().fill(tone.color.opacity(0.45)).frame(width: size, height: size)
+                Circle().fill(tone.dot.opacity(0.45)).frame(width: size, height: size)
                     .scaleEffect(expanded ? 2.4 : 1).opacity(expanded ? 0 : 0.9)
                     .animation(.easeOut(duration: 1.8).repeatForever(autoreverses: false), value: expanded)
             }
@@ -375,12 +351,13 @@ struct StatusBadge: View {
 
     private static func fill(_ tone: Tone) -> Color {
         switch tone {
-        case .live, .accent: CE.violet.opacity(0.2)
-        case .attention: CE.attention.opacity(0.15)
-        case .approval: CE.approval.opacity(0.17)
-        case .danger: CE.error.opacity(0.15)
-        case .success: CE.success.opacity(0.14)
-        case .neutral: Color.white.opacity(0.06)
+        // mockup .st--*: the dot colour at 13%
+        case .live, .accent: CE.violet.opacity(0.13)
+        case .attention: CE.attentionDot.opacity(0.13)
+        case .approval: CE.approvalDot.opacity(0.13)
+        case .danger: CE.error.opacity(0.12)
+        case .success: CE.successDot.opacity(0.13)
+        case .neutral: Color(red: 140 / 255, green: 140 / 255, blue: 160 / 255).opacity(0.13)
         case .dim: Color.clear
         }
     }
@@ -413,7 +390,7 @@ struct CountBadge: View {
             Text("\(count)").font(CEFont.caption.weight(.semibold)).monospacedDigit()
                 .foregroundStyle(tone == .neutral ? CE.ink : .white)
                 .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 20)
-                .background(tone == .neutral ? Color.white.opacity(0.12) : (tone == .danger || tone == .approval ? CE.error : CE.accentFill), in: Capsule())
+                .background(tone == .neutral ? CE.wash(0.08) : (tone == .danger || tone == .approval ? CE.error : CE.accentFill), in: Capsule())
                 .fixedSize()
         }
     }
@@ -452,8 +429,8 @@ struct InlineNotice: View {
         }
         .padding(.vertical, 12).padding(.leading, 14).padding(.trailing, actionTitle != nil ? 10 : 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tone.color.opacity(0.09), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(tone.color.opacity(0.22)) }
+        .background(tone.dot.opacity(0.1), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(tone.dot.opacity(0.3)) }
     }
 }
 
@@ -470,15 +447,15 @@ struct BrandMark: View {
             .interpolation(.high)
             .frame(width: size, height: size)
             .clipShape(tile)
-            .overlay { tile.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5) }
-            .shadow(color: CE.violet.opacity(0.45), radius: 5, y: 1)
+            .overlay { tile.strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5) }
+            .shadow(color: CE.violet.opacity(0.3), radius: 4, y: 1)
             .accessibilityHidden(true)
     }
 }
 
 // MARK: - Sheet (popup) frame
 
-/// The one quiet round close button (×) of drawers and sheets: 26pt white-tint circle, no focus ring, Esc closes.
+/// The one quiet round close button (×) of drawers and sheets: 26pt faint ink-tint circle, no focus ring, Esc closes.
 /// iPhone keeps a 44pt hit target around the visible circle.
 struct CECloseButton: View {
     var label = "닫기"
@@ -509,8 +486,8 @@ private struct CECloseButtonStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(hovering ? CE.ink : CE.ink2)
                 .frame(width: 26, height: 26)
-                .background(Color.white.opacity(configuration.isPressed ? 0.14 : hovering ? 0.1 : 0.06), in: Circle())
-                .overlay { Circle().strokeBorder(Color.white.opacity(0.07)) }
+                .background(CE.wash(configuration.isPressed ? 0.12 : hovering ? 0.08 : 0.05), in: Circle())
+                .overlay { Circle().strokeBorder(CE.line) }
                 .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
@@ -518,13 +495,13 @@ private struct CECloseButtonStyle: ButtonStyle {
     }
 }
 
-/// Surface of every popup: the card's deep violet, darker toward the bottom, one faint violet light at the top
-/// left. No aurora blobs (they read as stains in a small window) and no material (it greys the colour).
+/// Surface of every popup: the light background, a little whiter at the top, one faint violet light at the top left.
+/// No aurora blobs (they read as stains in a small window) and no material.
 struct CESheetBackground: View {
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(hex: 0x19132F), Color(hex: 0x0F0B20)], startPoint: .top, endPoint: .bottom)
-            RadialGradient(colors: [CE.violet.opacity(0.16), .clear], center: UnitPoint(x: 0.12, y: 0), startRadius: 0, endRadius: 380)
+            LinearGradient(colors: [Color(hex: 0xFDFCFF), CE.bg], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [CE.violet.opacity(0.08), .clear], center: UnitPoint(x: 0.12, y: 0), startRadius: 0, endRadius: 380)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -536,7 +513,7 @@ struct CESheetBackground: View {
 /// - Header: optional icon tile, title, optional one-line subtitle, `CECloseButton` (Esc).
 /// - Body: on Mac the sheet's height follows the content and scrolls only past `maxBodyHeight`; `scrolls: false`
 ///   hands the body the space as is (a terminal, a reader) and the caller sizes it.
-/// - Footer (optional): right-aligned buttons on a slightly darker band. `ceSecondaryButton` for 닫기/취소/다시 확인,
+/// - Footer (optional): right-aligned buttons on a slightly tinted band. `ceSecondaryButton` for 닫기/취소/다시 확인,
 ///   one `ceProminentButton` (with `.keyboardShortcut(.defaultAction)`) for the main action. Never system-tinted buttons.
 /// iPhone: the same body and footer in a NavigationStack with an inline title and a trailing close button.
 struct CESheet<Content: View, Footer: View>: View {
@@ -658,7 +635,7 @@ struct CESheet<Content: View, Footer: View>: View {
         }
         .padding(.horizontal, isMac ? 22 : 16)
         .padding(.vertical, isMac ? 14 : 10)
-        .background(Color.black.opacity(0.22))
+        .background(CE.violet.opacity(0.035))
         .overlay(alignment: .top) { Rectangle().fill(CE.line).frame(height: 1) }
     }
 }
@@ -701,7 +678,7 @@ struct Avatar: View {
             .font(.system(size: size * 0.42, weight: .medium))
             .foregroundStyle(CE.ink2)
             .frame(width: size, height: size)
-            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+            .background(CE.soft, in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
             .accessibilityHidden(true)
     }
 }
@@ -711,8 +688,8 @@ struct ContextMeter: View {
     var body: some View {
         let value = min(max(pct, 0), 100)
         HStack(spacing: 5) {
-            Capsule().fill(Color.white.opacity(0.1)).frame(width: 34, height: 4)
-                .overlay(alignment: .leading) { Capsule().fill(value >= 80 ? CE.attention : CE.ink3).frame(width: 34 * value / 100, height: 4) }
+            Capsule().fill(CE.wash(0.1)).frame(width: 34, height: 4)
+                .overlay(alignment: .leading) { Capsule().fill(value >= 80 ? CE.attentionDot : CE.ink3).frame(width: 34 * value / 100, height: 4) }
             Text("문맥 \(Int(value))%").font(CEFont.meta).foregroundStyle(CE.ink3).monospacedDigit()
         }
         .accessibilityElement(children: .ignore)
@@ -726,8 +703,8 @@ struct ContextMeter: View {
 /// drawn as a real grid. Inline: bold, italic, `code` (a faint chip), links and ~~strikethrough~~; a single `~` stays a
 /// tilde ("0.0~3.9" is a range, never a strike). Sizes follow Dynamic Type on iPhone.
 extension EnvironmentValues {
-    /// Markdown drawn on the violet "mine" bubble (web .th-mine .md): dark code chips and boxes, a white quote bar,
-    /// lilac quote text and list markers, since the default faint white details vanish on violet.
+    /// Markdown drawn on the violet "mine" bubble (mockup .th-mine): white text, dark code chips and boxes, a white
+    /// quote bar, lilac quote text and list markers, since the page's dark ink would vanish on violet.
     @Entry var markdownOnAccent = false
 }
 
@@ -750,6 +727,10 @@ struct MarkdownText: View {
 
     /// Extra space between two lines of one paragraph: the web line height over the system font's own ~1.2.
     private var leading: CGFloat { CELeading.spacing(size, lineHeight) }
+    /// Text colours: the page inks, or white / lilac on the violet bubble.
+    private var ink: Color { onAccent ? .white : CE.ink }
+    private var ink2: Color { onAccent ? CE.onAccentSub : CE.ink2 }
+    private var ink3: Color { onAccent ? Color(hex: 0xDAD2FF) : CE.ink3 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: (size * 0.7).rounded()) {
@@ -760,7 +741,7 @@ struct MarkdownText: View {
                         .font(.system(size: headingSize(level), weight: .semibold))
                         .tracking(-0.15)
                         .lineSpacing((size * 0.2).rounded())
-                        .foregroundStyle(level >= 4 ? CE.ink2 : CE.ink)
+                        .foregroundStyle(level >= 4 ? ink2 : ink)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, index == 0 ? 0 : (size * (level <= 2 ? 0.55 : 0.4)).rounded())
                         .accessibilityAddTraits(.isHeader)
@@ -769,13 +750,13 @@ struct MarkdownText: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(value).font(.system(size: (size * 0.87).rounded(), design: .monospaced))
                             .lineSpacing((size * 0.3).rounded())
-                            .foregroundStyle(CE.ink2)
+                            .foregroundStyle(onAccent ? Color.white : CE.ink)
                             .padding(.horizontal, 14).padding(.vertical, 12)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(onAccent ? Color(red: 9 / 255, green: 7 / 255, blue: 19 / 255).opacity(0.5)
-                                         : Color(red: 5 / 255, green: 4 / 255, blue: 11 / 255).opacity(0.55), in: shape)
-                    .overlay { shape.strokeBorder(CE.line) }
+                    .background(onAccent ? Color(red: 28 / 255, green: 12 / 255, blue: 96 / 255).opacity(0.4)
+                                         : CE.violet.opacity(0.05), in: shape)
+                    .overlay { shape.strokeBorder(onAccent ? Color.white.opacity(0.18) : CE.line) }
                 case .list(let items):
                     VStack(alignment: .leading, spacing: (size * 0.25).rounded()) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in listRow(item) }
@@ -784,11 +765,11 @@ struct MarkdownText: View {
                     HStack(alignment: .top, spacing: 12) {
                         RoundedRectangle(cornerRadius: 1).fill(onAccent ? Color.white.opacity(0.5) : CE.accent.opacity(0.7)).frame(width: 2)
                         MarkdownText(text: value, size: size, lineHeight: lineHeight)
-                            .foregroundStyle(onAccent ? Color(hex: 0xE6DFFF) : CE.ink2)
+                            .foregroundStyle(ink2)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                 case .rule:
-                    Rectangle().fill(CE.line).frame(height: 1).padding(.vertical, (size * 0.2).rounded())
+                    Rectangle().fill(onAccent ? Color.white.opacity(0.3) : CE.line).frame(height: 1).padding(.vertical, (size * 0.2).rounded())
                 case .table(let table):
                     MarkdownTableView(table: table, size: (size * 0.93).rounded())
                 case .paragraph(let value):
@@ -808,28 +789,28 @@ struct MarkdownText: View {
             Group {
                 if let done = item.task {
                     Image(systemName: done ? "checkmark.square.fill" : "square")
-                        .font(.system(size: size * 0.9)).foregroundStyle(done ? CE.accent : CE.ink3)
+                        .font(.system(size: size * 0.9)).foregroundStyle(onAccent ? ink2 : done ? CE.accent : CE.ink3)
                 } else {
                     Text(item.marker).font(.system(size: item.marker.count > 1 ? size * 0.93 : size))
-                        .foregroundStyle(onAccent ? Color(hex: 0xDAD2FF) : CE.ink3)
+                        .foregroundStyle(ink3)
                         .monospacedDigit()
                 }
             }
             .frame(minWidth: (size * 1.35).rounded(), alignment: .leading)
             .padding(.trailing, item.marker.count > 2 ? 4 : 0)
             Text(inline(item.text)).font(.system(size: size)).lineSpacing(leading)
-                .foregroundStyle(item.task == true ? CE.ink2 : CE.ink)
+                .foregroundStyle(item.task == true ? ink2 : ink)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.leading, CGFloat(item.level) * (size * 1.35).rounded())
     }
 
-    /// Inline markdown; on the violet bubble `code` sits on a dark chip (web .th-mine .md code rgb(9 7 19 / .35)).
+    /// Inline markdown; on the violet bubble `code` sits on a dark violet chip in white.
     private func inline(_ value: String) -> AttributedString {
         var result = markdownInline(value)
         guard onAccent else { return result }
         for run in result.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            result[run.range].backgroundColor = Color(red: 9 / 255, green: 7 / 255, blue: 19 / 255).opacity(0.35)
+            result[run.range].backgroundColor = Color(red: 28 / 255, green: 12 / 255, blue: 96 / 255).opacity(0.35)
             if run.link == nil { result[run.range].foregroundColor = Color.white }
         }
         return result
@@ -1030,7 +1011,7 @@ func markdownInline(_ value: String) -> AttributedString {
     var result = (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
         ?? AttributedString(value)
     for run in result.runs where run.inlinePresentationIntent?.contains(.code) == true {
-        result[run.range].backgroundColor = Color.white.opacity(0.08)
+        result[run.range].backgroundColor = CE.violet.opacity(0.08)
         result[run.range].foregroundColor = CE.ink
     }
     return LocalFileLinks.applying(to: result)
@@ -1089,7 +1070,7 @@ private struct MarkdownTableView: View {
                 }
             }
         }
-        .background(Color.white.opacity(0.02))
+        .background(Color.white.opacity(0.5))
         .clipShape(shape)
         .overlay { shape.strokeBorder(CE.line) }
         .accessibilityElement(children: .contain)
@@ -1108,7 +1089,7 @@ private struct MarkdownTableView: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10).padding(.vertical, 7)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: frameAlign)
-            .background(header ? Color.white.opacity(0.04) : Color.clear)
+            .background(header ? CE.violet.opacity(0.05) : Color.clear)
             .overlay(alignment: .top) { if row > 0 { Rectangle().fill(CE.line).frame(height: 1) } }
             .overlay(alignment: .leading) { if column > 0 { Rectangle().fill(CE.line).frame(width: 1) } }
     }
@@ -1275,7 +1256,7 @@ struct DotLabel: View {
     init(_ text: String, tone: Tone = .neutral, emphasized: Bool = false) { self.text = text; self.tone = tone; self.emphasized = emphasized }
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(tone.color).frame(width: 6, height: 6)
+            Circle().fill(tone.dot).frame(width: 6, height: 6)
             Text(text).font(CEFont.meta.weight(emphasized ? .semibold : .regular)).foregroundStyle(emphasized ? tone.color : CE.ink2).lineLimit(1)
         }
         .fixedSize()

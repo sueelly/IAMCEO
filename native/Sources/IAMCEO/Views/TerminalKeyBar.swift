@@ -3,14 +3,15 @@ import SwiftTerm
 import UIKit
 
 /// The key bar above the iPhone keyboard while typing into a live terminal: the keys a CLI needs that the system
-/// keyboard lacks, drawn as separate chips in the app's dark style (SwiftTerm's default bar is a row of plain grey
-/// system labels with nothing between them).
+/// keyboard lacks, drawn as separate chips in the app's light glass style (SwiftTerm's default bar is a row of plain
+/// grey system labels with nothing between them).
 ///
 /// - esc · tab · ctrl (a sticky modifier for the next key, lit violet while on) · ⌃C, then the arrows (they repeat
 ///   while held), then / - | ~ — on a horizontally scrolling row.
 /// - Pinned at the right end, behind a hairline: lower the keyboard.
-/// - Every chip is 34pt tall, at least 40pt wide, 9pt corners, a white .09 fill with a white .10 edge. It lights up
-///   while pressed, and gives a light haptic tick.
+/// - Every chip is 34pt tall, at least 40pt wide, 9pt corners, a white .9 fill with an ink .12 edge (mockup --field),
+///   ink #17132B text. It tints violet while pressed, and gives a light haptic tick. ctrl while on: #6D4DF2 fill,
+///   white text.
 final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     private weak var terminal: SwiftTerm.TerminalView?
     private let scroll = UIScrollView()
@@ -42,9 +43,10 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     // MARK: Layout
 
     private func build() {
-        backgroundColor = UIColor(red: 18 / 255, green: 14 / 255, blue: 38 / 255, alpha: 0.97)
+        // Light bar: CE.bg #F7F5FD with a CE.line (ink #17132B .08) hairline on top.
+        backgroundColor = UIColor(red: 247 / 255, green: 245 / 255, blue: 253 / 255, alpha: 0.97)
         let hairline = UIView()
-        hairline.backgroundColor = UIColor.white.withAlphaComponent(0.08)
+        hairline.backgroundColor = Self.ink.withAlphaComponent(0.08)
         hairline.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hairline)
 
@@ -77,7 +79,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
 
         // Pinned right: lower the keyboard, set off by a hairline.
         let divider = UIView()
-        divider.backgroundColor = UIColor.white.withAlphaComponent(0.1)
+        divider.backgroundColor = Self.ink.withAlphaComponent(0.12)
         divider.translatesAutoresizingMaskIntoConstraints = false
         addSubview(divider)
         let lower = chip(symbol: "keyboard.chevron.compact.down", accessibility: "키보드 내리기") { [weak self] in
@@ -118,6 +120,11 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
 
     // MARK: Chips
 
+    /// CE.ink #17132B (text, hairlines at low alpha), CE.accentFill #6D4DF2 (fill under white text), CE.focus #7A5BFF.
+    private static let ink = UIColor(red: 23 / 255, green: 19 / 255, blue: 43 / 255, alpha: 1)
+    private static let accentFill = UIColor(red: 109 / 255, green: 77 / 255, blue: 242 / 255, alpha: 1)
+    private static let focus = UIColor(red: 122 / 255, green: 91 / 255, blue: 255 / 255, alpha: 1)
+
     private func style(_ button: UIButton, title: String?, symbol: String?, mono: Bool) {
         var config = UIButton.Configuration.plain()
         if let title {
@@ -139,10 +146,10 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             let on = button.isSelected
             let pressed = button.isHighlighted
             config.background.backgroundColor = on
-                ? UIColor(red: 122 / 255, green: 91 / 255, blue: 255 / 255, alpha: pressed ? 0.7 : 0.85)
-                : UIColor.white.withAlphaComponent(pressed ? 0.2 : 0.09)
-            config.background.strokeColor = on ? UIColor.white.withAlphaComponent(0.25) : UIColor.white.withAlphaComponent(0.1)
-            config.baseForegroundColor = on ? .white : UIColor(red: 245 / 255, green: 242 / 255, blue: 255 / 255, alpha: 1)
+                ? TerminalKeyBar.accentFill.withAlphaComponent(pressed ? 0.85 : 1)
+                : (pressed ? TerminalKeyBar.focus.withAlphaComponent(0.16) : UIColor.white.withAlphaComponent(0.9))
+            config.background.strokeColor = on ? UIColor.white.withAlphaComponent(0.25) : TerminalKeyBar.ink.withAlphaComponent(0.12)
+            config.baseForegroundColor = on ? .white : TerminalKeyBar.ink
             button.configuration = config
         }
         button.translatesAutoresizingMaskIntoConstraints = false
@@ -248,6 +255,7 @@ struct TerminalKeyBarPreview: UIViewRepresentable {
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let view = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 500),
                                           font: .monospacedSystemFont(ofSize: 11, weight: .regular))
+        // The terminal canvas stays dark on purpose (TerminalScreenPalette); only the key bar around it is light.
         view.nativeBackgroundColor = UIColor(red: 11 / 255, green: 9 / 255, blue: 24 / 255, alpha: 1)
         view.nativeForegroundColor = UIColor(red: 245 / 255, green: 242 / 255, blue: 255 / 255, alpha: 1)
         view.feed(text: "Claude Code\r\n\r\n> 다음 작업을 입력하세요\r\n")

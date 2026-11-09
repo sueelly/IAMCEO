@@ -1,47 +1,83 @@
 import SwiftUI
 
-/// Design tokens. Content sits on calm plates; glass is reserved for chrome (sidebar, toolbar, tab bar, composer, sticky bars).
-/// Tokens copied from the web client (web/src/styles/tokens.css), which the owner prefers.
+/// Design tokens: the light glass theme (owner-approved mockup `images/light-glass-mockup-20261109-100709`, Nov 9 2026).
+/// A near-white violet-tinted background with soft violet and ice light; white glass for chrome and cards; the existing
+/// violet kept for buttons, selection, badges and links only. Content sits on calm plates; glass is reserved for chrome
+/// (sidebar, toolbar, tab bar, composer, sticky bars).
+///
+/// State colours come in two strengths: `CE.live`, `CE.attention`, … are the TEXT strength (≥ 4.5:1 on white glass),
+/// safe for labels and icons; `CE.liveDot`, `CE.attentionDot`, … are the bright DOT strength for dots, glows and bars
+/// only (never text). `Tone.color` is text strength, `Tone.dot` dot strength.
 enum CE {
-    static let bg = Color(hex: 0x090713)
-    static let bgDeep = Color(hex: 0x05040B)
-    static let plateSolid = Color(hex: 0x16112C)
-    static let plateRaisedSolid = Color(hex: 0x1D1638)
-    static let plate = Color.white.opacity(0.045)
-    static let plateRaised = Color.white.opacity(0.08)
-    static let line = Color.white.opacity(0.08)
-    static let lineStrong = Color.white.opacity(0.14)
-    static let ink = Color(hex: 0xF5F2FF)
-    static let ink2 = Color(hex: 0xC2BBDF)
-    static let ink3 = Color(hex: 0x8F88B2)
-    static let accent = Color(hex: 0xB9A8FF)       // --focus: links, selection rings
-    static let accentFill = Color(hex: 0x6D4DF2)   // --accent-fill: fills under white text (badges, send)
+    /// Ink base for hairlines and quiet neutral washes on the light background (`CE.wash`).
+    static let inkBase = Color(hex: 0x17132B)
+    static let bg = Color(hex: 0xF7F5FD)
+    /// A well inside a card (input fields, inset boxes): white, used at 50–90%.
+    static let bgDeep = Color.white
+    /// Reduce Transparency surfaces.
+    static let plateSolid = Color.white
+    static let plateRaisedSolid = Color(hex: 0xF3F0FC)
+    static let plate = Color.white.opacity(0.6)
+    static let plateRaised = Color.white.opacity(0.82)
+    static let line = Color(hex: 0x17132B).opacity(0.08)
+    static let lineStrong = Color(hex: 0x17132B).opacity(0.14)
+    /// Body text #17132B, secondary #4A4566, faint #5F5983 (all ≥ 4.5:1 on the background and on white glass).
+    static let ink = Color(hex: 0x17132B)
+    static let ink2 = Color(hex: 0x4A4566)
+    static let ink3 = Color(hex: 0x5F5983)
+    /// Links, the active tab label and selected text (6.7:1 on white). Replaces the dark theme's #B9A8FF.
+    static let accent = Color(hex: 0x5B3FD9)
+    /// Selection rings, focus rings and violet light (#7A5BFF). Not for text.
+    static let focus = Color(hex: 0x7A5BFF)
+    /// Fills under white text: buttons, badges, the owner's own bubble (5.3:1 with white).
+    static let accentFill = Color(hex: 0x6D4DF2)
     static let violet = Color(hex: 0x7A5BFF)
     static let orchid = Color(hex: 0xB35CFF)
     static let indigo = Color(hex: 0x3D45FF)
     static let rose = Color(hex: 0xFF6FB8)
     static let ice = Color(hex: 0xA8ECFF)
-    // Member states (--st-*) and semantic text colours (--ok/--warn/--danger)
-    static let live = Color(hex: 0xB9A8FF)         // 일하는 중
-    static let attention = Color(hex: 0xFFB070)    // 내 답 기다림
-    static let approval = Color(hex: 0xFF8A80)     // 승인 창 앞
-    static let danger = Color(hex: 0xFF8A9B)       // 오류 · 실패 (text)
-    static let error = Color(hex: 0xFF5A62)        // 오류 dot
-    static let success = Color(hex: 0x6FE3B2)      // 받음 · 완료
-    static let warn = Color(hex: 0xFFC773)         // 보류
-    static let idle = Color(hex: 0xA6A6AE)         // 대기
-    static let dim = Color(hex: 0x8F88B2)          // 잠듦 · 안 보임 (hollow ring)
-    /// Primary button gradient (web .gbtn--primary).
-    static let primaryGradient = LinearGradient(colors: [Color(red: 134/255, green: 104/255, blue: 252/255).opacity(0.88), Color(red: 104/255, green: 68/255, blue: 246/255).opacity(0.84), Color(red: 92/255, green: 54/255, blue: 234/255).opacity(0.88)], startPoint: .top, endPoint: .bottom)
-    /// Text-heavy glass tint (web .glass-tint: rgb(9 7 19 / .52)).
-    static let glassTint = Color(red: 9/255, green: 7/255, blue: 19/255)
-    /// Card tint, used at 55%. The web card is rgb(12 9 28 / .6) over a `saturate(175%)` backdrop; SwiftUI has no
-    /// backdrop saturation, so the tint carries the blue that saturation adds to the violet aurora (measured on screen:
-    /// card interiors land on the web's dark, saturated violet instead of a neutral navy).
-    static let cardTint = Color(red: 13/255, green: 8/255, blue: 46/255)
+    // Member states and semantic colours, TEXT strength (web --tx-*).
+    static let live = Color(hex: 0x5B3FD9)         // 일하는 중
+    static let attention = Color(hex: 0xA8530A)    // 내 답 기다림
+    static let approval = Color(hex: 0xC2372E)     // 승인 창 앞
+    static let danger = Color(hex: 0xC2372E)       // 오류 · 실패 (text)
+    static let success = Color(hex: 0x0B7F55)      // 받음 · 완료
+    static let warn = Color(hex: 0x8A5A00)         // 보류
+    static let idle = Color(hex: 0x5F5983)         // 대기
+    static let dim = Color(hex: 0x5F5983)          // 잠듦 · 안 보임
+    // The same states, DOT strength (web --st-*): dots, glows, meters. Never text.
+    static let liveDot = Color(hex: 0x7A5BFF)
+    static let attentionDot = Color(hex: 0xFF9A4D)
+    static let approvalDot = Color(hex: 0xFF6B60)
+    static let error = Color(hex: 0xD9363E)        // 오류 dot / danger fill under white text (4:1 with white)
+    static let successDot = Color(hex: 0x20B97C)
+    static let warnDot = Color(hex: 0xF5B33D)
+    static let idleDot = Color(hex: 0xA6A6AE)
+    static let dimDot = Color(hex: 0x8F88B2)       // hollow ring
+    /// Primary button gradient (mockup .btn--p).
+    static let primaryGradient = LinearGradient(colors: [Color(red: 134/255, green: 104/255, blue: 252/255).opacity(0.95), Color(red: 104/255, green: 68/255, blue: 246/255).opacity(0.95), Color(red: 92/255, green: 54/255, blue: 234/255).opacity(0.97)], startPoint: .top, endPoint: .bottom)
+    /// Glass tint: white (the light glass is white 74% → 52%).
+    static let glassTint = Color.white
+    /// Card tint: white (cards are white glass; text-heavy cards white 86%).
+    static let cardTint = Color.white
+    /// Soft violet surface for chips, option tiles and jump buttons (mockup --soft) and its ring (--soft-ring).
+    static let soft = Color(hex: 0x7A5BFF).opacity(0.07)
+    static let softRing = Color(hex: 0x7A5BFF).opacity(0.16)
+    /// Selected row / recommended option (mockup --sel-bg / --sel-ring).
+    static let selectedTop = Color(hex: 0x7A5BFF).opacity(0.16)
+    static let selectedBottom = Color(hex: 0x7A5BFF).opacity(0.10)
+    static let selectedRing = Color(hex: 0x7A5BFF).opacity(0.3)
+    /// Violet-ink shadow colours of the light glass (mockup --g-shadow, --card-shadow).
+    static let shadowNear = Color(red: 40/255, green: 24/255, blue: 110/255)
+    static let shadowFar = Color(red: 70/255, green: 46/255, blue: 180/255)
+    /// The neutral wash that replaces the dark theme's `white.opacity(a)` fills (hover, pressed, chips, tracks):
+    /// ink at the same small opacity reads the same on the light background.
+    static func wash(_ opacity: Double) -> Color { inkBase.opacity(opacity) }
+    /// Subline on the owner's violet bubble (mockup --mine-to).
+    static let onAccentSub = Color(hex: 0xE6DFFF)
 }
 
-/// Semantic tone: color carries meaning, never decoration.
+/// Semantic tone: color carries meaning, never decoration. `color` is text strength, `dot` is dot strength.
 enum Tone: Sendable, Equatable {
     case neutral, accent, live, attention, approval, danger, success, dim
     var color: Color {
@@ -54,6 +90,19 @@ enum Tone: Sendable, Equatable {
         case .danger: CE.danger
         case .success: CE.success
         case .dim: CE.dim
+        }
+    }
+    /// Bright variant for dots, glows and bars (never text).
+    var dot: Color {
+        switch self {
+        case .neutral: CE.idleDot
+        case .accent: CE.focus
+        case .live: CE.liveDot
+        case .attention: CE.attentionDot
+        case .approval: CE.approvalDot
+        case .danger: CE.error
+        case .success: CE.successDot
+        case .dim: CE.dimDot
         }
     }
 }
@@ -157,35 +206,36 @@ let isMac = true
 let isMac = false
 #endif
 
-/// Web AuroraField: five soft blobs (violet, orchid, indigo, violet, rose) at strength k = .85 over #090713. Static.
+/// Light aurora (mockup `.lt --aurora`): #FBFAFF → #F3F0FC with soft light bleeding in: violet upper right, orchid
+/// in the top corner, ice at the bottom left, a faint violet at the left and a hint of rose low right. Static.
 struct AmbientBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    private struct Blob { let r, g, b: Double; let a: Double; let x, y, w, h: Double }
+    /// A radial light: colour, centre (x, y), diameter as a fraction of the longer side (w, h), and its stops as
+    /// (alpha, location) pairs ending transparent.
+    private struct Blob { let r, g, b: Double; let x, y, w, h: Double; let stops: [(Double, Double)] }
     private let blobs: [Blob] = [
-        Blob(r: 122, g: 91, b: 255, a: 0.50, x: 0.66, y: 0.34, w: 0.92, h: 0.68),
-        Blob(r: 179, g: 92, b: 255, a: 0.34, x: 0.92, y: 0.08, w: 0.54, h: 0.42),
-        Blob(r: 61, g: 69, b: 255, a: 0.42, x: 0.20, y: 0.96, w: 0.86, h: 0.56),
-        Blob(r: 122, g: 91, b: 255, a: 0.24, x: 0.04, y: 0.30, w: 0.52, h: 0.52),
-        Blob(r: 255, g: 111, b: 184, a: 0.13, x: 0.80, y: 0.84, w: 0.32, h: 0.24),
+        // radial-gradient(46% 34% at 70% 30%, violet .20, violet .08 45%, transparent 72%)
+        Blob(r: 122, g: 91, b: 255, x: 0.70, y: 0.30, w: 0.92, h: 0.68, stops: [(0.20, 0), (0.08, 0.45 / 0.72), (0, 1)]),
+        // radial-gradient(30% 24% at 94% 6%, orchid .16, transparent 70%)
+        Blob(r: 179, g: 92, b: 255, x: 0.94, y: 0.06, w: 0.60, h: 0.48, stops: [(0.16, 0), (0.07, 0.45), (0, 1)]),
+        // radial-gradient(44% 30% at 18% 98%, ice .45, transparent 70%)
+        Blob(r: 168, g: 236, b: 255, x: 0.18, y: 0.98, w: 0.88, h: 0.60, stops: [(0.45, 0), (0.2, 0.45), (0, 1)]),
+        // radial-gradient(28% 26% at 2% 28%, violet .10, transparent 70%)
+        Blob(r: 122, g: 91, b: 255, x: 0.02, y: 0.28, w: 0.56, h: 0.52, stops: [(0.10, 0), (0.045, 0.45), (0, 1)]),
+        // radial-gradient(18% 14% at 82% 86%, rose .12, transparent 70%)
+        Blob(r: 255, g: 111, b: 184, x: 0.82, y: 0.86, w: 0.36, h: 0.28, stops: [(0.12, 0), (0.05, 0.45), (0, 1)]),
     ]
     var body: some View {
         GeometryReader { geo in
             let vmax = max(geo.size.width, geo.size.height)
             ZStack {
-                CE.bg
-                RadialGradient(colors: [CE.indigo.opacity(0.14), .clear], center: UnitPoint(x: 0.5, y: 1.15), startRadius: 0, endRadius: vmax * 0.7)
+                LinearGradient(colors: [Color(hex: 0xFBFAFF), Color(hex: 0xF3F0FC)], startPoint: .top, endPoint: .bottom)
                 if !reduceTransparency {
                     ForEach(blobs.indices, id: \.self) { index in
                         let blob = blobs[index]
                         let color = Color(red: blob.r / 255, green: blob.g / 255, blue: blob.b / 255)
-                        let a = blob.a * 0.85
                         Ellipse()
-                            .fill(EllipticalGradient(stops: [
-                                .init(color: color.opacity(a), location: 0),
-                                .init(color: color.opacity(a * 0.5), location: 0.4),
-                                .init(color: color.opacity(a * 0.16), location: 0.68),
-                                .init(color: color.opacity(0), location: 1),
-                            ]))
+                            .fill(EllipticalGradient(stops: blob.stops.map { .init(color: color.opacity($0.0), location: $0.1) }))
                             .frame(width: vmax * blob.w, height: vmax * blob.h)
                             .position(x: geo.size.width * blob.x, y: geo.size.height * blob.y)
                     }
@@ -198,21 +248,13 @@ struct AmbientBackground: View {
     }
 }
 
-/// The web glass rim: bright top-left edge, faint ice glow bottom-right.
+/// The light glass rim (mockup `--rim`): white light from the top left, violet → ice glow at the bottom right, over a
+/// faint violet base ring. Same drawing as the card rim, a touch heavier when `strong`.
 struct GlassRim<S: InsettableShape>: View {
     let shape: S
     var strong = false
     var body: some View {
-        shape.strokeBorder(
-            LinearGradient(stops: [
-                .init(color: .white.opacity(strong ? 0.62 : 0.5), location: 0),
-                .init(color: .white.opacity(0.12), location: 0.32),
-                .init(color: .white.opacity(0.05), location: 0.6),
-                .init(color: CE.ice.opacity(0.28), location: 1),
-            ], startPoint: .topLeading, endPoint: .bottomTrailing),
-            lineWidth: strong ? 1.4 : 1.15
-        )
-        .allowsHitTesting(false)
+        CardRim(shape: shape, width: strong ? 1.4 : 1.2)
     }
 }
 
@@ -232,16 +274,21 @@ private struct GlassChrome<S: InsettableShape>: ViewModifier {
     let tint: Color?
     let interactive: Bool
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, iOS 26.0, *) {
-            content.glassEffect(ceGlass(tint: tint ?? CE.glassTint.opacity(0.45), interactive: interactive), in: shape)
+        if reduceTransparency {
+            content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
+        } else if #available(macOS 26.0, iOS 26.0, *) {
+            content.glassEffect(ceGlass(tint: tint ?? CE.glassTint.opacity(0.4), interactive: interactive), in: shape)
                 .overlay { GlassRim(shape: shape) }
-        } else if reduceTransparency {
-            content.background(CE.plateRaisedSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
+                .background { CardShadow(shape: shape) }
         } else {
+            // White glass 74% → 52% over the system blur (mockup `.g`: blur 28px, `--g-bg`).
             content
-                .background((tint ?? CE.glassTint).opacity(0.45), in: shape)
+                .background { if let tint { shape.fill(tint) } }
+                .background(LinearGradient(stops: [.init(color: .white.opacity(0.74), location: 0), .init(color: .white.opacity(0.52), location: 0.62)],
+                                           startPoint: .top, endPoint: .bottom), in: shape)
                 .background(.ultraThinMaterial, in: shape)
                 .overlay { GlassRim(shape: shape) }
+                .background { CardShadow(shape: shape) }
         }
     }
 }
@@ -301,8 +348,8 @@ extension View {
         #endif
     }
 
-    /// Text input surface used inside forms and composers (web .input: min-height 44, padding 10/13, 15px text,
-    /// rgb(5 4 11 / .5) well, white .12 ring; the focus ring is #B9A8FF). A font set on the field itself still wins.
+    /// Text input surface used inside forms and composers (mockup --field: min-height 44, padding 10/13, 15px text,
+    /// white .9 well, ink .12 ring; the focus ring is #7A5BFF). A font set on the field itself still wins.
     func ceField(focused: Bool = false) -> some View {
         let shape = RoundedRectangle(cornerRadius: CERadius.control, style: .continuous)
         return self.textFieldStyle(.plain)
@@ -313,9 +360,10 @@ extension View {
             #endif
             .padding(.horizontal, 13).padding(.vertical, 10)
             .frame(minHeight: 44)
-            .background(CE.bgDeep.opacity(0.5), in: shape)
+            .foregroundStyle(CE.ink)
+            .background(Color.white.opacity(0.9), in: shape)
             .overlay {
-                shape.strokeBorder(focused ? CE.accent.opacity(0.85) : Color.white.opacity(0.12), lineWidth: focused ? 1.5 : 1)
+                shape.strokeBorder(focused ? CE.focus.opacity(0.85) : CE.wash(0.12), lineWidth: focused ? 1.5 : 1)
             }
     }
 
@@ -370,8 +418,8 @@ struct CEFilledButtonStyle: ButtonStyle {
         @State private var hovering = false
         var body: some View {
             let metrics = CEButtonMetrics(controlSize, prominent: true)
-            // web .gbtn--primary: violet gradient, a glossy top half, a soft lilac glow along the bottom, a deep violet
-            // shadow and a dark text shadow; hover brightens 7%, press shrinks to .97; disabled keeps its colour at 40%.
+            // mockup .btn--p: violet gradient, a lit top edge, a soft lilac glow along the bottom, a violet shadow
+            // and a dark text shadow; hover brightens 6%, press shrinks to .97; disabled keeps its colour at 40%.
             configuration.label
                 .font(metrics.font)
                 .tracking(-0.15)
@@ -383,18 +431,19 @@ struct CEFilledButtonStyle: ButtonStyle {
                 .background {
                     Capsule().fill(CE.primaryGradient)
                         .overlay {
-                            Capsule().fill(LinearGradient(stops: [
-                                .init(color: .white.opacity(0.14), location: 0), .init(color: .white.opacity(0.025), location: 0.44),
-                                .init(color: .clear, location: 0.52),
-                            ], startPoint: .top, endPoint: .bottom))
-                        }
-                        .overlay {
-                            Capsule().fill(LinearGradient(colors: [.clear, Color(red: 222 / 255, green: 208 / 255, blue: 1).opacity(0.3)],
+                            // inset 0 -8px 14px -10px rgb(222 208 255 / .7)
+                            Capsule().fill(LinearGradient(colors: [.clear, Color(red: 222 / 255, green: 208 / 255, blue: 1).opacity(0.35)],
                                                           startPoint: .center, endPoint: .bottom))
                         }
-                        .overlay { GlassRim(shape: Capsule()) }
-                        .shadow(color: CE.violet.opacity(isEnabled ? 0.55 : 0), radius: 12, y: 8)
-                        .shadow(color: Color(red: 16 / 255, green: 6 / 255, blue: 52 / 255).opacity(isEnabled ? 0.5 : 0), radius: 3, y: 2)
+                        .overlay {
+                            // inset 0 1px .5px white .55: the lit top edge
+                            Capsule().strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
+                                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .clear, location: 0.3)],
+                                                     startPoint: .top, endPoint: .bottom))
+                        }
+                        // 0 8px 18px -8px violet .6, 0 2px 4px -1px rgb(40 16 120 / .3)
+                        .shadow(color: CE.violet.opacity(isEnabled ? 0.45 : 0), radius: 8, y: 7)
+                        .shadow(color: Color(red: 40 / 255, green: 16 / 255, blue: 120 / 255).opacity(isEnabled ? 0.25 : 0), radius: 2, y: 2)
                 }
                 .brightness(isEnabled && hovering && !configuration.isPressed ? 0.06 : 0)
                 .opacity(isEnabled ? 1 : 0.4)
@@ -416,7 +465,8 @@ struct CEQuietButtonStyle: ButtonStyle {
         @State private var hovering = false
         var body: some View {
             let metrics = CEButtonMetrics(controlSize, prominent: false)
-            // web .gbtn--glass: a top-lit white gradient over the glass, a rim, and a soft dark shadow under it.
+            // mockup .btn--g: a white top-down fill (white → white .8), ink label, a soft violet ring and a soft violet-ink
+            // shadow under it. Hover/press add a faint violet wash.
             configuration.label
                 .font(metrics.font)
                 .tracking(-0.15)
@@ -424,19 +474,20 @@ struct CEQuietButtonStyle: ButtonStyle {
                 .padding(.horizontal, metrics.horizontal)
                 .frame(minHeight: metrics.height)
                 .foregroundStyle(isEnabled ? CE.ink : CE.ink3)
-                .background(LinearGradient(colors: [Color.white.opacity(fill.top), Color.white.opacity(fill.bottom)],
-                                           startPoint: .top, endPoint: .bottom), in: Capsule())
-                .background(.ultraThinMaterial.opacity(isEnabled ? 1 : 0.5), in: Capsule())
-                .overlay { if isEnabled { GlassRim(shape: Capsule()) } else { Capsule().strokeBorder(CE.line) } }
-                .shadow(color: Color(red: 4 / 255, green: 2 / 255, blue: 14 / 255).opacity(isEnabled ? 0.45 : 0), radius: 8, y: 6)
+                .background {
+                    if isEnabled {
+                        Capsule().fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                            .overlay { Capsule().fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0)) }
+                    } else {
+                        Capsule().fill(Color.white.opacity(0.35))
+                    }
+                }
+                .overlay { Capsule().strokeBorder(isEnabled ? CE.softRing : CE.line) }
+                .shadow(color: CE.shadowNear.opacity(isEnabled ? 0.16 : 0), radius: 6, y: 5)
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.55), value: configuration.isPressed)
                 .ceButtonHitArea()
                 .onHover { hovering = $0 }
-        }
-        private var fill: (top: Double, bottom: Double) {
-            guard isEnabled else { return (0, 0) }
-            return configuration.isPressed ? (0.18, 0.08) : hovering ? (0.16, 0.06) : (0.10, 0.03)
         }
     }
 }
@@ -458,15 +509,15 @@ struct CEGhostButtonStyle: ButtonStyle {
                 .padding(.horizontal, metrics.horizontal)
                 .frame(minHeight: metrics.height)
                 .foregroundStyle(!isEnabled ? CE.ink3 : hovering ? CE.ink : CE.ink2)
-                .background(Color.white.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.10 : hovering ? 0.07 : 0), in: Capsule())
+                .background(CE.violet.opacity(!isEnabled ? 0 : configuration.isPressed ? 0.11 : hovering ? 0.07 : 0), in: Capsule())
                 .ceButtonHitArea()
                 .onHover { hovering = $0 }
         }
     }
 }
 
-/// Plain list row with hover, press and selection feedback (web .fl-row / .pj: hover white .06; the selected row is
-/// the rail's violet gradient with a lit top edge).
+/// Plain list row with hover, press and selection feedback (mockup .pj: hover a faint violet wash; the selected row
+/// is the light violet gradient, violet .16 → .10, inside a violet .3 ring).
 struct RowButtonStyle: ButtonStyle {
     var selected = false
     var radius: CGFloat = CERadius.control
@@ -484,15 +535,10 @@ struct RowButtonStyle: ButtonStyle {
                 .contentShape(shape)
                 .background {
                     if selected {
-                        shape.fill(LinearGradient(colors: [CE.violet.opacity(0.34), CE.violet.opacity(0.22)], startPoint: .top, endPoint: .bottom))
-                            .overlay {
-                                shape.strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5)
-                                    .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .clear, location: 0.35)],
-                                                         startPoint: .top, endPoint: .bottom))
-                            }
-                            .overlay { shape.strokeBorder(Color.white.opacity(0.05)) }
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.strokeBorder(CE.selectedRing) }
                     } else {
-                        shape.fill(Color.white.opacity(configuration.isPressed ? 0.09 : hovering ? 0.06 : 0))
+                        shape.fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0))
                     }
                 }
                 .onHover { hovering = $0 }

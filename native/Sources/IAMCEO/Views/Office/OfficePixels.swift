@@ -20,15 +20,18 @@ struct OfficeInk: Hashable, Sendable {
 /// Colours the scene uses outside the art pieces: state lights, glows, screens, bubbles and shadows.
 enum OfficePalette {
     static let line = OfficeInk(0x1A1433)
-    static let shadow = OfficeInk(0x05030D, alpha: 0.28)
+    /// Soft violet-ink shadows on the light floor (the light glass's shadow colour, CE.shadowNear).
+    static let shadow = OfficeInk(0x28186E, alpha: 0.18)
     /// The shadow colour drawn opaque into one layer that is then faded as a whole (overlaps never darken twice).
-    static let shadowSolid = OfficeInk(0x05030D)
+    static let shadowSolid = OfficeInk(0x28186E)
     static let bubble = OfficeInk(0xF7F4FF)
     static let bubbleShade = OfficeInk(0xD9D2F2)
     static let screenOn = OfficeInk(0x2A1F66)
     static let code: [OfficeInk] = [OfficeInk(0xC9BCFF), OfficeInk(0xB4F0FF), OfficeInk(0x9DEBD2)]
-    static let zed = OfficeInk(0xD3C9FF)
-    static let glowWork: UInt32 = 0xB9A8FF
+    /// Drifts over the light floor: the asleep body's light tone (#8C88B5), not the pale lilac it was on the dark plate.
+    static let zed = OfficeInk(0x8C88B5)
+    /// The violet light of a working screen (the light theme's glow colour, CE.focus #7A5BFF).
+    static let glowWork: UInt32 = 0x7A5BFF
     static let glowError: UInt32 = 0xFF5A62
 
     /// The 2px state light on a laptop lid or a monitor back.
