@@ -2,14 +2,14 @@
 .atv { display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
 
 .atv-thumb { flex:none; width:min(208px, 100%); height:148px; padding:0; overflow:hidden; border-radius:12px; cursor:zoom-in;
-  background:rgb(5 4 11 / .5); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:box-shadow 120ms linear; }
-.atv-thumb:hover { box-shadow:inset 0 0 0 1px rgb(255 255 255 / .28); }
+  background:var(--pre-bg); box-shadow:inset 0 0 0 1px var(--line-strong); transition:box-shadow 120ms linear; }
+.atv-thumb:hover { box-shadow:inset 0 0 0 1px rgb(var(--violet-rgb) / .45); }
 .atv-thumb img { width:100%; height:100%; object-fit:cover; }
 .atv[data-large] .atv-thumb { width:min(320px, 100%); height:220px; }
 
 .atv-file { display:inline-flex; align-items:center; gap:10px; min-height:44px; max-width:100%; padding:6px 14px; border-radius:12px; font-size:13.5px; line-height:1.35;
-  background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:background-color 120ms linear; }
-.atv-file:hover { background:rgb(255 255 255 / .13); }
+  color:var(--ink-1); background:var(--soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear; }
+.atv-file:hover { background:var(--soft-hover); }
 .atv-file__name { min-width:0; font-weight:550; overflow-wrap:anywhere; }
 .atv-file__size { flex:none; color:var(--ink-2); font-size:12.5px; }
 
@@ -17,7 +17,7 @@
 .dialog--modal[open]:has(.atv-box) { grid-template-columns:minmax(0, 1fr); }
 .dialog__panel:has(.atv-box) { width:min(100%, 1180px); }
 /* margin:auto 가운데 맞춤: grid·justify center 는 넘친 왼쪽·위를 스크롤로 못 닿게 만든다 */
-.atv-box { display:flex; overflow:auto; max-height:calc(var(--app-h) - 196px); border-radius:14px; background:rgb(5 4 11 / .5); }
+.atv-box { display:flex; overflow:auto; max-height:calc(var(--app-h) - 196px); border-radius:14px; background:var(--pre-bg); }
 .atv-zoom { display:block; flex:none; margin:auto; max-width:100%; cursor:zoom-in; }
 .atv-zoom img { max-width:100%; max-height:calc(var(--app-h) - 196px); }
 .atv-zoom[data-zoomed] { max-width:none; cursor:zoom-out; }

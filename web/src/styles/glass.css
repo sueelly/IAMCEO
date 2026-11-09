@@ -1,4 +1,5 @@
-/* 유리 재질. 원본: aing-check 랜딩 app/globals.css · docs/v3/glass-api.md. 값은 고치지 않고 그대로 옮겼다(달라진 곳은 주석).
+/* 유리 재질. 원본: aing-check 랜딩 app/globals.css · docs/v3/glass-api.md. 구조·움직임은 그대로, 색은 라이트 글라스 시안
+   (images/light-glass-mockup-20261109-100709): 흰 74%→52% 채움, blur 28px, saturate 180%, 테두리 왼쪽 위 흰 빛·오른쪽 아래 보라·하늘, 옅은 보라 그림자.
    규칙
    · 유리 판 뒤에는 늘 빛이 있어야 한다(AuroraField + LocalLight 1–2개).
    · 글 많은 판은 tint(.glass-tint), 굴절은 화면당 판 3개까지(상단 탭 물방울 · 입력칸).
@@ -7,11 +8,10 @@
    · 유리 안의 유리는 바깥 판의 채움만 흐린다. 겹침은 버튼·칩·탭 물방울 정도만. */
 
 .glass {
-  --g-blur:28px; --g-sat:175%; --g-a1:.045; --g-a2:.012; --g-r:22px; --g-tint:transparent;
-  --g-depth:inset 0 1px .5px -.5px rgb(255 255 255 / .6), inset 0 0 0 1px rgb(255 255 255 / .035),
-            inset 0 0 7px 1px rgb(6 3 20 / .22), inset 0 14px 26px -18px rgb(255 255 255 / .1),
-            inset 0 -12px 22px -16px rgb(255 255 255 / .06);
-  --g-shadow:0 24px 60px -24px rgb(4 2 14 / .8), 0 22px 56px -30px rgb(var(--violet-rgb) / .32);
+  --g-blur:28px; --g-sat:180%; --g-a1:.74; --g-a2:.52; --g-r:22px; --g-tint:transparent;
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .55),
+            inset 0 -10px 22px -16px rgb(var(--violet-rgb) / .14);
+  --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .3);
   --spec:0; --mx:50%; --my:-40%;
   position:relative; isolation:isolate; border-radius:var(--g-r);
   background:linear-gradient(180deg, rgb(255 255 255 / var(--g-a1)), rgb(255 255 255 / var(--g-a2)) 62%), var(--g-tint);
@@ -23,11 +23,10 @@
 .glass::before {
   content:""; position:absolute; inset:0; z-index:3; border-radius:inherit; padding:1.25px; pointer-events:none;
   background:
-    radial-gradient(170px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .9)), transparent 70%),
-    radial-gradient(62% 58% at 34% 0%, rgb(255 255 255 / .95), rgb(255 255 255 / .42) 34%, rgb(255 255 255 / 0) 68%),
-    radial-gradient(46% 52% at 0% 12%, rgb(255 255 255 / .6), rgb(255 255 255 / 0) 62%),
-    radial-gradient(58% 54% at 100% 100%, rgb(var(--ice-rgb) / .34), rgb(196 168 255 / .16) 38%, rgb(255 255 255 / 0) 68%),
-    linear-gradient(rgb(255 255 255 / .07), rgb(255 255 255 / .07));
+    radial-gradient(170px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .5)), transparent 70%),
+    radial-gradient(62% 58% at 34% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .6) 34%, rgb(255 255 255 / 0) 68%),
+    radial-gradient(58% 54% at 100% 100%, rgb(var(--violet-rgb) / .38), rgb(var(--ice-rgb) / .3) 40%, rgb(255 255 255 / 0) 70%),
+    linear-gradient(rgb(var(--violet-rgb) / .1), rgb(var(--violet-rgb) / .1));
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
@@ -35,28 +34,27 @@
 .glass::after {
   content:""; position:absolute; inset:0; z-index:3; border-radius:inherit; pointer-events:none;
   background:
-    radial-gradient(340px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .07)), transparent 68%),
-    linear-gradient(180deg, rgb(255 255 255 / .035), transparent 22%);
+    radial-gradient(340px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .35)), transparent 68%),
+    linear-gradient(180deg, rgb(255 255 255 / .04), transparent 22%); /* 광택은 내용 위(z 3)에 얹힌다. 진하면 판 위쪽 보라 배지의 흰 글자 대비를 깎는다 */
 }
 .glass--thin {
-  --g-blur:18px; --g-sat:170%; --g-a1:.06; --g-a2:.022; --g-r:999px;
-  --g-depth:inset 0 1px .5px -.5px rgb(255 255 255 / .55), inset 0 0 0 1px rgb(255 255 255 / .03),
-            inset 0 0 5px rgb(6 3 20 / .2), inset 0 -6px 12px -10px rgb(255 255 255 / .07);
-  --g-shadow:0 10px 30px -14px rgb(4 2 14 / .75);
+  --g-blur:18px; --g-sat:180%; --g-a1:.78; --g-a2:.58; --g-r:999px;
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .5),
+            inset 0 -6px 12px -10px rgb(var(--violet-rgb) / .12);
+  --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 10px 26px -14px rgb(70 46 180 / .28);
 }
 .glass--thick::before { padding:1.5px; }
-.glass--regular { --g-blur:28px; --g-sat:175%; --g-a1:.045; --g-a2:.012; --g-r:22px; }
+.glass--regular { --g-blur:28px; --g-sat:180%; --g-a1:.74; --g-a2:.52; --g-r:22px; }
 .glass--thick {
-  --g-blur:36px; --g-sat:170%; --g-a1:.05; --g-a2:.014; --g-r:30px;
-  --g-depth:inset 0 1px .5px -.5px rgb(255 255 255 / .7), inset 0 0 0 1px rgb(255 255 255 / .035),
-            inset 0 0 9px 1px rgb(6 3 20 / .26), inset 0 18px 30px -20px rgb(255 255 255 / .12),
-            inset 0 -14px 26px -18px rgb(255 255 255 / .07);
-  --g-shadow:0 44px 100px -34px rgb(4 2 14 / .9), 0 34px 90px -44px rgb(var(--violet-rgb) / .42);
+  --g-blur:36px; --g-sat:180%; --g-a1:.8; --g-a2:.58; --g-r:30px;
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .6),
+            inset 0 -14px 26px -18px rgb(var(--violet-rgb) / .16);
+  --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 30px 70px -30px rgb(70 46 180 / .36);
 }
 .glass[data-refract="on"] { backdrop-filter:var(--g-refract) saturate(var(--g-sat)); }
-/* 랜딩 tint 는 .38. 여기는 판 위 글이 본문이라 더 짙게 둔다(화면 시험의 대비 검사가 4.5 이상을 지킨다) */
-.glass-tint { --g-tint:rgb(9 7 19 / .52); }
-.glass-tint-soft { --g-tint:rgb(9 7 19 / .3); }
+/* 글 많은 판: 흰 채움을 더해 뒤 빛이 글자 밑에서 덜 비치게(화면 시험의 대비 검사가 4.5 이상을 지킨다) */
+.glass-tint { --g-tint:var(--tint-text); }
+.glass-tint-soft { --g-tint:rgb(255 255 255 / .18); }
 
 /* ── 유리 버튼 ── */
 .gbtn {
@@ -80,16 +78,17 @@
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
 }
+/* 흰 바탕 위라 채움은 불투명. 맨 위가 포인트 채움(#6D4DF2, 흰 글자 5.3)이라 어느 줄에서도 대비 4.5 이상 */
 .gbtn--primary {
   color:#fff; text-shadow:0 1px 1px rgb(28 8 92 / .45);
   background:
-    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .3)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .14), rgb(255 255 255 / .025) 44%, rgb(255 255 255 / 0) 52%),
-    linear-gradient(180deg, rgb(134 104 252 / .88), rgb(104 68 246 / .84) 55%, rgb(92 54 234 / .88)),
+    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .1)), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / .06), rgb(255 255 255 / .015) 44%, rgb(255 255 255 / 0) 52%),
+    linear-gradient(180deg, #6D4DF2, #6844F6 55%, #5C36EA),
     var(--b-tint);
-  box-shadow:inset 0 1px .5px rgb(255 255 255 / .7), inset 0 -1px 1px rgb(255 255 255 / .18),
-             inset 0 -10px 16px -9px rgb(222 208 255 / .62), inset 0 0 14px rgb(200 182 255 / .25), inset 0 0 0 1px rgb(255 255 255 / .06),
-             0 12px 32px -10px rgb(var(--violet-rgb) / .78), 0 2px 8px -2px rgb(16 6 52 / .55);
+  box-shadow:inset 0 1px .5px rgb(255 255 255 / .55), inset 0 -1px 1px rgb(255 255 255 / .18),
+             inset 0 -8px 14px -10px rgb(222 208 255 / .7), inset 0 0 0 1px rgb(255 255 255 / .06),
+             0 8px 18px -8px rgb(var(--violet-rgb) / .6), 0 2px 4px -1px rgb(40 16 120 / .3);
 }
 .gbtn--primary::before {
   background:radial-gradient(60% 90% at 30% 0%, rgb(255 255 255 / .9), rgb(255 255 255 / .3) 45%, rgb(255 255 255 / 0) 75%),
@@ -98,61 +97,67 @@
 }
 .gbtn--primary.gbtn--s {
   background:
-    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .3)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .12), rgb(255 255 255 / 0) 30%),
-    linear-gradient(180deg, rgb(134 104 252 / .88), rgb(104 68 246 / .84) 55%, rgb(92 54 234 / .88)),
+    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .1)), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / .06), rgb(255 255 255 / 0) 30%),
+    linear-gradient(180deg, #6D4DF2, #6844F6 55%, #5C36EA),
     var(--b-tint);
 }
-.gbtn--primary:hover { filter:brightness(1.07) saturate(1.06); }
+/* 흰 바탕에서는 밝히면 흰 글자 대비가 깎인다. 올리면 살짝 진하게 */
+.gbtn--primary:hover { filter:brightness(.94) saturate(1.04); }
 .gbtn--glass, .gbtn--chip {
-  color:var(--ink-1);
+  color:var(--btn2-ink);
   background:
-    radial-gradient(130px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .16)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .1), rgb(255 255 255 / .03)), var(--g-tint);
-  box-shadow:inset 0 1px .5px rgb(255 255 255 / .45), inset 0 0 6px rgb(6 3 20 / .18), 0 8px 22px -10px rgb(4 2 14 / .7);
+    radial-gradient(130px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .1)), transparent 70%),
+    var(--btn2), var(--g-tint);
+  box-shadow:var(--soft-ring), var(--lift);
 }
 .gbtn--glass::before, .gbtn--chip::before {
-  background:radial-gradient(60% 90% at 30% 0%, rgb(255 255 255 / .75), rgb(255 255 255 / .2) 45%, rgb(255 255 255 / 0) 75%),
-             radial-gradient(60% 90% at 100% 100%, rgb(var(--ice-rgb) / .3), rgb(255 255 255 / 0) 70%),
-             linear-gradient(rgb(255 255 255 / .09), rgb(255 255 255 / .09));
+  background:radial-gradient(60% 90% at 30% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .4) 45%, rgb(255 255 255 / 0) 75%),
+             radial-gradient(60% 90% at 100% 100%, rgb(var(--violet-rgb) / .3), rgb(var(--ice-rgb) / .2) 45%, rgb(255 255 255 / 0) 70%),
+             linear-gradient(rgb(var(--violet-rgb) / .08), rgb(var(--violet-rgb) / .08));
 }
 .gbtn--glass:hover, .gbtn--chip:hover {
   background:
-    radial-gradient(130px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .16)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .16), rgb(255 255 255 / .06)), var(--g-tint);
+    radial-gradient(130px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .1)), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / 1), rgb(255 255 255 / .9)), linear-gradient(var(--soft), var(--soft)), var(--g-tint);
 }
 .gbtn--chip { --b-h:36px; --b-px:13px; font-size:13.5px; gap:6px; }
 .gbtn--ghost { color:var(--ink-2); background:transparent; }
-.gbtn--ghost:hover { color:var(--ink-1); background:rgb(255 255 255 / .07); }
+.gbtn--ghost:hover { color:var(--ink-1); background:var(--hover); }
 .gbtn[aria-disabled="true"], .gbtn:disabled { pointer-events:none; cursor:default; opacity:.4; }
+/* 꺼진 보라 버튼을 흐리게만 하면 흰 바탕에서 옅은 라벤더 덩어리가 되고 흰 글자가 사라진다. 옅은 칩 + 흐린 글자로 */
+.gbtn--primary[aria-disabled="true"], .gbtn--primary:disabled { opacity:1; color:var(--ink-3); text-shadow:none; background:var(--soft-hover); box-shadow:var(--soft-ring); }
+.gbtn--primary[aria-disabled="true"]::before, .gbtn--primary:disabled::before { opacity:.5; }
 @media (prefers-reduced-motion: reduce) { .gbtn, .gbtn:active { transition:none; scale:none; } }
 
 /* ── 물방울 유리 탭(랜딩 기능 세그먼트 .fx-seg · .fx-drop) ──
-   판 = regular 유리 + 어두운 보라 바닥. 물방울 = 칸 하나 크기의 볼록한 유리, 글자 위에 얹혀(pointer-events 없음) 가장자리 렌즈가 지나가는 칸 글자를 휜다.
+   판 = regular 흰 유리. 물방울 = 칸 하나 크기의 볼록한 유리, 글자 위에 얹혀(pointer-events 없음) 가장자리 렌즈가 지나가는 칸 글자를 휜다.
    가운데 서리는 거의 0 이라 활성 칸 글자는 또렷하다. 굴절을 못 켜는 환경은 같은 채움·테두리·그림자의 맑은 알약이다. */
 .gtabs-wrap { --n:4; --active:0; --tab-h:40px; position:relative; isolation:isolate; display:block; }
 /* 판 뒤로 번지는 보라 빛(랜딩은 절의 LocalLight 가 맡던 몫). 활성 칸을 따라 움직인다 */
 .gtabs-glow {
   position:absolute; z-index:-1; top:50%; left:calc(4px + (100% - 8px) * (var(--active) + .5) / var(--n));
   width:calc(200% / var(--n) + 90px); height:calc(var(--tab-h) * 3.1); translate:-50% -50%; border-radius:50%; pointer-events:none;
-  background:radial-gradient(closest-side, rgb(var(--violet-rgb) / .56), rgb(var(--violet-rgb) / .22) 48%, rgb(var(--violet-rgb) / 0) 100%);
+  background:radial-gradient(closest-side, rgb(var(--violet-rgb) / .2), rgb(var(--violet-rgb) / .08) 48%, rgb(var(--violet-rgb) / 0) 100%);
   transition:left 620ms var(--ease-spring);
 }
-.gtabs { --g-r:999px; --g-tint:rgb(24 16 56 / .5); position:relative; padding:4px; }
+.gtabs { --g-r:999px; --g-tint:transparent; position:relative; padding:4px; }
 .gtabs__list { position:relative; display:grid; grid-template-columns:repeat(var(--n), minmax(0, 1fr)); margin:0; padding:0; list-style:none; }
 .gtabs__link {
   display:flex; align-items:center; justify-content:center; gap:6px; height:var(--tab-h); padding:0 6px; border-radius:999px; white-space:nowrap;
   font-family:var(--font-heading); font-weight:600; font-size:14.5px; line-height:1; letter-spacing:-.01em;
   color:var(--ink-2); transition:color 200ms linear; -webkit-tap-highlight-color:transparent;
 }
-.gtabs__link:hover, .gtabs__link[aria-current] { color:var(--ink-1); }
+.gtabs__link:hover { color:var(--ink-1); }
+.gtabs__link[aria-current] { color:var(--link); }
 /* 활성 칸 글자는 물방울 위로 올린다: 물방울 채움이 글자를 덮으면 흐려진다. 다른 칸 글자는 아래에 있어 물방울이 지날 때 렌즈로 휜다 */
 .gtabs__link[aria-current] { position:relative; z-index:2; }
 .gtabs__link:focus-visible { outline-offset:-2px; }
 .gtabs__drop {
-  /* 판이 어두운 틴트라 랜딩의 흰 채움만으로는 회색으로 보인다. 보라를 약간 더해 뒤 빛을 머금은 물방울로 */
-  --g-r:999px; --g-blur:.01px; --g-a1:.22; --g-a2:.09; --g-tint:rgb(var(--violet-rgb) / .1);
-  --g-shadow:0 6px 18px -6px rgb(var(--violet-rgb) / .75), 0 0 16px -2px rgb(var(--violet-rgb) / .45), 0 2px 6px -2px rgb(4 2 14 / .5);
+  /* 흰 판 위 물방울: 거의 흰 채움 + 보라 그림자·1px 보라 테두리로 떠 보이게(시안 --drop-bg · --drop-shadow) */
+  --g-r:999px; --g-blur:.01px; --g-a1:1; --g-a2:.94; --g-tint:transparent;
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1);
+  --g-shadow:0 6px 16px -6px rgb(var(--violet-rgb) / .55), 0 0 0 1px rgb(var(--violet-rgb) / .22);
   position:absolute; top:4px; left:4px; z-index:1; display:block;
   width:calc((100% - 8px) / var(--n)); height:var(--tab-h); pointer-events:none;
   translate:calc(var(--active) * 100%) 0;
@@ -162,13 +167,13 @@
 
 /* ── 바탕 오로라: fixed 전체 화면 층. filter:blur 없이 방사 그라디언트만 ── */
 .aurora { position:fixed; inset:0; z-index:-1; overflow:hidden; pointer-events:none; contain:strict;
-  background:radial-gradient(130% 70% at 50% 115%, rgb(var(--indigo-rgb) / .14), transparent 70%), var(--bg); }
+  background:linear-gradient(180deg, #FBFAFF, #F3F0FC), var(--bg); }
 .aurora__blob { position:absolute; left:var(--x); top:var(--y); width:var(--w); height:var(--h); translate:-50% -50%; border-radius:50%;
   background:radial-gradient(closest-side, rgb(var(--c) / var(--a)), rgb(var(--c) / calc(var(--a) * .5)) 40%,
                              rgb(var(--c) / calc(var(--a) * .16)) 68%, rgb(var(--c) / 0) 100%);
   animation:var(--drift, aurora-a) var(--dur, 56s) ease-in-out infinite alternate; animation-delay:var(--delay, 0s); will-change:transform; }
-.aurora::after { content:""; position:absolute; inset:0; opacity:.05; background-size:180px 180px;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.aurora::after { content:""; position:absolute; inset:0; opacity:.025; background-size:180px 180px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .09 0 0 0 0 .07 0 0 0 0 .17 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 html[data-tab-hidden] .aurora__blob { animation-play-state:paused; }
 @keyframes aurora-a { from { transform:translate3d(-3%, -2%, 0) scale(1); } to { transform:translate3d(4%, 3%, 0) scale(1.08); } }
 @keyframes aurora-b { from { transform:translate3d(3%, -3%, 0) scale(1.05); } to { transform:translate3d(-4%, 4%, 0) scale(.96); } }
@@ -178,16 +183,20 @@ html[data-tab-hidden] .aurora__blob { animation-play-state:paused; }
 /* 국소 빛: 부모는 relative + isolate */
 .local-light { position:absolute; left:var(--x, 50%); top:var(--y, 50%); z-index:-1; width:var(--s, 900px); height:calc(var(--s, 900px) * var(--ar, .7));
   translate:-50% -50%; border-radius:50%; pointer-events:none;
-  background:radial-gradient(closest-side, rgb(var(--c) / var(--a)), rgb(var(--c) / calc(var(--a) * .42)) 45%, rgb(var(--c) / 0) 100%); }
+  --la:calc(var(--a) * var(--light-k, 1));
+  background:radial-gradient(closest-side, rgb(var(--c) / var(--la)), rgb(var(--c) / calc(var(--la) * .42)) 45%, rgb(var(--c) / 0) 100%); }
 
 /* backdrop-filter 를 못 그리는 환경·투명도 줄이기 = 불투명에 가까운 판(같은 링·그림자). 기본값 뒤에 둔다 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(22 17 44 / .86); }
+  .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(255 255 255 / .86); }
+  /* 판마다 --g-tint 를 다시 정하므로 채움 알파를 올려 확실히 불투명하게 한다(클래스 둘이라 판별 선택자를 이긴다) */
+  .glass.glass { --g-a1:.94; --g-a2:.9; }
   .gbtn--primary { --b-tint:rgb(96 66 236 / .92); }
-  .gtabs__drop { --g-tint:rgb(var(--violet-rgb) / .34); }
+  .gtabs__drop { --g-tint:rgb(255 255 255 / .95); }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(22 17 44 / .92); }
+  .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(255 255 255 / .92); }
+  .glass.glass { --g-a1:.96; --g-a2:.93; }
   .gbtn--primary { --b-tint:rgb(96 66 236 / .95); }
-  .gtabs__drop { --g-tint:rgb(var(--violet-rgb) / .34); }
+  .gtabs__drop { --g-tint:rgb(255 255 255 / .98); }
 }
