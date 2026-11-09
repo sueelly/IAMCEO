@@ -209,8 +209,8 @@ async function audit(page: Page, label: string): Promise<void> {
       const style = getComputedStyle(el);
       if (!el.getBoundingClientRect().width) continue;
       const fg = parse(style.color);
-      // 뒤판을 위로 쌓는다. 맨 아래는 가장 밝은 경우를 가정한 어두운 바탕이다.
-      let bg = [18, 14, 40];
+      // 뒤판을 위로 쌓는다. 맨 아래는 라이트 바탕(#F7F5FD)이다.
+      let bg = [247, 245, 253];
       const layers: { rgb: number[]; a: number }[] = [];
       for (let n: HTMLElement | null = el; n; n = n.parentElement) {
         const c = parse(getComputedStyle(n).backgroundColor);

@@ -1332,9 +1332,11 @@ describe("2차 검수 회귀", () => {
       ),
     );
     expect(colors.blocked![0]).not.toBe(colors.error![0]);
-    expect(colors.idle![0]).toBe(colors.idle![1]);
-    const [ir, ig, ib] = colors.idle![0]!.match(/\d+/g)!.map(Number);
-    expect(Math.max(ir!, ig!, ib!) - Math.min(ir!, ig!, ib!)).toBeLessThan(16); // 회색
+    // 라이트 글라스: 점은 지금 색, 글자는 같은 계열의 진한 단계(흰 판 위 대비). 대기는 점·글자 모두 회색
+    for (const c of colors.idle!) {
+      const [ir, ig, ib] = c!.match(/\d+/g)!.map(Number);
+      expect(Math.max(ir!, ig!, ib!) - Math.min(ir!, ig!, ib!)).toBeLessThan(16); // 회색
+    }
     await page.close();
   }, 20_000);
 

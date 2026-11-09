@@ -1,11 +1,11 @@
-/* 대화 화면. 접두 th. 글 수백 개가 스크롤되므로 카드에 backdrop-filter 를 쓰지 않고 짙은 판으로 둔다. */
+/* 대화 화면. 접두 th. 글 수백 개가 스크롤되므로 카드에 backdrop-filter 를 쓰지 않고 거의 흰 판으로 둔다. */
 .th { display:flex; flex-direction:column; min-width:0; }
 .th-list { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .th-row { display:flex; flex-direction:column; align-items:flex-start; min-width:0; }
 
 /* ── 보고 ── */
 .th-card { display:flex; flex-direction:column; gap:8px; width:min(100%, 720px); min-width:0; padding:13px 16px 14px; border-radius:18px;
-  background:rgb(15 11 32 / .72); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08), inset 0 1px .5px -.5px rgb(255 255 255 / .42); }
+  background:var(--card-bg); box-shadow:var(--card-ring), var(--card-shadow); }
 .th-card__head { display:flex; align-items:center; gap:8px; min-width:0; }
 .th-card__who { min-width:0; font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .th-card__time { flex:none; margin-left:auto; font-size:12.5px; color:var(--ink-2); }
@@ -15,13 +15,25 @@
 /* ── 내 말 ── */
 .th-row--mine { align-items:flex-end; gap:4px; }
 .th-mine { display:flex; flex-direction:column; gap:8px; max-width:min(86%, 620px); min-width:0; padding:10px 15px 11px; border-radius:18px 18px 5px 18px;
-  background:rgb(72 50 176 / .9); box-shadow:inset 0 1px .5px -.5px rgb(255 255 255 / .4), inset 0 0 0 1px rgb(255 255 255 / .07); }
-.th-mine__to { font-size:12.5px; font-weight:600; color:#DAD2FF; }
+  background:var(--mine); color:#fff; box-shadow:inset 0 1px .5px rgb(255 255 255 / .4), 0 6px 14px -10px rgb(109 77 242 / .45); } /* 그림자가 바로 아래 '받음' 줄 바탕을 보라로 물들이지 않게 짧게 */
+.th-mine__to { font-size:12.5px; font-weight:600; color:var(--mine-to); }
+/* 보라 채움 위라 글자는 흰색. 코드·표·칩 바닥은 흰 반투명이 아니라 어두운 반투명으로 깐다(흰 반투명은 바닥을 밝혀 흰 글자 대비를 깎는다) */
 .th-mine .md { color:#fff; }
-.th-mine .md a { color:#E6DFFF; }
-.th-mine .md code { background:rgb(9 7 19 / .35); }
-.th-mine .md pre { background:rgb(9 7 19 / .5); }
-.th-mine .md blockquote { color:#E6DFFF; border-left-color:rgb(255 255 255 / .5); }
+.th-mine .md a { color:#fff; }
+.th-mine .md h4 { color:var(--mine-to); }
+.th-mine .md code { background:rgb(23 19 43 / .16); }
+.th-mine .md pre { background:rgb(23 19 43 / .14); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .2); }
+.th-mine .md pre code { background:none; }
+.th-mine .md blockquote { color:var(--mine-to); border-left-color:rgb(255 255 255 / .55); }
+.th-mine .md hr, .th-mine .md th, .th-mine .md td { border-color:rgb(255 255 255 / .28); }
+.th-mine .md th { background:rgb(23 19 43 / .12); }
+/* 내 말풍선 안 첨부 파일 칩: 흰 판 기준 칩을 보라 위에 맞춘다 */
+.th-mine .atv-file { color:#fff; background:rgb(23 19 43 / .14); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .28); }
+.th-mine .atv-file:hover { background:rgb(23 19 43 / .22); }
+.th-mine .atv-file__size { color:#fff; }
+/* 보라 위에서는 보라 초점 링이 안 보인다. 고른 글도 흰 글자로 */
+.th-mine :focus-visible { outline-color:#fff; }
+.th-mine ::selection { background:rgb(23 19 43 / .32); color:#fff; }
 
 .th-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; column-gap:8px; max-width:100%; padding-right:4px; font-size:12.5px; line-height:1.4; color:var(--ink-2); }
 .th-delivery[data-tone="ok"] { color:var(--ok); }
@@ -31,18 +43,19 @@
 
 /* ── 시스템 ── */
 .th-row--system { align-items:center; }
-.th-system { max-width:min(100%, 620px); padding:6px 14px; border-radius:12px; background:rgb(15 11 32 / .66); font-size:13px; line-height:1.5; text-align:center; color:var(--ink-2); white-space:pre-line; }
+.th-system { max-width:min(100%, 620px); padding:6px 14px; border-radius:12px; background:var(--soft); font-size:13px; line-height:1.5; text-align:center; color:var(--ink-2); white-space:pre-line; }
 .th-system__time { display:inline; margin-left:4px; color:var(--ink-3); font-size:12px; white-space:nowrap; }
 
 /* ── 결재·자료로 이어짐 ── */
 .th-jumps { display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
 .th-link { display:inline-flex; align-items:center; gap:6px; min-height:44px; max-width:100%; min-width:0; padding:6px 12px 6px 14px; border-radius:12px; font-size:13.5px; font-weight:600; line-height:1.35;
-  background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .1); transition:background-color 120ms linear; }
-.th-link:hover { background:rgb(255 255 255 / .13); }
-.th-link[data-open] { background:rgb(var(--violet-rgb) / .34); box-shadow:inset 0 0 0 1px rgb(var(--violet-rgb) / .8); }
-.th-link[data-open]:hover { background:rgb(var(--violet-rgb) / .48); }
+  color:var(--ink-1); background:var(--soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear; }
+.th-link:hover { background:var(--soft-hover); }
+/* 아직 답하지 않은 결재: 고른 줄 바닥 + 보라 테두리 */
+.th-link[data-open] { background:var(--sel-bg); box-shadow:var(--pick-ring); }
+.th-link[data-open]:hover { background:rgb(var(--violet-rgb) / .2); }
 .th-link__text { min-width:0; }
-.th-link svg { flex:none; color:var(--ink-2); }
+.th-link svg { flex:none; color:var(--link); }
 
 /* ── 이전 글 ── */
 .th-older { display:flex; flex-direction:column; align-items:center; gap:4px; padding:4px 0 12px; }

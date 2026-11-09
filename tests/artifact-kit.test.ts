@@ -54,4 +54,12 @@ describe("buildArtifactSrcdoc", () => {
     for (const line of ARTIFACT_KIT_CSS.split("\n")) if (!line.startsWith("@media")) expect(line.startsWith(":where(")).toBe(true);
     expect(ARTIFACT_KIT_CSS).not.toContain("url(");
   });
+
+  test("키트: 기본은 라이트다(웹 자료 보기와 같은 바탕·글자)", () => {
+    expect(ARTIFACT_KIT_CSS).toContain(":where(html){color-scheme:light;");
+    expect(ARTIFACT_KIT_CSS).toContain("background:#FBFAFE;color:#17132B;");
+    expect(ARTIFACT_KIT_CSS).toContain(":where(a){color:#5B3FD9}");
+    // 어두운 판 시절 값이 남지 않는다.
+    for (const dark of ["color-scheme:dark", "#090713", "#F5F2FF", "#C2BBDF", "#B9A8FF", "rgba(255,255,255"]) expect(ARTIFACT_KIT_CSS).not.toContain(dark);
+  });
 });

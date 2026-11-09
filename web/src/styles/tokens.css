@@ -1,23 +1,57 @@
-/* 토큰·기본값. 랜딩(aing-check v3)의 색·움직임을 그대로 옮겼다. 글꼴만 시스템 글꼴로 바꿨다. */
+/* 토큰·기본값. 움직임은 랜딩(aing-check v3) 그대로, 색은 라이트 글라스 시안. 글꼴은 시스템 글꼴. */
 
 @property --spec { syntax:"<number>"; inherits:true; initial-value:0; }
 @property --g-blur { syntax:"<length>"; inherits:false; initial-value:28px; }
 
 :root {
-  /* 상태 색. 전 화면 공통 */
-  --st-work:#B9A8FF; --st-wait:#FFB070; --st-idle:#A6A6AE; --st-block:#FF8A80; --st-error:#FF5A62; --st-asleep:#8F88B2;
-  --bg:#090713; --bg-deep:#05040B;
-  --accent-fill:#6D4DF2; /* 흰 글자가 놓이는 작은 표시. --light-violet 은 흰 글자 대비가 4.5 에 모자란다 */
+  /* 라이트 글라스(2026-11-09 확정 시안 images/light-glass-mockup-20261109-100709). 흰 바탕에 옅은 보라·하늘 빛, 보라는 버튼·선택·배지·링크에만.
+     점(dot)은 지금 색 계열, 글자는 같은 색의 진한 단계(흰 판 위 대비 4.5 이상). 대기는 점도 글자도 회색 */
+  --st-work:#7A5BFF; --st-wait:#FF9A4D; --st-idle:#A6A6AE; --st-block:#FF6B60; --st-error:#E5484D; --st-asleep:#8F88B2;
+  --tx-work:#5B3FD9; --tx-wait:#934709; --tx-idle:#5A5A62; --tx-block:#AD2E26; --tx-error:#A51F26; --tx-asleep:#5F5983;
+  --bg:#F7F5FD; --bg-deep:#EFEBFA;
+  --accent-fill:#6D4DF2; /* 흰 글자가 놓이는 채움(버튼·배지·내 말풍선). 흰 글자 대비 5.3 */
   --light-violet:#7A5BFF; --light-orchid:#B35CFF; --light-indigo:#3D45FF; --light-rose:#FF6FB8; --ice:#A8ECFF;
   --violet-rgb:122 91 255; --orchid-rgb:179 92 255; --indigo-rgb:61 69 255; --rose-rgb:255 111 184; --ice-rgb:168 236 255;
-  --ink-1:#F5F2FF; --ink-2:#C2BBDF; --ink-3:#8F88B2;
-  --focus:#B9A8FF;
-  --line:rgb(255 255 255 / .08);
+  --ink-rgb:23 19 43;
+  --ink-1:#17132B; --ink-2:#4A4566; --ink-3:#5F5983;
+  --link:#5B3FD9; /* 링크·활성 탭 글자. 흰 바탕 대비 6.7 */
+  --focus:#7A5BFF; /* 선택 테두리·초점 링 */
+  --line:rgb(23 19 43 / .08);
+  --line-strong:rgb(23 19 43 / .12);
 
-  /* 상태색: 글로 쓰일 때 어두운 판 위 대비 4.5 이상 */
-  --ok:#6FE3B2; --ok-rgb:111 227 178;
-  --warn:#FFC773; --warn-rgb:255 199 115;
-  --danger:#FF8A9B; --danger-rgb:255 138 155;
+  /* 상태색: 글자로 쓸 때 판 밖 바탕(보라 빛 가장 진한 곳)·고른 줄 위에서도 대비 4.5 이상. -rgb 는 옅은 바닥·점에 쓴다 */
+  --ok:#086B47; --ok-dot:#20B97C; --ok-rgb:32 185 124;
+  --warn:#8F4508; --warn-dot:#FF9A4D; --warn-rgb:255 154 77;
+  --danger:#A82A22; --danger-dot:#FF6B60; --danger-rgb:255 107 96;
+
+  /* 면(面) 토큰: 화면마다 같은 값을 쓴다 */
+  --hover:rgb(23 19 43 / .05);                  /* 줄·버튼 위에 올렸을 때 */
+  --soft:rgb(122 91 255 / .07);                 /* 옅은 칩·버튼 바닥 */
+  --soft-hover:rgb(122 91 255 / .12);
+  --soft-ring:inset 0 0 0 1px rgb(122 91 255 / .16);
+  --sel-bg:linear-gradient(180deg, rgb(122 91 255 / .16), rgb(122 91 255 / .10)); /* 고른 줄 */
+  --sel-ring:inset 0 0 0 1px rgb(122 91 255 / .3);
+  --pick-ring:inset 0 0 0 1.5px var(--focus);   /* 고른 선택지(추천 등) */
+  --card-bg:rgb(255 255 255 / .86);             /* 글 많은 카드(대화 보고 등). backdrop 없이 거의 흰 판 */
+  --card-ring:inset 0 0 0 1px rgb(23 19 43 / .06), inset 0 1px 0 rgb(255 255 255 / 1);
+  --card-shadow:0 1px 2px rgb(40 24 110 / .05), 0 10px 28px -18px rgb(70 46 180 / .25);
+  --field:rgb(255 255 255 / .9);                /* 입력칸 바닥 */
+  --field-ring:inset 0 0 0 1px rgb(23 19 43 / .12);
+  --code-bg:rgb(122 91 255 / .08);              /* 글 안 코드 */
+  --pre-bg:rgb(23 19 43 / .04);                 /* 코드 덩어리 */
+  --menu-bg:rgb(255 255 255 / .98);             /* 떠 있는 메뉴·팝오버 */
+  --menu-ring:inset 0 0 0 1px rgb(23 19 43 / .08);
+  --menu-shadow:0 18px 44px -12px rgb(70 46 180 / .35), 0 2px 6px rgb(40 24 110 / .08);
+  --scrim:rgb(23 19 43 / .28);                  /* 대화 상자 뒤 */
+  /* 내 말풍선(흰 글자). 시안은 #7A5BFF 에서 시작하지만 그 위 흰 글자가 4.4라 맨 위를 한 단계 진하게(흰 5.0) */
+  --mine:linear-gradient(180deg, #7152F5, #6D4DF2);
+  --mine-to:#F7F5FF; /* 받는 사람 줄. 시안 #E6DFFF 는 보라 위 3.4~4.1 */
+  --band-rgb:247 245 253;                       /* 위아래 띠(바탕과 같은 색) */
+  --tint-text:rgb(255 255 255 / .34);           /* 글 많은 유리 판(.glass-tint) */
+  --tint-strong:rgb(255 255 255 / .62);         /* 아주 글 많은·겹친 판 */
+  --btn2:linear-gradient(180deg, #fff, rgb(255 255 255 / .8)); /* 보조 버튼 */
+  --btn2-ink:#17132B;
+  --lift:0 6px 14px -8px rgb(40 24 110 / .3);   /* 작은 떠 있는 것의 그림자 */
 
   --t-quick:120ms; --t-resize:200ms;
   --ease-out:cubic-bezier(.2,.8,.2,1);
@@ -27,8 +61,10 @@
   --font-heading:var(--font-sans);
   --font-code:ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* 랜딩보다 바탕 빛을 낮춘다: 카드 밖 글자(대화 줄기 등)가 빛 위에 바로 놓이기 때문이다 */
-  --aurora-k:.85;
+  /* 바탕 빛 세기. 라이트 시안의 '옅은 보라·하늘 빛' 값이 1 이다 */
+  --aurora-k:1;
+  /* 국소 빛(LocalLight) 세기 배율. 어두운 바탕 기준 값을 흰 바탕에 맞게 줄인다 */
+  --light-k:.55;
 
   --safe-t:env(safe-area-inset-top, 0px);
   --safe-b:env(safe-area-inset-bottom, 0px);
@@ -41,7 +77,7 @@
 }
 
 *, *::before, *::after { box-sizing:border-box; }
-html { height:100%; background:var(--bg); color:var(--ink-1); color-scheme:dark; font-family:var(--font-sans);
+html { height:100%; background:var(--bg); color:var(--ink-1); color-scheme:light; font-family:var(--font-sans);
        word-break:keep-all; overflow-wrap:anywhere; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
        -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 /* 문서 전체는 스크롤하지 않는다. 각 판이 자기 스크롤을 갖고, iOS 고무줄 때문에 고정 유리가 흔들리지 않게 한다 */
@@ -55,10 +91,12 @@ button { background:none; border:0; padding:0; cursor:pointer; -webkit-tap-highl
 img, svg { display:block; max-width:100%; }
 [hidden] { display:none !important; }
 :focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
-::selection { background:rgb(var(--violet-rgb) / .45); color:var(--ink-1); }
+::selection { background:rgb(var(--violet-rgb) / .22); color:var(--ink-1); }
+/* 보라 채움 위 흰 글자는 골라도 흰 글자로 */
+.badge[data-tone="accent"]::selection, .gtabs__count::selection, .fl-kind[data-kind="artifact"]::selection, .cmp-chip--target[data-direct] ::selection { background:rgb(23 19 43 / .32); color:#fff; }
 /* iOS 는 16px 미만 입력칸에 초점이 가면 화면을 확대한다 */
 @media (max-width:1023.98px) { input, textarea, select { font-size:16px; } }
-* { scrollbar-width:thin; scrollbar-color:rgb(255 255 255 / .16) transparent; }
+* { scrollbar-width:thin; scrollbar-color:rgb(23 19 43 / .2) transparent; }
 
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border-width:0; }
 .t-tabular { font-variant-numeric:tabular-nums; }

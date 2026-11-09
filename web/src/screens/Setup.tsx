@@ -60,8 +60,8 @@ function CodeStep() {
 export default function Setup() {
   return (
     <main className="su">
-      <LocalLight tone="violet" x="50%" y="24%" size="min(1000px, 150%)" aspect={0.6} strength={0.42} />
-      <LocalLight tone="orchid" x="72%" y="88%" size="min(800px, 120%)" aspect={0.6} strength={0.28} />
+      <LocalLight tone="violet" x="50%" y="24%" size="min(1000px, 150%)" aspect={0.6} strength={0.34} />
+      <LocalLight tone="orchid" x="72%" y="88%" size="min(800px, 120%)" aspect={0.6} strength={0.22} />
       <div className="su__scroll"><CodeStep /></div>
     </main>
   );
