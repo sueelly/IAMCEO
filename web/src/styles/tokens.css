@@ -2,6 +2,9 @@
 
 @property --spec { syntax:"<number>"; inherits:true; initial-value:0; }
 @property --g-blur { syntax:"<length>"; inherits:false; initial-value:28px; }
+/* 유리 채움 알파를 등록해 hover 때 불투명해지는 변화가 부드럽게 이어지게 한다 */
+@property --g-a1 { syntax:"<number>"; inherits:false; initial-value:.5; }
+@property --g-a2 { syntax:"<number>"; inherits:false; initial-value:.24; }
 
 :root {
   /* 라이트 글라스(2026-11-09 확정 시안 images/light-glass-mockup-20261109-100709). 흰 바탕에 옅은 보라·하늘 빛, 보라는 버튼·선택·배지·링크에만.
@@ -20,7 +23,7 @@
   --line-strong:rgb(23 19 43 / .12);
 
   /* 상태색: 글자로 쓸 때 판 밖 바탕(보라 빛 가장 진한 곳)·고른 줄 위에서도 대비 4.5 이상. -rgb 는 옅은 바닥·점에 쓴다 */
-  --ok:#086B47; --ok-dot:#20B97C; --ok-rgb:32 185 124;
+  --ok:#065A3B; --ok-dot:#20B97C; --ok-rgb:32 185 124;
   --warn:#8F4508; --warn-dot:#FF9A4D; --warn-rgb:255 154 77;
   --danger:#A82A22; --danger-dot:#FF6B60; --danger-rgb:255 107 96;
 
@@ -32,10 +35,13 @@
   --sel-bg:linear-gradient(180deg, rgb(122 91 255 / .16), rgb(122 91 255 / .10)); /* 고른 줄 */
   --sel-ring:inset 0 0 0 1px rgb(122 91 255 / .3);
   --pick-ring:inset 0 0 0 1.5px var(--focus);   /* 고른 선택지(추천 등) */
-  --card-bg:rgb(255 255 255 / .86);             /* 글 많은 카드(대화 보고 등). backdrop 없이 거의 흰 판 */
-  --card-ring:inset 0 0 0 1px rgb(23 19 43 / .06), inset 0 1px 0 rgb(255 255 255 / 1);
+  --card-bg:rgb(255 255 255 / .6);              /* 글 많은 카드(대화 보고 등). 글 수백 개라 backdrop 없이 맑은 판(뒤 빛은 흐린 방사광이라 흐림 없이도 유리처럼 보인다) */
+  --card-ring:inset 0 1px 0 rgb(255 255 255 / 1), inset 1px 0 0 rgb(255 255 255 / .85),
+              inset 0 -1px 0 rgb(var(--violet-rgb) / .26), inset -1px 0 0 rgb(var(--ice-rgb) / .55),
+              inset 0 3px 5px -3px rgb(255 255 255 / 1), inset 0 -3px 6px -4px rgb(var(--violet-rgb) / .2),
+              inset 0 0 0 1px rgb(var(--violet-rgb) / .12), inset 0 0 20px -6px rgb(255 255 255 / .95);
   --card-shadow:0 1px 2px rgb(40 24 110 / .05), 0 10px 28px -18px rgb(70 46 180 / .25);
-  --field:rgb(255 255 255 / .9);                /* 입력칸 바닥 */
+  --field:#fff;                                 /* 입력칸 바닥. 불투명 */
   --field-ring:inset 0 0 0 1px rgb(23 19 43 / .12);
   --code-bg:rgb(122 91 255 / .08);              /* 글 안 코드 */
   --pre-bg:rgb(23 19 43 / .04);                 /* 코드 덩어리 */
@@ -47,9 +53,36 @@
   --mine:linear-gradient(180deg, #7152F5, #6D4DF2);
   --mine-to:#F7F5FF; /* 받는 사람 줄. 시안 #E6DFFF 는 보라 위 3.4~4.1 */
   --band-rgb:247 245 253;                       /* 위아래 띠(바탕과 같은 색) */
-  --tint-text:rgb(255 255 255 / .34);           /* 글 많은 유리 판(.glass-tint) */
-  --tint-strong:rgb(255 255 255 / .62);         /* 아주 글 많은·겹친 판 */
-  --btn2:linear-gradient(180deg, #fff, rgb(255 255 255 / .8)); /* 보조 버튼 */
+  /* 유리 판 채움(흰, 위→아래). 2026-11-09 대표 요청 '더 맑게': 74%→52% 에서 낮췄다. blur·채도도 여기서 */
+  --glass-a1:.5; --glass-a2:.24; --glass-blur:24px; --glass-sat:200%;
+  --tint-text:rgb(255 255 255 / .16);           /* 글 많은 유리 판(.glass-tint) */
+  --tint-strong:rgb(255 255 255 / .42);         /* 아주 글 많은·겹친 판(결재 원문·읽기 판·대화 상자) */
+  --opaque-bar:.97;                              /* 상단 바·탭 바·입력칸(불투명) */
+  --btn2:linear-gradient(180deg, #fff, #FBFAFF); /* 보조 버튼. 불투명 */
+  /* 누르는 것(선택지·칩·링크 버튼)은 불투명: 옅은 보라를 흰 바닥 위에 깐다(판 뒤 빛이 비치지 않게) */
+  --btn-soft:linear-gradient(var(--soft), var(--soft)), #fff;
+  --btn-soft-hover:linear-gradient(var(--soft-hover), var(--soft-hover)), #fff;
+  --btn-sel:var(--sel-bg), #fff;
+  /* 누를 수 있는 줄·판에 올리면(hover) 불투명 흰 판으로 떠오른다 */
+  --row-hover:#fff;
+  --row-lift:inset 0 0 0 1px rgb(var(--violet-rgb) / .12), 0 6px 14px -10px rgb(70 46 180 / .35);
+  /* 볼록한 광택 스티커(강조 버튼): 위 절반 광택 띠 + 아래로 갈수록 옅은 보라(볼록) + 아래 두께 턱 + 그림자 */
+  --sticker-gloss:linear-gradient(180deg, rgb(255 255 255 / .95), rgb(255 255 255 / .4) 46%, rgb(255 255 255 / 0) 50%);
+  /* 몸통 = 흰 반투명 그라데이션 + 밑색. hover 는 밑색(background-color)만 바꿔 transition 이 걸리게 한다 */
+  --sticker-body:linear-gradient(180deg, rgb(255 255 255 / 1) 0%, rgb(255 255 255 / .55) 52%, rgb(255 255 255 / 0) 100%);
+  --sticker-bg:var(--sticker-gloss), var(--sticker-body), #EAE3FF;
+  --sticker-hover:#DED3FF;
+  --sticker-sel-bg:var(--sticker-gloss), linear-gradient(180deg, rgb(255 255 255 / .75), rgb(255 255 255 / .35) 52%, rgb(255 255 255 / 0)), #DDD2FF;
+  --sticker-shadow:inset 0 1px 0 #fff, inset 0 -2px 4px -1px rgb(var(--violet-rgb) / .24), inset 0 0 0 1px rgb(var(--violet-rgb) / .22),
+                   0 2px 0 rgb(var(--violet-rgb) / .2), 0 8px 16px -7px rgb(70 46 180 / .38);
+  --sticker-shadow-hover:inset 0 1px 0 #fff, inset 0 -2px 4px -1px rgb(var(--violet-rgb) / .26), inset 0 0 0 1px rgb(var(--violet-rgb) / .3),
+                   0 2px 0 rgb(var(--violet-rgb) / .24), 0 11px 20px -8px rgb(70 46 180 / .45);
+  --sticker-shadow-down:inset 0 1px 3px rgb(var(--violet-rgb) / .22), inset 0 0 0 1px rgb(var(--violet-rgb) / .26),
+                   0 0 0 rgb(var(--violet-rgb) / .2), 0 3px 6px -4px rgb(70 46 180 / .3);
+  /* 큰 선택지(여러 줄)는 광택 띠를 위 16px 에만 */
+  --sticker-soft-bg:linear-gradient(180deg, rgb(255 255 255 / .95), rgb(255 255 255 / 0) 16px), linear-gradient(180deg, rgb(255 255 255 / .8), rgb(255 255 255 / 0)), #F1ECFF;
+  --sticker-soft-hover:#E7DFFF;
+  --btn-press:linear-gradient(180deg, rgb(var(--violet-rgb) / .22), rgb(var(--violet-rgb) / .14)), #fff;
   --btn2-ink:#17132B;
   --lift:0 6px 14px -8px rgb(40 24 110 / .3);   /* 작은 떠 있는 것의 그림자 */
 
@@ -62,9 +95,10 @@
   --font-code:ui-monospace, "SF Mono", Menlo, monospace;
 
   /* 바탕 빛 세기. 라이트 시안의 '옅은 보라·하늘 빛' 값이 1 이다 */
-  --aurora-k:1;
-  /* 국소 빛(LocalLight) 세기 배율. 어두운 바탕 기준 값을 흰 바탕에 맞게 줄인다 */
-  --light-k:.55;
+  /* 2026-11-09 판을 맑게 하면서 1→1.5: 뒤 빛에 색이 있어야 맑은 판이 흰 판이 아니라 유리로 보인다 */
+  --aurora-k:1.5;
+  /* 국소 빛(LocalLight) 세기 배율. 어두운 바탕 기준 값을 흰 바탕에 맞게 줄였다(.55). 맑은 판에 맞춰 .75 */
+  --light-k:.75;
 
   --safe-t:env(safe-area-inset-top, 0px);
   --safe-b:env(safe-area-inset-bottom, 0px);

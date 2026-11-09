@@ -5,7 +5,8 @@
 
 /* ── 보고 ── */
 .th-card { display:flex; flex-direction:column; gap:8px; width:min(100%, 720px); min-width:0; padding:13px 16px 14px; border-radius:18px;
-  background:var(--card-bg); box-shadow:var(--card-ring), var(--card-shadow); }
+  background:var(--card-bg); box-shadow:var(--card-ring), var(--card-shadow); transition:background-color 220ms var(--ease-out); }
+@media (hover:hover) { .th-card:hover { background:rgb(255 255 255 / .97); } }
 .th-card__head { display:flex; align-items:center; gap:8px; min-width:0; }
 .th-card__who { min-width:0; font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .th-card__time { flex:none; margin-left:auto; font-size:12.5px; color:var(--ink-2); }
@@ -49,11 +50,16 @@
 /* ── 결재·자료로 이어짐 ── */
 .th-jumps { display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
 .th-link { display:inline-flex; align-items:center; gap:6px; min-height:44px; max-width:100%; min-width:0; padding:6px 12px 6px 14px; border-radius:12px; font-size:13.5px; font-weight:600; line-height:1.35;
-  color:var(--ink-1); background:var(--soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear; }
-.th-link:hover { background:var(--soft-hover); }
-/* 아직 답하지 않은 결재: 고른 줄 바닥 + 보라 테두리 */
-.th-link[data-open] { background:var(--sel-bg); box-shadow:var(--pick-ring); }
-.th-link[data-open]:hover { background:rgb(var(--violet-rgb) / .2); }
+  color:var(--ink-1); background:var(--sticker-bg); box-shadow:var(--sticker-shadow);
+  transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
+/* 볼록한 광택 스티커: 올리면 그림자가 깊어지고, 누르면 아래 턱이 사라지며 눌린다. 위치는 옮기지 않는다(가장자리 클릭이 빗나가지 않게) */
+@media (hover:hover) { .th-link:hover { background-color:var(--sticker-hover); box-shadow:var(--sticker-shadow-hover); } }
+.th-link:active { box-shadow:var(--sticker-shadow-down); transition-duration:70ms; }
+/* 아직 답하지 않은 결재: 보라 스티커 + 보라 테두리 */
+.th-link[data-open] { background:var(--sticker-sel-bg); box-shadow:var(--pick-ring), var(--sticker-shadow); }
+@media (hover:hover) { .th-link[data-open]:hover { background-color:#D2C4FF; box-shadow:var(--pick-ring), var(--sticker-shadow-hover); } }
+.th-link[data-open]:active { box-shadow:var(--pick-ring), var(--sticker-shadow-down); }
+@media (prefers-reduced-motion: reduce) { .th-link { transition:none; } }
 .th-link__text { min-width:0; }
 .th-link svg { flex:none; color:var(--link); }
 
