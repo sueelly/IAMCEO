@@ -1,32 +1,45 @@
 /* 유리 재질. 원본: aing-check 랜딩 app/globals.css · docs/v3/glass-api.md. 구조·움직임은 그대로, 색은 라이트 글라스 시안
-   (images/light-glass-mockup-20261109-100709): 흰 74%→52% 채움, blur 28px, saturate 180%, 테두리 왼쪽 위 흰 빛·오른쪽 아래 보라·하늘, 옅은 보라 그림자.
+   (images/light-glass-mockup-20261109-100709). 2026-11-09 대표 요청으로 판은 더 맑게(흰 50%→24%, 값은 tokens.css --glass-*),
+   가장자리는 두께가 보이게(안쪽 빛 테·모서리 빛 맺힘·아래쪽 보라 그늘), 버튼·입력칸·상단 바·탭 바는 불투명.
    규칙
    · 유리 판 뒤에는 늘 빛이 있어야 한다(AuroraField + LocalLight 1–2개).
    · 글 많은 판은 tint(.glass-tint), 굴절은 화면당 판 3개까지(상단 탭 물방울 · 입력칸).
    · .glass 의 ::before/::after 는 유리가 쓴다(링·광택, z 3). 다른 용도로 쓰지 말 것.
    · 유리 판의 조상에 opacity<1 · filter · mask · clip-path · mix-blend-mode 금지(그 조상이 backdrop root 가 되어 뒤가 빈다). 페이드는 유리 자신에.
-   · 유리 안의 유리는 바깥 판의 채움만 흐린다. 겹침은 버튼·칩·탭 물방울 정도만. */
+   · 유리 안의 유리는 바깥 판의 채움만 흐린다. 겹침은 버튼·칩·탭 물방울 정도만.
+   · 모서리 빛 맺힘은 내용 아래(배경 층)에 둔다. ::after(내용 위)에 두면 판 구석 글자 대비를 깎는다. */
 
 .glass {
-  --g-blur:28px; --g-sat:180%; --g-a1:.74; --g-a2:.52; --g-r:22px; --g-tint:transparent;
-  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .55),
-            inset 0 -10px 22px -16px rgb(var(--violet-rgb) / .14);
-  --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .3);
+  --g-blur:var(--glass-blur); --g-sat:var(--glass-sat); --g-a1:var(--glass-a1); --g-a2:var(--glass-a2); --g-r:22px; --g-tint:transparent;
+  --g-glint:1; /* 판 안쪽 모서리 빛 맺힘(왼쪽 위 흰·오른쪽 아래 하늘). 불투명 바·탭 물방울은 0 */
+  /* 두께: 위·왼쪽 안쪽 1px 흰 빛, 아래·오른쪽 안쪽 1px 보라·하늘, 가장자리 안쪽으로 번지는 흰 빛(두께감), 아래쪽 옅은 보라 그늘 */
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 1px 0 0 rgb(255 255 255 / .85),
+            inset 0 -1px 0 rgb(var(--violet-rgb) / .28), inset -1px 0 0 rgb(var(--ice-rgb) / .6),
+            inset 0 3px 5px -3px rgb(255 255 255 / 1), inset 0 -3px 6px -4px rgb(var(--violet-rgb) / .22),
+            inset 0 0 0 1px rgb(255 255 255 / .34), inset 0 0 22px -6px rgb(255 255 255 / .95),
+            inset 0 -16px 28px -18px rgb(var(--violet-rgb) / .3);
+  --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .32);
   --spec:0; --mx:50%; --my:-40%;
   position:relative; isolation:isolate; border-radius:var(--g-r);
-  background:linear-gradient(180deg, rgb(255 255 255 / var(--g-a1)), rgb(255 255 255 / var(--g-a2)) 62%), var(--g-tint);
+  background:
+    radial-gradient(180px 120px at 0% 0%, rgb(255 255 255 / calc(var(--g-glint) * .78)), rgb(255 255 255 / 0) 70%),
+    radial-gradient(170px 110px at 100% 100%, rgb(var(--ice-rgb) / calc(var(--g-glint) * .3)), rgb(var(--violet-rgb) / calc(var(--g-glint) * .06)) 45%, rgb(var(--ice-rgb) / 0) 72%),
+    linear-gradient(180deg, rgb(255 255 255 / var(--g-a1)), rgb(255 255 255 / var(--g-a2)) 62%), var(--g-tint);
   -webkit-backdrop-filter:blur(var(--g-blur)) saturate(var(--g-sat));
   backdrop-filter:blur(var(--g-blur)) saturate(var(--g-sat));
   box-shadow:var(--g-depth), var(--g-shadow);
-  transition:--spec 420ms var(--ease-out);
+  transition:--spec 420ms var(--ease-out), --g-a1 220ms var(--ease-out), --g-a2 220ms var(--ease-out);
 }
+/* 굴절처럼 보이는 테두리: 왼쪽 위는 흰 빛이 맺히고 오른쪽 아래는 보라·하늘로 휜다. 바닥 테는 옅은 보라 */
 .glass::before {
-  content:""; position:absolute; inset:0; z-index:3; border-radius:inherit; padding:1.25px; pointer-events:none;
+  content:""; position:absolute; inset:0; z-index:3; border-radius:inherit; padding:1.75px; pointer-events:none;
   background:
     radial-gradient(170px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .5)), transparent 70%),
-    radial-gradient(62% 58% at 34% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .6) 34%, rgb(255 255 255 / 0) 68%),
-    radial-gradient(58% 54% at 100% 100%, rgb(var(--violet-rgb) / .38), rgb(var(--ice-rgb) / .3) 40%, rgb(255 255 255 / 0) 70%),
-    linear-gradient(rgb(var(--violet-rgb) / .1), rgb(var(--violet-rgb) / .1));
+    radial-gradient(52% 64% at 0% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .9) 42%, rgb(255 255 255 / 0) 78%),
+    radial-gradient(62% 58% at 34% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .65) 34%, rgb(255 255 255 / 0) 68%),
+    radial-gradient(62% 64% at 100% 100%, rgb(var(--violet-rgb) / .72), rgb(var(--ice-rgb) / .62) 42%, rgb(255 255 255 / 0) 74%),
+    radial-gradient(40% 50% at 0% 100%, rgb(var(--ice-rgb) / .45), rgb(255 255 255 / 0) 72%),
+    linear-gradient(rgb(var(--violet-rgb) / .2), rgb(var(--violet-rgb) / .2));
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
@@ -38,17 +51,19 @@
     linear-gradient(180deg, rgb(255 255 255 / .04), transparent 22%); /* 광택은 내용 위(z 3)에 얹힌다. 진하면 판 위쪽 보라 배지의 흰 글자 대비를 깎는다 */
 }
 .glass--thin {
-  --g-blur:18px; --g-sat:180%; --g-a1:.78; --g-a2:.58; --g-r:999px;
+  --g-blur:18px; --g-sat:var(--glass-sat); --g-a1:calc(var(--glass-a1) + .06); --g-a2:calc(var(--glass-a2) + .06); --g-r:999px;
   --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .5),
             inset 0 -6px 12px -10px rgb(var(--violet-rgb) / .12);
   --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 10px 26px -14px rgb(70 46 180 / .28);
 }
-.glass--thick::before { padding:1.5px; }
-.glass--regular { --g-blur:28px; --g-sat:180%; --g-a1:.74; --g-a2:.52; --g-r:22px; }
+.glass--thick::before { padding:2px; }
+.glass--regular { --g-blur:var(--glass-blur); --g-sat:var(--glass-sat); --g-a1:var(--glass-a1); --g-a2:var(--glass-a2); --g-r:22px; }
 .glass--thick {
-  --g-blur:36px; --g-sat:180%; --g-a1:.8; --g-a2:.58; --g-r:30px;
-  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / .6),
-            inset 0 -14px 26px -18px rgb(var(--violet-rgb) / .16);
+  --g-blur:calc(var(--glass-blur) + 8px); --g-sat:var(--glass-sat); --g-a1:calc(var(--glass-a1) + .08); --g-a2:calc(var(--glass-a2) + .08); --g-r:30px;
+  --g-depth:inset 0 1px 0 rgb(255 255 255 / 1), inset 1px 0 0 rgb(255 255 255 / .75),
+            inset 0 -1px 0 rgb(var(--violet-rgb) / .22), inset -1px 0 0 rgb(var(--ice-rgb) / .5),
+            inset 0 0 0 1px rgb(255 255 255 / .35), inset 0 0 24px -8px rgb(255 255 255 / .9),
+            inset 0 -18px 30px -20px rgb(var(--violet-rgb) / .26);
   --g-shadow:0 1px 2px rgb(40 24 110 / .06), 0 30px 70px -30px rgb(70 46 180 / .36);
 }
 .glass[data-refract="on"] { backdrop-filter:var(--g-refract) saturate(var(--g-sat)); }
@@ -65,31 +80,31 @@
   -webkit-tap-highlight-color:transparent;
   transition:scale 520ms var(--ease-spring), background-color 160ms linear, color 160ms linear, box-shadow 200ms linear, filter 160ms linear, --spec 360ms var(--ease-out);
 }
-.gbtn:active { scale:.97; transition-duration:90ms, 160ms, 160ms, 200ms, 160ms, 360ms; transition-timing-function:var(--ease-out); }
+.gbtn:active { scale:.97; transition-duration:90ms, 160ms, 160ms, 90ms, 160ms, 360ms; transition-timing-function:var(--ease-out); }
 .gbtn--l { --b-h:52px; --b-px:26px; font-size:16px; }
 .gbtn--m { --b-h:44px; --b-px:20px; font-size:15px; }
 .gbtn--s { --b-h:32px; --b-px:14px; font-size:13.5px; }
 .gbtn--s::after { content:""; position:absolute; inset:-6px 0; }
-.gbtn--primary, .gbtn--glass, .gbtn--chip {
-  -webkit-backdrop-filter:blur(16px) saturate(170%); backdrop-filter:blur(16px) saturate(170%);
-}
 .gbtn--primary::before, .gbtn--glass::before, .gbtn--chip::before {
   content:""; position:absolute; inset:0; border-radius:inherit; padding:1px; pointer-events:none;
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
 }
-/* 흰 바탕 위라 채움은 불투명. 맨 위가 포인트 채움(#6D4DF2, 흰 글자 5.3)이라 어느 줄에서도 대비 4.5 이상 */
+/* 버튼은 유리 판 위에서 또렷하게: 주 버튼·보조 버튼 모두 불투명(뒤가 비치지 않는다). */
+/* 볼록한 광택 스티커. 바닥을 #5E3FEC 로 한 단계 진하게 두고 위 절반에 흰 14% 광택 띠를 얹어, 보이는 색은 포인트(#6D4DF2) 근처이면서
+   광택 띠 위 흰 글자도 4.7(아래 절반 5.5+). 아래 2px 진한 턱과 그림자로 튀어나와 보이고, 누르면 턱이 사라진다 */
 .gbtn--primary {
   color:#fff; text-shadow:0 1px 1px rgb(28 8 92 / .45);
   background:
-    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .1)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .06), rgb(255 255 255 / .015) 44%, rgb(255 255 255 / 0) 52%),
-    linear-gradient(180deg, #6D4DF2, #6844F6 55%, #5C36EA),
+    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .04)), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / .14), rgb(255 255 255 / .1) 44%, rgb(255 255 255 / 0) 50%),
+    linear-gradient(180deg, #5E3FEC, #5A39E8 55%, #5132DC),
     var(--b-tint);
-  box-shadow:inset 0 1px .5px rgb(255 255 255 / .55), inset 0 -1px 1px rgb(255 255 255 / .18),
-             inset 0 -8px 14px -10px rgb(222 208 255 / .7), inset 0 0 0 1px rgb(255 255 255 / .06),
-             0 8px 18px -8px rgb(var(--violet-rgb) / .6), 0 2px 4px -1px rgb(40 16 120 / .3);
+  box-shadow:inset 0 1px .5px rgb(255 255 255 / .6), inset 0 -2px 4px -1px rgb(28 8 92 / .35),
+             inset 0 -8px 14px -10px rgb(222 208 255 / .55), inset 0 0 0 1px rgb(255 255 255 / .08),
+             0 2px 0 #3F22B8, 0 9px 18px -8px rgb(var(--violet-rgb) / .65), 0 2px 4px -1px rgb(40 16 120 / .3);
 }
+.gbtn--primary:active { box-shadow:inset 0 1px 3px rgb(28 8 92 / .4), inset 0 0 0 1px rgb(255 255 255 / .08), 0 0 0 #3F22B8, 0 3px 8px -4px rgb(var(--violet-rgb) / .5); }
 .gbtn--primary::before {
   background:radial-gradient(60% 90% at 30% 0%, rgb(255 255 255 / .9), rgb(255 255 255 / .3) 45%, rgb(255 255 255 / 0) 75%),
              radial-gradient(60% 90% at 100% 100%, rgb(var(--ice-rgb) / .45), rgb(255 255 255 / 0) 70%),
@@ -97,29 +112,34 @@
 }
 .gbtn--primary.gbtn--s {
   background:
-    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .1)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / .06), rgb(255 255 255 / 0) 30%),
-    linear-gradient(180deg, #6D4DF2, #6844F6 55%, #5C36EA),
+    radial-gradient(150px circle at var(--mx) var(--my), rgb(255 255 255 / calc(var(--spec) * .04)), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / .14), rgb(255 255 255 / .1) 44%, rgb(255 255 255 / 0) 50%),
+    linear-gradient(180deg, #5E3FEC, #5A39E8 55%, #5132DC),
     var(--b-tint);
 }
 /* 흰 바탕에서는 밝히면 흰 글자 대비가 깎인다. 올리면 살짝 진하게 */
-.gbtn--primary:hover { filter:brightness(.94) saturate(1.04); }
+@media (hover:hover) { .gbtn--primary:hover { filter:brightness(.95) saturate(1.04); } }
+/* 보조 버튼: 흰 광택 스티커(불투명) */
 .gbtn--glass, .gbtn--chip {
   color:var(--btn2-ink);
   background:
     radial-gradient(130px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .1)), transparent 70%),
-    var(--btn2), var(--g-tint);
-  box-shadow:var(--soft-ring), var(--lift);
+    var(--sticker-bg);
+  box-shadow:var(--sticker-shadow);
 }
+.gbtn--glass:active, .gbtn--chip:active { box-shadow:var(--sticker-shadow-down); }
 .gbtn--glass::before, .gbtn--chip::before {
   background:radial-gradient(60% 90% at 30% 0%, rgb(255 255 255 / 1), rgb(255 255 255 / .4) 45%, rgb(255 255 255 / 0) 75%),
              radial-gradient(60% 90% at 100% 100%, rgb(var(--violet-rgb) / .3), rgb(var(--ice-rgb) / .2) 45%, rgb(255 255 255 / 0) 70%),
              linear-gradient(rgb(var(--violet-rgb) / .08), rgb(var(--violet-rgb) / .08));
 }
-.gbtn--glass:hover, .gbtn--chip:hover {
-  background:
-    radial-gradient(130px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .1)), transparent 70%),
-    linear-gradient(180deg, rgb(255 255 255 / 1), rgb(255 255 255 / .9)), linear-gradient(var(--soft), var(--soft)), var(--g-tint);
+@media (hover:hover) {
+  .gbtn--glass:hover, .gbtn--chip:hover {
+    background:
+      radial-gradient(130px circle at var(--mx) var(--my), rgb(var(--violet-rgb) / calc(var(--spec) * .1)), transparent 70%),
+      var(--sticker-gloss), var(--sticker-body), var(--sticker-hover);
+    box-shadow:var(--sticker-shadow-hover);
+  }
 }
 .gbtn--chip { --b-h:36px; --b-px:13px; font-size:13.5px; gap:6px; }
 .gbtn--ghost { color:var(--ink-2); background:transparent; }
@@ -141,7 +161,8 @@
   background:radial-gradient(closest-side, rgb(var(--violet-rgb) / .2), rgb(var(--violet-rgb) / .08) 48%, rgb(var(--violet-rgb) / 0) 100%);
   transition:left 620ms var(--ease-spring);
 }
-.gtabs { --g-r:999px; --g-tint:transparent; position:relative; padding:4px; }
+/* 탭 바는 중요한 길잡이라 불투명(흰 97%→94%). 테두리 빛·그림자는 유리 그대로 */
+.gtabs { --g-r:999px; --g-tint:transparent; --g-glint:0; --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); position:relative; padding:4px; }
 .gtabs__list { position:relative; display:grid; grid-template-columns:repeat(var(--n), minmax(0, 1fr)); margin:0; padding:0; list-style:none; }
 .gtabs__link {
   display:flex; align-items:center; justify-content:center; gap:6px; height:var(--tab-h); padding:0 6px; border-radius:999px; white-space:nowrap;
@@ -155,7 +176,7 @@
 .gtabs__link:focus-visible { outline-offset:-2px; }
 .gtabs__drop {
   /* 흰 판 위 물방울: 거의 흰 채움 + 보라 그림자·1px 보라 테두리로 떠 보이게(시안 --drop-bg · --drop-shadow) */
-  --g-r:999px; --g-blur:.01px; --g-a1:1; --g-a2:.94; --g-tint:transparent;
+  --g-r:999px; --g-blur:.01px; --g-a1:1; --g-a2:.94; --g-tint:rgb(var(--violet-rgb) / .07); --g-glint:0;
   --g-depth:inset 0 1px 0 rgb(255 255 255 / 1);
   --g-shadow:0 6px 16px -6px rgb(var(--violet-rgb) / .55), 0 0 0 1px rgb(var(--violet-rgb) / .22);
   position:absolute; top:4px; left:4px; z-index:1; display:block;
@@ -191,12 +212,15 @@ html[data-tab-hidden] .aurora__blob { animation-play-state:paused; }
   .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(255 255 255 / .86); }
   /* 판마다 --g-tint 를 다시 정하므로 채움 알파를 올려 확실히 불투명하게 한다(클래스 둘이라 판별 선택자를 이긴다) */
   .glass.glass { --g-a1:.94; --g-a2:.9; }
+  /* 불투명으로 정한 입력칸·상단 바·탭 바는 판보다 덜 불투명해지지 않게(입력칸 css 가 glass.css 보다 앞에 묶인다) */
+  .glass.glass.cmp__panel, .glass.glass.ph-head, .glass.glass.gtabs, .glass.glass.ibx-seg, .glass.glass.dialog__panel { --g-a1:1; --g-a2:1; }
   .gbtn--primary { --b-tint:rgb(96 66 236 / .92); }
   .gtabs__drop { --g-tint:rgb(255 255 255 / .95); }
 }
 @media (prefers-reduced-transparency: reduce) {
   .glass, .gbtn--glass, .gbtn--chip { --g-tint:rgb(255 255 255 / .92); }
   .glass.glass { --g-a1:.96; --g-a2:.93; }
+  .glass.glass.cmp__panel, .glass.glass.ph-head, .glass.glass.gtabs, .glass.glass.ibx-seg, .glass.glass.dialog__panel { --g-a1:1; --g-a2:1; }
   .gbtn--primary { --b-tint:rgb(96 66 236 / .95); }
   .gtabs__drop { --g-tint:rgb(255 255 255 / .98); }
 }

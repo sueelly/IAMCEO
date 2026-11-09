@@ -128,7 +128,7 @@ fieldset.field > .choice-row + .su-hint, fieldset.field > .st-perms + .su-hint, 
 .st-leave { display:flex; justify-content:flex-end; }
 
 /* 저장 띠: 고친 것이 있을 때만 보이고, 어디까지 내려가 있든 화면 아래에 붙는다. 지나가는 글 위에 떠 있으니 거의 흰 유리로 */
-.st > .st-bar { --g-tint:var(--tint-strong); position:sticky; bottom:calc(var(--bottom-h, 0px) + 10px); z-index:1; display:flex; align-items:center; justify-content:flex-end; gap:10px; min-height:60px; padding:8px 8px 8px 18px; }
+.st > .st-bar { --g-tint:var(--tint-strong); --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); position:sticky; bottom:calc(var(--bottom-h, 0px) + 10px); z-index:1; display:flex; align-items:center; justify-content:flex-end; gap:10px; min-height:60px; padding:8px 8px 8px 18px; }
 .st-bar > p { flex:1; min-width:0; font-size:13.5px; line-height:1.4; }
 .st-bar__ok { color:var(--ok); }
 .st-bar__note { color:var(--ink-2); }

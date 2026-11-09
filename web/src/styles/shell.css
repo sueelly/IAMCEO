@@ -55,8 +55,9 @@
 .pj-list { display:flex; flex-direction:column; gap:2px; }
 .pj-heading { padding:14px 12px 6px; font-size:12px; font-weight:600; color:var(--ink-3); }
 .pj { position:relative; display:flex; align-items:center; gap:10px; width:100%; min-height:48px; padding:7px 12px; border-radius:13px; text-align:left;
-  transition:background-color 120ms linear, color 120ms linear; color:var(--ink-1); }
-.pj:hover { background:var(--hover); }
+  transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out), color 120ms linear; color:var(--ink-1); }
+/* 누를 수 있는 줄: 올리면 불투명 흰 판으로 떠오른다. 터치 기기에서 hover 가 남지 않게 (hover:hover) 안에서만 */
+@media (hover:hover) { .pj:not([aria-current]):hover { background:var(--row-hover); box-shadow:var(--row-lift); } }
 .pj[aria-current] { background:var(--sel-bg); box-shadow:var(--sel-ring); }
 .pj__main { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
 .pj__name { font-size:14.5px; font-weight:600; line-height:1.3; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -96,6 +97,8 @@
 .shell--phone .gtabs__count { position:absolute; left:100%; bottom:calc(100% - 3px); margin-left:-3px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
 @media (max-width:359.98px) { .shell--phone .gtabs__link { font-size:13.5px; } }
 .shell--phone .shell__column { padding:6px calc(var(--safe-r) + 14px) 44px calc(var(--safe-l) + 14px); }
+/* 상단 바는 불투명(아래로 지나가는 글이 비치지 않게) */
+.glass.ph-head { --g-tint:transparent; --g-glint:0; --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); }
 .ph-head { --g-r:18px; display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:46px; padding:1px 14px 1px 1px; }
 .ph-switch { display:inline-flex; align-items:center; gap:8px; min-width:0; min-height:44px; padding:0 8px 0 13px; border-radius:17px;
   font-size:16px; font-weight:650; letter-spacing:-.015em; }
@@ -174,6 +177,8 @@
 .dialog--modal[open] { position:fixed; inset:0; display:grid; grid-template-rows:minmax(0, 1fr); place-items:center; width:100%; height:100%; padding:20px; }
 .dialog--sheet[open] { position:fixed; inset:0; display:flex; align-items:flex-end; width:100%; height:100%; padding:calc(var(--safe-t) + 48px) 8px calc(var(--safe-b) + 8px); }
 /* 격자 칸의 %는 내용에 따라 풀릴 때가 있어(place-items:center) 화면 높이로 직접 막는다. 아니면 긴 내용의 판이 화면 밖으로 나가 머리줄·닫기 버튼을 잃는다. */
+/* 대화 상자·시트는 위에 뜨는 판이라 뒤(탭 바·본문)가 비치지 않게 거의 불투명 */
+.glass.dialog__panel { --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); --g-glint:0; }
 .dialog__panel { --g-tint:var(--tint-strong); --g-r:26px; display:flex; flex-direction:column; width:min(100%, 480px); max-height:calc(var(--app-h) - 40px); padding:2px; }
 .dialog--sheet .dialog__panel { width:min(100%, 560px); margin-inline:auto; max-height:min(100%, 76vh); }
 .dialog__head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 8px 6px 18px; }
@@ -198,11 +203,11 @@
 textarea.input { resize:vertical; line-height:1.5; }
 .choice-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:8px; }
 .choice { position:relative; display:flex; flex-direction:column; gap:3px; padding:11px 13px; border-radius:13px; cursor:pointer; font-size:14px; font-weight:600;
-  background:var(--soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear, box-shadow 120ms linear; }
+  background:var(--btn-soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear, box-shadow 120ms linear; }
 .choice small { font-size:12.5px; font-weight:400; line-height:1.4; color:var(--ink-2); }
 .choice input { position:absolute; opacity:0; inset:0; margin:0; cursor:inherit; }
 .choice:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:2px; }
-.choice[data-on] { background:var(--sel-bg); box-shadow:var(--pick-ring); }
+.choice[data-on] { background:var(--btn-sel); box-shadow:var(--pick-ring); }
 .choice[data-off] { cursor:default; color:var(--ink-3); }
 .choice[data-off] small { color:var(--ink-3); }
 .form__error { font-size:13.5px; color:var(--danger); }

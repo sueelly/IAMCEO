@@ -1,6 +1,7 @@
 /* 입력칸(흰 유리, 시안 .composer). 번들 순서상 glass.css 보다 앞에 올 수 있어, 유리·버튼 값을 덮을 때는 클래스 둘로 쓴다. */
 .cmp { position:relative; min-width:0; }
-.glass.cmp__panel { --g-r:20px; --g-tint:var(--tint-text); display:flex; flex-direction:column; padding:6px; }
+/* 입력칸은 불투명(뒤 글·빛이 비치지 않게). 테두리 빛·그림자만 유리 */
+.glass.cmp__panel { --g-r:20px; --g-tint:transparent; --g-glint:0; --g-a1:1; --g-a2:.98; display:flex; flex-direction:column; padding:6px; }
 .cmp__panel:has(.cmp__input:focus-visible) { outline:1.5px solid var(--focus); outline-offset:0; }
 .cmp__panel[data-drag] { outline:2px dashed var(--focus); outline-offset:1px; }
 

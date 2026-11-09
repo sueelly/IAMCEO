@@ -1,7 +1,7 @@
 // 앱 틀: 프로젝트 목록 · 유리 탭 · 연결 끊김 띠 · 입력칸 자리. 데스크톱(≥1024)은 왼쪽 패널 + 위 탭, 그보다 좁으면 위 제목 + 아래 탭.
 // 본문은 유리 탭·입력칸 밑으로 지나가며 스크롤한다(유리가 진짜로 비치도록). 그만큼의 여백은 --top-h · --bottom-h 로 잰다.
 // 본문 스크롤 요소에는 data-scroll-root 가 있다(대화 화면의 맨 아래 붙이기 등).
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ProjectSummary } from "@shared/types";
 import { Glass, GlassTabs, LocalLight, type GlassTab } from "../glass";
 import {
@@ -332,7 +332,7 @@ function PhoneShell({ onAdd }: { onAdd: () => void }) {
       <LocalLight tone="orchid" x="86%" y="0%" size="110%" aspect={0.5} strength={0.2} />
       <Scroller />
       <div ref={topRef} className="shell__top">
-        <Glass as="header" level="thin" className="ph-head" style={{ "--g-tint": "var(--tint-text)" } as CSSProperties}>
+        <Glass as="header" level="thin" className="ph-head">
           <button type="button" className="ph-switch" aria-haspopup="dialog" aria-expanded={sheet} onClick={() => setSheet(true)}>
             <span className="ph-switch__name">{title}</span>
             {elsewhere > 0 ? (
