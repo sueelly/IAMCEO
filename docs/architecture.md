@@ -64,11 +64,23 @@ CLI의 입력 수락과 업무 완료는 다르다. `started:false` 응답도 �
 
 ## 제공자·모델·문맥 압축
 
-프로젝트 총괄의 `chiefCli`와 멤버의 `cli`는 각각 `claude|codex`로 저장하며 기본은 Claude다. 현재 소스의 실행 backend는 core다. 라이브 herdr 전환은 별도 운영 절차를 따른다.
+프로젝트 총괄의 `chiefCli`와 멤버의 `cli`는 각각 `claude|codex|antigravity`로 저장하며 기본은 Claude다. 현재 소스의 실행 backend는 core다. 라이브 herdr 전환은 별도 운영 절차를 따른다.
 
 제공자나 실행 중인 세션의 모델·effort를 바꾸려면 작업 중·승인 대기·불명확한 전달을 먼저 해결해야 한다. 새 인자를 검증하고 이전 터미널의 종료를 확인한 뒤 세션 이력을 남기고 MCP 토큰과 세대를 바꾼다. 멤버 ID·역할·업무·대화는 유지한다. 이전 종료에 실패하면 제공자와 토큰을 바꾸지 않고, 새 시작에 실패하면 오류를 남긴다.
 
 같은 Claude의 설정 변경은 알려진 native UUID로 이어 연다. 제공자가 바뀌거나 Codex의 native ID를 모르면 새 세션에 역할·현재 일·다음 일·프로젝트 상황을 인계한다. 제공자 간 숨은 추론이나 대화 문맥을 옮기는 기능은 없다. 모델은 멤버별 지정, 적용 가능한 직급 값, CLI 기본값 순으로 고른다. Claude용 직급 설정을 Codex에 그대로 적용하지 않는다.
+
+### Antigravity CLI(`agy`)
+
+Google의 Gemini CLI 개인 로그인은 2026-06-18 종료됐다. Google AI 구독(Pro·Ultra)은 Antigravity CLI(`agy`, 1.5.3에서 실측)로 쓴다. API 키나 추가 비용은 쓰지 않는다.
+
+- 설정 폴더: 직원마다 `$IAMCEO_HOME/antigravity/<memberId>`를 `agy --gemini_dir=`로 넘긴다. 사용자 `~/.gemini`는 읽기만 한다. 실행 전에 이 폴더에 `GEMINI.md`(IAMCEO 역할 규칙 + 사용자 `~/.gemini/GEMINI.md`), `config/mcp_config.json`(사용자 MCP 서버 + `iamceo` 다리), `antigravity-cli/settings.json`(사용자의 화면·신뢰 설정만 복사)을 0600으로 쓴다. 로그인은 macOS 키체인에 있어 폴더와 무관하게 공유된다. 사용자가 이미 마친 첫 설정(onboarding)만 복사하고, 약관·데이터 동의 화면은 IAMCEO가 대신 답하지 않는다.
+- 실행 인자: `--model <id>`(effort가 모델 이름에 들어 있다. 예: `gemini-4-argon-high`), 바이패스 모드면 `--dangerously-skip-permissions`, 자동 모드면 `--mode auto`, 세션 한정 `--settings`로 `mcp(iamceo/*)` 허용과 문맥 측정용 상태줄을 넘긴다. 환경 변수 `AGY_CLI_DISABLE_AUTO_UPDATE=true`로 자동 업데이트를 끈다. 재개는 `--conversation <id>`.
+- 세션 연결: Codex처럼 첫 전달에 `[IAMCEO session binding: <nonce>]` 줄을 붙이고, 직원 폴더의 `antigravity-cli/brain/<대화 id>/.system_generated/logs/transcript.jsonl`에서 그 줄이 든 `USER_INPUT`(source `USER_EXPLICIT`)이 정확히 하나일 때만 대화 id를 연결한다.
+- 전달 근거: 같은 기록의 `USER_INPUT`에서 전달 표식을 찾는다(`antigravity_log`). 기록 시각이 초 단위라 1초 여유를 둔다. 모르는 기록 종류가 사용자 입력 같거나 표식을 담으면 결과를 모름으로 둔다.
+- 상태·승인: agy가 OSC 7501을 직접 낸다. 폴더 신뢰 창(`Yes, I trust this folder` / `No, exit`)은 Claude·Codex와 같은 승인 카드로 처리한다.
+- 문맥: 상태줄 입력(`session_id`=대화 id, `context_window`)을 공식 창 크기·%로 쓰고, 없으면 기록의 마지막 모델 단계 `input_tokens + cache_read_tokens`를 쓴다. agy에는 `/compact`가 없고 스스로 압축하므로 IAMCEO 압축은 지원하지 않음으로 답한다.
+- 직급 기본값(`ranks`·`codexRanks`)은 적용하지 않는다. 모델은 직원별 지정 또는 agy 기본값이다.
 
 Claude 병렬 모드는 `/effort ultracode on|off`의 응답을 확인한다. Codex는 자체 서브에이전트 기능과 다음 과제의 병렬·순차 선호를 쓴다. 설정이 실제 하위 실행 개수를 보장하지는 않는다.
 

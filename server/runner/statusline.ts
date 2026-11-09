@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 const home = process.argv[2];
+// "context-only": record usage, never chain to a Claude status line (Antigravity draws its own built-in line).
+const forward = process.argv[3] !== 'context-only';
 let child;
 // 사용자 명령의 캐시 갱신·네트워크 요청을 기다린다. 정상 종료 뒤 자손은 건드리지 않는다.
 const stop = signal => { try { child?.kill(signal); } catch {} };
@@ -49,7 +51,7 @@ try {
   const project = [input.workspace?.project_dir, input.workspace?.current_dir].find(p => typeof p === 'string' && p.length > 0) ?? process.cwd();
   const files = [MANAGED_SETTINGS_PATH, join(project, '.claude/settings.local.json'), join(project, '.claude/settings.json'), join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json')];
   let command;
-  for (const file of files) {
+  for (const file of forward ? files : []) {
     try {
       const line = JSON.parse(readFileSync(file, 'utf8')).statusLine;
       if (line === undefined) continue;
@@ -77,7 +79,7 @@ process.exit(0);
 `;
 
 function quote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
-export function writeStatuslineWrapper(home: string, options: { execPath?: string; managedSettingsPath?: string; /** 테스트의 대기 시간만 줄인다. 실제 호출은 기본 30초. */ safetyTimeoutMs?: number } = {}): { type: "command"; command: string } {
+export function writeStatuslineWrapper(home: string, options: { execPath?: string; managedSettingsPath?: string; /** 테스트의 대기 시간만 줄인다. 실제 호출은 기본 30초. */ safetyTimeoutMs?: number; /** false: 사용량만 적고 사용자 Claude 상태줄은 부르지 않는다(Antigravity). */ forward?: boolean } = {}): { type: "command"; command: string } {
   const dir = join(home, "run");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${STATUSLINE_MARKER}.mjs`);
@@ -93,7 +95,7 @@ export function writeStatuslineWrapper(home: string, options: { execPath?: strin
     finally { try { unlinkSync(tmp); } catch { /* rename 성공 */ } }
   }
   chmodSync(path, 0o600);
-  return { type: "command", command: `BUN_BE_BUN=1 ${quote(options.execPath ?? process.execPath)} ${quote(path)} ${quote(home)}` };
+  return { type: "command", command: `BUN_BE_BUN=1 ${quote(options.execPath ?? process.execPath)} ${quote(path)} ${quote(home)}${options.forward === false ? " context-only" : ""}` };
 }
 
 interface ContextRecord { session_id: string; model: string | null; context_window_size: number; used_percentage: number | null; tokens: number | null; at: number }

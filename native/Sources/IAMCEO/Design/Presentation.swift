@@ -4,11 +4,11 @@ import Foundation
 // Labels match the web client so the same person sees the same words on every device.
 
 func providerName(_ cli: String) -> String {
-    switch cli { case "claude": "Claude"; case "codex": "Codex"; default: cli.capitalized }
+    switch cli { case "claude": "Claude"; case "codex": "Codex"; case "antigravity": "Antigravity"; default: cli.capitalized }
 }
 
 func providerFullName(_ cli: String) -> String {
-    switch cli { case "claude": "Claude Code"; case "codex": "Codex CLI"; default: cli }
+    switch cli { case "claude": "Claude Code"; case "codex": "Codex CLI"; case "antigravity": "Antigravity CLI"; default: cli }
 }
 
 func rankName(_ kind: String) -> String {
@@ -271,6 +271,7 @@ struct DeliveryEvidenceInfo: Sendable {
         switch evidence.source {
         case "claude_log": sourceLabel = "Claude 주 세션 입력 기록"
         case "codex_log": sourceLabel = "Codex 주 세션 입력 기록"
+        case "antigravity_log": sourceLabel = "Antigravity 대화 입력 기록"
         case "transport": sourceLabel = "터미널 응답"
         case "core_screen", "herdr_screen": sourceLabel = evidence.location == "composer" ? "입력칸" : "터미널 화면"
         default: sourceLabel = "전달 근거"

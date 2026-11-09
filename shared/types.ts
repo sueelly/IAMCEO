@@ -1,7 +1,8 @@
 // IAMCEO 공유 계약: 서버·웹·MCP가 함께 쓰는 타입. 바꾸려면 docs/spec.md 와 같이 바꾼다.
 
 export type Backend = "core" | "herdr" | "headless";
-export type CliProvider = "claude" | "codex";
+export type CliProvider = "claude" | "codex" | "antigravity";
+export const CLI_PROVIDERS = ["claude", "codex", "antigravity"] as const;
 /** bypassPermissions 묻지 않음(기본) · auto 위험한 것만 멈춤 · default 전부 승인 필요(herdr 는 승인 창, headless 는 창이 없어 막히고 활동에 남는다) */
 export type PermissionMode = "bypassPermissions" | "auto" | "default";
 export const PERMISSION_MODES = ["bypassPermissions", "auto", "default"] as const;
@@ -58,7 +59,7 @@ export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "
   memberCount: number;
 }
 
-export type ContextWindowSource = "statusline" | "codex" | "headless" | "screen";
+export type ContextWindowSource = "statusline" | "codex" | "antigravity" | "headless" | "screen";
 
 /** blocked는 입력 보류다. permission만 증거로 확인된 승인 대기로 집계한다. */
 export type BlockedReason = "permission" | "selection" | "setup" | "status_unknown";
@@ -330,7 +331,7 @@ export interface Delivery {
 export type EvidenceVerdict = "present" | "absent" | "unknown";
 /** 공개 증거 요약. 원시 화면/프롬프트/로그 경로/lease ID는 포함하지 않는다. */
 export interface DeliveryEvidence {
-  source: "claude_log" | "codex_log" | "core_screen" | "herdr_screen" | "transport";
+  source: "claude_log" | "codex_log" | "antigravity_log" | "core_screen" | "herdr_screen" | "transport";
   verdict: EvidenceVerdict;
   location: "received_input" | "composer" | "history" | "none";
   code: string;
@@ -567,6 +568,8 @@ export function memberRank(kind: MemberKind): Exclude<Rank, "staff"> {
 
 /** 이 직원이 써야 할 값. 직원별 지정이 직급 기본을 이긴다. */
 export function memberConfig(m: Pick<Member, "kind" | "modelOverride" | "effortOverride"> & Partial<Pick<Member, "cli">>, ranks: Ranks, codexRanks: Ranks = DEFAULT_CODEX_RANKS): RankConfig {
+  // Antigravity has no rank defaults: model ids carry their own effort, and Claude/Codex rank values never apply to it.
+  if (m.cli === "antigravity") return { model: m.modelOverride ?? null, effort: null };
   const rank = (m.cli === "codex" ? codexRanks : ranks)[memberRank(m.kind)];
   return { model: m.modelOverride ?? rank.model, effort: m.effortOverride ?? rank.effort };
 }

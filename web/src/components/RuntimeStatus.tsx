@@ -48,7 +48,7 @@ export function RuntimeDetails({ diagnostics }: { diagnostics: ReturnType<typeof
   return (
     <Glass as="section" level="regular" tint className="st-panel" aria-label="실행 환경">
       <h2 className="st-panel__title">실행 환경</h2>
-      <p className="su-hint">모든 AI 직원은 herdr-core에서 실행됩니다. 직원마다 Claude Code 또는 Codex를 고릅니다.</p>
+      <p className="su-hint">모든 AI 직원은 herdr-core에서 실행됩니다. 직원마다 Claude Code, Codex, Antigravity 중에서 고릅니다.</p>
       <dl className="st-facts">
         <div><dt>herdr-core</dt><dd>{runtime ? runtime.core.available ? `사용 가능${runtime.core.version ? ` · ${runtime.core.version}` : ""}` : runtime.core.installed ? "설치됨 · 사용할 수 없음" : "설치 필요" : "상태 확인 필요"}</dd></div>
         {PROVIDERS.map((cli) => <div key={cli}><dt>{providerName(cli)}</dt><dd>{runtime ? runtime.providers[cli]?.installed ? "CLI 설치됨 · 로그인은 실행 시 확인" : "CLI 설치 필요" : "확인 전"}</dd></div>)}

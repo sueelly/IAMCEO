@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { CliProvider, DeliveryEvidence } from "../../shared/types.ts";
 import type { DeliveryLogBaseline } from "./types.ts";
+import { ANTIGRAVITY_RECORD_TYPES, antigravityLogRoot, isAntigravityTranscript, parseAntigravityUserInput } from "./antigravity.ts";
 
 export interface JsonlCursor {
   path: string;
@@ -134,6 +135,11 @@ export function parseCodexSessionMeta(value: unknown): CodexSessionMeta | null {
 export interface ProviderUserText { texts: string[]; sessionId: string | null; cwd: string | null; eventId: string | null; timestamp: string | null }
 /** Only direct user text, never recursively search a tool result or raw JSON. */
 export function parseProviderUserText(cli: CliProvider, value: unknown): ProviderUserText | null {
+  if (cli === "antigravity") {
+    // Identity comes from the transcript path (brain/<conversation>/...); records carry neither session nor cwd.
+    const user = parseAntigravityUserInput(value);
+    return user && { texts: [user.text], sessionId: null, cwd: null, eventId: user.stepIndex !== null ? `step:${user.stepIndex}` : null, timestamp: user.createdAt };
+  }
   const entry = jsonObject(value);
   if (!entry || entry.isSidechain || entry.isMeta || entry.isReplay || entry.is_replay) return null;
   const message = jsonObject(cli === "claude" ? entry.message : entry.payload);
@@ -161,6 +167,7 @@ function textBlocks(content: unknown, kinds: string[]): string[] {
 /** Recognizable non-text user blocks are safe to skip; future text layouts are not absence. */
 export function supportedUserTextLayout(cli: CliProvider, value: unknown): boolean {
   const entry = jsonObject(value);
+  if (cli === "antigravity") return entry?.type !== "USER_INPUT" || (typeof entry.content === "string" && (entry.source === undefined || entry.source === "USER_EXPLICIT"));
   if (!entry || entry.isSidechain || entry.isMeta || entry.isReplay || entry.is_replay) return true;
   const message = jsonObject(cli === "claude" ? entry.message : entry.payload);
   const relevant = cli === "claude" ? entry.type === "user" :
@@ -237,15 +244,21 @@ export interface DeliveryLogResult {
   receivedDeliveryIds: string[];
   cursor: DeliveryEvidenceCursor | null;
 }
+/** Directory every native log of this provider must stay inside. */
+export function providerLogRoot(cli: CliProvider, home: string): string {
+  return cli === "antigravity" ? antigravityLogRoot(home) : join(home, cli === "claude" ? "projects" : "sessions");
+}
 export function readDeliveryEvidence(options: DeliveryEvidenceOptions): DeliveryLogResult {
   const { cli, home, path, sessionId, sessionGeneration, cwd, markers, baseline } = options;
-  const root = join(home, cli === "claude" ? "projects" : "sessions");
+  const root = providerLogRoot(cli, home);
+  const source = cli === "claude" ? "claude_log" : cli === "codex" ? "codex_log" : "antigravity_log";
   const queryKey = createHash("sha256").update(JSON.stringify([cli, resolve(home), resolve(path), markers, options.bundleMarker, baseline, options.since])).digest("hex");
-  const unknown = (code: string): DeliveryLogResult => ({ evidence: { source: cli === "claude" ? "claude_log" : "codex_log", verdict: "unknown", location: "none", code, complete: false, checkedAt: new Date().toISOString() }, receivedDeliveryIds: [], cursor: options.cursor ?? null });
+  const unknown = (code: string): DeliveryLogResult => ({ evidence: { source, verdict: "unknown", location: "none", code, complete: false, checkedAt: new Date().toISOString() }, receivedDeliveryIds: [], cursor: options.cursor ?? null });
   const old = options.cursor;
   if (old && (old.sessionGeneration !== sessionGeneration || old.sessionId !== sessionId || old.cwd !== cwd || old.queryKey !== queryKey)) return unknown("generation_changed");
   if (!Number.isSafeInteger(sessionGeneration) || sessionGeneration < 0 || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(sessionId) || !isAbsolute(cwd)) return unknown("session_unbound");
-  if (cli === "claude" ? basename(path) !== `${sessionId}.jsonl` || relative(root, path).split(/[\\/]/).length !== 2 : !/^rollout-.+\.jsonl$/.test(basename(path))) return unknown("unrecognized_path");
+  if (cli === "antigravity" ? isAntigravityTranscript(home, path) !== sessionId :
+    cli === "claude" ? basename(path) !== `${sessionId}.jsonl` || relative(root, path).split(/[\\/]/).length !== 2 : !/^rollout-.+\.jsonl$/.test(basename(path))) return unknown("unrecognized_path");
   if (markers.some(({ marker }) => !/^#iamceo_[A-Za-z0-9_-]{22}$/.test(marker)) || new Set(markers.map(({ marker }) => marker)).size !== markers.length ||
     new Set(markers.map(({ deliveryId }) => deliveryId)).size !== markers.length ||
     (options.bundleMarker !== undefined && !/^#iamceo_b_[A-Za-z0-9_-]{22}$/.test(options.bundleMarker))) return unknown("invalid_marker");
@@ -285,6 +298,11 @@ export function readDeliveryEvidence(options: DeliveryEvidenceOptions): Delivery
       if (jsonObject(entry.message)?.role === "user" || markers.some(({ marker }) => raw.includes(marker)) || (options.bundleMarker && raw.includes(options.bundleMarker))) state.unsupported = true;
       continue;
     }
+    if (cli === "antigravity" && !ANTIGRAVITY_RECORD_TYPES.includes(entry.type)) {
+      const raw = JSON.stringify(entry);
+      if (entry.source === "USER_EXPLICIT" || markers.some(({ marker }) => raw.includes(marker)) || (options.bundleMarker && raw.includes(options.bundleMarker))) state.unsupported = true;
+      continue;
+    }
     if (cli === "codex" && !["session_meta", "response_item", "event_msg", "turn_context", "compacted", "world_state", "token_usage_record"].includes(entry.type)) {
       const raw = JSON.stringify(entry), payload = jsonObject(entry.payload);
       if (entry.role === "user" || jsonObject(entry.message)?.role === "user" || payload?.role === "user" || payload?.type === "user_message" ||
@@ -319,9 +337,10 @@ export function readDeliveryEvidence(options: DeliveryEvidenceOptions): Delivery
     const user = parseProviderUserText(cli, entry);
     if (!user) continue;
     if ((user.eventId && (seen.has(user.eventId) || user.eventId === baseline?.eventId)) ||
-      (options.since && user.timestamp && Date.parse(user.timestamp) < Date.parse(options.since))) continue;
+      // agy writes created_at in whole seconds.
+      (options.since && user.timestamp && Date.parse(user.timestamp) < Date.parse(options.since) - (cli === "antigravity" ? 1000 : 0))) continue;
     if (user.eventId) seen.add(user.eventId);
-    const correct = cli === "claude" ? user.sessionId === sessionId && user.cwd === cwd :
+    const correct = cli === "antigravity" ? true : cli === "claude" ? user.sessionId === sessionId && user.cwd === cwd :
       state.meta?.sessionId === sessionId && state.meta.cwd === cwd && (user.sessionId === null || user.sessionId === sessionId) && (user.cwd === null || user.cwd === cwd);
     const bundle = options.bundleMarker && user.texts.some((text) => hasExactMarker(text, options.bundleMarker!));
     const matches = markers.filter(({ marker }) => bundle || user.texts.some((text) => hasExactMarker(text, marker)));
@@ -332,8 +351,8 @@ export function readDeliveryEvidence(options: DeliveryEvidenceOptions): Delivery
   state.seenEventIds = [...seen];
   state.blobOnlyDeliveryIds = [...blobOnly].filter((id) => !received.has(id));
   const blobMismatch = state.blobOnlyDeliveryIds.length > 0;
-  const complete = range.complete && !state.conflict && !state.unsupported && !blobMismatch && (cli === "claude" ? state.recognized : state.meta?.sessionId === sessionId && state.meta.cwd === cwd);
+  const complete = range.complete && !state.conflict && !state.unsupported && !blobMismatch && (cli === "antigravity" ? true : cli === "claude" ? state.recognized : state.meta?.sessionId === sessionId && state.meta.cwd === cwd);
   // Positive evidence survives an unrelated corrupt/partial line; conflicts do not authorize input.
   const code = state.conflict ? "session_conflict" : received.size ? "marker_in_user_input" : state.unsupported ? "unrecognized_layout" : blobMismatch ? "marker_outside_user_input" : complete ? "complete_range_without_marker" : range.code;
-  return { evidence: { source: cli === "claude" ? "claude_log" : "codex_log", verdict: received.size ? "present" : complete ? "absent" : "unknown", location: received.size ? "received_input" : "none", code, complete, checkedAt: new Date().toISOString() }, receivedDeliveryIds: [...received], cursor: state };
+  return { evidence: { source, verdict: received.size ? "present" : complete ? "absent" : "unknown", location: received.size ? "received_input" : "none", code, complete, checkedAt: new Date().toISOString() }, receivedDeliveryIds: [...received], cursor: state };
 }

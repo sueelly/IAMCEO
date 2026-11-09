@@ -7,7 +7,7 @@ import { MIGRATIONS } from "./db.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { z } from "zod";
-import { fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
+import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
 import type { OperationReceipt, ServerCapabilities } from "../shared/operations.ts";
 import type { DeliveryRecoveryService } from "./service-contracts.ts";
 import { ARTIFACT_CSP } from "../shared/artifact-kit.ts";
@@ -171,7 +171,7 @@ function bearer(req: Request): string | null {
 // ---- 요청 검증 ----
 const nonEmpty = z.string().trim().min(1);
 const backend = z.enum(["core", "herdr", "headless"]);
-const cliProvider = z.enum(["claude", "codex"]);
+const cliProvider = z.enum(CLI_PROVIDERS);
 const permissionMode = z.enum(PERMISSION_MODES);
 const effort = z.string().min(1); // Membership comes from the selected model's catalog, including new CLI names.
 // 그대로 --model 뒤에 들어간다. '--플래그' 나 공백이 들어오면 안 된다. 별칭(haiku)·전체 이름·[1m] 을 받는다.

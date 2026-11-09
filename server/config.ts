@@ -16,6 +16,7 @@ export interface ConfigFile {
   hosts?: string[];
   claudeBin?: string;
   codexBin?: string;
+  antigravityBin?: string;
   claudeHome?: string;
   codexHome?: string;
   coreBin?: string;
@@ -37,6 +38,10 @@ export interface Config {
   hostsAuto?: boolean;
   claudeBin: string;
   codexBin?: string;
+  /** Antigravity CLI (`agy`). */
+  antigravityBin?: string;
+  /** IAMCEO-owned per-member agy configuration folders (`agy --gemini_dir`). Never the user's ~/.gemini. */
+  antigravityRoot?: string;
   claudeHome?: string;
   codexHome?: string;
   coreBin?: string;
@@ -81,7 +86,7 @@ export function homeDir(env: NodeJS.ProcessEnv = process.env): string {
 function validateConfig(value: unknown, path: string): Partial<ConfigFile> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`설정 파일 형식이 잘못되었습니다: ${path}`);
   const file = value as Record<string, unknown>;
-  for (const key of ["accessCode", "claudeBin", "codexBin", "coreBin", "coreSocket", "herdrSocket"]) {
+  for (const key of ["accessCode", "claudeBin", "codexBin", "antigravityBin", "coreBin", "coreSocket", "herdrSocket"]) {
     if (file[key] !== undefined && (typeof file[key] !== "string" || !file[key] || (file[key] as string).includes("\0"))) {
       throw new Error(`설정 파일 필드가 잘못되었습니다(${key}): ${path}`);
     }
@@ -254,6 +259,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     hostsAuto: !(Array.isArray(file.hosts) && file.hosts.length > 0),
     claudeBin: resolveCliExecutable(env.IAMCEO_CLAUDE_BIN || file.claudeBin || "claude", env) ?? env.IAMCEO_CLAUDE_BIN ?? file.claudeBin ?? "claude",
     codexBin: resolveCliExecutable(env.IAMCEO_CODEX_BIN || file.codexBin || "codex", env) ?? env.IAMCEO_CODEX_BIN ?? file.codexBin ?? "codex",
+    antigravityBin: resolveCliExecutable(env.IAMCEO_ANTIGRAVITY_BIN || file.antigravityBin || "agy", env) ?? env.IAMCEO_ANTIGRAVITY_BIN ?? file.antigravityBin ?? "agy",
+    antigravityRoot: join(home, "antigravity"),
     coreBin: env.IAMCEO_CORE_BIN || file.coreBin || defaultCoreBin(),
     coreSocket: env.IAMCEO_CORE_SOCKET || file.coreSocket || join(home, "run", "core.sock"),
     // $HERDR_SOCKET_PATH 는 일부러 보지 않는다: 라이브 세션 서버를 건드리면 안 된다(spec §5).

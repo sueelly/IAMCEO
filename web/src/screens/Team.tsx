@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { EFFORTS, memberRank, type Activity, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
+import { PROVIDERS } from "../lib/runtime";
 import ApprovalPanel from "../components/ApprovalPanel";
 import { enterSends, isComposing } from "../components/Composer";
 import ConnectGate, { isGateRejection, useGate } from "../components/ConnectGate";
@@ -38,7 +39,8 @@ const DELIVERY_LABEL = { queued: "전달 대기", delivering: "전달 중", held
 /** 작은따옴표 안에서는 작은따옴표만 끊어 넣으면 어떤 경로도 안전하다. 안전한 글자뿐이면 그대로 둔다. */
 const shellQuote = (s: string) => (/^[A-Za-z0-9_\-./:=@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 // sessionId 도 인용한다: 붙여 넣는 곳은 대표의 셸이다.
-const resumeCommand = (m: Member) => `cd ${shellQuote(m.cwd)} && ${m.cli === "codex" ? "codex resume" : "claude --resume"} ${shellQuote(m.sessionId ?? "")}`;
+// Antigravity 직원의 대화는 IAMCEO 데이터 폴더 안 직원별 설정 폴더에 있다.
+const resumeCommand = (m: Member, home: string) => `cd ${shellQuote(m.cwd)} && ${m.cli === "codex" ? "codex resume" : m.cli === "antigravity" ? `agy ${shellQuote(`--gemini_dir=${home}/antigravity/${m.id}`)} --conversation` : "claude --resume"} ${shellQuote(m.sessionId ?? "")}`;
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
 function useAction() {
@@ -82,7 +84,7 @@ function StartPanel({ project, hasMembers }: { project: Project; hasMembers: boo
   return (
     <Glass as="section" level="regular" tint className="tm-start">
       <h2 className="tm-start__title">{project.runnerEnabled ? "아직 팀이 없습니다" : "총괄을 시작하세요"}</h2>
-      <p className="tm-start__text">{blocked ?? (!gate.ok && gate.kind !== "runner_off" ? gate.detail : hasMembers ? "총괄을 시작하면 팀이 다시 일을 이어갑니다." : "총괄이 일을 받아 Claude Code와 Codex 직원을 꾸립니다.")}</p>
+      <p className="tm-start__text">{blocked ?? (!gate.ok && gate.kind !== "runner_off" ? gate.detail : hasMembers ? "총괄을 시작하면 팀이 다시 일을 이어갑니다." : "총괄이 일을 받아 Claude Code·Codex·Antigravity 직원을 꾸립니다.")}</p>
       <div className="tm-start__actions">
         <GlassButton variant="primary" size="m" disabled={busy !== null || !canStart} onClick={start}>{busy === "start" ? "시작하는 중" : "총괄 시작"}</GlassButton>
       </div>
@@ -452,9 +454,10 @@ function CopyBox({ command, label, onCopied }: { command: string; label: string;
 function CopyCommand({ m }: { m: Member }) {
   const [copied, setCopied] = useState(false);
   const running = m.status !== "asleep" && m.status !== "offline";
-  const cli = useBootstrap()?.cli ?? "iamceo";
+  const bootstrap = useBootstrap();
+  const cli = bootstrap?.cli ?? "iamceo";
   const attached = m.backend === "core" && !!m.paneId;
-  const command = attached ? `${cli} attach ${shellQuote(m.id)}` : resumeCommand(m);
+  const command = attached ? `${cli} attach ${shellQuote(m.id)}` : resumeCommand(m, bootstrap?.home ?? "~/.iamceo");
   return (
     <div className="tm-copy">
       <p className="tm-label">{attached ? "연결된 터미널 열기" : "터미널로 열기"}</p>
@@ -466,6 +469,8 @@ function CopyCommand({ m }: { m: Member }) {
 }
 
 const MODELS = ["fable", "opus", "sonnet", "haiku"];
+// agy 모델 이름에 effort 가 들어 있다(gemini-4-argon-high 등). 서버 목록과 같은 값.
+const ANTIGRAVITY_MODELS = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low", "claude-opus-5-5-medium", "claude-sonnet-5-5-medium", "gpt-oss-120b-medium"];
 
 /** 제공자 전환은 서버가 이전 세션을 닫고 새 세션에 인계한다. */
 function MemberConfig({ m }: { m: Member }) {
@@ -481,21 +486,23 @@ function MemberConfig({ m }: { m: Member }) {
   const changing = m.status === "working" || m.status === "blocked" || m.queuedCount > 0;
   const legacy = !!m.backend && m.backend !== "core";
   const blocked = runtimeBlock(diagnostics.runtime);
-  const base = (v: string | null | undefined) => `직급 기본값${v ? ` (${v})` : ""}`;
+  const agy = m.cli === "antigravity";
+  // Antigravity 는 직급 기본값이 없고 effort 가 모델 이름에 들어 있다.
+  const base = (v: string | null | undefined) => agy ? "Antigravity 기본값" : `직급 기본값${v ? ` (${v})` : ""}`;
   return (
     <div className="tm-config">
       <p className="tm-label">AI CLI · 모델 · effort</p>
       <label className="field">
         <span className="field__label">AI CLI</span>
         <select className="input tm-select" aria-label="직원 AI CLI" disabled={busy !== null || !!changing || legacy || !!blocked} value={m.cli ?? "claude"} onChange={(e) => void save({ cli: e.target.value as CliProvider })}>
-          {(["claude", "codex"] as const).map((cli) => <option key={cli} value={cli} disabled={!!runtimeBlock(diagnostics.runtime, cli)}>{providerName(cli)}{diagnostics.runtime && !diagnostics.runtime.providers[cli]?.installed ? " · 설치 필요" : ""}</option>)}
+          {PROVIDERS.map((cli) => <option key={cli} value={cli} disabled={!!runtimeBlock(diagnostics.runtime, cli)}>{providerName(cli)}{diagnostics.runtime && !diagnostics.runtime.providers[cli]?.installed ? " · 설치 필요" : ""}</option>)}
         </select>
       </label>
       <p className="tm-note tm-note--left">{legacy ? "이전 실행기의 세션은 여기서 CLI를 전환할 수 없습니다." : changing ? "일이나 전달 대기가 끝나면 CLI를 바꿀 수 있습니다." : blocked ?? "CLI를 바꾸면 이전 세션을 닫고 현재 일과 상황을 새 세션에 인계합니다."}</p>
       <div className="tm-config__row">
-        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => setModel(e.target.value)} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
-        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || legacy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
-          <option value="">{base(rank?.effort)}</option>
+        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => setModel(e.target.value)} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : m.cli === "antigravity" ? ANTIGRAVITY_MODELS : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
+        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || legacy || agy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
+          <option value="">{agy ? "모델 이름에 포함" : base(rank?.effort)}</option>
           {EFFORTS.map((x) => <option key={x} value={x} disabled={m.cli === "codex" && x === "max"}>{x}{m.cli === "codex" && x === "max" ? " · Codex 미지원" : ""}</option>)}
         </select></label>
       </div>

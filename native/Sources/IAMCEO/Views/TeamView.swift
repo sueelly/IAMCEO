@@ -1198,21 +1198,22 @@ struct MemberDetailView: View {
         let block = configBlock(m, target: target, reopens: reopens)
         let busy = running == "config"
         let rank = m.kind == "worker" ? "lead" : "manager"
-        let rankConfig = store.bootstrap?.settings.rankConfig(rank, cli: target == "codex" ? .codex : .claude)
+        let agy = target == "antigravity"
+        let rankConfig = agy ? nil : store.bootstrap?.settings.rankConfig(rank, cli: target == "codex" ? .codex : .claude)
         let cli: RankSettingsCLI = target == "codex" ? .codex : .claude
-        let list = store.modelCatalog.list(for: cli)
+        let list = store.modelCatalog.list(provider: target)
         let selected = list.option(for: trimmed)
-        let efforts = list.efforts(for: trimmed.isEmpty ? (rankConfig?.model ?? "") : trimmed, cli: cli)
-        let modelDefault = rankConfig?.model.map { "직급 기본값 (\($0))" } ?? "직급 기본값"
-        let effortDefault = rankConfig?.effort.map { "직급 기본값 (\($0))" } ?? "직급 기본값"
+        // Antigravity: effort is part of the model id (gemini-4-argon-high), so there is no separate choice.
+        let efforts = agy ? [] : list.efforts(for: trimmed.isEmpty ? (rankConfig?.model ?? "") : trimmed, cli: cli)
+        let modelDefault = agy ? "Antigravity 기본값" : rankConfig?.model.map { "직급 기본값 (\($0))" } ?? "직급 기본값"
+        let effortDefault = agy ? "모델 이름에 포함" : rankConfig?.effort.map { "직급 기본값 (\($0))" } ?? "직급 기본값"
         let modelShown = trimmed.isEmpty ? modelDefault : (selected?.label ?? list.unknownCurrent(trimmed) ?? trimmed)
         let effortShown = effort.isEmpty ? effortDefault : (efforts.contains(effort) ? effort : "현재: \(effort)")
         return VStack(alignment: .leading, spacing: 10) {
             // Web .field__label 13/600 ink-2 next to .input-sized controls (the fact rows above keep 13 ink-3).
             TeamFactRow(label: "AI CLI", alignment: .center, strong: true) {
                 Picker("AI CLI", selection: Binding(get: { switchAllowed ? provider : m.cli }, set: { provider = $0 })) {
-                    Text(providerOption("claude")).tag("claude")
-                    Text(providerOption("codex")).tag("codex")
+                    ForEach(teamProviders, id: \.self) { Text(providerOption($0)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -1247,7 +1248,7 @@ struct MemberDetailView: View {
                     .labelsHidden()
                     .pickerStyle(.inline)
                 }
-                .disabled(!store.canWrite)
+                .disabled(!store.canWrite || agy)
             }
             if reopens {
                 InlineNotice(tone: .attention, icon: "arrow.triangle.2.circlepath", title: reopenTitle(m, target: target),
@@ -1382,7 +1383,11 @@ struct MemberDetailView: View {
             return (TerminalCommand.attach(memberID: m.id, bootstrap: store.bootstrap), true)
         }
         if let session = m.sessionId, !session.isEmpty {
-            let resume = m.cli == "codex" ? "codex resume" : "claude --resume"
+            // Antigravity conversations live in IAMCEO's per-member config folder, not ~/.gemini.
+            let home = store.bootstrap?.home ?? ""
+            let resume = m.cli == "codex" ? "codex resume"
+                : m.cli == "antigravity" ? "agy \(TerminalCommand.shellQuote("--gemini_dir=\(home.isEmpty ? "~/.iamceo" : home)/antigravity/\(m.id)")) --conversation"
+                : "claude --resume"
             return ("cd \(TerminalCommand.shellQuote(m.cwd)) && \(resume) \(TerminalCommand.shellQuote(session))", false)
         }
         return nil
@@ -1395,7 +1400,8 @@ struct MemberDetailView: View {
     }
 
     private func providerOption(_ cli: String) -> String {
-        let name = providerFullName(cli)
+        // Short names keep three segments inside an iPhone row.
+        let name = providerName(cli)
         return store.runtime?.providers[cli]?.installed == false ? "\(name) · 설치 필요" : name
     }
 
@@ -1453,7 +1459,7 @@ struct MemberDetailView: View {
     }
 
     private func configBlock(_ m: Member, target: String, reopens: Bool) -> String? {
-        if !effort.isEmpty && !(target == "codex" ? RankSettingsCLI.codex : .claude).efforts.contains(effort) { return "선택한 CLI에서 지원하지 않는 effort입니다. 다른 값을 고르세요." }
+        if target != "antigravity" && !effort.isEmpty && !(target == "codex" ? RankSettingsCLI.codex : .claude).efforts.contains(effort) { return "선택한 CLI에서 지원하지 않는 effort입니다. 다른 값을 고르세요." }
         if target != m.cli, store.runtime?.providers[target]?.installed == false {
             return "\(providerFullName(target))가 실행 호스트에 설치돼 있지 않습니다. 설정의 실행 환경을 확인하세요."
         }
@@ -1524,7 +1530,7 @@ struct MemberDetailView: View {
         let reopens = configReopens(m, target: target, model: trimmed)
         let namespace = store.writeNamespace, id = memberID
         running = "config"; configNote = nil; configFailure = nil; configHandoff = false
-        let ok = await store.patchMember(m, provider: target, model: trimmed.isEmpty ? nil : trimmed, effort: sent.effort.isEmpty ? nil : sent.effort)
+        let ok = await store.patchMember(m, provider: target, model: trimmed.isEmpty ? nil : trimmed, effort: sent.effort.isEmpty || target == "antigravity" ? nil : sent.effort)
         guard namespace == store.writeNamespace, id == memberID else { return }
         running = nil
         guard ok else {
@@ -1850,8 +1856,7 @@ struct NewMemberView: View {
             VStack(alignment: .leading, spacing: 6) {
                 fieldLabel("AI CLI")
                 Picker("AI CLI", selection: $provider) {
-                    Text(providerOption("claude")).tag("claude")
-                    Text(providerOption("codex")).tag("codex")
+                    ForEach(teamProviders, id: \.self) { Text(providerOption($0)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -1909,7 +1914,8 @@ struct NewMemberView: View {
     #endif
 
     private func providerOption(_ cli: String) -> String {
-        let name = providerFullName(cli)
+        // Short names keep three segments inside an iPhone row.
+        let name = providerName(cli)
         return store.runtime?.providers[cli]?.installed == false ? "\(name) · 설치 필요" : name
     }
 
@@ -2225,3 +2231,6 @@ struct TeamMemberStatusBadge: View {
         }
     }
 }
+
+/// Same order as the web PROVIDERS list.
+let teamProviders = ["claude", "codex", "antigravity"]

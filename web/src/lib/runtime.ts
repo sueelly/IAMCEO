@@ -1,7 +1,7 @@
 import type { CliProvider, RuntimeInfo } from "@shared/types";
 
-export const PROVIDERS: readonly CliProvider[] = ["claude", "codex"];
-export const providerName = (cli: CliProvider) => cli === "codex" ? "Codex" : "Claude Code";
+export const PROVIDERS: readonly CliProvider[] = ["claude", "codex", "antigravity"];
+export const providerName = (cli: CliProvider) => cli === "codex" ? "Codex" : cli === "antigravity" ? "Antigravity" : "Claude Code";
 
 /** 설치 여부만으로 실행 성공을 가정하지 않는다. 인증·세션 시작은 서버 응답으로 확인한다. */
 export function runtimeBlock(runtime: RuntimeInfo | null, cli?: CliProvider): string | null {

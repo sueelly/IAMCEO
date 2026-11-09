@@ -13,7 +13,7 @@ IAMCEO는 **소스 공개형**이며 Sustainable Use License 1.0 + IAMCEO 추가
 - 사용자 실제 `~/.iamceo`, 기존 herdr/core 소켓·세션·서비스에 개발 쓰기 요청을 보내지 않는다. 시험은 임시 `IAMCEO_HOME`, 명시적 시험 소켓, 격리된 `HC_SESSION`·XDG 경로를 사용한다.
 - 단위·통합 시험은 실제 유료 모델을 부르지 않는다. core는 fake JSON-RPC 서버, 기존 headless 회귀 시험은 fake Claude를 쓴다. 실제 모델 호출·전역 도구 설치·업데이트·배포·launchd 등록은 해당 작업이 명시적으로 요청된 경우만 한다.
 - core shutdown은 detach다. 앱·서버 종료를 이유로 holder나 제공자 CLI를 끝내지 않는다. 명시적 멤버 종료·잠재우기·안전한 세션 교체와 구분한다.
-- 공식 CLI의 사용자 설정·로그인·도구를 유지한다. 호출별 인자·MCP 설정을 쓰고 전역 Claude/Codex 설정 파일을 수정하지 않는다. 부모의 외부 `HC_*`·`HERDR_*`·Claude 중첩 세션 변수는 전달하지 않고, 사용자 HOME·XDG 설정 경로를 복원한다.
+- 공식 CLI의 사용자 설정·로그인·도구를 유지한다. 호출별 인자·MCP 설정을 쓰고 전역 Claude/Codex/Antigravity 설정 파일을 수정하지 않는다(Antigravity는 직원별 IAMCEO 전용 `--gemini_dir`). 부모의 외부 `HC_*`·`HERDR_*`·Claude 중첩 세션 변수는 전달하지 않고, 사용자 HOME·XDG 설정 경로를 복원한다.
 - 초안을 지우거나 불확실한 PTY 입력을 자동 재전송하지 않는다. 화면은 입력 안전 확인·사람의 조작을 위해 읽을 수 있지만 실행 상태나 최종 답변을 추측하는 근거로 쓰지 않는다.
 
 ## 1. 구조
@@ -31,7 +31,7 @@ MCP stdio ── iamceo mcp /agent/* ──┘             │
 
 | 경로 | 내용 |
 |---|---|
-| `server/config.ts` | IAMCEO_HOME, 포트·주소, `IAMCEO_CLAUDE_BIN`, `IAMCEO_CODEX_BIN`, `IAMCEO_CORE_BIN`, `IAMCEO_CORE_SOCKET` |
+| `server/config.ts` | IAMCEO_HOME, 포트·주소, `IAMCEO_CLAUDE_BIN`, `IAMCEO_CODEX_BIN`, `IAMCEO_ANTIGRAVITY_BIN`(기본 `agy`), `IAMCEO_CORE_BIN`, `IAMCEO_CORE_SOCKET` |
 | `server/db.ts`, `store.ts`, `bus.ts` | WAL DB·마이그레이션 전 백업·도메인 상태·웹 이벤트 |
 | `server/http.ts`, `orchestrator-api.ts` | 인증된 REST·웹 WS·접근 제어 |
 | `server/orchestrator.ts`, `agent-tools.ts` | 전달·세션 교체·재결합과 MCP 업무 도구 |
@@ -59,11 +59,11 @@ MCP stdio ── iamceo mcp /agent/* ──┘             │
 아래 기존 경로의 기본 응답은 v1이다. v2 쓰기의 별도 요청·응답은 §3.3을 따른다.
 
 - `GET /api/health`(인증 없음) → `{ok,version}`: liveness만 의미한다. `GET /api/readiness`(사용자 Bearer) → `{ok,version,daemon,schema,core,hosts}`: 준비되면 200, 아니면 503. daemon에는 `ready,buildId,version`, schema에는 `version,supportedVersion`, hosts에는 bind 상태가 있다. core 정보는 진단이며 provider 로그인 성공을 보증하지 않는다
-- `GET /api/runtime` → `{backend:"core",core:{installed,available,version,detail},providers:{claude:{installed},codex:{installed}}}`. 읽기 전용 진단이며 daemon을 설치·시작하지 않는다
+- `GET /api/runtime` → `{backend:"core",core:{installed,available,version,detail},providers:{claude:{installed},codex:{installed},antigravity:{installed}}}`. 읽기 전용 진단이며 daemon을 설치·시작하지 않는다
 - `GET /api/bootstrap` → Bootstrap(`runtime` 진단 포함, `urls`: 서버가 듣는 주소 목록, `cli`: 터미널에서 CLI 를 부르는 명령). 답하기 전에 실행기를 다시 본다
 - `GET /api/projects/:id/state` → ProjectState
 - `GET /api/projects/:id/messages?before=<at>&limit=` → Message[]
-- `POST /api/projects`(CreateProjectReq: `name,cwd,goal?,startConductor?,chiefCli?:"claude"|"codex"`) → Project · `PATCH /api/projects/:id`(PatchProjectReq). 실행 방식·권한·모델 필드는 없다. 보내면 400
+- `POST /api/projects`(CreateProjectReq: `name,cwd,goal?,startConductor?,chiefCli?:"claude"|"codex"|"antigravity"`) → Project · `PATCH /api/projects/:id`(PatchProjectReq). 실행 방식·권한·모델 필드는 없다. 보내면 400
 - `POST /api/projects/:id/conductor/start` → Member (총괄 띄우기, runnerEnabled 를 true 로)
 - `POST /api/projects/:id/messages`(SendMessageReq; id 는 클라이언트 UUID로 멱등) → Message. 연결되어 있지 않으면 409(§3.1)
 - `POST /api/uploads?project=<id>&target=<직원 id>`(multipart, file, 50MB) → Attachment. `project` 를 주면 연결을 먼저 본다(409). 끝까지 올린 뒤에 보내기에서 거부당하지 않게 화면은 붙인다
