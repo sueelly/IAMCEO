@@ -140,7 +140,8 @@ struct ChatMineRow: View {
         }
     }
 
-    /// Web .th-mine: gap 8, padding 10 15 11.
+    /// Web .th-mine: gap 8, padding 10 15 11; violet #7A5BFF → #6D4DF2 in white, a lit top edge and a soft violet
+    /// shadow below (0 8px 18px -10px rgb(109 77 242 / .6)).
     private var bubble: some View {
         let shape = ChatBubbleShape.shape
         return VStack(alignment: .leading, spacing: 8) {
@@ -157,7 +158,10 @@ struct ChatMineRow: View {
         .foregroundStyle(Color.white)
         .tint(ChatPalette.bubbleLink)
         .padding(.horizontal, 15).padding(.top, 10).padding(.bottom, 11)
-        .background(ChatPalette.bubble, in: shape)
+        .background {
+            shape.fill(ChatPalette.bubble)
+                .shadow(color: CE.accentFill.opacity(0.35), radius: 9, y: 8)
+        }
         .overlay { shape.strokeBorder(ChatPalette.bubbleRim, lineWidth: 1) }
         .chatMessageMenu(message)
     }
@@ -1280,8 +1284,8 @@ private struct ChatNoteCapsule: View {
         .font(CEFont.meta)
         .padding(.horizontal, 10)
         .frame(height: 26)
-        .background(note.tone.color.opacity(0.1), in: Capsule())
-        .overlay { Capsule().strokeBorder(note.tone.color.opacity(0.22)) }
+        .background(note.tone.dot.opacity(0.12), in: Capsule())
+        .overlay { Capsule().strokeBorder(note.tone.dot.opacity(0.28)) }
         .help(note.text)
     }
 }
@@ -1311,13 +1315,13 @@ private struct ChatNoteStrip: View {
         .font(CEFont.meta)
         .padding(.horizontal, 12).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(note.tone.color.opacity(0.1), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(note.tone.color.opacity(0.22)) }
+        .background(note.tone.dot.opacity(0.12), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(note.tone.dot.opacity(0.28)) }
     }
 }
 
-/// Web .th-link: rounded chip with a chevron (13.5 / 600 at 1.35, padding 6 12 6 14, radius 12); the open-decision
-/// chip is the violet one. 36 tall on Mac (the web chip step), 44 on iPhone.
+/// Web .th-link / mockup .th-jump: rounded soft-violet chip with a chevron in the link violet (13.5 / 600 at 1.35,
+/// padding 6 12 6 14, radius 12); the open-decision chip is the selected-violet one. 36 tall on Mac (the web chip step), 44 on iPhone.
 private struct ChatJumpChip: View {
     let title: String
     var prominent = false
@@ -1326,7 +1330,7 @@ private struct ChatJumpChip: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Text(title).lineLimit(2).ceLineHeight(13.5, 1.35)
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.ink2)
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.accent)
             }
             .font(ChatFont.chip)
             .foregroundStyle(CE.ink)
@@ -1349,14 +1353,25 @@ private struct ChatJumpBody<Label: View>: View {
     let pressed: Bool
     let prominent: Bool
     @State private var hovering = false
-    /// Web: white .07 → .13 on hover; the open one violet .34 → .48. 120ms linear.
+    /// Mockup .th-jump: soft violet (--soft) in its ring (--soft-ring); the open one the selected violet (--sel-bg) in a
+    /// focus-violet ring. Hover/press add a faint violet wash. 120ms linear.
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        let fill = prominent ? (pressed ? 0.54 : hovering ? 0.48 : 0.34) : (pressed ? 0.17 : hovering ? 0.13 : 0.07)
+        let wash = pressed ? 0.08 : hovering ? 0.04 : 0
+        let ring = prominent ? CE.focus.opacity(0.8) : CE.softRing
         label
             .contentShape(shape)
-            .background(prominent ? CE.violet.opacity(fill) : Color.white.opacity(fill), in: shape)
-            .overlay { shape.strokeBorder(prominent ? CE.violet.opacity(0.8) : Color.white.opacity(0.1)) }
+            .background {
+                ZStack {
+                    if prominent {
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        shape.fill(CE.soft)
+                    }
+                    shape.fill(CE.violet.opacity(wash))
+                }
+            }
+            .overlay { shape.strokeBorder(ring) }
             .animation(.linear(duration: 0.12), value: hovering)
             .onHover { hovering = $0 }
     }
@@ -1380,7 +1395,7 @@ private struct ChatFooterLink: View {
     }
 }
 
-/// Web `.pj[aria-current]`: violet gradient (.32 → .2) with a bright top edge; otherwise a plain white fill.
+/// Mockup selected row (--sel-bg / --sel-ring): violet .16 → .10 in a violet .3 ring; otherwise a faint ink wash.
 private struct ChatSelectionFill<S: InsettableShape>: View {
     let shape: S
     let selected: Bool
@@ -1388,10 +1403,10 @@ private struct ChatSelectionFill<S: InsettableShape>: View {
     var body: some View {
         if selected {
             shape
-                .fill(LinearGradient(colors: [CE.violet.opacity(0.34), CE.violet.opacity(0.2)], startPoint: .top, endPoint: .bottom))
-                .overlay { shape.strokeBorder(ChatPalette.selectionRim, lineWidth: 1) }
+                .fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                .overlay { shape.strokeBorder(CE.selectedRing, lineWidth: 1) }
         } else if rest > 0 {
-            shape.fill(Color.white.opacity(rest))
+            shape.fill(CE.wash(rest * 0.8))
         } else {
             Color.clear
         }
@@ -1468,13 +1483,16 @@ private struct ChatBodyText: View {
         }
         return false
     }
-    /// Inline markdown on the violet bubble: `code` sits on a dark chip (web .th-mine .md code rgb(9 7 19 / .35)),
-    /// since the shared faint white chip disappears on violet.
+    /// Inline markdown on the violet bubble: `code` sits on a deep violet chip in white (like MarkdownText on accent),
+    /// since the shared faint violet chip disappears on violet; links are lilac and underlined.
     static func inline(_ value: String) -> AttributedString {
         var result = markdownInline(value)
         for run in result.runs where run.inlinePresentationIntent?.contains(.code) == true {
             result[run.range].backgroundColor = ChatPalette.bubbleCode
             if run.link == nil { result[run.range].foregroundColor = Color.white }
+        }
+        for run in result.runs where run.link != nil {
+            result[run.range].underlineStyle = Text.LineStyle.single
         }
         return result
     }
@@ -1482,27 +1500,23 @@ private struct ChatBodyText: View {
 
 /// Web thread colours that are not foundation tokens.
 private enum ChatPalette {
-    /// .th-mine background rgb(72 50 176 / .9).
-    static let bubble = Color(red: 72 / 255, green: 50 / 255, blue: 176 / 255).opacity(0.9)
-    static let bubbleTo = Color(hex: 0xDAD2FF)
-    static let bubbleLink = Color(hex: 0xE6DFFF)
-    /// .th-mine .md code background rgb(9 7 19 / .35).
-    static let bubbleCode = Color(red: 9 / 255, green: 7 / 255, blue: 19 / 255).opacity(0.35)
-    /// .th-card background rgb(15 11 32 / .72): a dark plate, not glass (hundreds of rows scroll).
-    static let cardFill = Color(red: 15 / 255, green: 11 / 255, blue: 32 / 255).opacity(0.72)
-    /// Bright top edge + faint ring (inset 0 1px .5px -.5px white .4, inset 0 0 0 1px white .07).
+    /// Mockup .th-mine (--mine): linear-gradient(180deg, #7A5BFF, #6D4DF2) under white text.
+    static let bubble = LinearGradient(colors: [CE.violet, CE.accentFill], startPoint: .top, endPoint: .bottom)
+    /// "{name}에게" subline and links on the bubble (--mine-to #E6DFFF).
+    static let bubbleTo = CE.onAccentSub
+    static let bubbleLink = CE.onAccentSub
+    /// `code` on the bubble: a deep violet chip rgb(28 12 96 / .35), as MarkdownText draws it on accent.
+    static let bubbleCode = Color(red: 28 / 255, green: 12 / 255, blue: 96 / 255).opacity(0.35)
+    /// Mockup .th-card (--card-bg): white .86, a plate rather than glass (hundreds of rows scroll).
+    static let cardFill = Color.white.opacity(0.86)
+    /// Lit top edge + faint ring on the bubble (inset 0 1px .5px white .4, inset 0 0 0 1px white .07).
     static let bubbleRim = LinearGradient(stops: [
         .init(color: .white.opacity(0.4), location: 0),
         .init(color: .white.opacity(0.08), location: 0.22),
         .init(color: .white.opacity(0.07), location: 1),
     ], startPoint: .top, endPoint: .bottom)
-    static let selectionRim = LinearGradient(stops: [
-        .init(color: .white.opacity(0.42), location: 0),
-        .init(color: .white.opacity(0.06), location: 0.3),
-        .init(color: .white.opacity(0.05), location: 1),
-    ], startPoint: .top, endPoint: .bottom)
-    /// .th-system background rgb(15 11 32 / .66).
-    static let systemFill = Color(red: 15 / 255, green: 11 / 255, blue: 32 / 255).opacity(0.66)
+    /// Mockup .th-sys background (--soft): violet .07.
+    static let systemFill = CE.soft
 }
 
 private enum ChatBubbleShape {
@@ -1534,8 +1548,9 @@ private enum ChatFont {
     #endif
 }
 
-/// Web .th-card: radius 18, a dark plate rgb(15 11 32 / .72) with a 1pt white .08 ring and a half-point white .42
-/// highlight along the top edge. No glass, rim gradient or blurred shadow: hundreds of these scroll.
+/// Mockup .th-card: radius 18, white .86 with a 1pt ink .06 ring (--card-ring) and a white highlight along the top
+/// edge, over a soft violet-ink shadow (--card-shadow: 0 1px 2px .05, 0 10px 28px -18px .25). No glass or rim
+/// gradient: hundreds of these scroll, so the shadow sits on the plain fill shape only.
 /// Reduce Transparency: the solid plate.
 private struct ChatCardSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -1545,11 +1560,15 @@ private struct ChatCardSurface: ViewModifier {
             content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
         } else {
             content
-                .background(ChatPalette.cardFill, in: shape)
+                .background {
+                    shape.fill(ChatPalette.cardFill)
+                        .shadow(color: CE.shadowNear.opacity(0.05), radius: 1, y: 1)
+                        .shadow(color: CE.shadowFar.opacity(0.16), radius: 12, y: 8)
+                }
                 .overlay {
                     ZStack {
-                        shape.strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-                        shape.strokeBorder(Color.white.opacity(0.42), lineWidth: 0.5)
+                        shape.strokeBorder(CE.wash(0.06), lineWidth: 1)
+                        shape.strokeBorder(Color.white, lineWidth: 0.5)
                             .mask(alignment: .top) {
                                 LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 8)
                             }
@@ -1625,6 +1644,11 @@ private struct ChatAttachmentItem: View {
     private var displayName: String { attachment.name.isEmpty ? "이름 없는 첨부" : attachment.name }
     private var isTextual: Bool { attachment.mime.hasPrefix("text/") || attachment.mime.contains("json") }
     private var sizeText: String { chatFileSize(attachment.size) }
+    /// A white ring on my violet bubble; an ink ring on the light cards.
+    private var thumbRing: Color { onBubble ? Color.white.opacity(hovering ? 0.28 : 0.1) : CE.wash(hovering ? 0.2 : 0.08) }
+    /// File chip: white .07 → .13 on my violet bubble; the soft violet (--soft) → violet .11 on the light cards.
+    private var chipFill: Color { onBubble ? Color.white.opacity(hovering ? 0.13 : 0.07) : CE.violet.opacity(hovering ? 0.11 : 0.07) }
+    private var chipRing: Color { onBubble ? Color.white.opacity(0.1) : CE.softRing }
 
     var body: some View {
         Group {
@@ -1642,7 +1666,8 @@ private struct ChatAttachmentItem: View {
             if let fileURL { quickLook = fileURL } else { Task { await load() } }
         } label: {
             ZStack {
-                CE.bgDeep.opacity(0.5)
+                // The well under a loading image: soft violet on the cards, light lilac on my bubble (ink stays legible).
+                onBubble ? Color.white.opacity(0.85) : CE.soft
                 if let image {
                     image.resizable().scaledToFill()
                         .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
@@ -1670,7 +1695,7 @@ private struct ChatAttachmentItem: View {
             }
             .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
             .clipShape(shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(hovering ? 0.28 : 0.1), lineWidth: 1) }
+            .overlay { shape.strokeBorder(thumbRing, lineWidth: 1) }
             .contentShape(shape)
             .animation(.linear(duration: 0.12), value: hovering)
         }
@@ -1689,7 +1714,8 @@ private struct ChatAttachmentItem: View {
 
     // MARK: Other files (web .atv-file)
 
-    /// 13.5 at 1.35, padding 6 14, radius 12, white .07 (hover .13) with a white .1 ring; name 550, size 12.5 ink-2.
+    /// 13.5 at 1.35, padding 6 14, radius 12; soft violet in its ring on the cards (white .07 / .1 ring on my bubble);
+    /// name 550, size 12.5 ink-2.
     private var fileChip: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         return VStack(alignment: .leading, spacing: 6) {
@@ -1710,8 +1736,8 @@ private struct ChatAttachmentItem: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 6)
                 .frame(minHeight: isMac ? 36 : 44)
-                .background(Color.white.opacity(hovering ? 0.13 : 0.07), in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.1), lineWidth: 1) }
+                .background(chipFill, in: shape)
+                .overlay { shape.strokeBorder(chipRing, lineWidth: 1) }
                 .contentShape(shape)
                 .animation(.linear(duration: 0.12), value: hovering)
             }
@@ -1738,7 +1764,7 @@ private struct ChatAttachmentItem: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(onBubble ? ChatPalette.bubbleCode : CE.bgDeep.opacity(0.5),
+                    .background(onBubble ? ChatPalette.bubbleCode : CE.violet.opacity(0.05),
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             if let error {

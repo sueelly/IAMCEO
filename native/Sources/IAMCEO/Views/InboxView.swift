@@ -292,7 +292,7 @@ struct InboxView: View {
             }
             .padding(.vertical, 16).padding(.horizontal, wide ? 18 : 14)
         }
-        .overlay { RoundedRectangle(cornerRadius: CERadius.plate, style: .continuous).strokeBorder(CE.approval.opacity(0.28)) }
+        .overlay { RoundedRectangle(cornerRadius: CERadius.plate, style: .continuous).strokeBorder(CE.approvalDot.opacity(0.4)) }
     }
 
     private func approvalHeader(_ member: Member) -> some View {
@@ -526,7 +526,7 @@ struct InboxView: View {
                 }
             }
             if expanded && hasMore {
-                // Web .ibx-done__bg: padding 12 14, radius 14, white .05; the detail at the card's 14.5 / 1.6.
+                // Web .ibx-done__bg: padding 12 14, radius 14, a faint ink wash; the detail at the card's 14.5 / 1.6.
                 VStack(alignment: .leading, spacing: 10) {
                     if !decision.detail.isEmpty { MarkdownText(text: decision.detail, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink) }
                     if !decision.images.isEmpty { ImageStrip(images: decision.images) }
@@ -536,13 +536,13 @@ struct InboxView: View {
                 }
                 .padding(.vertical, 12).padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(CE.wash(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.top, 2)
             }
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 16)
-        .background(CE.accent.opacity(flashID == id ? 0.1 : 0))
+        .background(CE.violet.opacity(flashID == id ? 0.1 : 0))
         .overlay { FlashRing(on: flashID == id, radius: 6) }
         .animation(.easeOut(duration: 0.35), value: flashID == id)
         .id(id)
@@ -1068,8 +1068,9 @@ private struct DecisionCard: View {
     }
 }
 
-/// Web option tile: quiet glass fill; the recommended one violet with a ring; the picked one deep violet with a
-/// focus ring and a check. When another option is picked the recommended one steps back.
+/// Mockup option tile (.opt): the soft violet fill and ring; the recommended one (.opt.rec) the selected violet fill with
+/// a 1.5pt focus ring; the picked one a deeper violet fill with a 2pt focus ring and a violet check. When another option
+/// is picked the recommended one steps back to the soft fill with a lighter ring.
 struct OptionTile: View {
     let option: DecisionOption
     let recommended: Bool
@@ -1093,7 +1094,7 @@ struct OptionTile: View {
                     if wasLastChoice { Tag("직전 답") }
                     Spacer(minLength: 0)
                     if picked {
-                        Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                        Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(CE.accent)
                             .accessibilityHidden(true)
                     }
                 }
@@ -1125,15 +1126,20 @@ struct OptionTile: View {
     }
 
     private var lit: Bool { hovering && isEnabled }
-    private var fill: Color {
-        if picked { return CE.violet.opacity(0.5) }
-        if recommended && !somethingPicked { return CE.violet.opacity(lit ? 0.32 : 0.2) }
-        return Color.white.opacity(lit ? 0.11 : 0.06)
+    private var fill: AnyShapeStyle {
+        if picked { return AnyShapeStyle(CE.violet.opacity(0.2)) }
+        // mockup .opt.rec --sel-bg: violet .16 → .10 top to bottom (a touch deeper on hover)
+        if recommended && !somethingPicked {
+            let top = lit ? CE.violet.opacity(0.2) : CE.selectedTop
+            let bottom = lit ? CE.violet.opacity(0.14) : CE.selectedBottom
+            return AnyShapeStyle(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
+        }
+        return AnyShapeStyle(lit ? CE.violet.opacity(0.11) : CE.soft)
     }
     private var stroke: (color: Color, width: CGFloat) {
-        if picked { return (CE.accent, 2) }
-        if recommended { return somethingPicked ? (CE.violet.opacity(0.5), 1) : (CE.violet.opacity(0.9), 1.5) }
-        return (Color.white.opacity(0.14), 1)
+        if picked { return (CE.focus, 2) }
+        if recommended { return somethingPicked ? (CE.focus.opacity(0.45), 1) : (CE.focus, 1.5) }
+        return (CE.softRing, 1)
     }
 }
 
@@ -1149,7 +1155,7 @@ private struct RecommendedBadge: View {
     }
 }
 
-/// Quiet press feedback for option tiles: a touch brighter and a hair smaller. Disabled options keep their fill and
+/// Quiet press feedback for option tiles: a touch lighter and a hair smaller. Disabled options keep their fill and
 /// ring; only the label steps down to ink-2 (web .ibx-opt:disabled), so locked cards stay readable.
 struct OptionPressStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1193,7 +1199,7 @@ struct ConfirmBar: View {
                 } label: {
                     HStack(spacing: 0) {
                         if busy {
-                            ProgressView().controlSize(.small).padding(.trailing, 6)
+                            ProgressView().controlSize(.small).tint(.white).padding(.trailing, 6)
                             Text("보내는 중")
                         } else {
                             // A long quote truncates; the verb always stays visible.
@@ -1302,7 +1308,8 @@ private struct AnswerFlow: View {
 
 // MARK: - Small pieces
 
-/// Web segment pill: thin glass capsule; the active half is a violet drop with a ring that slides between halves.
+/// Web segment pill: the card glass capsule; the active half is the white `TabDrop` (violet glow and ring) that slides
+/// between halves, its label in the accent.
 private struct InboxSegmentBar: View {
     @Binding var segment: InboxSegment
     let openCount: Int
@@ -1327,7 +1334,7 @@ private struct InboxSegmentBar: View {
     }
 }
 
-/// One half of the segment pill (web .ibx-seg__item: 44 tall on the web, 13.5 / 600, ink-2 that brightens on hover).
+/// One half of the segment pill (web .ibx-seg__item: 44 tall on the web, 13.5 / 600, ink-2 that darkens to ink on hover).
 /// Pending decisions show their count as an accent bubble so they read at a glance; the done count stays plain.
 private struct InboxSegmentItem: View {
     let title: String
@@ -1350,15 +1357,13 @@ private struct InboxSegmentItem: View {
                 }
             }
             .font(segmentFont)
-            .foregroundStyle(selected ? Color.white : hovering ? CE.ink : CE.ink2)
+            .foregroundStyle(selected ? CE.accent : hovering ? CE.ink : CE.ink2)
             .lineLimit(1)
             .padding(.horizontal, stretch ? 8 : 14)
             .frame(maxWidth: stretch ? .infinity : nil, minHeight: isMac ? 40 : 44)
             .background {
                 if selected {
-                    Capsule().fill(CE.violet.opacity(0.42))
-                        .overlay { Capsule().strokeBorder(CE.violet.opacity(0.9)) }
-                        .shadow(color: CE.violet.opacity(0.45), radius: 10, y: 2)
+                    TabDrop()
                         .matchedGeometryEffect(id: "drop", in: drop)
                 }
             }
@@ -1380,7 +1385,7 @@ private struct InboxSegmentItem: View {
     }
 }
 
-/// Web .ibx-count: a 20pt bubble, 12 / 650. Neutral is white .12 with ink digits; accent is the accent fill with white.
+/// Web .ibx-count: a 20pt bubble, 12 / 650. Neutral is a faint ink wash with ink digits; accent is the accent fill with white.
 private struct InboxCount: View {
     let count: Int
     var accent = false
@@ -1391,12 +1396,12 @@ private struct InboxCount: View {
             .foregroundStyle(accent ? Color.white : CE.ink)
             .padding(.horizontal, 6)
             .frame(minWidth: 20, minHeight: 20)
-            .background(accent ? CE.accentFill : Color.white.opacity(0.12), in: Capsule())
+            .background(accent ? CE.accentFill : CE.wash(0.08), in: Capsule())
             .fixedSize()
     }
 }
 
-/// Group container (web .ibx-group): violet tint with a violet ring. Its tree is the same for one card and several so
+/// Group container (web .ibx-group): the soft violet tint with a violet ring. Its tree is the same for one card and several so
 /// a card never remounts (and loses its memo focus) when a second card joins; only the header and tint appear.
 private struct GroupFrame<Header: View, Content: View>: View {
     let single: Bool
@@ -1410,8 +1415,8 @@ private struct GroupFrame<Header: View, Content: View>: View {
             content
         }
         .padding(single ? 0 : (wide ? 10 : 8))
-        .background(CE.violet.opacity(single ? 0 : 0.1), in: shape)
-        .overlay { shape.strokeBorder(CE.violet.opacity(single ? 0 : 0.3)) }
+        .background(CE.violet.opacity(single ? 0 : 0.07), in: shape)
+        .overlay { shape.strokeBorder(CE.violet.opacity(single ? 0 : 0.22)) }
     }
 }
 
@@ -1452,7 +1457,7 @@ private struct ClampedDetail: View {
     }
 }
 
-/// Web .ibx-more: a focus-coloured text toggle with a turning chevron; it brightens to ink on hover.
+/// Web .ibx-more: an accent text toggle with a turning chevron; it darkens to ink on hover.
 private struct DisclosureLink: View {
     let title: String
     let expanded: Bool
@@ -1532,7 +1537,7 @@ private struct DecisionThumb: View {
                     image.resizable().scaledToFill().frame(width: width, height: height)
                 } else {
                     ZStack {
-                        Color.white.opacity(0.04)
+                        CE.wash(0.04)
                         if loading {
                             ProgressView().controlSize(.small)
                         } else {
@@ -1543,7 +1548,7 @@ private struct DecisionThumb: View {
                 }
             }
             .clipShape(shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(hovering ? 0.22 : 0.12)) }
+            .overlay { shape.strokeBorder(CE.wash(hovering ? 0.2 : 0.1)) }
             .contentShape(shape)
         }
         .buttonStyle(.plain)
@@ -1592,7 +1597,7 @@ private func decodeThumbnail(_ data: Data, maxPixel: Int) -> (image: Image, size
     return (Image(decorative: cgImage, scale: 1), CGSize(width: cgImage.width, height: cgImage.height))
 }
 
-/// Web .ibx-file: "자료 보기: 제목" opens the file in 자료 (14 / 500 in the focus colour, white .05 well, ring .1).
+/// Web .ibx-file: "자료 보기: 제목" opens the file in 자료 (14 / 500 in the accent, the soft violet well and ring).
 private struct FileChip: View {
     let title: String?
     let action: () -> Void
@@ -1607,8 +1612,8 @@ private struct FileChip: View {
             .font(isMac ? .system(size: 14, weight: .medium) : CEFont.body.weight(.medium)).foregroundStyle(CE.accent)
             .padding(.leading, 11).padding(.trailing, 14)
             .frame(minHeight: isMac ? 36 : 44)
-            .background(Color.white.opacity(hovering ? 0.09 : 0.05), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+            .background(hovering ? CE.violet.opacity(0.11) : CE.soft, in: shape)
+            .overlay { shape.strokeBorder(CE.softRing) }
             .contentShape(shape)
         }
         .buttonStyle(.plain)
@@ -1622,7 +1627,7 @@ private struct FlashRing: View {
     var radius: CGFloat = CERadius.plate
     var body: some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .strokeBorder(CE.accent, lineWidth: 2)
+            .strokeBorder(CE.focus, lineWidth: 2)
             .opacity(on ? 1 : 0)
             .animation(.easeOut(duration: 0.35), value: on)
             .allowsHitTesting(false)

@@ -132,7 +132,8 @@ private struct DeliveryNoticeRow: View {
             || !deliveryPanelActions(item).isEmpty
     }
 
-    /// The message as a quoted well (at most four lines; the full text is in 원문 보기).
+    /// The message as a quoted well (at most four lines; the full text is in 원문 보기): mockup --field, white .9 in
+    /// an ink .12 ring, so it stands out on the white glass plate.
     private func quoted(_ text: String) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return Text(text).font(CEFont.body).foregroundStyle(CE.ink)
@@ -142,8 +143,8 @@ private struct DeliveryNoticeRow: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CE.bgDeep.opacity(0.5), in: shape)
-            .overlay { shape.strokeBorder(CE.line) }
+            .background(CE.bgDeep.opacity(0.9), in: shape)
+            .overlay { shape.strokeBorder(CE.wash(0.12)) }
     }
 
     /// "마지막 확인 3분 전 · 다음 확인 14:20" on one line; the full dates are the tooltip.

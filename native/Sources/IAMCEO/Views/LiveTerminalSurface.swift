@@ -22,6 +22,21 @@ struct TerminalGridLayout: Equatable {
     }
 }
 
+/// The terminal screen itself stays DARK on purpose, the one exception to the light glass theme: it mirrors CLI
+/// programs whose ANSI colours are tuned for a dark terminal. Only the canvas is dark; the chrome around it is light.
+/// The live SwiftTerm view (Mac and iPhone), the key bar preview and the mirrored text screen all use these values.
+/// Spelled `SwiftUI.Color`: this file imports SwiftTerm, which has its own `Color` class.
+enum TerminalScreenPalette {
+    /// Canvas #0B0918.
+    static let background: SwiftUI.Color = SwiftUI.Color(red: 11/255, green: 9/255, blue: 24/255)
+    /// Text #F5F2FF.
+    static let text: SwiftUI.Color = SwiftUI.Color(hex: 0xF5F2FF)
+    /// Placeholder / empty-screen text #8F88B2 (5.9:1 on the canvas).
+    static let faint: SwiftUI.Color = SwiftUI.Color(hex: 0x8F88B2)
+    /// Caret #B9A8FF.
+    static let caret: SwiftUI.Color = SwiftUI.Color(hex: 0xB9A8FF)
+}
+
 /// SwiftTerm owns VT parsing, selection, accessibility and (on iOS) the input accessory.
 struct LiveTerminalSurface: View {
     let client: TerminalStreamClient
@@ -235,10 +250,12 @@ final class TerminalSurfaceHost: NSScrollView {
         options.scrollback = 5000
         terminal = TerminalCanvas(frame: CGRect(x: 0, y: 0, width: 800, height: 500), font: Self.font(13), options: options)
         super.init(frame: frame)
+        // Dark terminal canvas on purpose (TerminalScreenPalette): CLI colours are tuned for a dark terminal.
         drawsBackground = true; backgroundColor = NSColor(red: 11/255, green: 9/255, blue: 24/255, alpha: 1)
         hasVerticalScroller = true; hasHorizontalScroller = true; autohidesScrollers = true
+        scrollerKnobStyle = .light
         terminal.nativeBackgroundColor = backgroundColor
-        terminal.nativeForegroundColor = NSColor(CE.ink); terminal.caretColor = NSColor(CE.accent)
+        terminal.nativeForegroundColor = NSColor(TerminalScreenPalette.text); terminal.caretColor = NSColor(TerminalScreenPalette.caret)
         terminal.terminalDelegate = coordinator; terminal.surface = self
         canvas.wantsLayer = true
         canvas.addSubview(terminal); documentView = canvas
@@ -473,11 +490,13 @@ final class TerminalSurfaceHost: UIScrollView, UIScrollViewDelegate {
         options.scrollback = 5000
         terminal = TerminalCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: 400), font: Self.font(10), options: options)
         super.init(frame: frame)
+        // Dark terminal canvas on purpose (TerminalScreenPalette): CLI colours are tuned for a dark terminal.
         backgroundColor = UIColor(red: 11/255, green: 9/255, blue: 24/255, alpha: 1)
+        indicatorStyle = .white
         terminal.nativeBackgroundColor = backgroundColor!
-        terminal.nativeForegroundColor = UIColor(CE.ink); terminal.caretColor = UIColor(CE.accent)
+        terminal.nativeForegroundColor = UIColor(TerminalScreenPalette.text); terminal.caretColor = UIColor(TerminalScreenPalette.caret)
         terminal.terminalDelegate = coordinator; terminal.surface = self
-        // The app's key bar (separate chips, dark) instead of SwiftTerm's plain grey default.
+        // The app's key bar (separate chips, light glass) instead of SwiftTerm's plain grey default.
         inputAccessory = TerminalKeyBar(terminal: terminal)
         updateInputMode()
         canvas.addSubview(terminal); addSubview(canvas); delegate = self

@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The screen and key events come from the daemon's leased CLI session (`/terminal/control`).
 /// While this device holds the lease, the daemon pauses automatic delivery to the member.
-/// Look: the web .tm-screen well (near-black, hairline rim) on the aurora, with a compact status row and glass controls.
+/// Look: the web .tm-screen well (kept dark on purpose, hairline rim) on the light sheet, with a compact status row and
+/// light glass controls.
 struct TerminalMirrorView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -184,7 +185,7 @@ struct TerminalMirrorView: View {
             Button { follow.toggle() } label: {
                 Image(systemName: follow ? "arrow.down.to.line.compact" : "pause")
                     .font(.system(size: 12, weight: .semibold)).frame(width: 28, height: 28)
-                    .background(follow ? CE.accent.opacity(0.16) : Color.white.opacity(0.05), in: Circle())
+                    .background(follow ? CE.violet.opacity(0.16) : CE.wash(0.05), in: Circle())
                     .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
                     .contentShape(Rectangle())
             }
@@ -198,7 +199,7 @@ struct TerminalMirrorView: View {
                     if loading { ProgressView().controlSize(.mini) } else { Image(systemName: "arrow.clockwise") }
                 }
                 .font(.system(size: 12, weight: .semibold)).frame(width: 28, height: 28)
-                .background(Color.white.opacity(0.05), in: Circle())
+                .background(CE.wash(0.05), in: Circle())
                 .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
             }
@@ -227,7 +228,9 @@ struct TerminalMirrorView: View {
         }
     }
 
-    /// web .tm-screen: radius 12, padding 12, rgb(5 4 11 / .78) with a hairline ring, code at line-height 1.45.
+    /// web .tm-screen: radius 12, padding 12, a hairline ring, code at line-height 1.45. The screen stays DARK on purpose
+    /// (TerminalScreenPalette: it mirrors CLI programs whose colours are tuned for a dark terminal), opaque #0B0918 with
+    /// #F5F2FF text, inside the light sheet.
     private var terminal: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         return GeometryReader { proxy in
@@ -236,7 +239,7 @@ struct TerminalMirrorView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(displayText)
                             .font(CEFont.mono)
-                            .foregroundStyle(screen.isEmpty ? CE.ink3 : CE.ink)
+                            .foregroundStyle(screen.isEmpty ? TerminalScreenPalette.faint : TerminalScreenPalette.text)
                             .lineSpacing(CELeading.spacing(12.5, 1.45))
                             .textSelection(.enabled)
                             .fixedSize()
@@ -253,11 +256,14 @@ struct TerminalMirrorView: View {
                 }
             }
         }
+        // Dark scheme scoped to the dark canvas only, so the text-selection highlight and the scroll indicators are
+        // drawn for a dark surface (the light app scheme would put a pale highlight behind the light text).
+        .environment(\.colorScheme, .dark)
         .frame(minHeight: keyboardUp ? 120 : 220, maxHeight: .infinity)
-        .background(CE.bgDeep.opacity(0.78), in: shape)
+        .background(TerminalScreenPalette.background, in: shape)
         .clipShape(shape)
-        .overlay { shape.strokeBorder(controlling ? CE.approval.opacity(0.55) : CE.line, lineWidth: controlling ? 1.2 : 1) }
-        .shadow(color: controlling ? CE.approval.opacity(0.18) : .clear, radius: 14)
+        .overlay { shape.strokeBorder(controlling ? CE.approvalDot.opacity(0.75) : CE.line, lineWidth: controlling ? 1.2 : 1) }
+        .shadow(color: controlling ? CE.approvalDot.opacity(0.3) : .clear, radius: 14)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(current.name)의 CLI 화면")
     }
@@ -485,14 +491,14 @@ private struct TermNotice: View {
         }
         .padding(.vertical, 12).padding(.horizontal, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tone.color.opacity(0.09), in: shape)
-        .overlay { shape.strokeBorder(tone.color.opacity(0.22)) }
+        .background(tone.dot.opacity(0.1), in: shape)
+        .overlay { shape.strokeBorder(tone.dot.opacity(0.3)) }
         .layoutPriority(1)
         .accessibilityElement(children: .combine)
     }
 }
 
-/// Glass key cap: light fill, hairline rim, pressed state brighter. 32pt on Mac (web gbtn--s), 40 on iPhone.
+/// Glass key cap: white glass fill, light rim, a violet tint while pressed. 32pt on Mac (web gbtn--s), 40 on iPhone.
 private struct TermKeyStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { KeyBody(configuration: configuration) }
     private struct KeyBody: View {
@@ -505,7 +511,7 @@ private struct TermKeyStyle: ButtonStyle {
                 .foregroundStyle(isEnabled ? CE.ink : CE.ink3)
                 .padding(.horizontal, 12)
                 .frame(minWidth: isMac ? 40 : 44, minHeight: isMac ? 32 : 40)
-                .background(Color.white.opacity(configuration.isPressed ? 0.16 : hovering && isEnabled ? 0.11 : 0.07), in: shape)
+                .background(configuration.isPressed ? CE.violet.opacity(0.12) : Color.white.opacity(hovering && isEnabled ? 0.95 : 0.78), in: shape)
                 .background(.ultraThinMaterial.opacity(isEnabled ? 1 : 0.5), in: shape)
                 .overlay { if isEnabled { GlassRim(shape: shape) } else { shape.strokeBorder(CE.line) } }
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -516,7 +522,7 @@ private struct TermKeyStyle: ButtonStyle {
     }
 }
 
-/// The quiet round × of the title bar, as CECloseButton draws it: 26pt white-tint circle, ink-1 on hover.
+/// The quiet round × of the title bar, as CECloseButton draws it: 26pt ink-wash circle, ink-1 on hover.
 private struct MirrorCloseStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { CloseBody(configuration: configuration) }
     private struct CloseBody: View {
@@ -526,8 +532,8 @@ private struct MirrorCloseStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(hovering ? CE.ink : CE.ink2)
                 .frame(width: 26, height: 26)
-                .background(Color.white.opacity(configuration.isPressed ? 0.14 : hovering ? 0.1 : 0.06), in: Circle())
-                .overlay { Circle().strokeBorder(Color.white.opacity(0.07)) }
+                .background(CE.wash(configuration.isPressed ? 0.12 : hovering ? 0.08 : 0.05), in: Circle())
+                .overlay { Circle().strokeBorder(CE.line) }
                 .contentShape(Circle())
                 .onHover { hovering = $0 }
         }

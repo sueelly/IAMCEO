@@ -277,8 +277,9 @@ private struct TeamWorkList: View {
     }
 }
 
-/// Web .tm-chip: 13.5/600 ink-2, 36 tall (44 on a phone), padding 0 13, dark capsule rgb(11 8 26 / .55) with a white
-/// .1 hairline; selected = violet .42 fill and violet .9 rim; hover brightens the label.
+/// Web .tm-chip: 13.5/600 ink-2, 36 tall (44 on a phone), padding 0 13, the light violet soft capsule (violet .07 with a
+/// violet .16 ring); selected = the selected gradient (violet .16 → .10) in a violet .3 ring with an accent label; hover
+/// darkens the label to ink.
 private struct TeamFilterChip: View {
     let title: String
     let count: Int?
@@ -297,17 +298,21 @@ private struct TeamFilterChip: View {
             #else
             .font(.footnote.weight(.semibold))
             #endif
-            .foregroundStyle(selected || hovering ? CE.ink : CE.ink2)
+            .foregroundStyle(selected ? CE.accent : hovering ? CE.ink : CE.ink2)
             .padding(.horizontal, isMac ? 13 : 14)
             .frame(minHeight: isMac ? 36 : 44)
-            .background(selected ? CE.violet.opacity(0.42) : Color(red: 11 / 255, green: 8 / 255, blue: 26 / 255).opacity(0.55), in: Capsule())
-            .overlay { Capsule().strokeBorder(selected ? CE.violet.opacity(0.9) : Color.white.opacity(0.1)) }
+            .background(selected ? AnyShapeStyle(Self.selectedFill) : AnyShapeStyle(CE.soft), in: Capsule())
+            .overlay { Capsule().strokeBorder(selected ? CE.selectedRing : CE.softRing) }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityLabel(count.map { "\(title) \($0)건" } ?? title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private static var selectedFill: LinearGradient {
+        LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom)
     }
 }
 
@@ -832,7 +837,7 @@ struct MemberDetailView: View {
             stateBox(tone: .danger, icon: "exclamationmark.triangle.fill", title: "마지막 오류") {
                 // Web .tm-error: the error itself in the danger colour, 13.5 / 1.45.
                 Text(error)
-                    .font(CEFont.note).foregroundStyle(CE.danger.opacity(0.92)).lineSpacing(CELeading.note)
+                    .font(CEFont.note).foregroundStyle(CE.danger).lineSpacing(CELeading.note)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 // The way back that is actually in reach: 깨우기 in the row, or for an older runner's session the menu.
@@ -858,8 +863,9 @@ struct MemberDetailView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tone.color.opacity(0.07), in: shape)
-        .overlay { shape.strokeBorder(tone.color.opacity(0.2)) }
+        // Light: a faint wash of the state's dot colour and a slightly stronger rim; the text stays in tone.color.
+        .background(tone.dot.opacity(0.1), in: shape)
+        .overlay { shape.strokeBorder(tone.dot.opacity(0.3)) }
     }
 
     /// The last few lines of this member's conversation room, oldest first like the chat. A worker's room is its
@@ -1128,8 +1134,11 @@ struct MemberDetailView: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(CE.ink2)
                 .frame(width: isMac ? 32 : 38, height: isMac ? 32 : 38)
-                .background(Color.white.opacity(0.06), in: Capsule())
-                .overlay { Capsule().strokeBorder(Color.white.opacity(0.1)) }
+                // Same surface as the quiet buttons beside it (mockup .btn--g): white → white .8, violet .16 ring, the
+                // same soft violet-ink shadow under it.
+                .background(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom), in: Capsule())
+                .overlay { Capsule().strokeBorder(CE.softRing) }
+                .shadow(color: CE.shadowNear.opacity(0.16), radius: 6, y: 5)
                 .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
         }
@@ -1636,9 +1645,9 @@ private struct TeamContextBar: View {
         let value = Int(min(max(pct, 0), 100).rounded())
         let due = value >= compactAt
         HStack(spacing: 8) {
-            Capsule().fill(Color.white.opacity(0.12)).frame(width: 72, height: 5)
+            Capsule().fill(CE.wash(0.1)).frame(width: 72, height: 5)
                 .overlay(alignment: .leading) {
-                    Capsule().fill(due ? CE.attention : CE.live).frame(width: 72 * CGFloat(value) / 100, height: 5)
+                    Capsule().fill(due ? CE.attentionDot : CE.liveDot).frame(width: 72 * CGFloat(value) / 100, height: 5)
                 }
             Text("\(value)%").font(CEFont.secondary).monospacedDigit().foregroundStyle(CE.ink)
             if due { Tag("압축 기준 도달", tone: .attention) }
@@ -1931,8 +1940,8 @@ private enum NewMemberField: Hashable { case name, role, model }
 
 // MARK: - Member detail surfaces (file-private)
 
-/// Section plate of the member detail. In the Mac drawer (already a panel) a flat faint white fill and rim, no dark
-/// wells; on the iPhone page, which sits on the aurora, the shared card surface, so it is as clear as every other card.
+/// Section plate of the member detail. In the Mac drawer (already a panel) a flat white .55 fill and a faint ink rim,
+/// no wells; on the iPhone page, which sits on the aurora, the shared card surface, so it is as clear as every other card.
 private struct DetailPlate<Content: View>: View {
     @Environment(\.ceInsideGlass) private var insideGlass
     var padding: CGFloat = 14
@@ -1947,8 +1956,8 @@ private struct DetailPlate<Content: View>: View {
             .environment(\.ceInsideGlass, true)
         if insideGlass {
             inner
-                .background(Color.white.opacity(isMac ? 0.035 : 0.045), in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.065)) }
+                .background(Color.white.opacity(isMac ? 0.55 : 0.6), in: shape)
+                .overlay { shape.strokeBorder(CE.wash(0.06)) }
         } else {
             inner.cardGlass(shape)
         }
@@ -1965,8 +1974,8 @@ private struct DetailSectionTitle: View {
     }
 }
 
-/// Web .input.tm-select: a dark well with a white .12 ring, the value and a chevron at the trailing edge; the choices
-/// open as a menu. `content` is an inline Picker, so the chosen value keeps its checkmark.
+/// Web .input.tm-select: a white .9 well (mockup --field) with an ink .12 ring (.2 on hover), the value and a chevron
+/// at the trailing edge; the choices open as a menu. `content` is an inline Picker, so the chosen value keeps its checkmark.
 private struct TeamSelect<Content: View>: View {
     let value: String
     var mono = false
@@ -1992,8 +2001,8 @@ private struct TeamSelect<Content: View>: View {
             }
             .padding(.horizontal, 12)
             .frame(minWidth: 170, minHeight: isMac ? 36 : 44, alignment: .leading)
-            .background(CE.bgDeep.opacity(0.5), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(isEnabled && hovering ? 0.2 : 0.12)) }
+            .background(Color.white.opacity(0.9), in: shape)
+            .overlay { shape.strokeBorder(CE.wash(isEnabled && hovering ? 0.2 : 0.12)) }
             .contentShape(shape)
         }
         .menuStyle(.button)
@@ -2022,12 +2031,12 @@ private struct DetailPressStyle: ButtonStyle {
 }
 
 private extension View {
-    /// Text field on a flat plate: a light well instead of `ceField`'s dark one.
+    /// Text field on a flat plate: a white .9 well with an ink .12 ring (mockup --field / --field-ring).
     func detailField() -> some View {
         self.textFieldStyle(.plain)
             .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.line) }
+            .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.wash(0.12)) }
     }
 }
 
@@ -2195,7 +2204,8 @@ private func teamCopy(_ text: String) {
 }
 
 /// Observation-aware status using the shared tokens, also used by the terminal sheet. Web .status.tm-status: 24 tall,
-/// padding 0 9 0 8, dot 8, 12.5/600, a fill per state (none for asleep/offline, which keep only the hollow ring).
+/// padding 0 9 0 8, dot 8, 12.5/600, a fill per state at .13 of its dot colour (mockup .st, --pill-a .13; none for
+/// asleep/offline, which keep only the hollow ring).
 struct TeamMemberStatusBadge: View {
     let member: Member
     var body: some View {
@@ -2215,12 +2225,12 @@ struct TeamMemberStatusBadge: View {
 
     private static func fill(_ tone: Tone) -> Color {
         switch tone {
-        case .live, .accent: CE.violet.opacity(0.2)
-        case .attention: CE.attention.opacity(0.15)
-        case .approval: CE.approval.opacity(0.17)
-        case .danger: CE.error.opacity(0.15)
-        case .success: CE.success.opacity(0.14)
-        case .neutral: Color.white.opacity(0.06)
+        case .live, .accent: CE.liveDot.opacity(0.13)
+        case .attention: CE.attentionDot.opacity(0.13)
+        case .approval: CE.approvalDot.opacity(0.13)
+        case .danger: CE.error.opacity(0.13)
+        case .success: CE.successDot.opacity(0.13)
+        case .neutral: Color(red: 140 / 255, green: 140 / 255, blue: 160 / 255).opacity(0.13)
         case .dim: Color.clear
         }
     }

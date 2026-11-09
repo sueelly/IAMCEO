@@ -121,7 +121,7 @@ private struct MainWindow: View {
             .environment(store)
             .environment(router)
             .environment(drafts)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(.light)
             .tint(CE.accent)
             #if os(macOS)
             // Sidebar ≤320 + detail ≥560 fit inside this minimum (see AppShell.desk).
@@ -140,7 +140,7 @@ private struct SettingsWindow: View {
             .environment(store)
             .environment(router)
             .environment(drafts)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(.light)
             .tint(CE.accent)
     }
 }
