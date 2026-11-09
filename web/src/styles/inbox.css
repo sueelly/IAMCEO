@@ -38,21 +38,17 @@
 /* 셋 이하면 넓은 화면에서 나란히, 좁으면 자동으로 한 줄씩 */
 .ibx-opts[data-few] { grid-template-columns:repeat(auto-fit, minmax(min(100%, 210px), 1fr)); }
 .ibx-opt { display:flex; flex-direction:column; gap:3px; min-width:0; min-height:48px; padding:11px 14px; border-radius:14px; text-align:left;
-  background:var(--sticker-soft-bg); box-shadow:var(--sticker-shadow); transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
-.ibx-opt:active:not(:disabled) { box-shadow:var(--sticker-shadow-down); transition-duration:70ms; }
-@media (prefers-reduced-motion: reduce) { .ibx-opt { transition:none; } }
-@media (hover:hover) { .ibx-opt:hover:not(:disabled) { background-color:var(--sticker-soft-hover); box-shadow:var(--sticker-shadow-hover); } }
+  background:var(--btn-soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear, box-shadow 120ms linear; }
+@media (hover:hover) { .ibx-opt:hover:not(:disabled) { background:var(--btn-soft-hover); } }
 /* 권장: 고른 줄 바닥 + 보라 테두리(시안 .opt.rec) */
-.ibx-opt[data-rec] { background:linear-gradient(180deg, rgb(255 255 255 / .9), rgb(255 255 255 / 0) 16px), var(--btn-sel); box-shadow:var(--pick-ring), var(--sticker-shadow); }
-@media (hover:hover) { .ibx-opt[data-rec]:hover:not(:disabled) { background:linear-gradient(180deg, rgb(255 255 255 / .9), rgb(255 255 255 / 0) 16px), linear-gradient(var(--soft), var(--soft)), var(--btn-sel); box-shadow:var(--pick-ring), var(--sticker-shadow-hover); } }
-.ibx-opt[data-rec]:active:not(:disabled) { box-shadow:var(--pick-ring), var(--sticker-shadow-down); }
+.ibx-opt[data-rec] { background:var(--btn-sel); box-shadow:var(--pick-ring); }
+@media (hover:hover) { .ibx-opt[data-rec]:hover:not(:disabled) { background:linear-gradient(var(--soft), var(--soft)), var(--btn-sel); } }
 /* 보내는 중 등으로 잠긴 권장 선택지는 권장 표시(보라 바닥·테두리)를 지킨다. 다른 걸 고른 뒤에는 아래 :has 규칙이 덮는다 */
 .ibx-opt[data-rec]:disabled:not([aria-pressed="true"]) { background:var(--btn-sel); box-shadow:var(--pick-ring); }
 .ibx-opt:disabled { cursor:default; }
 .ibx-opt.ibx-opt[aria-pressed="true"], .ibx-opt.ibx-opt[aria-pressed="true"]:hover { background:var(--btn-press); box-shadow:inset 0 0 0 2px var(--focus); }
 .ibx-opt__check { flex:none; margin-left:auto; color:var(--link); }
-/* 답한 뒤 고르지 않은 선택지는 튀어나오지 않게 평평한 칩으로 */
-.ibx-opt:disabled:not([aria-pressed="true"]) { color:var(--ink-2); background:var(--btn-soft); box-shadow:var(--soft-ring); }
+.ibx-opt:disabled:not([aria-pressed="true"]) { color:var(--ink-2); }
 .ibx-opts:has(.ibx-opt[aria-pressed="true"]) .ibx-opt[data-rec]:not([aria-pressed="true"]) { background:var(--btn-soft); box-shadow:inset 0 0 0 1px rgb(var(--violet-rgb) / .45); }
 .input.ibx-memo__input:disabled { opacity:.7; cursor:not-allowed; }
 .ibx-opt__label { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; font-size:15px; font-weight:600; line-height:1.4; }
