@@ -1586,7 +1586,7 @@ export class Orchestrator implements OrchestratorApi {
       const log = this.contextLog(member);
       if (!log) throw new ApiError(409, "이어갈 native 세션 기록을 확인할 수 없습니다");
       const records = readJsonlRange(providerLogRoot(member.cli, log.home), log.path).records;
-      if (member.cli === "antigravity" ? !records.some(record => jsonObject(record.value)?.type === "USER_INPUT") : member.cli === "claude" && !records.some(record => {
+      if (member.cli === "antigravity" ? !records.some(record => jsonObject(record.value)?.type === "USER_INPUT") : member.cli !== "codex" && !records.some(record => {
         const entry = jsonObject(record.value);
         return entry?.sessionId === member.sessionId && entry.cwd === member.cwd && !entry.isSidechain;
       })) throw new ApiError(409, "현재 native 세션과 일치하는 주 세션 기록을 확인할 수 없습니다");
@@ -4522,7 +4522,7 @@ export class Orchestrator implements OrchestratorApi {
 
   private rulesFor(member: Member, project: Project): string {
     const conductor = this.store.getConductor(project.id);
-    const staffEffort = member.cli === "claude" ? this.store.getSettings().ranks.staff.effort : null;
+    const staffEffort = member.cli === "codex" || member.cli === "antigravity" ? null : this.store.getSettings().ranks.staff.effort;
     return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "" }, this.config.rolesDir);
   }
 
@@ -4540,7 +4540,8 @@ export class Orchestrator implements OrchestratorApi {
     const projectSessions = this.store.listMembers(project.id).flatMap((m) => (m.origin === "adopted" ? [] : (m.sessionId ?? [])));
     // 바이패스는 대표가 설정에서 고른 모드다. 첫 경고 창이 아무도 안 보는 칸에서 일을 막지 않게 한다.
     let settingsFile: string | undefined;
-    if (member.cli === "claude") {
+    // Claude only (also legacy rows without a cli): Codex and Antigravity take their settings as launch arguments.
+    if (member.cli !== "codex" && member.cli !== "antigravity") {
       settingsFile = join(dir, `${member.id}.settings.json`);
       const settings = { statusLine: writeStatuslineWrapper(this.config.home),
         ...(this.store.getSettings().permissionMode === "bypassPermissions" ? { skipDangerousModePermissionPrompt: true } : {}) };
@@ -4599,7 +4600,7 @@ export function mcpCommand(): { command: string; args: string[] } {
 
 /** Staff subagent model/effort the member's CLI passes on. Antigravity picks its own subagent model. */
 function staffSubagent(cli: CliProvider, ranks: Settings["ranks"], codexRanks: Settings["codexRanks"]): { subagentModel: string | null; subagentEffort: Settings["ranks"]["staff"]["effort"] | null } {
-  if (cli === "claude") return { subagentModel: ranks.staff.model, subagentEffort: ranks.staff.effort };
   if (cli === "codex") return { subagentModel: codexRanks.staff.model, subagentEffort: null };
-  return { subagentModel: null, subagentEffort: null };
+  if (cli === "antigravity") return { subagentModel: null, subagentEffort: null };
+  return { subagentModel: ranks.staff.model, subagentEffort: ranks.staff.effort };
 }
