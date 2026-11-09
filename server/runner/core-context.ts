@@ -119,6 +119,8 @@ export function observeCompactBoundary(options: { cli: CliProvider; home: string
   if (baseline.sessionId !== current.sessionId || baseline.generation !== current.generation || baseline.terminalId !== current.terminalId || baseline.model !== current.model ||
     (baseline.turn !== null && (current.turn === null || current.turn < baseline.turn)) || !baseline.fileIdentity ||
     (options.cursor && options.cursor.queryKey !== queryKey)) return unknown("session_changed");
+  // Antigravity has no /compact; IAMCEO never starts one there.
+  if (options.cli === "antigravity") return unknown("unsupported_provider");
   const root = options.cli === "codex" ? join(options.home, "sessions") : join(options.home, "projects");
   if (!providerLogPath(root, baseline.path)) return unknown("path_unavailable");
   if (options.cli === "codex") {

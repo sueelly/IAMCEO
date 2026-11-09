@@ -67,7 +67,8 @@ import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
 import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
-import { readJsonlRange, parseCodexSessionMeta, jsonObject } from "./runner/delivery-evidence.ts";
+import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
+import { ANTIGRAVITY_MODEL_RE, antigravityMemberHome, existingAntigravityTranscript } from "./runner/antigravity.ts";
 import { defaultClaudeHome, findSessionFile } from "./runner/herdr.ts";
 import { providerLaunch } from "./runner/providers.ts";
 import { CoreRunner, ensureCoreServer, type CoreCompactState, type CoreRunnerDeps } from "./runner/core.ts";
@@ -325,7 +326,7 @@ const MAX_TURN_ERROR_ATTEMPTS = 3;
 const SWITCH_SETTLE_MS = 5000;
 
 export interface OrchestratorDeps {
-  config: Pick<Config, "home" | "rolesDir" | "port"> & Partial<Pick<Config, "claudeBin" | "codexBin" | "coreBin" | "coreSocket" | "claudeHome" | "codexHome">>;
+  config: Pick<Config, "home" | "rolesDir" | "port"> & Partial<Pick<Config, "claudeBin" | "codexBin" | "antigravityBin" | "antigravityRoot" | "coreBin" | "coreSocket" | "claudeHome" | "codexHome">>;
   store: Store;
   runners: Map<Backend, Runner>;
   herdr?: HerdrQueries;
@@ -336,7 +337,7 @@ export interface OrchestratorDeps {
   notifier?: (title: string, body: string) => void;
   deliveryRecovery?: DeliveryRecovery;
   /** 주입한 CoreRunner와 같은 기록 루트. 시험은 임시 경로만 사용한다. */
-  providerHomes?: { claudeHome: string; codexHome: string };
+  providerHomes?: { claudeHome: string; codexHome: string; antigravityRoot?: string };
 }
 
 export interface NewMemberInput {
@@ -551,7 +552,7 @@ export function createOrchestrator(config: Config, store: Store): Orchestrator {
   const runners = new Map<Backend, Runner>();
   let orchestrator: Orchestrator | null = null;
   const deliveryRecovery = new OrchestratorDeliveryRecovery(store, member => orchestrator?.recoveryRunner(member) ?? null);
-  runners.set("core", new CoreRunner({ contextHome: config.home, coreBin: config.coreBin, socketPath: config.coreSocket, session: "iamceo", stateDir: join(config.home, "core-state"), configDir: join(config.home, "core-config"), claudeBin: config.claudeBin, codexBin: config.codexBin }, {
+  runners.set("core", new CoreRunner({ contextHome: config.home, coreBin: config.coreBin, socketPath: config.coreSocket, session: "iamceo", stateDir: join(config.home, "core-state"), configDir: join(config.home, "core-config"), claudeBin: config.claudeBin, codexBin: config.codexBin, antigravityBin: config.antigravityBin, antigravityRoot: config.antigravityRoot }, {
     recoveryStore: store,
     compactStore: coreCompactStore(store),
     repair: deliveryRecovery.repair,
@@ -560,7 +561,7 @@ export function createOrchestrator(config: Config, store: Store): Orchestrator {
     quiescence: (_memberId, dispatch) => ({ originalWrite: dispatch.transportState === "rejected" ? "rejected" : dispatch.transportState === "accepted" ? "settled" : "unresolved", externalInput: null }),
   }));
   const herdr: HerdrQueries = { info: () => detectHerdr(config.herdrSocket), agents: () => listAgents(config.herdrSocket), inspect: (a) => inspectPane(config.herdrSocket, a) };
-  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex") }, notifier: macNotifier() });
+  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"), antigravityRoot: config.antigravityRoot }, notifier: macNotifier() });
   return orchestrator;
 }
 
@@ -821,6 +822,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     return { backend: "core", core: { installed, available: available.ok, version, detail: available.ok ? null : available.detail ?? null }, providers: {
       claude: { installed: !!Bun.which(configured.claudeBin ?? "claude") }, codex: { installed: !!Bun.which(configured.codexBin ?? "codex") },
+      antigravity: { installed: !!Bun.which(configured.antigravityBin ?? "agy") },
     } };
   }
 
@@ -1583,8 +1585,8 @@ export class Orchestrator implements OrchestratorApi {
     if (runner instanceof CoreRunner) {
       const log = this.contextLog(member);
       if (!log) throw new ApiError(409, "이어갈 native 세션 기록을 확인할 수 없습니다");
-      const records = readJsonlRange(join(log.home, member.cli === "codex" ? "sessions" : "projects"), log.path).records;
-      if (member.cli !== "codex" && !records.some(record => {
+      const records = readJsonlRange(providerLogRoot(member.cli, log.home), log.path).records;
+      if (member.cli === "antigravity" ? !records.some(record => jsonObject(record.value)?.type === "USER_INPUT") : member.cli === "claude" && !records.some(record => {
         const entry = jsonObject(record.value);
         return entry?.sessionId === member.sessionId && entry.cwd === member.cwd && !entry.isSidechain;
       })) throw new ApiError(409, "현재 native 세션과 일치하는 주 세션 기록을 확인할 수 없습니다");
@@ -1637,6 +1639,7 @@ export class Orchestrator implements OrchestratorApi {
       if (targetRunner instanceof CoreRunner) {
         const model = this.desiredConfig(target).model;
         if (target.cli === "codex" && model && /^(?:claude[-:]|opus(?:-|$)|sonnet(?:-|$)|haiku(?:-|$))/i.test(model)) throw new ApiError(400, "Codex용 모델을 고르거나 직원 모델 지정을 기본값으로 되돌리세요");
+        if (target.cli === "antigravity" && model && !ANTIGRAVITY_MODEL_RE.test(model)) throw new ApiError(400, "Antigravity용 모델을 고르거나 직원 모델 지정을 기본값으로 되돌리세요");
         try { providerLaunch(this.runnerMember(target, project), this.writeRunFiles(target, project, !!target.sessionId), this.config); }
         catch (e) { throw new ApiError(400, `CLI 설정을 적용할 수 없습니다: ${(e as Error).message}`); }
       }
@@ -2724,6 +2727,12 @@ export class Orchestrator implements OrchestratorApi {
 
   private contextLog(member: Member): { path: string; home: string } | null {
     if (!this.providerHomes || !member.sessionId) return null;
+    if (member.cli === "antigravity") {
+      if (!this.providerHomes.antigravityRoot) return null;
+      const home = antigravityMemberHome(this.providerHomes.antigravityRoot, member.id);
+      const path = existingAntigravityTranscript(home, member.sessionId);
+      return path ? { path, home } : null;
+    }
     const home = member.cli === "codex" ? this.providerHomes.codexHome : this.providerHomes.claudeHome;
     if (member.cli !== "codex") {
       const path = findSessionFile(home, member.cwd, member.sessionId);
@@ -3017,8 +3026,7 @@ export class Orchestrator implements OrchestratorApi {
       parallel: m.parallel,
       updatedAt: m.updatedAt,
       ...memberConfig(m, ranks, codexRanks),
-      subagentModel: (m.cli === "codex" ? codexRanks : ranks).staff.model,
-      subagentEffort: m.cli === "codex" ? null : ranks.staff.effort,
+      ...staffSubagent(m.cli, ranks, codexRanks),
     }));
   }
 
@@ -3621,7 +3629,8 @@ export class Orchestrator implements OrchestratorApi {
   private desiredConfig(member: Member): AppliedConfig {
     const { ranks, codexRanks } = this.store.getSettings();
     const { model, effort } = memberConfig(member, ranks, codexRanks);
-    return { model, effort, staffModel: (member.cli === "codex" ? codexRanks : ranks).staff.model, staffEffort: member.cli === "codex" ? null : ranks.staff.effort };
+    const staff = staffSubagent(member.cli, ranks, codexRanks);
+    return { model, effort, staffModel: staff.subagentModel, staffEffort: staff.subagentEffort };
   }
 
   /** 서버가 띄운 세션이 지금 설정과 다른가. 넘겨받은 세션은 대표가 쓰던 칸이라 스스로 닫지 않는다(깨울 때 맞춰진다). 잠든 세션은 깨울 때 맞춰진다. */
@@ -4371,7 +4380,7 @@ export class Orchestrator implements OrchestratorApi {
       const old = state.baseline?.measurementLog as CompactBoundaryBaseline | undefined;
       let builtin = false;
       if (log && old) builtin = observeCompactBoundary({ cli: member.cli, home: log.home, cwd: member.cwd, baseline: old, current: identity, settled: true, providerError: false }).outcome === "succeeded";
-      const range = log ? readJsonlRange(join(log.home, member.cli === "codex" ? "sessions" : "projects"), log.path) : null;
+      const range = log ? readJsonlRange(providerLogRoot(member.cli, log.home), log.path) : null;
       const baseline = range?.complete && range.cursor && log ? { ...identity, path: log.path, fileIdentity: range.cursor.fileIdentity, offset: range.cursor.offset } : null;
       this.store.saveContextState({ ...state, measurement, baseline: { ...state.baseline, configRevision: this.store.memberRevisions(member.id).configRevision,
         measurementLog: baseline, ...(builtin ? { autoTurn: measurement.turn } : {}) } },
@@ -4503,7 +4512,7 @@ export class Orchestrator implements OrchestratorApi {
       sessionId: member.sessionId,
       paneId: member.paneId,
       ...memberConfig(member, settings.ranks, settings.codexRanks),
-      subagentModel: (member.cli === "codex" ? settings.codexRanks : settings.ranks).staff.model,
+      subagentModel: staffSubagent(member.cli, settings.ranks, settings.codexRanks).subagentModel,
       permissionMode: settings.permissionMode,
       kind: member.kind,
       origin: member.origin,
@@ -4513,7 +4522,7 @@ export class Orchestrator implements OrchestratorApi {
 
   private rulesFor(member: Member, project: Project): string {
     const conductor = this.store.getConductor(project.id);
-    const staffEffort = member.cli === "codex" ? null : this.store.getSettings().ranks.staff.effort;
+    const staffEffort = member.cli === "claude" ? this.store.getSettings().ranks.staff.effort : null;
     return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "" }, this.config.rolesDir);
   }
 
@@ -4531,7 +4540,7 @@ export class Orchestrator implements OrchestratorApi {
     const projectSessions = this.store.listMembers(project.id).flatMap((m) => (m.origin === "adopted" ? [] : (m.sessionId ?? [])));
     // 바이패스는 대표가 설정에서 고른 모드다. 첫 경고 창이 아무도 안 보는 칸에서 일을 막지 않게 한다.
     let settingsFile: string | undefined;
-    if (member.cli !== "codex") {
+    if (member.cli === "claude") {
       settingsFile = join(dir, `${member.id}.settings.json`);
       const settings = { statusLine: writeStatuslineWrapper(this.config.home),
         ...(this.store.getSettings().permissionMode === "bypassPermissions" ? { skipDangerousModePermissionPrompt: true } : {}) };
@@ -4586,4 +4595,11 @@ export function cliCommand(): string {
 export function mcpCommand(): { command: string; args: string[] } {
   if (import.meta.path.startsWith("/$bunfs/")) return { command: process.execPath, args: ["mcp"] };
   return { command: process.execPath, args: [resolve(import.meta.dir, "..", "bin", "iamceo.ts"), "mcp"] };
+}
+
+/** Staff subagent model/effort the member's CLI passes on. Antigravity picks its own subagent model. */
+function staffSubagent(cli: CliProvider, ranks: Settings["ranks"], codexRanks: Settings["codexRanks"]): { subagentModel: string | null; subagentEffort: Settings["ranks"]["staff"]["effort"] | null } {
+  if (cli === "claude") return { subagentModel: ranks.staff.model, subagentEffort: ranks.staff.effort };
+  if (cli === "codex") return { subagentModel: codexRanks.staff.model, subagentEffort: null };
+  return { subagentModel: null, subagentEffort: null };
 }

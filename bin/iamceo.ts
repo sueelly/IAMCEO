@@ -658,13 +658,14 @@ export async function service(args: string[], dependencies?: ServiceDependencies
   const logDir = join(config.home, "logs");
   const serviceEnv = { ...inherited, ...process.env };
   const env = Object.fromEntries(
-    (["IAMCEO_HOME", "IAMCEO_PORT", "IAMCEO_CLAUDE_BIN", "IAMCEO_CODEX_BIN", "IAMCEO_CORE_BIN", "IAMCEO_CORE_SOCKET"] as const).flatMap((k) => (serviceEnv[k] ? [[k, serviceEnv[k]!]] : [])),
+    (["IAMCEO_HOME", "IAMCEO_PORT", "IAMCEO_CLAUDE_BIN", "IAMCEO_CODEX_BIN", "IAMCEO_ANTIGRAVITY_BIN", "IAMCEO_CORE_BIN", "IAMCEO_CORE_SOCKET"] as const).flatMap((k) => (serviceEnv[k] ? [[k, serviceEnv[k]!]] : [])),
   );
   const claude = config.claudeBin.includes("/") ? config.claudeBin : Bun.which(config.claudeBin);
   const codex = config.codexBin?.includes("/") ? config.codexBin : Bun.which(config.codexBin ?? "codex");
+  const antigravity = config.antigravityBin?.includes("/") ? config.antigravityBin : Bun.which(config.antigravityBin ?? "agy");
   const core = config.coreBin?.includes("/") ? config.coreBin : Bun.which(config.coreBin ?? "herdr-core");
-  Object.assign(env, { IAMCEO_LOG_WRITER: "1", IAMCEO_HOME: config.home, ...(claude ? { IAMCEO_CLAUDE_BIN: claude } : {}), ...(codex ? { IAMCEO_CODEX_BIN: codex } : {}), ...(core ? { IAMCEO_CORE_BIN: core } : {}), IAMCEO_CORE_SOCKET: config.coreSocket ?? join(config.home, "run", "core.sock") });
-  const plist = launchdPlist({ program: dependencies?.program ?? selfCommand("serve"), home, logDir, workingDir: home, env, path: servicePath(home, [claude, codex ?? null, core ?? null]) });
+  Object.assign(env, { IAMCEO_LOG_WRITER: "1", IAMCEO_HOME: config.home, ...(claude ? { IAMCEO_CLAUDE_BIN: claude } : {}), ...(codex ? { IAMCEO_CODEX_BIN: codex } : {}), ...(antigravity ? { IAMCEO_ANTIGRAVITY_BIN: antigravity } : {}), ...(core ? { IAMCEO_CORE_BIN: core } : {}), IAMCEO_CORE_SOCKET: config.coreSocket ?? join(config.home, "run", "core.sock") });
+  const plist = launchdPlist({ program: dependencies?.program ?? selfCommand("serve"), home, logDir, workingDir: home, env, path: servicePath(home, [claude, codex ?? null, antigravity ?? null, core ?? null]) });
   if (dry) return console.log(`쓸 파일: ${plistPath}\n로그: ${join(logDir, "server.log")}\n실행할 명령: launchctl bootstrap ${target} ${plistPath}\n\n${plist}`);
   if (!claude) console.log("claude 명령을 찾지 못했습니다. Claude Code 를 설치한 뒤 iamceo service install 을 다시 실행하세요. 그때 찾은 위치를 서비스에 적어 둡니다.");
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { CliProvider, Member, PatchMemberReq, Settings, SettingsPatch } from "../shared/types.ts";
 import { ApiError } from "./store.ts";
 import { CODEX_EFFORTS, EFFORTS, memberRank } from "../shared/types.ts";
+import { ANTIGRAVITY_DEFAULT_MODELS } from "./runner/antigravity.ts";
 
 export interface ModelOption {
   value: string;
@@ -17,7 +18,7 @@ export interface ModelList {
   source: "cli" | "default";
   updatedAt?: string;
 }
-export interface ModelCatalog { claude: ModelList; codex: ModelList }
+export interface ModelCatalog { claude: ModelList; codex: ModelList; antigravity: ModelList }
 
 const validName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,127}$/.test(value);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -74,7 +75,8 @@ export class ModelCatalogReader {
     };
   }
 
-  read(): ModelCatalog { return { claude: this.readList("claude"), codex: this.readList("codex") }; }
+  // agy 1.5.3 keeps no model cache file; its picker list is fixed per release. Effort is part of the model id.
+  read(): ModelCatalog { return { claude: this.readList("claude"), codex: this.readList("codex"), antigravity: { source: "default", models: ANTIGRAVITY_DEFAULT_MODELS.map(model => ({ ...model, efforts: [] })) } }; }
 
   requireModel(cli: CliProvider, value: string | null | undefined): void {
     if (value == null) return;
@@ -85,6 +87,7 @@ export class ModelCatalogReader {
   }
 
   efforts(cli: CliProvider, value?: string | null): readonly string[] {
+    if (cli === "antigravity") return [];
     const list = this.read()[cli].models;
     const model = list.find(model => model.value === value) ??
       (cli === "claude" && value === "fable" ? list.find(model => model.label.toLowerCase() === "fable") : undefined);
@@ -104,8 +107,8 @@ export class ModelCatalogReader {
       catch { patch.modelOverride = null; resetOverrides.push("modelOverride"); }
     }
     this.requireModel(cli, patch.modelOverride);
-    const rank = (cli === "codex" ? settings.codexRanks : settings.ranks)[memberRank(member.kind)];
-    const model = (patch.modelOverride === undefined ? member.modelOverride : patch.modelOverride) ?? rank.model;
+    const rank = cli === "antigravity" ? null : (cli === "codex" ? settings.codexRanks : settings.ranks)[memberRank(member.kind)];
+    const model = (patch.modelOverride === undefined ? member.modelOverride : patch.modelOverride) ?? rank?.model ?? null;
     if (switching && patch.effortOverride === undefined && member.effortOverride != null && !this.efforts(cli, model).includes(member.effortOverride)) {
       patch.effortOverride = null; resetOverrides.push("effortOverride");
     }

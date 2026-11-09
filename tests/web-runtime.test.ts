@@ -5,7 +5,7 @@ import { providerName, runtimeBlock } from "../web/src/lib/runtime";
 const healthy = (): RuntimeInfo => ({
   backend: "core",
   core: { installed: true, available: true, version: "0.1.18", detail: null },
-  providers: { claude: { installed: true }, codex: { installed: true } },
+  providers: { claude: { installed: true }, codex: { installed: true }, antigravity: { installed: true } },
 });
 
 describe("web runtime launch gate", () => {
@@ -26,9 +26,9 @@ describe("web runtime launch gate", () => {
     expect(runtimeBlock(runtime, "claude")).toBeNull();
   });
   test("healthy core and selected installed provider permit a real server launch", () => {
-    for (const cli of ["claude", "codex"] as const) {
+    for (const cli of ["claude", "codex", "antigravity"] as const) {
       expect(runtimeBlock(healthy(), cli)).toBeNull();
-      expect(providerName(cli)).toBe(cli === "claude" ? "Claude Code" : "Codex");
+      expect(providerName(cli)).toBe({ claude: "Claude Code", codex: "Codex", antigravity: "Antigravity" }[cli]);
     }
   });
 });

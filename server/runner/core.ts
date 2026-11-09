@@ -6,11 +6,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalPrompt, Backend } from "../../shared/types.ts";
 import { claudeFolderTrust, codexFolderTrust } from "./core-approval.ts";
+import { antigravityDraft, antigravityExactComposer, antigravityFolderTrust, antigravityMemberHome, discoverAntigravityConversation, existingAntigravityTranscript, readAntigravityContext } from "./antigravity.ts";
 import { cleanText } from "../text.ts";
 import { childEnv } from "./headless.ts";
 import { defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
 import { CoreError, coreRpc, coreSocketPath, type CoreHello, type CoreTerminal } from "./core-client.ts";
-import { providerFor, providerLaunch, isProviderArgv, type ProviderBins } from "./providers.ts";
+import { providerFor, providerLaunch, isProviderArgv, type CoreProvider, type ProviderBins } from "./providers.ts";
 import { codexBindingMarker, discoverCodexSession, observeCompactBoundary, type CodexBindingCursor, type CompactBoundaryBaseline, type CompactBoundaryCursor } from "./core-context.ts";
 import { readDeliveryEvidence, readJsonlRange, parseCodexSessionMeta, providerLogPath, type DeliveryEvidenceCursor, type JsonlCursor } from "./delivery-evidence.ts";
 import type { DeliveryDispatch, RunnerRecoveryStore, TerminalLease } from "../service-contracts.ts";
@@ -197,7 +198,7 @@ export class CoreRunner implements Runner {
     // A persisted core pane is evidence of a previous program. Never replace it
     // on a transport failure, a missing snapshot, or an unknown Codex session.
     if (member.origin === "adopted") throw new CoreError("unsupported", "Core does not adopt terminals without IAMCEO ownership labels");
-    if (providerFor(member) === "codex" && (member.paneId || (this.lostCodex.has(member.id) && this.lostCodex.get(member.id) === member.sessionGeneration)) && !member.sessionId) throw new CoreError("session_unknown", "The previous Codex terminal is gone and its native session id is unknown; explicitly start a fresh session with context handoff");
+    if (laterNativeId(providerFor(member)) && (member.paneId || (this.lostCodex.has(member.id) && this.lostCodex.get(member.id) === member.sessionGeneration)) && !member.sessionId) throw new CoreError("session_unknown", "The previous Codex/Antigravity terminal is gone and its native session id is unknown; explicitly start a fresh session with context handoff");
     const launch = providerLaunch(member, opts, this.options);
     const env = childEnv();
     for (const key of Object.keys(env)) if (/^(HC_|HERDR_)/.test(key)) delete env[key];
@@ -208,7 +209,7 @@ export class CoreRunner implements Runner {
     if (this.options.claudeHome) env.CLAUDE_CONFIG_DIR = this.options.claudeHome;
     if (this.options.codexHome) env.CODEX_HOME = this.options.codexHome;
     Object.assign(env, launch.env);
-    const nonce = providerFor(member) === "codex" ? crypto.randomUUID().replaceAll("-", "") : null;
+    const nonce = laterNativeId(providerFor(member)) ? crypto.randomUUID().replaceAll("-", "") : null;
     let terminal: CoreTerminal;
     try { terminal = await this.call<CoreTerminal>("terminal.run", {
       argv: launch.argv, cwd: member.cwd, env, name: this.name(member), size: { cols: 160, rows: 50 },
@@ -239,7 +240,7 @@ export class CoreRunner implements Runner {
     if (!matches.length) return { outcome: "not_found", code: "no_owned_terminal" };
     if (matches.length !== 1) return { outcome: "conflict", code: "multiple_terminals", detail: "Multiple live terminals claim this member" };
     const terminal = matches[0];
-    if (!this.owns(terminal, member) || !isProviderArgv(terminal.argv, providerFor(member), providerFor(member) === "claude" ? this.options.claudeBin : this.options.codexBin) || terminal.cwd !== member.cwd ||
+    if (!this.owns(terminal, member) || !isProviderArgv(terminal.argv, providerFor(member), this.binOf(member)) || terminal.cwd !== member.cwd ||
       (member.sessionId && terminal.labels["iamceo.session"] && terminal.labels["iamceo.session"] !== member.sessionId)) return { outcome: "conflict", code: "ownership_changed", detail: "Core terminal ownership, provider, cwd or generation changed" };
     const current = this.tracks.get(member.id);
     const sessionId = terminal.labels["iamceo.session"] || member.sessionId || (current?.terminal.address === terminal.address ? current.sessionId : null);
@@ -259,7 +260,7 @@ export class CoreRunner implements Runner {
     const state = terminal.status?.state;
     const status = terminal.state !== "live" ? "gone" : state === "working" ? "working" : ["idle", "done", "error"].includes(state || "") ? "idle" : "blocked";
     if (!initial && (terminal.turn !== previous.turn || state !== previous.status?.state)) this.bump(track);
-    if (status === "gone" && providerFor(track.member) === "codex" && !track.sessionId) this.lostCodex.set(track.member.id, track.member.sessionGeneration);
+    if (status === "gone" && laterNativeId(providerFor(track.member)) && !track.sessionId) this.lostCodex.set(track.member.id, track.member.sessionGeneration);
     if (initial && state === "error" && !track.compact) {
       track.lastError = terminal.status?.msg || "CLI reported an error";
       this.event(track, { type: "turn_end", memberId: track.member.id, finalText: "", isError: true, errorText: track.lastError });
@@ -294,6 +295,17 @@ export class CoreRunner implements Runner {
     if (!sessionId) return;
     const endedAt = Date.now();
     const turn = track.terminal.turn;
+    if (providerFor(track.member) === "antigravity") {
+      const path = this.logPath(track);
+      const tokens = path ? readAntigravityContext(this.providerHome(track.member), path) : null;
+      // The status line record (session_id = conversation id) carries agy's own window and %; transcript tokens are the fallback.
+      const captured = await capturedContext(this.options.contextHome, sessionId, { tokens: null, shownPct: null, model: track.member.model }, endedAt);
+      const reading = { ...captured, tokens: captured.tokens ?? tokens };
+      if (this.closed || this.tracks.get(track.member.id) !== track || (track.sessionId || track.member.sessionId) !== sessionId || track.terminal.turn !== turn) return;
+      if (reading.tokens === null && !reading.exact) return;
+      this.event(track, { type: "context_usage", memberId: track.member.id, sessionId, ...reading });
+      return;
+    }
     if (providerFor(track.member) === "codex") {
       const path = this.logPath(track);
       const reading = path ? readCodexContextFile(this.providerHome(track.member), path, sessionId).reading : null;
@@ -322,7 +334,7 @@ export class CoreRunner implements Runner {
       try {
         const terminal = await this.call<CoreTerminal>("terminal.get", { terminal: track.terminal.address });
         this.validateTrack(track);
-        if (!this.owns(terminal, track.member) || !isProviderArgv(terminal.argv, providerFor(track.member), providerFor(track.member) === "claude" ? this.options.claudeBin : this.options.codexBin) || terminal.cwd !== track.member.cwd) throw new CoreError("conflict", "Core terminal ownership changed");
+        if (!this.owns(terminal, track.member) || !isProviderArgv(terminal.argv, providerFor(track.member), this.binOf(track.member)) || terminal.cwd !== track.member.cwd) throw new CoreError("conflict", "Core terminal ownership changed");
         if (!this.manualLease(track.member.id)) this.discoverBinding(track);
         await this.observe(track, terminal);
         track.failures = 0; track.failure = null;
@@ -394,12 +406,12 @@ export class CoreRunner implements Runner {
       const screen = await this.call<{ text: string }>("terminal.read", { terminal: terminal.address, lines: 0 });
       // Never erase a person's draft or deliver through an unidentified dialog.
       // Status is taken exclusively from OSC7501, never this screen guard.
-      const draft = providerFor(member) === "claude" ? inputText(screen.text) : codexDraft(screen.text);
+      const draft = composerDraft(providerFor(member), screen.text);
       if (draft !== "") return { ok: false, reason: "input_busy", retryable: false, deliveryEffect: "not_written", detail: draft === null ? "Cannot identify an empty CLI composer" : "A user draft is present; IAMCEO leaves it untouched" };
       const preference = this.parallelPreferences.get(member.id) ?? member.parallel;
-      const prefix = providerFor(member) === "codex" && preference !== undefined
+      const prefix = providerFor(member) !== "claude" && preference !== undefined
         ? (preference ? "IAMCEO execution preference: Use native subagents for independent work in parallel when useful; retain your normal approvals and tool access.\n\n" : "IAMCEO execution preference: Work sequentially for this task; do not spawn subagents.\n\n") : "";
-      const binding = providerFor(member) === "codex" && !track.sessionId && track.nonce ? codexBindingMarker(track.nonce) + "\n\n" : "";
+      const binding = laterNativeId(providerFor(member)) && !track.sessionId && track.nonce ? codexBindingMarker(track.nonce) + "\n\n" : "";
       const cleaned = cleanText(binding + prefix + text);
       if (!cleaned.trim()) return unsupported("Message is empty");
       // Core generation 1 only permits if:idle|working. A done report has
@@ -427,10 +439,27 @@ export class CoreRunner implements Runner {
   }
 
   private providerHome(member: RunnerMember): string {
-    return providerFor(member) === "claude" ? this.options.claudeHome ?? defaultClaudeHome() : this.options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+    const provider = providerFor(member);
+    if (provider === "antigravity") {
+      if (!this.options.antigravityRoot) throw new CoreError("config", "Antigravity needs an IAMCEO-owned configuration root");
+      return antigravityMemberHome(this.options.antigravityRoot, member.id);
+    }
+    return provider === "claude" ? this.options.claudeHome ?? defaultClaudeHome() : this.options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  }
+  private binOf(member: RunnerMember): string | undefined {
+    const provider = providerFor(member);
+    return provider === "claude" ? this.options.claudeBin : provider === "codex" ? this.options.codexBin : this.options.antigravityBin;
   }
   private discoverBinding(track: Track): void {
-    if (providerFor(track.member) !== "codex" || track.sessionId || !track.nonce || track.member.sessionGeneration === undefined) return;
+    if (!laterNativeId(providerFor(track.member)) || track.sessionId || !track.nonce || track.member.sessionGeneration === undefined) return;
+    if (providerFor(track.member) === "antigravity") {
+      const found = discoverAntigravityConversation({ home: this.providerHome(track.member), nonce: track.nonce, marker: codexBindingMarker(track.nonce), since: track.bindingSince });
+      if (found.outcome === "bound" && found.sessionId) {
+        track.sessionId = found.sessionId;
+        this.event(track, { type: "session", memberId: track.member.id, sessionId: found.sessionId });
+      }
+      return;
+    }
     const result = discoverCodexSession({ home: this.providerHome(track.member), cwd: track.member.cwd, generation: track.member.sessionGeneration, nonce: track.nonce, since: track.bindingSince, cursor: track.binding });
     track.binding = result.cursor;
     if (result.outcome === "bound" && result.sessionId) {
@@ -442,6 +471,9 @@ export class CoreRunner implements Runner {
     if (!track.sessionId) return null;
     const home = this.providerHome(track.member);
     if (providerFor(track.member) === "claude") return findSessionFile(home, track.member.cwd, track.sessionId);
+    if (providerFor(track.member) === "antigravity") {
+      return existingAntigravityTranscript(home, track.sessionId);
+    }
     if (track.binding) {
       const matches = track.binding.files.filter((file) => file.matched && !file.invalid && file.meta?.sessionId === track.sessionId);
       if (matches.length === 1) return matches[0].path;
@@ -475,7 +507,7 @@ export class CoreRunner implements Runner {
     const screen = (await this.call<{ text: string }>("terminal.read", { terminal: terminal.address, lines: 0 })).text;
     this.validateTrack(track);
     if (track.epoch !== inputEpoch) return unknown("input_epoch_changed");
-    const draft = providerFor(member) === "claude" ? inputText(screen) : codexDraft(screen);
+    const draft = composerDraft(providerFor(member), screen);
     const composer = draft === null ? "unknown" : draft === "" ? "empty" : dispatch && exactComposer(screen, providerFor(member)) === dispatch.wireText ? "matches" : "different";
     const state = terminal.status?.state;
     const status = terminal.state !== "live" ? "gone" : ["idle", "done", "working", "blocked"].includes(state || "") ? state as "idle" | "done" | "working" | "blocked" : "unknown";
@@ -543,6 +575,8 @@ export class CoreRunner implements Runner {
     let attempted = false;
     const track = this.tracks.get(member.id);
     try {
+      // agy 1.5.3 has no /compact command; it compacts on its own.
+      if (providerFor(member) === "antigravity") return { ...unsupported("Antigravity CLI compacts its context automatically and has no /compact command"), deliveryEffect: "not_written" };
       if (!track || !track.sessionId || member.sessionGeneration === undefined || !this.deps.compactStore) return { ...unsupported("Compact requires an attached native session, generation and durable state port"), deliveryEffect: "not_written" };
       this.assertMember(track, member);
       if (this.manualLease(member.id) || this.isBusy(member.id)) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
@@ -553,7 +587,7 @@ export class CoreRunner implements Runner {
       if (terminal.state !== "live" || !["idle", "done"].includes(terminal.status?.state || "")) return { ok: false, reason: "blocked", retryable: true, deliveryEffect: "not_written", detail: "Compact requires an idle or finished CLI" };
       const epoch = track.epoch;
       const screen = await this.screen(member);
-      if ((providerFor(member) === "claude" ? inputText(screen) : codexDraft(screen)) !== "") return { ok: false, reason: "input_busy", retryable: true, deliveryEffect: "not_written" };
+      if ((composerDraft(providerFor(member), screen)) !== "") return { ok: false, reason: "input_busy", retryable: true, deliveryEffect: "not_written" };
       const path = this.logPath(track), home = this.providerHome(member);
       if (!path) return { ...unsupported("Native session log is unavailable"), deliveryEffect: "not_written" };
       const root = join(home, providerFor(member) === "claude" ? "projects" : "sessions");
@@ -617,8 +651,8 @@ export class CoreRunner implements Runner {
     } else operation.cursor = result.cursor;
   }
   async setParallel(member: RunnerMember, on: boolean, opts: StartOpts): Promise<SendResult> {
-    if (providerFor(member) === "codex") {
-      // Codex has native subagents, not Claude's Ultracode switch. Its capability
+    if (providerFor(member) !== "claude") {
+      // Codex and Antigravity have native subagents, not Claude's Ultracode switch. Its capability
       // stays enabled; this preference is added explicitly to each next task.
       this.parallelPreferences.set(member.id, on);
       return { ok: true };
@@ -646,14 +680,14 @@ export class CoreRunner implements Runner {
     if (this.manualLease(member.id)) return { ok: false, reason: "input_busy", retryable: true, detail: "Manual terminal control is active" };
     if (this.isBusy(member.id) || this.sending.has(member.id) || this.configuring.has(member.id)) return { ok: false, reason: "busy", retryable: true };
     const sessionId = track.sessionId || member.sessionId;
-    if (!sessionId) return unsupported("Native Codex session id is unknown; use the CLI /model menu or explicitly start a fresh session");
+    if (!sessionId) return unsupported("Native session id is unknown; use the CLI /model menu or explicitly start a fresh session");
     const release = this.reserve(member.id);
     this.configuring.add(member.id);
     try {
       const terminal = await this.refresh(track);
       if (!["idle", "done"].includes(terminal.status?.state || "")) return { ok: false, reason: "blocked", retryable: true };
       const screen = await this.screen(member);
-      const draft = providerFor(member) === "claude" ? inputText(screen) : codexDraft(screen);
+      const draft = composerDraft(providerFor(member), screen);
       if (draft !== "") return { ok: false, reason: "input_busy", retryable: false, detail: "Configuration reload requires an identifiable empty composer; the user draft is preserved" };
       const resumed = { ...member, sessionId, paneId: null };
       providerLaunch(resumed, { ...opts, resume: true }, this.options); // Validate before stopping.
@@ -694,7 +728,7 @@ export class CoreRunner implements Runner {
     if (!opts.whileWorking && !["idle", "done"].includes(state || "")) throw new CoreError("busy", "Resolve the current CLI turn/dialog before changing its provider or configuration");
     if (["idle", "done"].includes(state || "")) {
       const screen = await this.call<{ text: string }>("terminal.read", { terminal: terminal.address, lines: 0 });
-      const draft = providerFor(member) === "claude" ? inputText(screen.text) : codexDraft(screen.text);
+      const draft = composerDraft(providerFor(member), screen.text);
       if (draft !== "") throw new CoreError("input_busy", "Cannot close a CLI with a user draft or unknown composer; the draft is preserved");
     }
   }
@@ -724,7 +758,7 @@ export class CoreRunner implements Runner {
     if (lease) this.deps.recoveryStore?.removeLease(member.id, lease.claimId);
     this.leases.delete(member.id); this.parallelPreferences.delete(member.id);
     const track = this.tracks.get(member.id);
-    if (track && providerFor(member) === "codex" && !track.sessionId) this.lostCodex.set(member.id, member.sessionGeneration);
+    if (track && laterNativeId(providerFor(member)) && !track.sessionId) this.lostCodex.set(member.id, member.sessionGeneration);
     this.tracks.delete(member.id);
     if (track) this.event(track, { type: "status", memberId: member.id, status: "gone" });
   }
@@ -776,7 +810,7 @@ export class CoreRunner implements Runner {
     const epoch = track.epoch;
     const screen = await this.call<{ text: string }>("terminal.read", { terminal: track.terminal.address, lines: 0 });
     this.validateTrack(track);
-    return epoch === track.epoch ? (providerFor(track.member) === "claude" ? claudeFolderTrust : codexFolderTrust)(screen.text, track.member.cwd) : null;
+    return epoch === track.epoch ? folderTrust(providerFor(track.member))(screen.text, track.member.cwd) : null;
   }
   async approval(member: RunnerMember): Promise<ApprovalPrompt | null> {
     const track = this.tracks.get(member.id);
@@ -911,8 +945,16 @@ export class CoreRunner implements Runner {
 }
 
 /** No trimming or whitespace normalization for a submit-only full-wire comparison. */
-function exactComposer(screen: string, provider: "claude" | "codex"): string | null {
+const laterNativeId = (provider: CoreProvider) => provider !== "claude";
+function composerDraft(provider: CoreProvider, screen: string): string | null {
+  return provider === "claude" ? inputText(screen) : provider === "codex" ? codexDraft(screen) : antigravityDraft(screen);
+}
+function folderTrust(provider: CoreProvider) {
+  return provider === "claude" ? claudeFolderTrust : provider === "codex" ? codexFolderTrust : antigravityFolderTrust;
+}
+function exactComposer(screen: string, provider: CoreProvider): string | null {
   if (/\x1b/.test(screen)) return null;
+  if (provider === "antigravity") return antigravityExactComposer(screen);
   const lines = screen.split("\n");
   if (provider === "codex") {
     if (codexDraft(screen) === null) return null;

@@ -11,7 +11,7 @@ export type ApprovalAnswer =
 
 export interface RunnerMember {
   /** Official interactive provider; absent for legacy Claude members. */
-  cli?: "claude" | "codex";
+  cli?: CliProvider;
   /** Native subagent preference, retained across core reconnects. */
   parallel?: boolean;
   id: string;

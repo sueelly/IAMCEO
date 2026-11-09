@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member } from "../shared/types.ts";
+import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { toStorageError } from "./storage-errors.ts";
@@ -383,7 +383,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       name: oneLine(40).describe("화면 이름: 맡은 일(예: 결제 연동). 사람 이름은 쓰지 않는다. 한국어, 프로젝트 안에서 유일, 한 줄. 같은 역할이 더 필요하면 뒤에 2, 3"),
       role: oneLine(300).describe("맡을 역할(한 줄)"),
-      cli: z.enum(["claude", "codex"]).optional().describe("직원이 쓸 CLI. 생략하면 총괄의 CLI, 총괄이 없으면 프로젝트의 선택을 따른다(새 프로젝트 기본 Codex)"),
+      cli: z.enum(CLI_PROVIDERS).optional().describe("직원이 쓸 CLI. 생략하면 총괄의 CLI, 총괄이 없으면 프로젝트의 선택을 따른다(새 프로젝트 기본 Codex). antigravity 는 Google Antigravity CLI(agy)로 Google 구독의 Gemini 를 쓴다. 직접 Gemini CLI(gemini)는 지원하지 않는다"),
       model: z.string().nullable().optional().describe("서버 모델 목록의 값. null이면 직급 기본값"),
       handle: z.string().optional().describe("영문 소문자 핸들"),
       cwd: z.string().optional().describe("작업 폴더. 기본은 프로젝트 폴더. 프로젝트 폴더 안이어야 한다. 밖이 꼭 필요하면 ask 로 묻고, 대표가 그 경로를 쓴 글을 user_quote 에 싣는다"),
@@ -501,7 +501,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       cwd: text.describe("이미 있는 프로젝트 폴더"),
       goal: z.string().optional().describe("프로젝트 목표. 대표의 말 그대로"),
       start_conductor: z.boolean().optional().describe("총괄을 바로 띄운다"),
-      chief_cli: z.enum(["claude", "codex"]).optional().describe("총괄이 쓸 CLI. 생략하면 Codex"),
+      chief_cli: z.enum(CLI_PROVIDERS).optional().describe("총괄이 쓸 CLI. 생략하면 Codex"),
     }),
     async (orch, member, a) => {
       const cwd = expandPath(a.cwd, member.cwd);

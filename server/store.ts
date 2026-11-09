@@ -45,7 +45,7 @@ import type {
   WorkSec,
   WsEvent,
 } from "../shared/types.ts";
-import { DEFAULT_CODEX_RANKS, DEFAULT_RANKS, fileKindOf } from "../shared/types.ts";
+import { CLI_PROVIDERS, DEFAULT_CODEX_RANKS, DEFAULT_RANKS, fileKindOf } from "../shared/types.ts";
 import type { MemberRevisions, OperationKind, OperationReceipt, OperationStatus, SyncRevisions, ManualInboxBatch } from "../shared/operations.ts";
 import type { DeliveryDispatch, DeliveryIntentResult, DeliveryRecoveryRecord, DomainRecorder, LifecycleJournal, DecisionFollowUp, MessageReadStore, ProjectPatchStore, RunnerRecoveryStore, TerminalLease, RunnerRecoveryState, ReportReferences, BoardReview } from "./service-contracts.ts";
 import type { RunnerTerminalIdentity } from "./runner/types.ts";
@@ -791,7 +791,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   effectiveBackend(): Backend { return this.runtimeBackend; }
 
   chiefCli(projectId: string): CliProvider {
-    return this.row("SELECT chief_cli FROM projects WHERE id = ?", projectId)?.chief_cli === "codex" ? "codex" : "claude";
+    const cli = this.row("SELECT chief_cli FROM projects WHERE id = ?", projectId)?.chief_cli;
+    return (CLI_PROVIDERS as readonly string[]).includes(cli) ? cli as CliProvider : "claude";
   }
 
   defaultMemberCli(projectId: string): CliProvider {

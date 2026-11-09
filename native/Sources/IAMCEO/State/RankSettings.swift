@@ -22,6 +22,8 @@ extension Settings {
     }
 
     func memberConfig(_ member: Member) -> RankConfig {
+        // Antigravity has no rank defaults; its model ids carry their own effort.
+        if member.cli == "antigravity" { return RankConfig(model: member.modelOverride, effort: nil) }
         let defaults = rankConfig(member.kind == "worker" ? "lead" : "manager", cli: member.cli == "codex" ? .codex : .claude)
         return RankConfig(model: member.modelOverride ?? defaults?.model, effort: member.effortOverride ?? defaults?.effort)
     }

@@ -1355,11 +1355,13 @@ struct SettingsView: View {
                 }
             }) {
                 SettingsRow("herdr-core", hint: runtime?.core.detail, monoHint: true) { DotValue(tone: coreState(runtime).tone, text: coreState(runtime).text) }
-                    .help("모든 AI 직원은 herdr-core에서 실행됩니다. 직원마다 Claude Code 또는 Codex를 고릅니다.")
+                    .help("모든 AI 직원은 herdr-core에서 실행됩니다. 직원마다 Claude Code, Codex, Antigravity 중에서 고릅니다.")
                 RowDivider(inset: 0)
                 SettingsRow("Claude Code") { DotValue(tone: providerState(runtime, "claude").tone, text: providerState(runtime, "claude").text) }
                 RowDivider(inset: 0)
                 SettingsRow("Codex CLI") { DotValue(tone: providerState(runtime, "codex").tone, text: providerState(runtime, "codex").text) }
+                RowDivider(inset: 0)
+                SettingsRow("Antigravity CLI") { DotValue(tone: providerState(runtime, "antigravity").tone, text: providerState(runtime, "antigravity").text) }
             }
             if let runtimeError { SetupError("진단을 읽지 못했습니다. \(runtimeError)").padding(.horizontal, SetupMetrics.groupInset) }
         }
@@ -2058,7 +2060,7 @@ struct NewProjectView: View {
                     }
                 }
                 SetupField("총괄 AI CLI") {
-                    SettingsSegments(options: ["codex", "claude"].map { SettingsSegments.Option(id: $0, title: providerLabel($0)) },
+                    SettingsSegments(options: teamProviders.map { SettingsSegments.Option(id: $0, title: providerLabel($0)) },
                                      selection: provider, label: "총괄 AI CLI", fill: true) { provider = $0 }
                 }
             }
