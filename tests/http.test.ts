@@ -566,7 +566,7 @@ describe("새 읽기 계약", () => {
       }
     }
     const capabilities = await json(api("/api/capabilities"));
-    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, archive: true, realtime: true, delivery: false, push: false, operations: false } });
+    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
   });
 
   test("예외 로그에 비밀 query·헤더·오류 본문이 남지 않는다", async () => {

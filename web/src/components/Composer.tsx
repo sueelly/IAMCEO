@@ -1,110 +1,35 @@
 // 모든 화면 아래 입력칸. Enter 전송 · Shift+Enter 줄바꿈(터치 기기는 소프트 키보드에 Shift 가 없어 Enter 가 줄바꿈, 보내기 버튼으로 전송) · 첨부(버튼·붙여넣기·드래그) · @직원 지정.
 // 글·대상·첨부는 프로젝트별로 틀 밖과 localStorage 에 둔다: 프로젝트를 오가거나 틀이 다시 그려져도, 새로고침·앱 재시작 뒤에도 쓰던 글이 남아야 한다.
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
-import type { Attachment, MemberStatus } from "@shared/types";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
+import type { MemberStatus } from "@shared/types";
 import { GlassButton, Glass } from "../glass";
-import { api, errorText, fileUrl } from "../lib/api";
+import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
-import { getState, newId, onLogout, refresh, routeHash, sendMessage, useProject, useRoute } from "../lib/store";
+import { getState, newId, refresh, routeHash, useProject, useRoute } from "../lib/store";
+import type { Draft } from "../lib/submissions";
+import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
 import "../styles/composer.css";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const NOTICE_MS = 4000;
 
-interface Upload {
-  key: string;
-  name: string;
-  attachment: Attachment | null; // null 이면 아직 올리는 중이거나 실패
-  failed: boolean;
-}
-
-interface Draft {
-  text: string;
-  targetId: string | null;
-  uploads: Upload[];
-  /** 실패한 전송과 내용이 같으면 같은 id 로 다시 보낸다: 응답만 잃었을 때 두 번 전달되지 않고, 대화의 실패 글도 그 자리에서 바뀐다 */
-  retry: { id: string; signature: string; text: string } | null;
-  error: string | null;
-}
-
-const EMPTY: Draft = { text: "", targetId: null, uploads: [], retry: null, error: null };
-
-let drafts: Record<string, Draft> = {};
-const draftListeners = new Set<() => void>();
-const draftKey = (projectId: string) => `iamceo.draft.${projectId}`;
-
-function loadDraft(projectId: string): Draft {
-  const known = drafts[projectId];
-  if (known) return known;
-  let draft = EMPTY;
-  try {
-    const raw = localStorage.getItem(draftKey(projectId));
-    if (raw) {
-      const saved = JSON.parse(raw) as Partial<Draft>;
-      // 올리는 중이던 첨부는 이어 올릴 수 없다. 끝난 것만 되살린다.
-      draft = { ...EMPTY, ...saved, uploads: (saved.uploads ?? []).filter((u) => u.attachment) };
-    }
-  } catch {
-    // 깨진 값이면 빈 칸으로 시작한다.
-  }
-  drafts = { ...drafts, [projectId]: draft };
-  return draft;
-}
-
-// 메모리의 초안도 함께 지운다. 안 지우면 같은 탭에서 다시 들어왔을 때 나타나고, 글자를 치면 저장소로 되돌아간다.
-onLogout(() => {
-  drafts = {};
-  for (const fn of draftListeners) fn();
-});
-
-function saveDraft(projectId: string, d: Draft): void {
-  try {
-    const uploads = d.uploads.filter((u) => u.attachment);
-    if (!d.text && !d.targetId && uploads.length === 0 && !d.retry) localStorage.removeItem(draftKey(projectId));
-    else localStorage.setItem(draftKey(projectId), JSON.stringify({ ...d, uploads }));
-  } catch {
-    // 저장 공간이 없어도 입력은 계속된다.
-  }
-}
-
-function patchDraft(projectId: string, patch: (d: Draft) => Draft): void {
-  const next = patch(loadDraft(projectId));
-  drafts = { ...drafts, [projectId]: next };
-  saveDraft(projectId, next);
-  for (const fn of draftListeners) fn();
-}
-
-function subscribeDrafts(fn: () => void): () => void {
-  draftListeners.add(fn);
-  return () => draftListeners.delete(fn);
-}
-
-const useDraft = (projectId: string): Draft => useSyncExternalStore(subscribeDrafts, () => loadDraft(projectId));
+const patchDraft = (projectId: string, patch: (draft: Draft) => Draft) => submissions.patchDraft(projectId, patch);
 
 function attachFiles(projectId: string, files: File[]): void {
   for (const file of files) {
-    const key = newId();
     const name = file.name || "첨부";
-    const finish = (attachment: Attachment | null, error: string | null) =>
-      patchDraft(projectId, (d) => ({
-        ...d,
-        uploads: d.uploads.map((u) => (u.key === key ? { ...u, attachment, failed: !attachment } : u)),
-        error: error ? `${name}: ${error}` : d.error,
-      }));
-    patchDraft(projectId, (d) => ({ ...d, uploads: [...d.uploads, { key, name, attachment: null, failed: false }], error: null }));
+    const ticket = submissions.beginUpload(projectId, { key: newId(), name });
     if (file.size > MAX_UPLOAD_BYTES) {
-      finish(null, "파일은 50MB 까지 올릴 수 있습니다");
+      submissions.finishUpload(ticket, null, "파일은 50MB 까지 올릴 수 있습니다");
       continue;
     }
-    api.upload(file, name, { project: projectId, target: loadDraft(projectId).targetId }).then(
-      (attachment) => finish(attachment, null),
+    api.upload(file, name, { project: projectId, target: ticket.targetId }).then(
+      (attachment) => submissions.finishUpload(ticket, attachment),
       (e) => {
-        if (isGateRejection(e)) {
-          // 첨부까지 막힌 것이다. 칩을 실패로 남기지 않고 어디에 막혔는지만 알린다.
-          patchDraft(projectId, (d) => ({ ...d, uploads: d.uploads.filter((u) => u.key !== key), error: e.message }));
-          void refresh();
-        } else finish(null, errorText(e));
+        // A failed upload remains visible. Selecting the file again is required
+        // because browsers cannot restore a File after a page reload.
+        if (submissions.finishUpload(ticket, null, errorText(e)) && isGateRejection(e)) void refresh();
       },
     );
   }
@@ -195,7 +120,7 @@ export default function Composer() {
   const state = useProject();
   const projectId = route.projectId;
   const project = state?.project.id === projectId ? state : null;
-  const draft = useDraft(projectId);
+  const { draft, attempts } = useSubmissionDraft(projectId);
   const gate = useGate();
   const dragging = useWindowFileDrag(projectId, gate.ok);
 
@@ -210,17 +135,6 @@ export default function Composer() {
 
   // 게이트가 열리면 칸이 새로 그려진다. 값이 그대로여도 높이를 다시 잰다.
   useAutoGrow(inputRef, gate.ok ? draft.text : "");
-
-  // 다시 보내기가 성공했거나 응답만 잃은 글이었다. 실패로 믿고 고쳐 보내면 지시가 둘이 된다.
-  const retriedDelivery = project?.messages.find((m) => m.id === draft.retry?.id)?.delivery;
-  useEffect(() => {
-    if (!draft.retry || !retriedDelivery || retriedDelivery === "failed") return;
-    patchDraft(projectId, (d) => {
-      if (!d.retry) return d;
-      const same = d.text === d.retry.text;
-      return { ...d, text: same ? "" : d.text, targetId: same ? null : d.targetId, uploads: same ? [] : d.uploads, retry: null, error: null };
-    });
-  }, [projectId, draft.retry, retriedDelivery]);
 
   useEffect(() => {
     if (!notice) return;
@@ -308,47 +222,24 @@ export default function Composer() {
       return;
     }
     if (!canSend) return;
-    const sent = draft;
     const typed = target ? null : leadingMention(text, workers);
     const to = typed?.member ?? target;
     const body = typed?.rest ?? text;
-    const targetId = to?.id ?? null;
-    const signature = JSON.stringify([body, targetId, ready.map((a) => a.id)]);
-    const id = sent.retry?.signature === signature ? sent.retry.id : newId();
-    // 먼저 비워 바로 다음 말을 칠 수 있게 하고, 실패하면 아래에서 되돌린다.
-    // 대상도 기본으로 돌린다. 남아 있으면 이어 쓴 말이 모르는 사이 직원에게 바로 간다.
-    patchDraft(projectId, () => EMPTY);
+    const session = getCredentialGeneration();
+    const result = submissions.submit(
+      projectId,
+      draft,
+      { text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id) },
+      { targetName: to?.name ?? leadName, attachments: ready },
+    );
+    // submit persists synchronously before clearing the input. A storage failure
+    // leaves the draft intact and blocks the network request.
+    if (submissions.snapshot(projectId).draft.error) return;
     setCaret(0);
     setNotice(null);
     inputRef.current?.focus();
-
-    let rejected: string | null = null;
-    const saved = await sendMessage(
-      { id, text: body, targetMemberId: targetId, attachmentIds: ready.map((a) => a.id) },
-      {
-        targetName: to?.name ?? null,
-        attachments: ready,
-        onRejected: (e) => {
-          if (!isGateRejection(e)) return false;
-          rejected = e.message;
-          return true;
-        },
-      },
-    );
-    if (saved) {
-      setNotice(`${to?.name ?? leadName}에게 보냈습니다`);
-      return;
-    }
-    const failure = getState().project?.messages.find((m) => m.id === id)?.deliveryNote;
-    patchDraft(projectId, (d) => ({
-      ...d,
-      // 멘션을 뗀 글로 되돌린다. 원문(@이름 글)으로 두면 다시 보낼 때 글이 달라져 새 id 가 되고 두 번 전달된다.
-      text: d.text ? `${body}\n${d.text}` : body,
-      targetId,
-      uploads: [...sent.uploads, ...d.uploads],
-      retry: d.text ? null : { id, signature, text: body },
-      error: rejected ? `${rejected}. 글은 그대로 두었습니다` : `보내지 못했습니다${failure ? `: ${failure}` : ""}. 글은 그대로 두었습니다`,
-    }));
+    const saved = await result;
+    if (saved && getCredentialGeneration() === session && getState().route.projectId === projectId) setNotice(`${to?.name ?? leadName}에게 보냈습니다`);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -374,7 +265,7 @@ export default function Composer() {
   const showThreadLink = notice !== null && route.tab !== "thread";
 
   if (!gate.ok) {
-    const kept = draft.text.trim().length > 0 || draft.uploads.length > 0;
+    const kept = draft.text.trim().length > 0 || draft.uploads.length > 0 || attempts.length > 0;
     return (
       <div ref={rootRef} className="cmp">
         <ConnectGate />
@@ -470,6 +361,14 @@ export default function Composer() {
             {draft.error}
           </p>
         ) : null}
+        {attempts.map((attempt) => (
+          <div key={attempt.id} className="cmp__error" role="status">
+            <span>{attempt.targetName ?? "원래 대상"}에게 · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
+            <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void submissions.reconcile(projectId)}>다시 확인</GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking" || !project} onClick={() => void submissions.retry(projectId, attempt.id)}>같은 내용 재시도</GlassButton>
+          </div>
+        ))}
         <div className="cmp__row">
           <GlassButton variant="ghost" size="m" className="cmp__icon" ariaLabel="첨부" title="첨부" onClick={() => fileRef.current?.click()}>
             <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">

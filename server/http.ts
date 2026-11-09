@@ -602,7 +602,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("GET", "/api/capabilities", (_req, url) => {
       strictQuery(url, []);
       const body: ServerCapabilities = { contractVersion: 2, capabilities: {
-        paging: true, archive: true, realtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
+        paging: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
         // 네이티브는 이 값으로 엄격 쓰기를 켠다. 결과 조회와 모든 쓰기 포트가 있어야 한다.
         operations: (["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const)
           .every(port => port in orch && !!orch[port]),
@@ -1050,6 +1050,14 @@ const filesCookieValue = (accessCode: string) => createHmac("sha256", accessCode
 function filesCookie(url: URL, value: string, maxAge: number): string {
   return `${filesCookieName(url)}=${value}; Path=/files; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${url.protocol === "https:" ? "; Secure" : ""}`;
 }
+const REALTIME_COOKIE_MAX_AGE = 8 * 60 * 60;
+const realtimeCookieName = (url: URL) => `iamceo_realtime_${url.port || (url.protocol === "https:" ? "443" : "80")}`;
+function realtimeCookie(req: Request, url: URL, value: string, maxAge: number): string {
+  // Tailscale Serve terminates TLS before the loopback request. A matching HTTPS
+  // Origin also requires Secure; the common Origin/Host gate ran before this.
+  const secure = url.protocol === "https:" || req.headers.get("origin")?.startsWith("https://");
+  return `${realtimeCookieName(url)}=${value}; Path=/ws; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
+}
 function readCookie(req: Request, name: string): string | null {
   for (const part of (req.headers.get("cookie") ?? "").split(";")) {
     const eq = part.indexOf("=");
@@ -1146,6 +1154,10 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
   const hosts: string[] = [];
   const bindings = new Map<string, HostBinding>();
   let authGeneration = 0;
+  // Separate from file/API credentials and invalidated by both daemon restart
+  // and access-code rotation. Only Bearer-authenticated HTTP can mint a cookie.
+  const realtimeSecret = randomBytes(32);
+  const realtimeCredential = () => createHmac("sha256", realtimeSecret).update(config.accessCode).digest("hex");
   let boundPort = 0;
   const pairing = new Pairing();
   const terminalStreams = new TerminalStreams(config, store, ctx.orch);
@@ -1188,15 +1200,26 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       const version = url.searchParams.get("v");
       if (version !== null && version !== "2") return fail(400, "실시간 연결 버전이 잘못되었습니다");
       if (version === "2" && url.searchParams.has("t")) return fail(400, "실시간 연결 주소에 접속 코드를 넣지 마세요");
-      if (!hasAccessCode(req, url, version === null)) return fail(401, "인증이 필요합니다");
+      const cookie = version === "2" ? readCookie(req, realtimeCookieName(url)) : null;
+      const cookieAuth = !req.headers.has("authorization") && cookie !== null && safeEqual(cookie, realtimeCredential());
+      if (!hasAccessCode(req, url, version === null) && !cookieAuth) return fail(401, "인증이 필요합니다");
       return server.upgrade(req, { data: { kind: "realtime", protocol: version === "2" ? 2 : 1, authGeneration } }) ? undefined : fail(400, "WebSocket 요청이 아닙니다");
     }
     // 코드가 틀려 나가는 기기도 지울 수 있어야 하므로 인증 앞에 둔다. 지우기뿐이고 바깥 사이트는 Origin 검사에 걸린다.
     if (path === "/api/files-session" && req.method === "DELETE") {
       return new Response(null, { status: 204, headers: { "Set-Cookie": filesCookie(url, "", 0) } });
     }
+    if (path === "/api/realtime-session" && req.method === "DELETE") {
+      strictQuery(url, []);
+      return new Response(null, { status: 204, headers: { "Set-Cookie": realtimeCookie(req, url, "", 0) } });
+    }
     if (path.startsWith("/api/")) {
       if (!hasAccessCode(req, url, false)) return fail(401, "인증이 필요합니다");
+      if (path === "/api/realtime-session") {
+        strictQuery(url, []);
+        if (req.method !== "POST") return fail(405, "허용되지 않는 메서드입니다");
+        return new Response(null, { status: 204, headers: { "Set-Cookie": realtimeCookie(req, url, realtimeCredential(), REALTIME_COOKIE_MAX_AGE) } });
+      }
       const terminal = /^\/api\/members\/([^/]+)\/terminal\/stream$/.exec(path);
       if (terminal) {
         if (req.method !== "GET") return fail(405, "허용되지 않는 메서드입니다");

@@ -1,5 +1,7 @@
 # IAMCEO
 
+> Codex branch: the existing web UI also supports v2 synchronization, hidden-tab suspension, cursor history recovery, durable message attempts and reviewed writes. Browser use requires no native installation or Apple developer membership.
+
 > On `codex/native-codex`, new projects and headquarters default to Codex. New workers inherit their chief’s provider; explicit Claude choices and existing sessions are preserved.
 
 [한국어](README.ko.md)

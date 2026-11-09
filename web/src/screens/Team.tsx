@@ -4,11 +4,14 @@ import { EFFORTS, memberRank, type Activity, type ActivityKind, type CliProvider
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import ApprovalPanel from "../components/ApprovalPanel";
 import { enterSends, isComposing } from "../components/Composer";
-import ConnectGate, { isGateRejection, useGate } from "../components/ConnectGate";
+import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
 import { Glass, GlassButton, cx } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
-import { applyLocal, findMember, loadActivity, navigate, newId, refresh, routeHash, sendMessage, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
+import { applyLocal, findMember, getState, loadActivity, navigate, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
+import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, type WriteReview } from "../lib/reviewed-writes";
+import { readWriteContext, useWriteContext } from "../lib/review-context";
+import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
 import "../styles/team.css";
 
 const SCREEN_POLL_MS = 2000;
@@ -472,13 +475,30 @@ const MODELS = ["fable", "opus", "sonnet", "haiku"];
 /** 제공자 전환은 서버가 이전 세션을 닫고 새 세션에 인계한다. */
 function MemberConfig({ m }: { m: Member }) {
   const rank = useBootstrap()?.settings.ranks[memberRank(m.kind)];
+  const context = useWriteContext();
   const diagnostics = useRuntime();
-  const { busy, error, run } = useAction();
-  const [model, setModel] = useState(m.modelOverride ?? "");
-  useEffect(() => setModel(m.modelOverride ?? ""), [m.modelOverride]);
-  const save = (patch: PatchMemberReq) => run("config", async () => {
-    applyLocal({ type: "member", member: await api.patchMember(m.id, patch) });
-    await refresh();
+  const { busy, error, run, setError } = useAction();
+  const [modelDraft, setModelDraft] = useState<{ value: string; review: WriteReview } | null>(null);
+  const [conflict, setConflict] = useState<{ patch: PatchMemberReq; review: WriteReview; serverMember: Member; ready?: boolean } | null>(null);
+  const model = modelDraft?.value ?? m.modelOverride ?? "";
+  const capture = () => captureWriteReview(context, { kind: "member", projectId: m.projectId, id: m.id });
+  const save = (patch: PatchMemberReq, reviewed = capture()) => run("config", async () => {
+    try {
+      const member = await executeReviewedWrite(reviewed, readWriteContext(),
+        revision => api.patchMemberV2(m.id, patch, Number(revision)).then(result => result.member),
+        () => api.patchMember(m.id, patch));
+      if (!reviewStillCurrent(reviewed, readWriteContext())) return;
+      applyLocal({ type: "member", member });
+      if (patch.modelOverride !== undefined) setModelDraft(null);
+      setConflict(null);
+      await refresh();
+    } catch (e) {
+      if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) {
+        setConflict({ patch, review: reviewed, serverMember: getState().project?.members.find(member => member.id === m.id) ?? m });
+        void refresh();
+      }
+      throw e;
+    }
   });
   const changing = m.status === "working" || m.status === "blocked" || m.queuedCount > 0;
   const legacy = !!m.backend && m.backend !== "core";
@@ -489,19 +509,37 @@ function MemberConfig({ m }: { m: Member }) {
       <p className="tm-label">AI CLI · 모델 · effort</p>
       <label className="field">
         <span className="field__label">AI CLI</span>
-        <select className="input tm-select" aria-label="직원 AI CLI" disabled={busy !== null || !!changing || legacy || !!blocked} value={m.cli ?? "claude"} onChange={(e) => void save({ cli: e.target.value as CliProvider })}>
+        <select className="input tm-select" aria-label="직원 AI CLI" disabled={busy !== null || !!conflict || !!changing || legacy || !!blocked} value={m.cli ?? "claude"} onChange={(e) => void save({ cli: e.target.value as CliProvider })}>
           {(["claude", "codex"] as const).map((cli) => <option key={cli} value={cli} disabled={!!runtimeBlock(diagnostics.runtime, cli)}>{providerName(cli)}{diagnostics.runtime && !diagnostics.runtime.providers[cli]?.installed ? " · 설치 필요" : ""}</option>)}
         </select>
       </label>
       <p className="tm-note tm-note--left">{legacy ? "이전 실행기의 세션은 여기서 CLI를 전환할 수 없습니다." : changing ? "일이나 전달 대기가 끝나면 CLI를 바꿀 수 있습니다." : blocked ?? "CLI를 바꾸면 이전 세션을 닫고 현재 일과 상황을 새 세션에 인계합니다."}</p>
       <div className="tm-config__row">
-        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => setModel(e.target.value)} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
-        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || legacy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
+        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => {
+          const value = e.target.value;
+          setModelDraft(current => ({ value, review: current?.review ?? capture() }));
+        }} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
+        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || !!conflict || legacy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
           <option value="">{base(rank?.effort)}</option>
           {EFFORTS.map((x) => <option key={x} value={x} disabled={m.cli === "codex" && x === "max"}>{x}{m.cli === "codex" && x === "max" ? " · Codex 미지원" : ""}</option>)}
         </select></label>
       </div>
-      <GlassButton variant="glass" size="m" disabled={busy !== null || legacy || (model.trim() || null) === m.modelOverride} onClick={() => void save({ modelOverride: model.trim() || null })}>{busy ? "저장하는 중" : "모델 저장"}</GlassButton>
+      <GlassButton variant="glass" size="m" disabled={busy !== null || !!conflict || legacy || (model.trim() || null) === m.modelOverride} onClick={() => void save({ modelOverride: model.trim() || null }, modelDraft?.review ?? capture())}>{busy ? "저장하는 중" : "모델 저장"}</GlassButton>
+      {conflict ? <div role="status">
+        <p className="tm-note tm-note--left">입력한 값은 남겨 두었습니다. 현재 설정: {providerName(m.cli ?? "claude")} · 모델 {m.modelOverride ?? "직급 기본값"} · effort {m.effortOverride ?? "직급 기본값"}</p>
+        <p className="tm-note tm-note--left">저장하려던 값: {conflict.patch.cli ? `CLI ${providerName(conflict.patch.cli)}` : conflict.patch.effortOverride !== undefined ? `effort ${conflict.patch.effortOverride ?? "직급 기본값"}` : `모델 ${model.trim() || "직급 기본값"}`}</p>
+        {conflict.ready ? (
+          <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void save(conflict.patch.modelOverride !== undefined ? { modelOverride: model.trim() || null } : conflict.patch, conflict.review)}>검토한 변경 저장</GlassButton>
+        ) : (
+          <GlassButton variant="glass" size="m" disabled={busy !== null || m === conflict.serverMember || capture().mode === "unavailable"} onClick={() => {
+            const nextReview = capture();
+            setModelDraft(current => current ? { ...current, review: nextReview } : current);
+            setConflict({ ...conflict, review: nextReview, ready: true });
+            setError(null);
+          }}>현재 값 확인했습니다</GlassButton>
+        )}
+      </div> : null}
+      {modelDraft ? <GlassButton variant="ghost" size="m" disabled={busy !== null} onClick={() => { setModelDraft(null); setConflict(null); setError(null); }}>모델 입력 되돌리기</GlassButton> : null}
       <p className="tm-note tm-note--left">모델·effort 변경은 세션을 잠재운 뒤 다시 열 때 적용됩니다. 빈 모델은 직급 기본값을 씁니다.</p>
       <ErrorLine>{error}</ErrorLine>
     </div>
@@ -668,121 +706,44 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
   );
 }
 
-const directKey = (memberId: string) => `iamceo.draft.direct.${memberId}`;
-
-/** 창을 닫아도(바깥 누름·Esc) 쓰던 지시가 남는다. '이 기기에서 나가기'가 함께 지운다. */
-function loadDirect(memberId: string): { text: string; retry: { id: string; text: string } | null } {
-  try {
-    const raw = localStorage.getItem(directKey(memberId));
-    if (raw) return { text: "", retry: null, ...(JSON.parse(raw) as object) };
-  } catch {
-    // 깨진 값이면 빈 칸으로 시작한다.
-  }
-  return { text: "", retry: null };
-}
-
-function saveDirect(memberId: string, text: string, retry: { id: string; text: string } | null): void {
-  try {
-    if (!text && !retry) localStorage.removeItem(directKey(memberId));
-    else localStorage.setItem(directKey(memberId), JSON.stringify({ text, retry }));
-  } catch {
-    // 저장 공간이 없어도 입력은 계속된다.
-  }
-}
-
+/** Direct inputs share durable submission handling with the bottom composer, with
+ * independent per-member drafts and the real project ID retained in every request. */
 function DirectInput({ m }: { m: Member }) {
   const gate = useGate();
-  const [saved] = useState(() => loadDirect(m.id));
-  const [text, setTextState] = useState(saved.text);
-  // 실패한 글과 내용이 같으면 같은 id 로 다시 보낸다. 응답만 잃었을 때 지시가 둘이 되지 않는다.
-  const [retry, setRetryState] = useState(saved.retry);
-  const [sentId, setSentId] = useState<string | null>(saved.retry?.id ?? null);
-  const [busy, setBusy] = useState(false);
-  // 연결 때문에 서버가 받지 않았다. 없는 글이 실패 줄로 남지 않게 줄을 걷고 이유만 칸 위에 보인다.
-  const [rejected, setRejected] = useState<string | null>(null);
-  const sent = useProject()?.messages.find((x) => x.id === sentId) ?? null;
+  const manager = memberSubmissions(m);
+  const { draft, attempts } = useSubmissionDraft(m.projectId, manager);
+  const [sentId, setSentId] = useState<string | null>(null);
+  const sent = useProject()?.messages.find((message) => message.id === sentId) ?? null;
   const asleep = m.status === "asleep" || m.status === "offline";
-  const latest = useRef({ text, retry });
-  const update = (nextText: string, nextRetry: { id: string; text: string } | null) => {
-    latest.current = { text: nextText, retry: nextRetry };
-    setTextState(nextText);
-    setRetryState(nextRetry);
-    saveDirect(m.id, nextText, nextRetry);
+  const submit = () => {
+    const text = draft.text.trim();
+    if (!text) return;
+    // A conductor uses the project path; workers retain their exact member ID.
+    const result = manager.submit(m.projectId, draft, { text, targetMemberId: m.kind === "worker" ? m.id : null, attachmentIds: [] }, { targetName: m.name });
+    const staged = manager.snapshot(m.projectId).attempts.at(-1);
+    if (staged && !manager.snapshot(m.projectId).draft.error) setSentId(staged.id);
+    void result;
   };
-
-  // 응답만 잃었고 서버는 받았다(재동기화로 알았다). 칸에 남은 글을 또 보내면 지시가 둘이 된다.
-  const delivery = sent?.delivery;
-  useEffect(() => {
-    if (!retry || sent?.id !== retry.id || !delivery || delivery === "failed") return;
-    update(latest.current.text === retry.text ? "" : latest.current.text, null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retry, sent?.id, delivery]);
-
-  const submit = async () => {
-    const body = text.trim();
-    if (!body || busy) return;
-    setBusy(true);
-    const id = retry?.text === body ? retry.id : newId();
-    setSentId(id);
-    setRejected(null);
-    update("", null);
-    // 총괄은 대상을 비워야 '대표 말' 경로로 간다. @총괄 로 보내면 같은 사실을 자기에게 또 알린다
-    const worker = m.kind === "worker";
-    let gateRefused = false;
-    const result = await sendMessage(
-      { id, text: body, targetMemberId: worker ? m.id : null },
-      {
-        targetName: worker ? m.name : null,
-        onRejected: (e) => {
-          if (!isGateRejection(e)) return false;
-          gateRefused = true;
-          setRejected(e.message);
-          return true;
-        },
-      },
-    );
-    // 저장되지 않았으니 같은 id 를 이어 쓸 이유가 없다.
-    if (gateRefused) update(latest.current.text || body, null);
-    else if (!result) update(latest.current.text || body, latest.current.text ? null : { id, text: body });
-    setBusy(false);
-  };
-
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // 한글 조합 중 Enter 는 글자를 확정할 뿐이다. 터치 기기는 입력칸과 같게 Enter 가 줄바꿈이다.
-    if (!isComposing(e) && enterSends(e)) {
-      e.preventDefault();
-      void submit();
-    }
+    if (!isComposing(e) && enterSends(e)) { e.preventDefault(); submit(); }
   };
-
   const placeholder = asleep ? `${m.name}에게 직접 지시 (보내면 깨워서 전달합니다)` : `${m.name}에게 직접 지시`;
-
-  // 연결되기 전에는 칸을 열어 두지 않는다. 쓰던 글은 기기에 남아 있다.
   if (!gate.ok) return <ConnectGate className="tm-send" />;
-
   return (
-    <form
-      className="tm tm-send"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      {rejected ? (
-        <p className="tm-send__state" data-state="failed" role="alert">
-          {rejected}
-        </p>
-      ) : sent?.delivery ? (
-        <p className="tm-send__state" data-state={sent.delivery} role="status">
-          보낸 지시: {DELIVERY_LABEL[sent.delivery]}
-          {sent.deliveryNote ? ` (${sent.deliveryNote})` : ""}
-        </p>
-      ) : null}
+    <form className="tm tm-send" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+      {draft.error ? <p className="tm-send__state" data-state="failed" role="alert">{draft.error}</p> : null}
+      {attempts.map((attempt) => (
+        <div key={attempt.id} className="tm-send__state" data-state={attempt.status === "checking" ? "queued" : "failed"} role="status">
+          <span>{attempt.payload.text.slice(0, 60)}{attempt.payload.text.length > 60 ? "…" : ""}</span>
+          <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
+          <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void manager.reconcile(m.projectId)}>다시 확인</GlassButton>
+          <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void manager.retry(m.projectId, attempt.id)}>같은 내용 재시도</GlassButton>
+        </div>
+      ))}
+      {!attempts.length && sent?.delivery ? <p className="tm-send__state" data-state={sent.delivery} role="status">보낸 지시: {DELIVERY_LABEL[sent.delivery]}{sent.deliveryNote ? ` (${sent.deliveryNote})` : ""}</p> : null}
       <div className="tm-send__row">
-        <textarea className="input tm-send__input" rows={1} value={text} placeholder={placeholder} aria-label={placeholder} onChange={(e) => update(e.target.value, latest.current.retry)} onKeyDown={onKey} />
-        <GlassButton variant="primary" size="m" type="submit" disabled={!text.trim() || busy}>
-          보내기
-        </GlassButton>
+        <textarea className="input tm-send__input" rows={1} value={draft.text} placeholder={placeholder} aria-label={placeholder} onChange={(e) => manager.patchDraft(m.projectId, (d) => ({ ...d, text: e.target.value, error: null }))} onKeyDown={onKey} />
+        <GlassButton variant="primary" size="m" type="submit" disabled={!draft.text.trim()}>보내기</GlassButton>
       </div>
     </form>
   );

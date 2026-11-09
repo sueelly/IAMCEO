@@ -1,13 +1,15 @@
-// 설정: 전체 설정 하나다(#/settings). 고친 칸만 초안에 두고 나머지는 서버 값을 그대로 보여 준다(다른 기기에서 바꿔도 맞게).
+// 설정: 전체 설정 하나다(#/settings). 첫 편집 때의 값을 검토 기준으로 두고, 고친 칸만 보낸다.
 // 권한·직급·숫자·맥 알림은 아래 저장 띠 하나로 함께 저장한다. 프로젝트는 줄마다 따로 고친다.
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { EFFORTS } from "@shared/types";
-import type { Bootstrap, Effort, PermissionMode, Project, ProjectSummary, Rank, Settings as SettingsT, SettingsPatch } from "@shared/types";
+import type { Bootstrap, Effort, PermissionMode, Project, ProjectSummary, Rank, Settings as SettingsT } from "@shared/types";
 import RuntimeStatus from "../components/RuntimeStatus";
 import { Badge, Modal } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
-import { api, errorText } from "../lib/api";
-import { HQ_ID, applyLocal, logout, refresh, routeHash, savedDraftCount, useBootstrap, useRoute, useStore, useSummary } from "../lib/store";
+import { ApiError, api, errorText } from "../lib/api";
+import { HQ_ID, applyLocal, getState, logout, refresh, routeHash, savedDraftCount, useBootstrap, useRoute, useStore, useSummary } from "../lib/store";
+import { ReviewRequiredError, buildSettingsPatch, executeReviewedWrite, reviewStillCurrent, startSettingsReview, type NumberKey, type RankDraft, type SettingsDraft as Draft } from "../lib/reviewed-writes";
+import { readWriteContext, useWriteContext } from "../lib/review-context";
 import "../styles/setup.css";
 
 const PERMISSIONS: { mode: PermissionMode; label: string; desc: string; badge?: string }[] = [
@@ -24,7 +26,6 @@ const RANKS: { rank: Rank; label: string; scope: string }[] = [
 const MODELS = ["fable", "opus", "sonnet", "haiku"];
 const CUSTOM = "custom";
 
-type NumberKey = "maxConcurrentTurns" | "compactAtPct" | "maxAwakeWorkers";
 const NUMBERS: { key: NumberKey; label: string; unit: string; min: number; max: number; hint: string }[] = [
   { key: "maxConcurrentTurns", label: "동시 턴", unit: "개", min: 1, max: 64, hint: "넘치면 차례를 기다립니다" },
   { key: "compactAtPct", label: "압축 기준", unit: "%", min: 1, max: 100, hint: "문맥 표시 기준입니다. core 자동 압축은 지원하지 않으며 터미널에서 /compact를 사용합니다" },
@@ -40,19 +41,6 @@ const TIDY_CHOICES: { hours: number; label: string }[] = [
   { hours: 24, label: "매일" },
 ];
 
-/** custom: '직접 입력'을 골랐다. 아직 글을 넣지 않았어도 칸이 닫히지 않게 따로 기억한다. */
-interface RankDraft {
-  model?: string | null;
-  custom?: boolean;
-  effort?: Effort | null;
-}
-interface Draft {
-  permissionMode?: PermissionMode;
-  notifyMac?: boolean;
-  boardTidyHours?: number;
-  numbers: Partial<Record<NumberKey, string>>;
-  ranks: Partial<Record<Rank, RankDraft>>;
-}
 const EMPTY_DRAFT: Draft = { numbers: {}, ranks: {} };
 
 const shownModel = (s: SettingsT, d: Draft, r: Rank): string | null => {
@@ -68,31 +56,6 @@ const isCustom = (s: SettingsT, d: Draft, r: Rank): boolean => {
   return d.ranks[r]?.custom ?? (model !== null && !MODELS.includes(model));
 };
 const numberText = (s: SettingsT, d: Draft, k: NumberKey): string => d.numbers[k] ?? String(s[k]);
-
-/** 서버 값과 달라진 칸만 모은다. 비었으면 고친 것이 없다. 값이 잘못되었으면 error. */
-function buildPatch(s: SettingsT, d: Draft): { patch: SettingsPatch; error: string | null } {
-  const patch: SettingsPatch = {};
-  let error: string | null = null;
-  if (d.permissionMode !== undefined && d.permissionMode !== s.permissionMode) patch.permissionMode = d.permissionMode;
-  if (d.notifyMac !== undefined && d.notifyMac !== s.notifyMac) patch.notifyMac = d.notifyMac;
-  if (d.boardTidyHours !== undefined && d.boardTidyHours !== s.boardTidyHours) patch.boardTidyHours = d.boardTidyHours;
-  for (const n of NUMBERS) {
-    const text = numberText(s, d, n.key).trim();
-    const v = Number(text);
-    if (text === "" || !Number.isInteger(v) || v < n.min || v > n.max) error ??= `${n.label}은 ${n.min}부터 ${n.max}까지의 정수입니다`;
-    else if (v !== s[n.key]) patch[n.key] = v;
-  }
-  for (const { rank, label } of RANKS) {
-    const model = shownModel(s, d, rank)?.trim() ?? null;
-    const effort = shownEffort(s, d, rank);
-    if (isCustom(s, d, rank) && !model) error ??= `${label} 모델 이름을 넣어 주세요`;
-    const change: { model?: string | null; effort?: Effort | null } = {};
-    if ((model || null) !== s.ranks[rank].model) change.model = model || null;
-    if (effort !== s.ranks[rank].effort) change.effort = effort;
-    if (Object.keys(change).length > 0) patch.ranks = { ...patch.ranks, [rank]: change };
-  }
-  return { patch, error };
-}
 
 function PermissionChoices({ value, onChange }: { value: PermissionMode; onChange: (mode: PermissionMode) => void }) {
   return (
@@ -447,8 +410,29 @@ function ConnectionPanel({ version, urls }: { version: string; urls: string[] })
   );
 }
 
+function SettingsComparison({ settings, patch }: { settings: SettingsT; patch: ReturnType<typeof buildSettingsPatch>["patch"] }) {
+  const value = (v: unknown) => PERMISSIONS.find(p => p.mode === v)?.label ?? (v === null ? "직급 기본값" : typeof v === "boolean" ? (v ? "켬" : "끔") : String(v));
+  const rows: { label: string; current: unknown; edited: unknown }[] = [];
+  for (const [key, label] of [["permissionMode", "권한"], ["notifyMac", "맥 알림"], ["boardTidyHours", "판 정리 주기"], ...NUMBERS.map(n => [n.key, n.label])] as const) {
+    const k = key as "permissionMode" | "notifyMac" | "boardTidyHours" | NumberKey;
+    if (patch[k] !== undefined) rows.push({ label, current: settings[k], edited: patch[k] });
+  }
+  for (const { rank, label } of RANKS) {
+    const change = patch.ranks?.[rank];
+    if (change?.model !== undefined) rows.push({ label: `${label} 모델`, current: settings.ranks[rank].model, edited: change.model });
+    if (change?.effort !== undefined) rows.push({ label: `${label} effort`, current: settings.ranks[rank].effort, edited: change.effort });
+  }
+  return <ul>{rows.map(row => <li key={row.label}>{row.label}: 현재 {value(row.current)} → 입력 {value(row.edited)}</li>)}</ul>;
+}
+
 function SettingsForm({ settings, overrides, projects, version, urls }: { settings: SettingsT; overrides: Bootstrap["rankOverrides"]; projects: ProjectSummary[]; version: string; urls: string[] }) {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const context = useWriteContext();
+  const [review, setReview] = useState<ReturnType<typeof startSettingsReview> | null>(null);
+  const [conflict, setConflict] = useState<{ settings: SettingsT } | null>(null);
+  const shown = review?.base ?? settings;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -466,22 +450,24 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
   }, [saved]);
 
   const touch = (next: (d: Draft) => Draft) => {
-    setDraft(next);
+    setReview(current => current ?? startSettingsReview(settings, context));
+    draftRef.current = next(draftRef.current);
+    setDraft(draftRef.current);
     setSaved(null);
     setError(null);
   };
   const editRank = (rank: Rank, patch: RankDraft) => touch((d) => ({ ...d, ranks: { ...d.ranks, [rank]: { ...d.ranks[rank], ...patch } } }));
 
-  const permission = draft.permissionMode ?? settings.permissionMode;
-  const notify = draft.notifyMac ?? settings.notifyMac;
-  const tidyHours = draft.boardTidyHours ?? settings.boardTidyHours;
+  const permission = draft.permissionMode ?? shown.permissionMode;
+  const notify = draft.notifyMac ?? shown.notifyMac;
+  const tidyHours = draft.boardTidyHours ?? shown.boardTidyHours;
   // API 로 다른 값을 넣었으면 그 값도 고를 수 있게 둔다.
   const tidyChoices = TIDY_CHOICES.some((c) => c.hours === tidyHours) ? TIDY_CHOICES : [...TIDY_CHOICES, { hours: tidyHours, label: `${tidyHours}시간` }].sort((a, b) => a.hours - b.hours);
-  const { patch, error: invalid } = buildPatch(settings, draft);
+  const { patch, error: invalid } = buildSettingsPatch(shown, draft);
   const dirty = Object.keys(patch).length > 0 || invalid !== null;
 
   const save = async () => {
-    if (!dirty || busy) return;
+    if (!dirty || busy || conflict || !review) return;
     if (invalid) {
       setError(invalid);
       return;
@@ -489,12 +475,26 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
     setBusy(true);
     setError(null);
     try {
-      const next = await api.putSettings(patch);
-      applyLocal({ type: "settings", settings: next });
-      setDraft(EMPTY_DRAFT);
+      const submittedDraft = draft;
+      const settingsAtSubmit = getState().bootstrap?.settings;
+      const next = await executeReviewedWrite(review.write, readWriteContext(),
+        revision => api.putSettingsV2(patch, Number(revision)).then(result => result.settings),
+        () => api.putSettings(patch));
+      if (!reviewStillCurrent(review.write, readWriteContext())) return;
+      if (getState().bootstrap?.settings === settingsAtSubmit) applyLocal({ type: "settings", settings: next });
+      if (draftRef.current === submittedDraft) {
+        draftRef.current = EMPTY_DRAFT;
+        setDraft(EMPTY_DRAFT);
+        setReview(null);
+      }
       setSaved("저장했습니다. 모델·effort는 다음 실행에 적용됩니다.");
+      void refresh();
     } catch (err) {
       setError(errorText(err));
+      if (err instanceof ReviewRequiredError || err instanceof ApiError && (err.status === 409 || err.status === 0)) {
+        setConflict({ settings: getState().bootstrap?.settings ?? settings });
+        void refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -518,7 +518,7 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
         <h2 id="st-ranks" className="st-panel__title">
           직급별 모델·effort
         </h2>
-        <RankTable settings={settings} overrides={overrides} draft={draft} edit={editRank} onEnter={onEnter} />
+        <RankTable settings={shown} overrides={overrides} draft={draft} edit={editRank} onEnter={onEnter} />
       </Glass>
 
       <ProjectsPanel projects={projects} />
@@ -535,7 +535,7 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
                 <input
                   className="input t-tabular"
                   inputMode="numeric"
-                  value={numberText(settings, draft, n.key)}
+                  value={numberText(shown, draft, n.key)}
                   onChange={(e) => touch((d) => ({ ...d, numbers: { ...d.numbers, [n.key]: e.target.value } }))}
                   onKeyDown={onEnter}
                 />
@@ -567,6 +567,18 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
 
       <ConnectionPanel version={version} urls={urls} />
 
+      {conflict ? (
+        <Glass as="section" level="regular" tint className="st-panel" aria-label="바뀐 설정 검토">
+          <p role="status">입력한 값은 남겨 두었습니다. 현재 서버 값과 비교한 뒤 다시 저장해 주세요.</p>
+          <SettingsComparison settings={settings} patch={patch} />
+          <GlassButton variant="glass" size="m" disabled={busy || settings === conflict.settings || context.capabilities?.capabilities.operations !== false && !context.syncRevisions} onClick={() => {
+            setReview(startSettingsReview(settings, context));
+            setConflict(null);
+            setError(null);
+          }}>현재 값 확인했습니다</GlassButton>
+        </Glass>
+      ) : null}
+
       {dirty || error || saved ? (
         <Glass level="regular" tint className="st-bar">
           <p className={error ? "form__error" : saved && !dirty ? "st-bar__ok" : "st-bar__note"} role={error ? "alert" : "status"}>
@@ -579,13 +591,16 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
                 size="m"
                 disabled={busy}
                 onClick={() => {
+                  draftRef.current = EMPTY_DRAFT;
                   setDraft(EMPTY_DRAFT);
+                  setReview(null);
+                  setConflict(null);
                   setError(null);
                 }}
               >
                 되돌리기
               </GlassButton>
-              <GlassButton variant="primary" size="m" disabled={busy} onClick={() => void save()}>
+              <GlassButton variant="primary" size="m" disabled={busy || !!conflict} onClick={() => void save()}>
                 {busy ? "저장하는 중" : "저장"}
               </GlassButton>
             </>
