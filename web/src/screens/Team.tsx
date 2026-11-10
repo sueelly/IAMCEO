@@ -1,6 +1,6 @@
 // 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { EFFORTS, memberRank, type Activity, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import ApprovalPanel from "../components/ApprovalPanel";
 import { enterSends, isComposing } from "../components/Composer";
@@ -8,7 +8,7 @@ import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
 import { Glass, GlassButton, cx } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
-import { applyLocal, findMember, getState, loadActivity, navigate, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
+import { applyLocal, findMember, getState, loadActivity, navigate, newId, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
 import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
@@ -546,6 +546,94 @@ function MemberConfig({ m }: { m: Member }) {
   );
 }
 
+// ---- 전달 알림 ----
+
+const NOTICE_POLL_MS = 10_000;
+const NOTICE_PHASE: Record<DeliveryNoticeItem["phase"], string> = { none: "전달 대기", checking: "전달 확인 중", waiting: "확인 기다리는 중", retry_wait: "다시 보낼 차례 기다리는 중", needs_owner: "대표 확인 필요" };
+const NOTICE_KIND: Record<DeliveryNoticeItem["kind"], string> = { user_message: "대표 메시지", answer: "결재 답변", todo_done: "할 일 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" };
+
+/** 이 직원에게 아직 닿지 않은 전달과 '다시 확인'. 앱의 전달 알림 패널과 같은 서버 API·검사를 쓴다.
+ * 웹은 '다시 확인'만 내놓는다(중복 위험 재전송·중지는 앱/서버 정책 그대로 두고 여기서는 열지 않는다). */
+function DeliveryNotices({ m }: { m: Member }) {
+  const [page, setPage] = useState<DeliveryNoticePage | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // 응답을 못 받은 요청은 같은 operationId 로 다시 보낸다(서버 멱등). 결과를 받으면 지운다.
+  const ops = useRef(new Map<string, { op: string; version: number }>());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [actError, setActError] = useState<string | null>(null);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setPage(await api.deliveryNotices(m.id, signal));
+      setLoadError(null);
+    } catch (e) {
+      if (!signal?.aborted) setLoadError(errorText(e));
+    }
+  }, [m.id]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    void load(ac.signal);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") void load(ac.signal); }, NOTICE_POLL_MS);
+    return () => { ac.abort(); clearInterval(timer); };
+  }, [load]);
+
+  const recheck = async (item: DeliveryNoticeItem) => {
+    const id = item.deliveryId;
+    if (!id || busy) return;
+    const prev = ops.current.get(id);
+    const tracked = prev && prev.version === item.version ? prev : { op: newId(), version: item.version };
+    ops.current.set(id, tracked);
+    setBusy(id); setActError(null); setDone(null);
+    try {
+      await api.recoverDelivery(id, { operationId: tracked.op, expectedVersion: tracked.version, action: "recheck" });
+      ops.current.delete(id);
+      setDone(`${NOTICE_KIND[item.kind]}(${id})을 다시 확인하도록 요청했습니다. 조건이 맞으면 같은 내용 그대로 다시 보냅니다.`);
+    } catch (e) {
+      // 서버가 답한 거절(상태가 바뀜 등)은 결과가 확정됐으니 새로 읽고 새 요청으로 다시 누를 수 있게 한다. 연결 오류는 같은 id 로 다시 보낸다.
+      if (e instanceof ApiError && e.status !== 0) ops.current.delete(id);
+      setActError(errorText(e));
+    } finally {
+      setBusy(null);
+      void load();
+    }
+  };
+
+  const items = page?.items ?? [];
+  if (!items.length && !loadError) return null;
+  return (
+    <section className="tm-delivery" aria-label="전달 알림">
+      <p className="tm-label">전달 알림 {items.length ? <span className="tm-delivery__count">{items.length}건</span> : null}</p>
+      {loadError ? <p className="tm-error" role="alert">전달 알림을 읽지 못했습니다: {loadError}</p> : null}
+      <ul className="tm-delivery__list">
+        {items.map((item) => (
+          <li key={item.id} className="tm-delivery__item" data-phase={item.phase} data-delivery-id={item.deliveryId ?? undefined}>
+            <div className="tm-delivery__head">
+              <Badge>{NOTICE_PHASE[item.phase]}</Badge>
+              <span className="tm-delivery__kind">{NOTICE_KIND[item.kind]}</span>
+              <Time iso={item.createdAt} className="tm-delivery__time" />
+            </div>
+            {/* 메시지·결재가 없는 지시는 서버가 종류 이름만 준다. 같은 말을 두 번 보이지 않는다. */}
+            {item.preview && item.preview !== NOTICE_KIND[item.kind] ? <blockquote className="tm-delivery__preview">{item.preview}</blockquote> : null}
+            <p className="tm-note tm-note--left">{item.note}</p>
+            {item.deliveryId ? <p className="tm-delivery__id">전달 ID <code>{item.deliveryId}</code></p> : null}
+            {item.deliveryId && item.version > 0 && item.allowedActions.includes("recheck") ? (
+              <div className="tm-actions">
+                <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void recheck(item)}>
+                  {busy === item.deliveryId ? "요청하는 중" : "다시 확인"}
+                </GlassButton>
+              </div>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {done ? <p className="tm-note tm-note--left" role="status">{done}</p> : null}
+      <ErrorLine>{actError}</ErrorLine>
+    </section>
+  );
+}
+
 function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; project: Project; compactAt: number; openAsks: number }) {
   const hasScreen = m.backend === "core" && !!m.paneId && m.status !== "asleep" && m.status !== "offline";
   const [pane, setPane] = useState<"activity" | "screen" | null>(null);
@@ -683,6 +771,8 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
           {notice}
         </p>
       ) : null}
+
+      <DeliveryNotices m={m} />
 
       {manual ? null : <MemberConfig m={m} />}
       {(m.sessionId || (m.backend === "core" && m.paneId)) && m.status !== "blocked" ? <CopyCommand m={m} /> : null}

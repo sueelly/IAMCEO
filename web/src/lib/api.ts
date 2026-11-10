@@ -25,6 +25,7 @@ import type {
   Todo,
   SyncSnapshot,
 } from "@shared/types";
+import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
 
 const CODE_KEY = "iamceo.accessCode";
@@ -222,6 +223,11 @@ export const api = {
   approval: (memberId: string) => get<{ approval: ApprovalPrompt | null }>(`/api/members/${seg(memberId)}/approval`),
   /** 고른 선택지를 칸에서 누른다. 서버가 누르기 직전에 다시 읽어 fingerprint 가 다르면 409. note 는 거절일 때만. */
   answerApproval: (memberId: string, req: AnswerApprovalReq) => post<{ ok: true }>(`/api/members/${seg(memberId)}/approval`, req),
+
+  /** 전달 알림(대표 차례·확인 중인 전달). 앱의 전달 알림 패널과 같은 서버 API다. */
+  deliveryNotices: (memberId: string, signal?: AbortSignal) => get<DeliveryNoticePage>(`/api/members/${seg(memberId)}/delivery-notices?limit=50`, signal),
+  /** 같은 operationId 재요청은 같은 결과를 돌려준다(서버 멱등). */
+  recoverDelivery: (deliveryId: string, req: DeliveryRecoveryRequest) => post<DeliveryRecoveryResult>(`/api/deliveries/${seg(deliveryId)}/recovery`, req),
 
   /** 아티팩트 원본. 격리 칸(ArtifactFrame)에만 넣는다. */
   artifact: (fileId: string) => get<{ html: string }>(`/api/files/${seg(fileId)}/artifact`),
