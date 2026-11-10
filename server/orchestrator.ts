@@ -57,7 +57,7 @@ import type {
   WorkItem,
   WorkSec,
 } from "../shared/types.ts";
-import { adoptRefusal, memberConfig } from "../shared/types.ts";
+import { adoptRefusal, memberConfig, memberRank } from "../shared/types.ts";
 import type { Config } from "./config.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
@@ -65,7 +65,7 @@ import { josa, renderRole } from "./roles.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
-import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
+import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TerminalKey, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
 import { ANTIGRAVITY_MODEL_RE, antigravityMemberHome, existingAntigravityTranscript } from "./runner/antigravity.ts";
@@ -343,6 +343,8 @@ export interface OrchestratorDeps {
 export interface NewMemberInput {
   cli?: CliProvider;
   modelOverride?: string | null;
+  /** 직원별 effort. 그 CLI·모델이 지원하지 않으면 거절한다(바꿔 끼우지 않는다). */
+  effortOverride?: string | null;
   name: string;
   role?: string;
   handle?: string;
@@ -1123,6 +1125,40 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
+  /**
+   * 한 번에 보내기: 조작권 얻기 → 글 넣기 → (Enter) → 키 → 조작권 놓기. 모두 terminalControlV2(세대·조작권·입력 순번·operation ID)를 거친다.
+   * 같은 operationId 로 다시 부르면 단계마다 저장된 결과를 돌려줘 글이 두 번 들어가지 않는다. 결과가 불명확하면 화면을 먼저 읽으라고 돌려준다.
+   * AI 가 일하는 중(working)에는 글을 넣지 않는다(키만: 멈추기·승인 창 조작용).
+   */
+  async terminalSend(memberId: string, req: { operationId: string; text?: string; submit?: boolean; key?: TerminalKey; by: string }): Promise<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }> {
+    const member = this.store.requireMember(memberId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(req.operationId)) throw new ApiError(400, "operationId 형식이 잘못되었습니다");
+    if (!req.text && !req.key && !req.submit) throw new ApiError(400, "넣을 글이나 키가 필요합니다");
+    if (req.text && (member.status === "working" || this.runtime(memberId).turn)) throw new ApiError(409, `${josa(member.name, "은")} 일하는 중이라 글을 넣지 않습니다. 끝난 뒤 다시 하거나, 멈추려면 key 'esc'/'ctrl+c' 만 보냅니다`, "TERMINAL_REFUSED");
+    const generation = this.store.memberRevisions(memberId).sessionGeneration;
+    const claimId = `${req.by}-${req.operationId}`.slice(0, 120);
+    const steps: string[] = [];
+    const run = async (suffix: string, body: { action: "claim" | "release" } | { action: "input"; text: string } | { action: "key"; key: TerminalKey }) => {
+      // 다시 부른 같은 단계는 저장된 결과를 그대로 돌려준다(순번을 다시 셈하지 않는다: 두 번 넣지 않기 위해).
+      const done = this.store.getOperation(`${req.operationId}-${suffix}`) as OperationReceipt<"terminal_control"> | null;
+      if (done) { steps.push(`${suffix}:${done.status}(이전 결과)`); return done; }
+      const lease = this.store.inputState(memberId).lease;
+      const seq = body.action === "input" || body.action === "key" ? (lease?.lastInputSequence ?? 0) + 1 : undefined;
+      const receipt = await this.terminalControlV2(memberId, { operationId: `${req.operationId}-${suffix}`, expectedSessionGeneration: generation, claimId, ...body, ...(seq !== undefined ? { inputSequence: seq } : {}) } as TerminalControlRequestV2);
+      steps.push(`${suffix}:${receipt.status}`);
+      return receipt;
+    };
+    let failed: OperationReceipt<"terminal_control"> | null = null;
+    const claim = await run("claim", { action: "claim" });
+    if (claim.status !== "applied") failed = claim;
+    if (!failed && req.text) { const r = await run("input", { action: "input", text: req.text }); if (r.status !== "applied") failed = r; }
+    if (!failed && req.submit) { const r = await run("enter", { action: "key", key: "enter" }); if (r.status !== "applied") failed = r; }
+    if (!failed && req.key) { const r = await run("key", { action: "key", key: req.key }); if (r.status !== "applied") failed = r; }
+    if (claim.status === "applied") await run("release", { action: "release" }).catch(() => undefined);
+    if (!failed) return { status: "applied", steps, sessionGeneration: generation };
+    return { status: failed.status === "unknown" ? "unknown" : "refused", steps, error: failed.error ?? undefined, sessionGeneration: generation };
+  }
+
   async patchMemberConfigV2(memberId: string, patch: PatchMemberReq, precondition: RevisionPrecondition): Promise<MemberConfigWriteResult> {
     this.store.requireMember(memberId);
     if (this.configWrites.has(memberId)) throw new ApiError(409, "직원 설정을 적용하는 중입니다");
@@ -1808,6 +1844,23 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 직원별 모델·effort. null 이면 직급 기본으로 돌아간다. */
+  /**
+   * 총괄이 직원의 CLI·모델·effort 를 바꾼다(대표 화면의 직원 설정과 같은 저장·검증 경로).
+   * CLI 를 바꾸면 맞지 않게 되는 기존 지정을 서버가 몰래 비우지 않는다: 그런 경우 거절하고 model·effort 를 함께 밝히게 한다.
+   */
+  async configureMember(memberId: string, patch: PatchMemberReq): Promise<{ member: Member; applied: string }> {
+    const target = this.store.requireMember(memberId);
+    if (patch.cli === undefined && patch.modelOverride === undefined && patch.effortOverride === undefined) throw new ApiError(400, "바꿀 cli·model·effort 중 하나는 필요합니다");
+    const cli = patch.cli ?? target.cli ?? "claude";
+    if (cli === "antigravity" && patch.effortOverride != null) throw new ApiError(400, "Antigravity 는 effort 를 따로 받지 않습니다. 모델 이름에 들어 있는 값을 고르세요");
+    const { resetOverrides } = this.models.memberPatch(target, patch, this.store.getSettings());
+    if (resetOverrides.length) throw new ApiError(400, `CLI 를 ${cli}(으)로 바꾸면 지금 지정한 ${resetOverrides.map((k) => k === "modelOverride" ? `model(${target.modelOverride})` : `effort(${target.effortOverride})`).join("·")}을 그 CLI 가 지원하지 않습니다. 새 CLI 에 맞는 값을 함께 넣거나 null(직급 기본값)로 밝혀 다시 부르세요`);
+    const member = await this.patchMemberConfig(memberId, patch);
+    const config = memberConfig(member, this.store.getSettings().ranks, this.store.getSettings().codexRanks);
+    const live = member.status !== "asleep" && member.status !== "offline";
+    return { member, applied: `CLI ${member.cli ?? "claude"} · 모델 ${config.model ?? "CLI 기본"} · effort ${config.effort ?? (member.cli === "antigravity" ? "모델 이름에 포함" : "CLI 기본")}${live && patch.cli === undefined ? ". 모델·effort 는 세션을 다시 열 때 적용됩니다(team_sleep 뒤 team_resume)" : ""}` };
+  }
+
   async patchMemberConfig(memberId: string, patch: PatchMemberReq): Promise<Member> {
     this.requireActive(this.store.requireProject(this.store.requireMember(memberId).projectId));
     if (this.configWrites.has(memberId)) throw new ApiError(409, "직원 설정을 적용하는 중입니다");
@@ -2504,6 +2557,12 @@ export class Orchestrator implements OrchestratorApi {
     const project = this.store.requireProject(projectId);
     const cli = input.cli ?? this.store.defaultMemberCli(projectId);
     this.models.requireModel(cli, input.modelOverride);
+    if (input.effortOverride != null) {
+      if (cli === "antigravity") throw new ApiError(400, "Antigravity 는 effort 를 따로 받지 않습니다. 모델 이름에 들어 있는 값을 고르세요");
+      const kind = input.kind ?? "worker";
+      const rank = (cli === "codex" ? this.store.getSettings().codexRanks : this.store.getSettings().ranks)[memberRank(kind)];
+      this.models.requireEffort(cli, input.modelOverride ?? rank.model, input.effortOverride);
+    }
     if (!project.runnerEnabled) throw new ApiError(409, "이 프로젝트는 실행이 꺼져 있습니다");
     const name = input.name.trim();
     if (!name) throw new ApiError(400, "이름이 필요합니다");
@@ -2517,6 +2576,7 @@ export class Orchestrator implements OrchestratorApi {
         role: input.role ?? "",
         cli,
         modelOverride: input.modelOverride,
+        effortOverride: input.effortOverride,
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
@@ -2535,7 +2595,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 명부에 올리고 세션을 띄우기 시작한다. 끝나기 전에는 pump 가 건너뛰고, 끝나면 다시 민다. */
-  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null }): { member: Member; ready: Promise<void> } {
+  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null }): { member: Member; ready: Promise<void> } {
     this.requireActive(this.store.requireProject(project.id));
     this.requireNotSwitching(); // 옮기는 명단에 없는 칸이 옛 실행기에 남는다.
     const member = this.store.createMember({ projectId: project.id, ...input, origin: "runner", status: "idle" });

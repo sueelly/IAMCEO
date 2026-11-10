@@ -385,6 +385,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       role: oneLine(300).describe("맡을 역할(한 줄)"),
       cli: z.enum(CLI_PROVIDERS).optional().describe("직원이 쓸 CLI. 생략하면 총괄의 CLI, 총괄이 없으면 프로젝트의 선택을 따른다(새 프로젝트 기본 Codex). antigravity 는 Google Antigravity CLI(agy)로 Google 구독의 Gemini 를 쓴다. 직접 Gemini CLI(gemini)는 지원하지 않는다"),
       model: z.string().nullable().optional().describe("서버 모델 목록의 값. null이면 직급 기본값"),
+      effort: z.string().trim().min(1).max(20).nullable().optional().describe("effort(claude: low·medium·high·xhigh·max, codex: minimal·low·medium·high·xhigh, 모델마다 다를 수 있음). null·생략이면 직급 기본값. 지원하지 않는 값은 거절된다. antigravity 는 모델 이름에 들어 있어 따로 받지 않는다"),
       handle: z.string().optional().describe("영문 소문자 핸들"),
       cwd: z.string().optional().describe("작업 폴더. 기본은 프로젝트 폴더. 프로젝트 폴더 안이어야 한다. 밖이 꼭 필요하면 ask 로 묻고, 대표가 그 경로를 쓴 글을 user_quote 에 싣는다"),
       first_instruction: z.string().optional().describe("첫 지시. 끝났다고 볼 기준 포함"),
@@ -397,6 +398,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         role: a.role,
         cli: a.cli,
         modelOverride: a.model,
+        effortOverride: a.effort,
         handle: a.handle,
         cwd: a.cwd ? requireMemberCwd(orch, member, a.cwd, a.user_quote) : undefined,
         firstInstruction: a.first_instruction,
@@ -443,11 +445,66 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   team_resume: tool(
-    "잠든 직원을 대화 기록 그대로 다시 연다.",
-    z.strictObject({ member: memberRef, first_instruction: z.string().optional() }),
+    "잠든(asleep)·꺼진(offline) 직원을 대화 기록 그대로 다시 연다. 대화가 한 번도 저장되지 않아 이어 열 수 없는 세션이면 fresh: true 로 새 세션을 연다(역할·지금 일은 인계된다).",
+    z.strictObject({ member: memberRef, first_instruction: z.string().optional(), fresh: z.boolean().optional().describe("대화 기록 없이 새 세션으로 연다. 이어 열기가 실패했거나 기록이 없을 때만") }),
     async (orch, member, a) => {
-      const target = await orch.resumeMember(requireOther(orch, member, a.member).id, a.first_instruction, member);
-      return reply(`${josa(target.name, "을")} 다시 열었습니다`);
+      const id = requireOther(orch, member, a.member).id;
+      if (a.fresh) {
+        const target = await orch.freshMemberSession(id);
+        if (a.first_instruction?.trim()) await orch.assign(member.projectId, target.handle, { text: a.first_instruction }, member);
+        return reply(`${josa(target.name, "을")} 새 세션으로 열었습니다(${target.status}${target.cli ? ` · ${target.cli}` : ""})`);
+      }
+      try {
+        const target = await orch.resumeMember(id, a.first_instruction, member);
+        return reply(`${josa(target.name, "을")} 다시 열었습니다(${target.status})`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 502) throw new ApiError(502, `${e.message}. 대화 기록이 없어 이어 열 수 없는 세션이면 fresh: true 로 다시 부르세요(같은 실패를 반복하지 않는다)`);
+        throw e;
+      }
+    },
+  ),
+
+  team_config: tool(
+    "직원의 CLI·모델·effort 를 바꾼다(대표 화면의 직원 설정과 같은 저장). 지원하지 않는 값은 거절되고 바꿔 끼우지 않는다. 모델·effort 는 세션을 다시 열 때 적용된다.",
+    z.strictObject({
+      member: memberRef,
+      cli: z.enum(CLI_PROVIDERS).optional().describe("claude · codex · antigravity(agy, Google 구독의 Gemini). 직접 Gemini CLI(gemini)는 지원하지 않는다"),
+      model: z.string().trim().min(1).nullable().optional().describe("서버 모델 목록의 값. null 은 직급 기본값"),
+      effort: z.string().trim().min(1).max(20).nullable().optional().describe("effort. null 은 직급 기본값"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const { member: updated, applied } = await orch.configureMember(target.id, { ...(a.cli !== undefined ? { cli: a.cli } : {}), ...(a.model !== undefined ? { modelOverride: a.model } : {}), ...(a.effort !== undefined ? { effortOverride: a.effort } : {}) });
+      return reply(`${updated.name}(${updated.handle}) 설정: ${applied}. 상태 ${updated.status}`);
+    },
+  ),
+
+  terminal_read: tool(
+    "직원 터미널 화면(마지막 줄들)과 상태·세션 세대·조작권을 읽는다. 입력하기 전, 그리고 입력 결과가 불명확할 때 먼저 부른다.",
+    z.strictObject({ member: memberRef, lines: z.number().int().min(5).max(200).optional().describe("끝에서 몇 줄(기본 60)") }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const screen = await orch.memberScreen(target.id);
+      const lines = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").filter((l, i, all) => l.trim() || i < all.length - 1);
+      const lease = orch.store.inputState(target.id).lease;
+      return reply(JSON.stringify({ member: target.handle, name: target.name, status: target.status, cli: target.cli ?? "claude", pane: target.paneId, sessionGeneration: orch.store.memberRevisions(target.id).sessionGeneration, controlHeld: lease ? { claimId: lease.claimId, expiresAt: new Date(lease.expiresAt).toISOString() } : null, screen: lines.slice(-(a.lines ?? 60)).join("\n") }));
+    },
+  ),
+
+  terminal_input: tool(
+    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 일하는 중에는 글을 넣지 않고 키만(esc·ctrl+c 로 멈추기, 승인 창 고르기). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창·멈춤처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
+    z.strictObject({
+      member: memberRef,
+      text: z.string().min(1).max(4000).optional().describe("넣을 글(한 번에)"),
+      submit: z.boolean().optional().describe("글을 넣은 뒤 Enter"),
+      key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional().describe("누를 키 하나(글 뒤에 누른다)"),
+      operation_key: oneLine(80).regex(/^[A-Za-z0-9_-]+$/).describe("이 입력의 고유 키. 같은 입력을 응답 유실로 다시 부를 때만 같은 값을 쓴다"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const result = await orch.terminalSend(target.id, { operationId: `agent-${member.id}-${a.operation_key}`, text: a.text, submit: a.submit, key: a.key, by: `agent-${member.id}` });
+      const note = result.status === "applied" ? "넣었습니다. terminal_read 로 결과를 확인하세요" : result.status === "unknown" ? "들어갔는지 확실하지 않습니다. terminal_read 로 먼저 확인하고, 같은 입력을 새 operation_key 로 반복하지 마세요" : `넣지 못했습니다: ${result.error ?? "거절"}`;
+      return { text: `${target.name}: ${note} (${result.steps.join(", ")}; 세대 ${result.sessionGeneration})`, ...(result.status === "applied" ? {} : { isError: true }) };
     },
   ),
 

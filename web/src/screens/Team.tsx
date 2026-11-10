@@ -435,6 +435,51 @@ function ScreenPane({ memberId }: { memberId: string }) {
   );
 }
 
+type TerminalKeyName = "enter" | "up" | "down" | "esc" | "tab" | "ctrl+c" | "backspace";
+const TERMINAL_KEYS: { key: TerminalKeyName; label: string }[] = [
+  { key: "enter", label: "Enter" }, { key: "up", label: "↑" }, { key: "down", label: "↓" }, { key: "tab", label: "Tab" },
+  { key: "esc", label: "Esc" }, { key: "ctrl+c", label: "Ctrl+C" }, { key: "backspace", label: "⌫" },
+];
+
+/**
+ * 웹에서 직원 터미널에 글·키를 넣는다. 서버가 조작권·세션 세대·입력 순번을 확인하는 경로(총괄의 terminal_input 과 같다)만 쓴다.
+ * 응답을 잃으면 같은 입력은 같은 operationId 로 다시 확인해 두 번 들어가지 않게 한다.
+ */
+function TerminalInput({ member }: { member: Member }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const pending = useRef<{ op: string; payload: string } | null>(null);
+  const working = member.status === "working";
+  const send = async (payload: { text?: string; submit?: boolean; key?: TerminalKeyName }) => {
+    const key = JSON.stringify(payload);
+    const op = pending.current?.payload === key ? pending.current.op : `web-${newId()}`;
+    pending.current = { op, payload: key };
+    setBusy(true);
+    try {
+      const r = await api.terminalSend(member.id, { operationId: op, ...payload });
+      pending.current = null;
+      if (r.status === "applied") { setNote("넣었습니다. 위 화면에서 결과를 확인하세요"); if (payload.text) setText(""); }
+      else if (r.status === "unknown") setNote("들어갔는지 확실하지 않습니다. 화면을 먼저 확인하세요");
+      else setNote(`넣지 못했습니다: ${r.error ?? "거절"}`);
+    } catch (e) {
+      setNote(`보내지 못했습니다: ${errorText(e)}. 같은 버튼을 다시 누르면 같은 입력인지 서버가 확인합니다`);
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="tm-term-input">
+      <form className="tm-term-input__row" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !working) void send({ text, submit: true }); }}>
+        <input className="input t-code" aria-label="터미널에 넣을 글" value={text} disabled={busy || working} onChange={(e) => setText(e.target.value)} placeholder={working ? "일하는 중에는 글을 넣지 않습니다(키만)" : "터미널에 넣을 글"} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        <GlassButton variant="primary" size="m" type="submit" disabled={busy || working || !text.trim()}>{busy ? "보내는 중" : "보내기"}</GlassButton>
+      </form>
+      <div className="tm-term-input__keys" role="group" aria-label="터미널 키">
+        {TERMINAL_KEYS.map((k) => <GlassButton key={k.key} variant="glass" size="s" disabled={busy} onClick={() => void send({ key: k.key })}>{k.label}</GlassButton>)}
+      </div>
+      {note ? <p className="tm-note tm-note--left" role="status">{note}</p> : null}
+    </div>
+  );
+}
+
 /** 명령 한 줄과 복사 버튼. */
 function CopyBox({ command, label, onCopied }: { command: string; label: string; onCopied?: () => void }) {
   const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
@@ -797,7 +842,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
         ) : (
           <p className="tm-label">활동</p>
         )}
-        {shownPane === "screen" ? <ScreenPane memberId={m.id} /> : <ActivityList memberId={m.id} />}
+        {shownPane === "screen" ? <><ScreenPane memberId={m.id} />{m.backend === "core" ? <TerminalInput member={m} /> : null}</> : <ActivityList memberId={m.id} />}
       </div>
     </div>
   );

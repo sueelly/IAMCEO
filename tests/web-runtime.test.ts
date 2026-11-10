@@ -28,7 +28,7 @@ describe("web runtime launch gate", () => {
   test("healthy core and selected installed provider permit a real server launch", () => {
     for (const cli of ["claude", "codex", "antigravity"] as const) {
       expect(runtimeBlock(healthy(), cli)).toBeNull();
-      expect(providerName(cli)).toBe({ claude: "Claude Code", codex: "Codex", antigravity: "Antigravity" }[cli]);
+      expect(providerName(cli)).toBe({ claude: "Claude Code", codex: "Codex", antigravity: "Antigravity(Gemini)" }[cli]);
     }
   });
 });

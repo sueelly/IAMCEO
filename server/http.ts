@@ -204,6 +204,12 @@ const AnswerApprovalSchema = z.strictObject({
 });
 const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
+const TerminalSendSchema = z.strictObject({
+  operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  text: z.string().min(1).max(131072).optional(),
+  submit: z.boolean().optional(),
+  key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional(),
+});
 const TerminalControlSchema = z.strictObject({
   action: z.enum(["claim", "release", "input", "key"]),
   leaseId: nonEmpty.max(256).optional(),
@@ -833,6 +839,13 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       }
       if (!orch.terminalControl) throw new ApiError(501, "터미널 조작을 지원하지 않습니다");
       return Response.json(await orch.terminalControl(id!, await parseBody(req, TerminalControlSchema)));
+    }),
+    // 대표 화면의 '터미널에 보내기'. 총괄의 terminal_input 과 같은 경로(조작권·세대·입력 순번·operationId)다.
+    route("POST", "/api/members/:id/terminal/send", async (req, _url, [id]) => {
+      store.requireMember(id!);
+      if (!orch.terminalSend) throw new ApiError(501, "터미널 보내기를 지원하지 않습니다");
+      const body = await parseBody(req, TerminalSendSchema);
+      return Response.json(await orch.terminalSend(id!, { ...body, by: "rep" }));
     }),
     route("GET", "/api/members/:id", (_req, _url, [id]) => Response.json(store.requireMember(id!))),
     route("PATCH", "/api/members/:id", async (req, _url, [id]) => {

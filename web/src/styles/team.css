@@ -196,3 +196,9 @@ textarea.input.tm-send__input { resize:none; }
 .tm-delivery__time { margin-left:auto; }
 .tm-delivery__preview { margin:0; padding:8px 10px; border-radius:10px; background:rgb(0 0 0 / .04); font-size:13.5px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:7.5em; overflow:hidden; }
 .tm-delivery__id { font-size:12px; color:var(--ink-2); overflow-wrap:anywhere; }
+
+/* 웹 터미널 입력: 화면 아래 한 줄 입력과 키 버튼 */
+.tm-term-input { display: grid; gap: 8px; margin-top: 8px; }
+.tm-term-input__row { display: flex; gap: 8px; min-width: 0; }
+.tm-term-input__row .input { flex: 1; min-width: 0; }
+.tm-term-input__keys { display: flex; flex-wrap: wrap; gap: 6px; }

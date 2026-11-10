@@ -87,6 +87,7 @@ export type ProjectPatch = Partial<
 export interface NewMember {
   cli?: CliProvider;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   projectId: string;
   handle: string;
   name: string;
@@ -292,7 +293,7 @@ function toProject(r: Row, connection: ProjectConnection): Project {
     id: r.id,
     name: r.name,
     isHq: !!r.is_hq,
-    chiefCli: r.chief_cli === "codex" ? "codex" : "claude",
+    chiefCli: r.chief_cli === "codex" || r.chief_cli === "antigravity" ? r.chief_cli : "claude",
     cwd: r.cwd,
     runnerEnabled: !!r.runner_enabled,
     now: r.now,
@@ -1135,8 +1136,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("m_");
       const at = nowIso();
       this.run(
-        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override, effort_override)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.handle,
@@ -1155,6 +1156,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         input.cli ?? this.defaultMemberCli(input.projectId),
         input.modelOverride ?? null,
+        input.effortOverride ?? null,
       );
       const member = this.requireMember(id);
       this.emit({ type: "member", member });
