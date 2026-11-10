@@ -296,7 +296,7 @@ function TaskView({ id, state, onChange }: { id: string; state: WorkState; onCha
           {data.files.length ? <ul className="plain">{data.files.map((f) => <li key={f.id}><button type="button" className="link" onClick={() => setViewFile(f)}>{f.title}</button> <small className="muted">{time(f.at)}</small></li>)}</ul> : <p className="muted">아직 없음</p>}
         </div>
         <Runs detail={data} state={state} />
-        {data.records.length ? <Records records={data.records} onChange={refresh} /> : null}
+        {data.records.length ? <Records records={data.records} canSend={state.hindsight.config.upload.mode !== "none"} onChange={refresh} /> : null}
       </aside>
       {viewFile ? <FileModal f={viewFile} state={state} onClose={() => setViewFile(null)} /> : null}
     </section>
@@ -435,16 +435,17 @@ function Runs({ detail, state }: { detail: TaskDetail; state: WorkState }) {
   );
 }
 
-function Records({ records, onChange }: { records: HindsightRecordView[]; onChange: () => void }) {
+function Records({ records, canSend, onChange }: { records: HindsightRecordView[]; canSend: boolean; onChange: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   return (
     <div className="card">
       <h2>Hindsight 기록</h2>
+      {!canSend ? <p className="muted small">Hindsight 연결 전이라 보내지 않고 보관만 합니다.</p> : null}
       <ul className="plain">
         {records.map((r) => (
           <li key={r.id} data-record-id={r.id}>
             <b>{r.kind === "verified_record" ? "검증된 기록" : r.kind === "retrospective" ? "회고" : "개선 후보"}</b> · {r.revision}판 · <Badge tone={r.status === "uploaded" ? "ok" : r.status === "failed" ? "danger" : r.status === "unknown" ? "warn" : "plain"}>{HS[r.status]}{r.adapter === "test" ? "(시험 대역)" : ""}</Badge>
-            {r.status !== "uploaded" ? <button type="button" className="btn btn--s" onClick={() => void api("POST", `/api/hindsight/records/${r.id}/retry`, {}).then(onChange, (e) => setErr(String(e.message)))}>같은 판으로 다시 보내기</button> : null}
+            {r.status !== "uploaded" && canSend ? <button type="button" className="btn btn--s" onClick={() => void api("POST", `/api/hindsight/records/${r.id}/retry`, {}).then(onChange, (e) => setErr(String(e.message)))}>같은 판으로 다시 보내기</button> : null}
             {r.lastError ? <div className="muted small">{r.lastError}</div> : null}
           </li>
         ))}

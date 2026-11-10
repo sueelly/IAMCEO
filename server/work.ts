@@ -224,7 +224,7 @@ export class WorkService {
   /** 그 업무의 기록만으로 인계문을 만든다. 다른 업무·옛 실행의 대화 원문은 넣지 않는다. */
   handoffFor(taskId: string): string {
     const t = this.task(taskId);
-    const owner = (this.db.query("SELECT body FROM messages WHERE task_id = ? AND author = 'owner' ORDER BY at DESC LIMIT 5").all(taskId) as Row[]).map((r) => r.body).reverse();
+    const owner = (this.db.query("SELECT body FROM messages WHERE task_id = ? AND author = 'owner' ORDER BY at DESC LIMIT 5").all(taskId) as Row[]).map((r) => String(r.body).replace(/\s*\[(file|decision):[\w-]+\]/g, "")).reverse();
     const open = (this.db.query("SELECT title FROM decisions WHERE task_id = ? AND status = 'open'").all(taskId) as Row[]).map((r) => r.title);
     const answered = (this.db.query("SELECT title, answer FROM decisions WHERE task_id = ? AND status = 'answered'").all(taskId) as Row[]).map((r) => `${r.title} → ${r.answer}`);
     const files = (this.db.query("SELECT title FROM files WHERE task_id = ? ORDER BY at").all(taskId) as Row[]).map((r) => r.title);

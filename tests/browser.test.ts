@@ -28,6 +28,7 @@ describe("화면 시험", () => {
   test("전체 통합(요청 10건을 한 흐름으로)", () => runFile("integrated.browser.ts"), 300_000);
   test("회귀(결함별)", () => runFile("screens-regress.browser.ts"), 300_000);
   test("아티팩트 격리", () => runFile("artifact.browser.ts"), 180_000);
+  test("업무 체험판", () => runFile("work-trial.browser.ts"), 240_000);
   test("홈과 5칸 탭", () => runFile("home.browser.ts"), 180_000);
   test("자료 화면(종류별 보기·악성 아티팩트)", () => runFile("files.browser.ts"), 240_000);
 });
