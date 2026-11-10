@@ -492,17 +492,16 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   terminal_input: tool(
-    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 일하는 중에는 글을 넣지 않고 키만(esc·ctrl+c 로 멈추기, 승인 창 고르기). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창·멈춤처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
+    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 글은 넣는 즉시 제출(Enter)되어 그 직원에게 메시지로 간다. 일하는 중에는 글을 넣지 않고 키만(esc·ctrl+c 로 멈추기, 승인 창 고르기). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창·멈춤처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
     z.strictObject({
       member: memberRef,
-      text: z.string().min(1).max(4000).optional().describe("넣을 글(한 번에)"),
-      submit: z.boolean().optional().describe("글을 넣은 뒤 Enter"),
-      key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional().describe("누를 키 하나(글 뒤에 누른다)"),
+      text: z.string().min(1).max(4000).optional().describe("보낼 글. 바로 제출된다(입력칸에 넣어 두기만 하는 기능은 없다)"),
+      key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional().describe("누를 키 하나(글이 있으면 그 뒤에)"),
       operation_key: oneLine(80).regex(/^[A-Za-z0-9_-]+$/).describe("이 입력의 고유 키. 같은 입력을 응답 유실로 다시 부를 때만 같은 값을 쓴다"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
-      const result = await orch.terminalSend(target.id, { operationId: `agent-${member.id}-${a.operation_key}`, text: a.text, submit: a.submit, key: a.key, by: `agent-${member.id}` });
+      const result = await orch.terminalSend(target.id, { operationId: `agent-${member.id}-${a.operation_key}`, text: a.text, key: a.key, by: `agent-${member.id}` });
       const note = result.status === "applied" ? "넣었습니다. terminal_read 로 결과를 확인하세요" : result.status === "unknown" ? "들어갔는지 확실하지 않습니다. terminal_read 로 먼저 확인하고, 같은 입력을 새 operation_key 로 반복하지 마세요" : `넣지 못했습니다: ${result.error ?? "거절"}`;
       return { text: `${target.name}: ${note} (${result.steps.join(", ")}; 세대 ${result.sessionGeneration})`, ...(result.status === "applied" ? {} : { isError: true }) };
     },

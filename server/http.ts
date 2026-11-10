@@ -207,7 +207,6 @@ const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOve
 const TerminalSendSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
   text: z.string().min(1).max(131072).optional(),
-  submit: z.boolean().optional(),
   key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional(),
 });
 const TerminalControlSchema = z.strictObject({

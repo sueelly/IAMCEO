@@ -214,8 +214,8 @@ export const api = {
   activity: (memberId: string, limit?: number, signal?: AbortSignal) =>
     get<Activity[]>(`/api/members/${seg(memberId)}/activity${limit ? `?limit=${limit}` : ""}`, signal),
   screen: (memberId: string) => get<{ text: string }>(`/api/members/${seg(memberId)}/screen`),
-  /** 조작권 얻기→글→Enter→키→놓기를 서버가 한 번에 한다. 같은 operationId 는 같은 결과(두 번 넣지 않음). */
-  terminalSend: (memberId: string, req: { operationId: string; text?: string; submit?: boolean; key?: "enter" | "up" | "down" | "esc" | "tab" | "ctrl+c" | "backspace" }) =>
+  /** 조작권 얻기→글 보내기(바로 제출)→키→놓기를 서버가 한 번에 한다. 같은 operationId 는 같은 결과(두 번 넣지 않음). */
+  terminalSend: (memberId: string, req: { operationId: string; text?: string; key?: "enter" | "up" | "down" | "esc" | "tab" | "ctrl+c" | "backspace" }) =>
     post<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }>(`/api/members/${seg(memberId)}/terminal/send`, req),
   sleep: (memberId: string, force = false) => slowPost<Member>(`/api/members/${seg(memberId)}/sleep`, force ? { force: true } : undefined),
   freshSession: (memberId: string) => slowPost<Member>(`/api/members/${seg(memberId)}/fresh-session`),

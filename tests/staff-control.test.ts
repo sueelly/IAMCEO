@@ -146,19 +146,19 @@ describe("총괄의 직원 관리", () => {
 });
 
 describe("터미널 조작(총괄 도구·대표 화면 공통 경로)", () => {
-  test("글+Enter 를 조작권 안에서 넣고 놓으며, 같은 operation 은 두 번 넣지 않는다", async () => {
+  test("글(바로 제출)을 조작권 안에서 넣고 놓으며, 같은 operation 은 두 번 넣지 않는다", async () => {
     const t = await setup();
     const w = (await t.add({ name: "구현", role: "구현", cli: "claude" })).member!;
     const read = JSON.parse((await t.call(t.lead, "terminal_read", { member: w.handle })).text);
     expect(read).toMatchObject({ member: w.handle, status: "idle", controlHeld: null });
     expect(read.screen).toContain("❯");
-    const r1 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", submit: true, operation_key: "op1" });
+    const r1 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", operation_key: "op1" });
     expect(r1.isError).toBeFalsy();
-    expect(t.runner.typed.filter((x) => x.memberId === w.id)).toEqual([{ memberId: w.id, action: "input", text: "/model", key: undefined }, { memberId: w.id, action: "key", text: undefined, key: "enter" }]);
+    expect(t.runner.typed.filter((x) => x.memberId === w.id)).toEqual([{ memberId: w.id, action: "input", text: "/model", key: undefined }]);
     expect(t.store.inputState(w.id).lease).toBeNull(); // 놓았다
-    const r2 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", submit: true, operation_key: "op1" });
+    const r2 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", operation_key: "op1" });
     expect(r2.text).toContain("넣었습니다");
-    expect(t.runner.typed.filter((x) => x.memberId === w.id)).toHaveLength(2);
+    expect(t.runner.typed.filter((x) => x.memberId === w.id)).toHaveLength(1);
     // 대표 화면 경로도 같은 조작을 쓴다
     const res = await fetch(`${t.url}/api/members/${w.id}/terminal/send`, { method: "POST", headers: { Authorization: "Bearer code", "Content-Type": "application/json" }, body: JSON.stringify({ operationId: "web-1", key: "esc" }) });
     expect(await res.json()).toMatchObject({ status: "applied" });

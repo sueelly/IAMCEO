@@ -451,7 +451,7 @@ function TerminalInput({ member }: { member: Member }) {
   const [note, setNote] = useState<string | null>(null);
   const pending = useRef<{ op: string; payload: string } | null>(null);
   const working = member.status === "working";
-  const send = async (payload: { text?: string; submit?: boolean; key?: TerminalKeyName }) => {
+  const send = async (payload: { text?: string; key?: TerminalKeyName }) => {
     const key = JSON.stringify(payload);
     const op = pending.current?.payload === key ? pending.current.op : `web-${newId()}`;
     pending.current = { op, payload: key };
@@ -468,8 +468,8 @@ function TerminalInput({ member }: { member: Member }) {
   };
   return (
     <div className="tm-term-input">
-      <form className="tm-term-input__row" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !working) void send({ text, submit: true }); }}>
-        <input className="input t-code" aria-label="터미널에 넣을 글" value={text} disabled={busy || working} onChange={(e) => setText(e.target.value)} placeholder={working ? "일하는 중에는 글을 넣지 않습니다(키만)" : "터미널에 넣을 글"} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+      <form className="tm-term-input__row" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !working) void send({ text }); }}>
+        <input className="input t-code" aria-label="터미널에 넣을 글" value={text} disabled={busy || working} onChange={(e) => setText(e.target.value)} placeholder={working ? "일하는 중에는 글을 보내지 않습니다(키만)" : "보내면 바로 제출됩니다(직원에게 메시지로 감)"} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
         <GlassButton variant="primary" size="m" type="submit" disabled={busy || working || !text.trim()}>{busy ? "보내는 중" : "보내기"}</GlassButton>
       </form>
       <div className="tm-term-input__keys" role="group" aria-label="터미널 키">

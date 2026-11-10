@@ -1126,14 +1126,14 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
-   * 한 번에 보내기: 조작권 얻기 → 글 넣기 → (Enter) → 키 → 조작권 놓기. 모두 terminalControlV2(세대·조작권·입력 순번·operation ID)를 거친다.
+   * 한 번에 보내기: 조작권 얻기 → 글 보내기(core terminal.send 는 글을 넣고 바로 제출한다) → 키 → 조작권 놓기. 모두 terminalControlV2(세대·조작권·입력 순번·operation ID)를 거친다.
    * 같은 operationId 로 다시 부르면 단계마다 저장된 결과를 돌려줘 글이 두 번 들어가지 않는다. 결과가 불명확하면 화면을 먼저 읽으라고 돌려준다.
    * AI 가 일하는 중(working)에는 글을 넣지 않는다(키만: 멈추기·승인 창 조작용).
    */
-  async terminalSend(memberId: string, req: { operationId: string; text?: string; submit?: boolean; key?: TerminalKey; by: string }): Promise<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }> {
+  async terminalSend(memberId: string, req: { operationId: string; text?: string; key?: TerminalKey; by: string }): Promise<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }> {
     const member = this.store.requireMember(memberId);
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(req.operationId)) throw new ApiError(400, "operationId 형식이 잘못되었습니다");
-    if (!req.text && !req.key && !req.submit) throw new ApiError(400, "넣을 글이나 키가 필요합니다");
+    if (!req.text && !req.key) throw new ApiError(400, "보낼 글이나 키가 필요합니다");
     if (req.text && (member.status === "working" || this.runtime(memberId).turn)) throw new ApiError(409, `${josa(member.name, "은")} 일하는 중이라 글을 넣지 않습니다. 끝난 뒤 다시 하거나, 멈추려면 key 'esc'/'ctrl+c' 만 보냅니다`, "TERMINAL_REFUSED");
     const generation = this.store.memberRevisions(memberId).sessionGeneration;
     const claimId = `${req.by}-${req.operationId}`.slice(0, 120);
@@ -1152,7 +1152,6 @@ export class Orchestrator implements OrchestratorApi {
     const claim = await run("claim", { action: "claim" });
     if (claim.status !== "applied") failed = claim;
     if (!failed && req.text) { const r = await run("input", { action: "input", text: req.text }); if (r.status !== "applied") failed = r; }
-    if (!failed && req.submit) { const r = await run("enter", { action: "key", key: "enter" }); if (r.status !== "applied") failed = r; }
     if (!failed && req.key) { const r = await run("key", { action: "key", key: req.key }); if (r.status !== "applied") failed = r; }
     if (claim.status === "applied") await run("release", { action: "release" }).catch(() => undefined);
     if (!failed) return { status: "applied", steps, sessionGeneration: generation };
