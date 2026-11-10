@@ -23,6 +23,8 @@ export interface DeliveryRecoveryOptions {
 const MAX_REJECTED = 5;
 const CHECK_MS = [1_000, 3_000, 10_000, 30_000, 60_000];
 const RETRY_MS = [2_000, 10_000, 30_000];
+/** Delivery retry reason prefix for one owner-granted attempt after the automatic refusal limit. */
+const OWNER_RETRY = "owner_retry:";
 const STOP_NOTE = "추가 전달을 중지했습니다. 과거 수신 여부는 알 수 없습니다";
 const CHECK_NOTE = "전달 여부를 시스템이 확인하고 있습니다";
 const requestSchema = z.discriminatedUnion("action", [
@@ -147,7 +149,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       for (const d of deliveries) {
         const previous = this.latest(d), phase = this.record(d.id).phase;
         const admissible = previous
-          ? previous.transportState === "rejected" && this.rejectedCount(d) < MAX_REJECTED && ["none", "resolved"].includes(phase)
+          ? previous.transportState === "rejected" && (this.rejectedCount(d) < MAX_REJECTED || this.store.getDeliveryRetry(d.id).retryReason?.startsWith(OWNER_RETRY) === true) && ["none", "resolved"].includes(phase)
           : d.attempts === 0 && phase === "none";
         if (d.memberId !== first.memberId || d.projectId !== first.projectId || d.kind === "compact" || !["queued", "held"].includes(d.status) || !admissible || this.sourceRevision(d) === null) throw new ApiError(409, "새 전달 봉투를 만들 수 없습니다");
       }
@@ -183,6 +185,18 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       count++;
     }
     return count;
+  }
+
+  /**
+   * Automatic retries stop after MAX_REJECTED pre-write refusals. Only that exact state (the newest envelope was refused
+   * before any input, nothing was received, the source is unchanged) lets the owner grant one more ordinary attempt of the
+   * same delivery: same id, marker and text, through every normal admission gate. Ambiguous or received rows never qualify.
+   */
+  private ownerRetryable(d: Delivery, r = this.record(d.id)): boolean {
+    const latest = this.latest(d);
+    return r.phase === "resolved" && r.reason === "not_received" && ["queued", "held"].includes(d.status) && d.kind !== "compact" &&
+      this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" && latest?.transportState === "rejected" && this.rejectedCount(d) >= MAX_REJECTED &&
+      this.sourceValid(latest, d) && !this.store.listDispatches(d.memberId).some(x => x.items.some(i => i.deliveryId === d.id) && ["prepared", "write_started", "unknown"].includes(x.transportState));
   }
 
   /** A durable pre-write refusal needs no log, identity or quiescence evidence. */
@@ -304,6 +318,13 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     this.activeProject(d.projectId);
     return this.store.deliveryRecoveryOperation(deliveryId, request.operationId, request, () => {
       const r = this.record(deliveryId);
+      if (request.action === "recheck" && !this.closed && r.version === request.expectedVersion && !this.mutations.has(d.memberId) && this.ownerRetryable(d, r)) {
+        const next = this.store.updateDeliveryRecovery(d.id, r.version, { nextCheckAt: null });
+        this.store.setDeliveryStatus(d.id, "queued", { holdReason: null });
+        this.store.patchDeliveryRetry(d.id, { nextAttemptAt: null, retryReason: `${OWNER_RETRY}${request.operationId}` });
+        this.store.appendActivity(d.memberId, "system", `입력 전 거절 한도에 걸린 지시를 대표 요청으로 같은 내용 그대로 한 번 더 보냅니다 (${d.id})`, `${d.id}:owner_retry:${request.operationId}`);
+        return { operationId: request.operationId, deliveryId, outcome: "check_scheduled", committedVersion: next.version };
+      }
       if (this.closed || r.version !== request.expectedVersion || ["resolved", "stopped"].includes(r.phase) || r.phase === "none" || this.mutations.has(d.memberId)) throw new ApiError(409, "전달 상태가 바뀌었습니다. 다시 확인해 주세요");
       if (request.action !== "recheck" && !this.actions(d, r).includes(request.action)) throw new ApiError(409, "전달 상태가 바뀌었습니다. 다시 확인해 주세요");
       const next = this.store.updateDeliveryRecovery(d.id, r.version, request.action === "stop_retry"
@@ -559,9 +580,9 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     const m = d.refType === "message" && d.refId ? this.store.getMessage(d.refId) : null;
     const preview = m?.body ?? (d.refType === "decision" && d.refId ? this.store.getDecision(d.refId)?.title : d.refType === "todo" && d.refId ? this.store.getTodo(d.refId)?.title : null) ?? ({ user_message: "대표 메시지", answer: "결재 답변", todo_done: "업무 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" }[d.kind]);
     return { id: d.id, deliveryId: d.id, messageId: m?.id ?? null, memberId: d.memberId, projectId: d.projectId, kind: d.kind, status: d.status,
-      phase: r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: r.reason, note: this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" ? "입력 전에 5회 거절되어 자동 전달을 보류했습니다. 터미널의 입력칸과 승인 창을 확인한 뒤 다시 보내세요" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
+      phase: this.ownerRetryable(d, r) ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: r.reason, note: this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" ? "입력 전에 5회 거절되어 자동 전달을 보류했습니다. 터미널의 입력칸과 승인 창을 확인한 뒤 '다시 확인'을 누르면 같은 지시를 한 번 더 보냅니다" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
       version: r.version, createdAt: d.createdAt, lastCheckedAt: r.lastCheckedAt, nextCheckAt: r.nextCheckAt, autoAttempts: r.autoAttempts, evidence: r.evidence,
-      recommendation: r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: this.actions(d, r),
+      recommendation: r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: this.ownerRetryable(d, r) ? ["recheck"] : this.actions(d, r),
       ref: d.refType && d.refId ? { type: d.refType, id: d.refId } : null, preview: preview.length > 160 ? preview.slice(0, 157) + "..." : preview };
   }
   private items(projectId: string): DeliveryNoticeItem[] {

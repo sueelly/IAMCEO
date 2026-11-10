@@ -572,3 +572,80 @@ test("different native session records identity_changed for owner review instead
   expect(f.service.memberNotices(f.member.id).items[0].note).toContain("세션이 다시 열려");
   expect(f.writes).toHaveLength(0);
 });
+
+describe("거절 한도에 걸린 지시는 대표의 '다시 확인'으로 같은 전달을 한 번 더 보낸다", () => {
+  function exhausted() {
+    const f = setup(), d = f.enqueue(f.member, "원래 지시 원문"); let old = f.envelope([d]);
+    const markers = old.markers;
+    for (let i = 0; i < 5; i++) {
+      f.service.recordResult(old.dispatchId, { ok: false, reason: "busy", retryable: true, deliveryEffect: "rejected" });
+      if (i < 4) old = f.service.prepareDispatch([d.id], old.identity, old.baseline);
+    }
+    expect(f.store.getDeliveryRetry(d.id).retryReason).toBe("rejected_limit");
+    return { f, d, old, markers };
+  }
+  const recheck = (f: ReturnType<typeof setup>, id: string, operationId: string = randomUUID()) =>
+    f.service.recover(id, { operationId, expectedVersion: f.r(id).version, action: "recheck" });
+
+  test("알림은 대표 차례로 보이고 '다시 확인' 하나만 허용한다", () => {
+    const { f, d } = exhausted();
+    const item = f.service.memberNotices(f.member.id).items.find(x => x.deliveryId === d.id)!;
+    expect(item).toMatchObject({ phase: "needs_owner", reason: "not_received", allowedActions: ["recheck"] });
+    expect(item.note).toContain("다시 확인");
+    expect(f.service.notices(f.project.id).members[0].needsOwnerCount).toBe(1);
+  });
+
+  test("한 번 허가하면 같은 ID·표지·원문으로 일반 봉투를 한 번 만든다. 다시 거절되면 또 멈춘다", async () => {
+    const { f, d, old, markers } = exhausted();
+    const before = f.store.listDispatches(f.member.id).length;
+    const op = randomUUID(), version = f.r(d.id).version;
+    const result = await recheck(f, d.id, op);
+    expect(result).toMatchObject({ deliveryId: d.id, outcome: "check_scheduled" });
+    expect(result.committedVersion).toBeGreaterThan(version);
+    expect(f.store.requireDelivery(d.id)).toMatchObject({ id: d.id, status: "queued", text: "원래 지시 원문" });
+    // The same operation is idempotent and never grants a second attempt.
+    expect(await f.service.recover(d.id, { operationId: op, expectedVersion: version, action: "recheck" })).toEqual(result);
+    const next = f.service.prepareDispatch([d.id], old.identity, old.baseline);
+    expect(next.items.map(i => i.deliveryId)).toEqual([d.id]);
+    expect(next.markers).toEqual(markers);
+    expect(next.wireText.startsWith("원래 지시 원문\n")).toBe(true);
+    expect(f.store.listDispatches(f.member.id).length).toBe(before + 1);
+    expect(f.store.listDeliveries(f.project.id).filter(x => x.memberId === f.member.id)).toHaveLength(1);
+    f.service.recordResult(next.dispatchId, { ok: false, reason: "busy", retryable: true, deliveryEffect: "rejected" });
+    expect(f.store.requireDelivery(d.id)).toMatchObject({ status: "held", holdReason: "input_busy" });
+    expect(f.store.getDeliveryRetry(d.id).retryReason).toBe("rejected_limit");
+    expect(() => f.service.prepareDispatch([d.id], old.identity, old.baseline)).toThrow();
+    expect(f.service.fenced(f.member.id)).toBe(false);
+  });
+
+  test("수신이 애매하거나 이미 들어간 전달, 원문이 바뀐 전달, 옛 판 요청에는 허가하지 않는다", async () => {
+    // ambiguous: the newest envelope may have been written
+    const a = setup(), ad = a.enqueue(); a.envelope([ad], "unknown");
+    await recheck(a, ad.id).catch(() => null);
+    expect(a.store.getDeliveryRetry(ad.id).retryReason?.startsWith("owner_retry:") ?? false).toBe(false);
+    expect(a.store.requireDelivery(ad.id).status).not.toBe("queued");
+    expect(() => a.service.prepareDispatch([ad.id], { terminalId: a.member.paneId, sessionId: a.member.sessionId, sessionGeneration: a.store.memberRevisions(a.member.id).sessionGeneration, process: null }, { serverEpoch: "test-epoch", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date(a.now).toISOString() })).toThrow();
+    // delivered
+    const { f, d } = exhausted();
+    f.store.markDelivered(d.id);
+    await errorStatus(recheck(f, d.id), 409);
+    expect(f.store.getDeliveryRetry(d.id).retryReason).toBe("rejected_limit");
+    // stale version
+    const s = exhausted();
+    await errorStatus(s.f.service.recover(s.d.id, { operationId: randomUUID(), expectedVersion: s.f.r(s.d.id).version - 1, action: "recheck" }), 409);
+    expect(s.f.store.requireDelivery(s.d.id).status).toBe("held");
+    // source changed after the refusals
+    const c = exhausted();
+    c.f.db.run("UPDATE deliveries SET text = ? WHERE id = ?", ["바뀐 원문", c.d.id]);
+    await errorStatus(recheck(c.f, c.d.id), 409);
+    expect(c.f.store.requireDelivery(c.d.id).status).toBe("held");
+  });
+
+  test("한 번 허가된 뒤에도 일반 입력 검사를 그대로 거친다(수동 조작 중이면 봉투를 만들지 않는다)", async () => {
+    const { f, d, old } = exhausted();
+    await recheck(f, d.id);
+    f.store.patchMember(f.member.id, { sessionId: "다른-세션" });
+    expect(() => f.service.prepareDispatch([d.id], old.identity, old.baseline)).toThrow();
+    expect(f.store.requireDelivery(d.id).status).toBe("queued");
+  });
+});
