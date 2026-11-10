@@ -145,10 +145,12 @@ describe("웹 작업별 대화", () => {
     // 보낸 뒤에도 이 작업이 골라져 있다
     await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
 
-    // 곧바로 검색 작업으로 옮긴다. 그 사이 결제 직원의 늦은 보고(작업을 밝히지 않음)가 온다
+    // 곧바로 검색 작업으로 옮긴다. 그 사이 결제 직원의 늦은 보고(받은 글의 작업 줄대로 환불 작업을 밝힘)가 온다
     await chip(page, "검색 속도").click();
     await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
-    await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 넣음" });
+    await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 넣음", taskId: taskPay.id });
+    // 작업을 밝히지 않은 늦은 보고는 받지 않는다(어느 작업에도, 화면에서 보고 있는 검색 작업에도 붙지 않는다)
+    await expect(orch.recordPost(store.requireMember(pay.id), { kind: "알림", title: "작업 없는 늦은 글" })).rejects.toThrow("task_id");
     expect(store.listMessages(project.id).find((m) => m.title.endsWith("부분 환불 넣음"))!.taskId).toBe(taskPay.id);
     await settle();
     await page.waitForTimeout(300);

@@ -629,9 +629,8 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX delegation_ack_member ON delegation_ack_turns(member_id, ended);`,
   // 작업별 대화. 작업 id 는 등록 때 한 번 정해지고 브랜치·워크트리를 고쳐도 그대로다. 옛 글·카드·자료·할 일은 task_id 가 비어
-  // 전체 대화에만 남는다(소급 분류하지 않는다). member_task_focus.open_json 은 직원이 받은 대표 글·답·지시 중 아직 완료 보고로
-  // 닫지 않은 작업들('' 은 전체)이다. 작업을 밝히지 않은 보고는 열린 것이 하나일 때만 거기에 붙고, 둘 이상이면 task_id 를 요구한다.
-  // task_id 는 마지막으로 받은 작업(참고용).
+  // 전체 대화에만 남는다(소급 분류하지 않는다). 직원 출력의 작업은 직원이 밝힌 task_id 나 바뀌지 않는 출처(결재·자료·정정 대상 글,
+  // 자동 보고는 그 턴에 받은 전달의 deliveries.task_id)로만 정한다. 마지막으로 받은 작업으로 추측하지 않는다.
   `CREATE TABLE tasks (
      id TEXT PRIMARY KEY,
      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -644,12 +643,6 @@ export const MIGRATIONS: string[] = [
      updated_at TEXT NOT NULL
    );
    CREATE INDEX tasks_project ON tasks(project_id, created_at);
-   CREATE TABLE member_task_focus (
-     member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
-     task_id TEXT,
-     open_json TEXT NOT NULL DEFAULT '[]',
-     set_at TEXT NOT NULL
-   );
    ALTER TABLE messages ADD COLUMN task_id TEXT;
    ALTER TABLE decisions ADD COLUMN task_id TEXT;
    ALTER TABLE files ADD COLUMN task_id TEXT;
