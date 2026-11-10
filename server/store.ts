@@ -1706,16 +1706,52 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  /** 직원이 지금 하는 작업. 대표 글·답·지시를 받을 때 그 전달의 작업으로 바뀐다. */
+  /** 직원이 마지막으로 받은 대표 글·답·지시의 작업(참고용). 보고를 붙일 때는 resolveTaskContext 를 쓴다. */
   getTaskFocus(memberId: string): string | null {
     const id = (this.row("SELECT task_id FROM member_task_focus WHERE member_id = ?", memberId)?.task_id as string | null | undefined) ?? null;
     return id && this.getTask(id) ? id : null;
   }
 
-  setTaskFocus(memberId: string, taskId: string | null): void {
+  /** 아직 완료로 닫지 않은 받은 작업들. null 은 전체(작업 없는 글). 받은 순서대로. */
+  openTaskContexts(memberId: string): (string | null)[] {
+    const raw = this.row("SELECT open_json FROM member_task_focus WHERE member_id = ?", memberId)?.open_json as string | undefined;
+    const list = raw ? (JSON.parse(raw) as string[]) : [];
+    return list.filter((c) => c === "" || this.getTask(c)).map((c) => c || null);
+  }
+
+  private writeTaskContexts(memberId: string, latest: string | null, open: (string | null)[]): void {
     if (!this.getMember(memberId)) return;
-    this.run("INSERT INTO member_task_focus (member_id, task_id, set_at) VALUES (?, ?, ?) ON CONFLICT(member_id) DO UPDATE SET task_id = excluded.task_id, set_at = excluded.set_at",
-      memberId, taskId, nowIso());
+    const json = JSON.stringify([...new Set(open.map((c) => c ?? ""))]);
+    this.run(`INSERT INTO member_task_focus (member_id, task_id, open_json, set_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(member_id) DO UPDATE SET task_id = excluded.task_id, open_json = excluded.open_json, set_at = excluded.set_at`, memberId, latest, json, nowIso());
+  }
+
+  /** 대표 글·답·지시를 받았다: 그 작업(없으면 전체)을 연다. 이미 열린 다른 작업은 그대로 둔다. */
+  openTaskContext(memberId: string, taskId: string | null): void {
+    this.writeTaskContexts(memberId, taskId, [...this.openTaskContexts(memberId), taskId]);
+  }
+
+  /** 직원이 task 도구로 작업을 등록·이음: 전체에서 받은 일이 이 작업이 된 것으로 보고 전체 대신 이 작업을 연다. 다른 작업은 그대로. */
+  adoptTaskContext(memberId: string, taskId: string): void {
+    this.writeTaskContexts(memberId, taskId, [...this.openTaskContexts(memberId).filter((c) => c !== null), taskId]);
+  }
+
+  /** 그 작업(null 은 전체)의 완료 보고: 닫는다. */
+  closeTaskContext(memberId: string, taskId: string | null): void {
+    const row = this.row("SELECT task_id FROM member_task_focus WHERE member_id = ?", memberId);
+    if (!row) return;
+    this.writeTaskContexts(memberId, (row.task_id as string | null) ?? null, this.openTaskContexts(memberId).filter((c) => c !== taskId));
+  }
+
+  /**
+   * 작업을 밝히지 않은 보고의 작업. 열린 것이 하나면 그것, 하나도 없으면 마지막으로 받은 작업(그 뒤 받은 다른 일이 없다),
+   * 둘 이상이면 알 수 없다(ambiguous): 마지막으로 받은 것에 조용히 붙이지 않는다.
+   */
+  resolveTaskContext(memberId: string): { taskId: string | null } | { ambiguous: (string | null)[] } {
+    const open = this.openTaskContexts(memberId);
+    if (open.length > 1) return { ambiguous: open };
+    if (open.length === 1) return { taskId: open[0]! };
+    return { taskId: this.getTaskFocus(memberId) };
   }
 
   /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */
@@ -2092,9 +2128,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         nowIso(),
         id,
       );
-      // 직원이 대표 글·답·지시를 받은 순간 그 전달의 작업이 지금 작업이 된다(작업 없는 전달이면 비운다).
+      // 직원이 대표 글·답·지시를 받은 순간 그 전달의 작업(없으면 전체)이 열린다. 한 번에 여럿이 가거나(묶음·급한 지시) 앞 일이
+      // 끝나기 전에 다른 작업이 오면 둘 다 열려, 작업을 밝히지 않은 보고는 어느 쪽에도 붙지 않는다.
       if (status === "delivered" && before.status !== "delivered" && TASK_FOCUS_KINDS.has(before.kind)) {
-        this.setTaskFocus(before.memberId, (this.row("SELECT task_id FROM deliveries WHERE id = ?", id)?.task_id as string | null | undefined) ?? null);
+        this.openTaskContext(before.memberId, (this.row("SELECT task_id FROM deliveries WHERE id = ?", id)?.task_id as string | null | undefined) ?? null);
       }
       this.emitMember(before.memberId);
       return this.requireDelivery(id);

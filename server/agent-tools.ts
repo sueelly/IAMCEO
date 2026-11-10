@@ -164,7 +164,7 @@ function boardView(orch: Orchestrator, projectId: string) {
 
 const TOOLS: Record<ToolName, Tool<any>> = {
   task: tool(
-    "작업을 등록하거나 고친다. 새 일을 위해 브랜치·워크트리를 팔 때 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 작업별로 글을 보고 보낸다. 부르면 이 작업이 지금 작업이 되어, task_id 를 생략한 post·ask·file·todo 가 이 작업에 붙는다. 같은 브랜치로 이미 등록했으면 그 작업을 돌려준다.",
+    "작업을 등록하거나 고친다. 새 일을 위해 브랜치·워크트리를 팔 때 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 작업별로 글을 보고 보낸다. 부르면 전체에서 받은 일이 이 작업으로 열린다. 열린 작업이 이것 하나면 task_id 를 생략한 post·ask·file·todo 가 이 작업에 붙고, 여럿이면 task_id 를 넣어야 한다. 같은 브랜치로 이미 등록했으면 그 작업을 돌려준다.",
     z.strictObject({
       task_id: oneLine(64).optional().describe("고칠 작업 id(tk_...). 새로 등록할 때는 비운다"),
       title: oneLine(120).optional().describe("대표가 알아볼 작업 제목(한 줄). 새로 등록할 때 필요"),
@@ -200,7 +200,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       group: oneLineOpt(80).optional().describe("묶음 이름"),
       file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 지금 작업, null 이면 전체"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 받은 일 중 완료하지 않은 작업이 하나일 때 그 작업(둘 이상이면 거절), null 이면 전체"),
     }),
     async (orch, member, a) => {
       const keys = (a.options ?? []).map((o: { k: string }) => o.k);
@@ -229,7 +229,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 지금 작업, null 이면 전체"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 받은 일 중 완료하지 않은 작업이 하나일 때 그 작업(둘 이상이면 거절), null 이면 전체"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
         if ([a.kind, a.title, a.body, a.file_ids, a.decision_id, a.corrects_message_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
@@ -263,7 +263,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       content: z.string().optional().describe("마크다운 전문"),
       html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 대표가 실행을 눌러야 스크립트가 돈다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스(card, grid, callout, kpi, steps, flow, tabs, tag, compare)만 써도 깔끔하다. kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>"),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 지금 작업, null 이면 전체"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 받은 일 중 완료하지 않은 작업이 하나일 때 그 작업(둘 이상이면 거절), null 이면 전체"),
     }),
     async (orch, member, a) => {
       const taskId = orch.memberTask(member, a.task_id);
@@ -328,7 +328,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   todo: tool(
     "대표가 손수 해야 할 일(로그인·결제·실물 확인 등)을 결재함의 내 할 일에 올린다. 끝나면 다음 입력으로 알려 준다.",
     z.strictObject({ title: oneLine(200), detail: z.string().optional(),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 지금 작업, null 이면 전체"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 생략하면 받은 일 중 완료하지 않은 작업이 하나일 때 그 작업(둘 이상이면 거절), null 이면 전체"),
     }),
     (orch, member, a) => {
       const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail, taskId: orch.memberTask(member, a.task_id) });

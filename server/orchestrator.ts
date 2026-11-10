@@ -3034,7 +3034,7 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.transaction(() => {
       if (input.taskId) this.requireTaskInProject(member, input.taskId);
       const result = this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree });
-      this.store.setTaskFocus(member.id, result.task.id);
+      this.store.adoptTaskContext(member.id, result.task.id);
       return result;
     });
   }
@@ -3045,11 +3045,19 @@ export class Orchestrator implements OrchestratorApi {
     return task;
   }
 
-  /** 직원이 남기는 글·카드·자료·할 일의 작업. 밝히면 그 작업(null 은 전체), 아니면 마지막으로 받은 대표 글·답·지시의 작업. */
-  memberTask(member: Member, explicit?: string | null): string | null {
+  /**
+   * 직원이 남기는 글·카드·자료·할 일의 작업. 밝히면 그 작업(null 은 전체). 밝히지 않으면 아직 닫지 않은 받은 작업이 하나일 때만 그 작업.
+   * 둘 이상 열려 있으면 어느 작업의 글인지 서버가 알 수 없다. 도구 호출은 task_id 를 요구하며 거절하고(strict),
+   * 자동 보고(턴 마지막 글)는 마지막으로 받은 작업에 붙이지 않고 전체에 남긴다.
+   */
+  memberTask(member: Member, explicit?: string | null, strict = true): string | null {
     if (explicit === null) return null;
     if (explicit !== undefined) return this.requireTaskInProject(member, explicit).id;
-    return this.store.getTaskFocus(member.id);
+    const context = this.store.resolveTaskContext(member.id);
+    if ("taskId" in context) return context.taskId;
+    if (!strict) return null;
+    const names = context.ambiguous.map((id) => (id ? `"${id}" '${this.store.getTask(id)?.title ?? ""}'` : "null(전체)")).join(", ");
+    throw new ApiError(400, `받은 일 중 아직 완료 보고를 하지 않은 작업이 여럿이라 어느 작업의 글인지 알 수 없습니다: ${names}. 받은 글의 '작업 #' 줄을 보고 task_id 를 넣어 다시 부르세요(전체 글이면 null)`);
   }
 
   /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
@@ -3088,6 +3096,8 @@ export class Orchestrator implements OrchestratorApi {
       body: [input.body ?? "", extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
     }), message => {
       this.store.noteDelegationPost(member.id);
+      // 완료 보고는 그 작업(전체 포함)을 닫는다. 이후 그 작업 이름 없이 오는 글은 남은 작업에만 붙는다.
+      if (input.kind === "완료") this.store.closeTaskContext(member.id, taskId);
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind), refType: "message", refId: message.id }] : [];
     });
@@ -4290,13 +4300,13 @@ export class Orchestrator implements OrchestratorApi {
   /** post 를 안 부른 턴의 마지막 글(§6). 직원은 총괄에게 보고, 총괄·본사 AI 는 대표에게 하는 말. */
   private async fallbackReport(member: Member, finalText: string, direct: boolean): Promise<void> {
     if (member.kind !== "worker") {
-      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText, taskId: this.memberTask(member) });
+      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText, taskId: this.memberTask(member, undefined, false) });
       return;
     }
     const firstLine = normalizeSpace(finalText.split("\n")[0] ?? "").slice(0, 60);
     const title = `${direct ? "(직접) " : ""}(자동) ${firstLine}`;
     const conductor = this.store.getConductor(member.projectId);
-    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId: this.memberTask(member) }), message => conductor && conductor.id !== member.id ? [{
+    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId: this.memberTask(member, undefined, false) }), message => conductor && conductor.id !== member.id ? [{
       projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText), wake: true, refType: "message", refId: message.id,
     }] : []);
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
