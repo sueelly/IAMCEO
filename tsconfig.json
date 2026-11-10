@@ -6,5 +6,5 @@
     "allowImportingTsExtensions": true, "verbatimModuleSyntax": true, "esModuleInterop": true,
     "types": ["bun"], "baseUrl": ".", "paths": { "@shared/*": ["shared/*"] }
   },
-  "include": ["shared", "server", "bin", "web/src", "tests", "scripts"]
+  "include": ["shared", "server", "bin", "web/src", "web-trial/src", "tests", "scripts"]
 }
