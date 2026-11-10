@@ -79,6 +79,7 @@ import { exactSource, measureContext, validWindow } from "./runner/context.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, RunnerStartResult, RunnerTerminalIdentity, DeliveryRepair } from "./runner/types.ts";
 import { ApiError, TASK_SOURCE_KINDS, type AppliedConfig, type ExecutionJournal, type NewDelivery, type Store } from "./store.ts";
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
+import { clip, DevMemory, devMemoryConfigFromEnv, memoryTaskId, MemoryError, stableEventId, type ExperienceInput } from "./integrations/dev-memory.ts";
 import { conductorHandle, conductorName } from "./text.ts";
 
 // ---- 전달 글(§4). 서버만 만든다 ----
@@ -261,7 +262,7 @@ function isTidy(d: Pick<Delivery, "kind" | "text">): boolean {
 
 // ---- 공개 타입 ----
 export interface AgentToolsImpl {
-  listAgentTools(member: Member): AgentToolDef[] | Promise<AgentToolDef[]>;
+  listAgentTools(member: Member, opts?: { memory?: boolean }): AgentToolDef[] | Promise<AgentToolDef[]>;
   handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult>;
 }
 
@@ -337,6 +338,8 @@ export interface OrchestratorDeps {
   deliveryRecovery?: DeliveryRecovery;
   /** 주입한 CoreRunner와 같은 기록 루트. 시험은 임시 경로만 사용한다. */
   providerHomes?: { claudeHome: string; codexHome: string };
+  /** 개발 기억(Hindsight 게이트웨이) 연결. 없으면 외부 호출 0건이고 기억 도구도 보이지 않는다. */
+  devMemory?: DevMemory | null;
 }
 
 export interface NewMemberInput {
@@ -560,7 +563,8 @@ export function createOrchestrator(config: Config, store: Store): Orchestrator {
     quiescence: (_memberId, dispatch) => ({ originalWrite: dispatch.transportState === "rejected" ? "rejected" : dispatch.transportState === "accepted" ? "settled" : "unresolved", externalInput: null }),
   }));
   const herdr: HerdrQueries = { info: () => detectHerdr(config.herdrSocket), agents: () => listAgents(config.herdrSocket), inspect: (a) => inspectPane(config.herdrSocket, a) };
-  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex") }, notifier: macNotifier() });
+  const memoryConfig = devMemoryConfigFromEnv(process.env);
+  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex") }, notifier: macNotifier(), devMemory: memoryConfig ? new DevMemory(memoryConfig) : null });
   return orchestrator;
 }
 
@@ -589,6 +593,7 @@ export class Orchestrator implements OrchestratorApi {
   private readonly timings: OrchestratorTimings;
   private readonly herdr: HerdrQueries | null;
   private agentTools: AgentToolsImpl | null;
+  readonly devMemory: DevMemory | null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
   /** 동시 턴 상한에 걸려 기다리는 직원. 턴이 끝나면 차례로 다시 민다. */
@@ -634,6 +639,8 @@ export class Orchestrator implements OrchestratorApi {
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
     this.herdr = deps.herdr ?? null;
     this.agentTools = deps.agentTools ?? null;
+    this.devMemory = deps.devMemory ?? null;
+    this.devMemory?.start(this.store);
     this.notifier = deps.notifier ?? null;
     this.serverUrl = deps.serverUrl ?? `http://127.0.0.1:${deps.config.port}`;
     const core = this.runners.get("core");
@@ -1475,6 +1482,7 @@ export class Orchestrator implements OrchestratorApi {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.devMemory?.stop();
     await Promise.all([...this.terminalStreamClosers].map(close => close()));
     await this.coreSupervisor?.shutdown();
     await Promise.all([...this.eventQueues.values()]);
@@ -2065,6 +2073,7 @@ export class Orchestrator implements OrchestratorApi {
       return intents;
     });
     if (!changed) return decision;
+    this.queueDecisionMemory(decision);
     if (booting) await (booting as Promise<void>).catch(e => console.warn("결재 답을 받을 총괄을 띄우지 못했습니다:", (e as Error).message));
     this.wakeAll(this.askWaiters, decisionId);
     if (decision.memberId) this.wakeAll(this.inboxWaiters, decision.memberId);
@@ -2369,7 +2378,71 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async listAgentTools(member: Member): Promise<AgentToolDef[]> {
-    return (await this.tools()).listAgentTools(member);
+    return (await this.tools()).listAgentTools(member, { memory: this.memoryEnabledFor(member) });
+  }
+
+  // ---- 개발 기억 ----
+  memoryEnabledFor(member: Member): boolean {
+    return !!this.devMemory?.enabledFor(member.projectId) && member.origin !== "manual";
+  }
+
+  requireMemory(member: Member): DevMemory {
+    if (!this.devMemory || !this.memoryEnabledFor(member)) throw new ApiError(400, "이 프로젝트는 개발 기억 연결이 켜져 있지 않습니다");
+    return this.devMemory;
+  }
+
+  /** 기억 범위의 작업: 직원이 밝힌 task_id 만 쓴다(없으면 직원별 전체 범위). 검색·조회는 프로젝트 범위라 글 귀속 규칙과 따로 둔다. */
+  memoryScope(member: Member, taskId?: string | null): string {
+    return memoryTaskId(taskId ? this.requireTaskInProject(member, taskId).id : null, member.id);
+  }
+
+  /**
+   * 대표가 결재 카드에 답하면 그 결정을 개발 기억에 올린다. 직원이 쓴 배경은 대표 결정과 구분해 적는다.
+   * 같은 카드의 같은 답은 한 번만 올라간다(event_id 고정). 다시 열린 뒤 다른 답이면 새 사건이다.
+   */
+  private queueDecisionMemory(decision: Decision): void {
+    const memory = this.devMemory;
+    if (!memory?.enabledFor(decision.projectId) || decision.status !== "answered") return;
+    try {
+      const project = this.store.requireProject(decision.projectId);
+      const task = decision.taskId ? this.store.getTask(decision.taskId) : null;
+      const option = decision.options.find((o) => o.k === decision.choice);
+      const answer = option ? `"${option.label}"${option.desc ? ` (${option.desc})` : ""}` : "(선택지 없이 메모로 답함)";
+      const lines = [
+        `분류: 대표 명시 결정 — 대표가 IAMCEO 결재 카드에 직접 답했다${decision.batch ? "(묶음 추천을 한꺼번에 승인)" : ""}.`,
+        `IAMCEO 프로젝트: ${project.name} (${project.id})`,
+        `작업: ${task ? `${task.title} (#${task.id}${task.branch ? ` · ${task.branch}` : ""})` : "전체(작업 없음)"}`,
+        `물은 직원: ${decision.who}`,
+        `결재 질문: ${decision.title}`,
+        `대표 답(원문): ${answer}`,
+        ...(decision.note ? [`대표 메모(원문): ${decision.note}`] : []),
+        `답한 시각: ${decision.answeredAt ?? ""}`,
+        "적용 범위: 이 프로젝트에서 이 질문에 대한 결정이다. 다른 프로젝트·이후 지시보다 앞서지 않는다.",
+        "",
+        "선택지(직원이 제안한 것):",
+        ...decision.options.map((o) => `- ${o.label}${o.desc ? `: ${o.desc}` : ""}${decision.rec === o.k ? " (직원 추천)" : ""}${o.k === decision.choice ? " ← 대표 선택" : ""}`),
+        "",
+        "배경(직원이 쓴 설명이며 대표 결정이 아니다):",
+        decision.detail,
+      ];
+      const { content, capture } = clip(lines.join("\n"));
+      const eventId = stableEventId("iamceo-decision", decision.id, decision.choice ?? "", decision.note ?? "", decision.answeredAt ?? "");
+      const experience: ExperienceInput = {
+        event_id: eventId,
+        kind: "decision",
+        summary: `대표 결정: ${decision.title}`.slice(0, 300),
+        content,
+        capture,
+        source: { task_id: memoryTaskId(decision.taskId ?? null, decision.memberId ?? "rep"), item_id: decision.id, service: "iamceo" },
+        evidence: [
+          { kind: "classification", text: "explicit_user_decision" },
+          { kind: "iamceo_ref", text: `project_id=${project.id}; decision_id=${decision.id}; task_id=${decision.taskId ?? "none"}; answered_at=${decision.answeredAt ?? ""}` },
+        ],
+      };
+      if (this.store.enqueueMemoryUpload({ eventId, projectId: decision.projectId, refType: "decision", refId: decision.id, body: JSON.stringify(experience) })) void memory.flush(this.store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message));
+    } catch (e) {
+      console.warn("개발 기억 업로드를 준비하지 못했습니다:", e instanceof MemoryError ? e.message : (e as Error).message);
+    }
   }
 
   async handleAgentTool(member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
