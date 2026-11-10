@@ -219,6 +219,8 @@ export interface Decision {
   /** 닫은 이(화면 이름) 또는 '시스템'. */
   closedBy: string | null;
   closedAt: string | null;
+  /** 이 카드가 속한 작업. 없으면(옛 카드 포함) 전체 대화에만 속한다. */
+  taskId?: string | null;
 }
 /** decided 대표가 대화 등으로 이미 정함(서버가 대표 글로 확인) · obsolete 상황이 바뀌어 필요 없어짐 */
 export type DecisionCloseKind = "decided" | "obsolete";
@@ -240,6 +242,24 @@ export interface Todo {
   /** AI 가 todo_close 로 정리했을 때의 이유와 정리한 이. 대표가 체크했으면 null. */
   closeReason: string | null;
   closedBy: string | null;
+  taskId?: string | null;
+}
+
+/**
+ * 작업: 직원이 브랜치·워크트리를 파서 하는 일 하나. id 는 처음 등록할 때 정해지고, 제목·브랜치·워크트리를 고쳐도 바뀌지 않는다.
+ * 대화·결재·자료·할 일은 taskId 로 작업에 붙는다. taskId 가 없는 것은 전체 대화에만 속한다.
+ */
+export interface Task {
+  id: string;
+  projectId: string;
+  /** 등록한 직원. 그 직원이 닫히면 null. */
+  memberId: string | null;
+  who: string;
+  title: string;
+  branch: string | null;
+  worktree: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** 팀 화면 아래: 진행 중 · 예정(AI가 곧 할 일) · 보류 · 완료 */
@@ -277,9 +297,11 @@ export interface Message {
   /** 대표 말의 전달 상태: sent 보냄 · queued 대기 · held 보류(사유) · delivered 받음 · failed 실패 */
   delivery: DeliveryStatus | null;
   deliveryNote: string | null;
+  /** 이 글이 속한 작업. 대표 글은 보낸 순간 고른 작업으로 정해진다. 없으면 전체 대화에만 속한다. */
+  taskId?: string | null;
 }
 
-export type MessageScope = { kind: "project" } | { kind: "member"; memberId: string };
+export type MessageScope = { kind: "project" } | { kind: "member"; memberId: string } | { kind: "task"; taskId: string };
 export interface MessagePageOptions { scope?: MessageScope; cursor?: string; limit?: number }
 /** items는(at BINARY,id BINARY) 오름차순. cursor는 불투명하며 hasOlder=false이면 null. */
 export interface MessagePage {
@@ -305,6 +327,7 @@ export interface FileDoc {
   attachments: Attachment[];
   createdAt: string;
   order: number;
+  taskId?: string | null;
 }
 
 export type DeliveryKind = "user_message" | "answer" | "todo_done" | "instruction" | "report" | "system" | "compact";
@@ -479,6 +502,8 @@ export interface ProjectState {
   messages: Message[]; // 최근 200, 오래된 → 최신
   files: FileDoc[];
   deliveryNotices?: DeliveryNotices;
+  /** 작업들. 최근 등록한 것부터. 옛 서버는 보내지 않는다. */
+  tasks?: Task[];
 }
 
 /** 보관함 GET 전용 DTO. 늦은 manual 기록이 가능하므로 불변 DB snapshot은 아니다. */
@@ -512,6 +537,7 @@ export type WsEvent =
   | { type: "work"; projectId: string; work: WorkItem[] }
   | { type: "message"; message: Message }
   | { type: "file"; file: FileDoc }
+  | { type: "task"; task: Task }
   | { type: "activity"; projectId: string; activity: Activity }
   | { type: "settings"; settings: Settings }
   | { type: "herdr"; herdr: HerdrInfo };
@@ -534,7 +560,8 @@ export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "res
 };
 /** PATCH /api/members/:id. null 이면 직급 기본으로 돌아간다. */
 export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | null; effortOverride?: Effort | null }
-export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[] }
+/** taskId: 보낸 순간 고른 작업. 없으면 전체 대화에 남고 어느 작업에도 붙지 않는다. */
+export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[]; taskId?: string | null }
 export interface AnswerReq { expectedVersion?: string; choice?: string | null; note?: string | null; batch?: boolean }
 export interface AdoptReq { paneId: string; name: string; role: string; handle?: string; kind?: "conductor" | "worker" }
 /** conductor 다른 지휘자의 흔적 · folder 프로젝트 밖 폴더 · input 입력칸에 쓰던 글(넘겨받을 때 지운다). 편입을 막지는 않는다. */
@@ -598,7 +625,7 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
-export const WORKER_TOOLS = ["status", "ask", "post", "file", "todo", "ask_close", "todo_close"] as const;
+export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close"] as const;
 export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_compact", "team_sleep", "team_resume", "team_close", "roster", "project_now", "work_set", "work_list", "work_remove", "board"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;
 export const MANUAL_TOOLS = ["wait"] as const;

@@ -177,6 +177,7 @@ export const api = {
   messagePage: (id: string, opts: MessagePageOptions = {}, signal?: AbortSignal) => {
     const q = new URLSearchParams({ scope: opts.scope?.kind ?? "project" });
     if (opts.scope?.kind === "member") q.set("memberId", opts.scope.memberId);
+    if (opts.scope?.kind === "task") q.set("taskId", opts.scope.taskId);
     if (opts.cursor) q.set("cursor", opts.cursor);
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     return get<MessagePage>(`/api/projects/${seg(id)}/messages/page?${q}`, signal);

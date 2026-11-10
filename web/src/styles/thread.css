@@ -66,3 +66,11 @@
 .th-down { position:fixed; z-index:1; top:calc(var(--app-h) - var(--bottom-h) - 50px);
   left:calc(var(--rail-space, 0px) + (100vw - var(--rail-space, 0px)) / 2); translate:-50% 0; }
 .th-retry:disabled { opacity:.5; cursor:not-allowed; }
+
+/* 고른 작업: 대화 맨 위에 무엇을 보고 있는지 한 줄 */
+.th-task { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; margin:0 0 12px; padding:8px 12px; border-radius:12px; background:var(--soft); box-shadow:var(--soft-ring); font-size:13px; line-height:1.4; min-width:0; }
+.th-task__label { flex:none; font-size:12px; font-weight:600; color:var(--link); }
+.th-task__title { min-width:0; font-weight:600; color:var(--ink-1); overflow-wrap:anywhere; }
+.th-task__meta { min-width:0; font-size:12px; color:var(--ink-2); overflow-wrap:anywhere; }
+/* 전체에서 글이 속한 작업 */
+.th-card__task { flex:none; max-width:40%; padding:1px 7px; border-radius:999px; font-size:11.5px; font-weight:500; color:var(--link); background:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

@@ -1,7 +1,7 @@
 // 모든 화면 아래 입력칸. Enter 전송 · Shift+Enter 줄바꿈(터치 기기는 소프트 키보드에 Shift 가 없어 Enter 가 줄바꿈, 보내기 버튼으로 전송) · 첨부(버튼·붙여넣기·드래그) · @직원 지정.
 // 글·대상·첨부는 프로젝트별로 틀 밖과 localStorage 에 둔다: 프로젝트를 오가거나 틀이 다시 그려져도, 새로고침·앱 재시작 뒤에도 쓰던 글이 남아야 한다.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
-import type { MemberStatus } from "@shared/types";
+import type { MemberStatus, Task } from "@shared/types";
 import { GlassButton, Glass } from "../glass";
 import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
@@ -9,6 +9,7 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
+import { taskTarget, visibleTasks } from "../lib/tasks";
 import "../styles/composer.css";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -162,6 +163,10 @@ export default function Composer() {
   const lead = members.find((m) => m.kind === "root" || m.kind === "conductor") ?? null;
   const workers = members.filter((m) => m.kind === "worker");
   const target = workers.find((m) => m.id === draft.targetId) ?? null;
+  const allTasks = project?.tasks ?? [];
+  const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
+  // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원의 작업만.
+  const shownTasks = visibleTasks(allTasks, task ? null : target?.id ?? null);
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
     { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
@@ -176,19 +181,28 @@ export default function Composer() {
   const menuOpen = chipMenu || (mentionOpen && matches.length > 0);
   const activeIndex = Math.min(active, Math.max(matches.length - 1, 0));
 
+  // 고른 작업의 직원이 아닌 사람을 대상으로 고르면 작업 선택을 푼다(그 사람에게 보내는 글은 이 작업의 글이 아니다).
+  const keepTask = (d: { taskId?: string | null }, targetId: string | null) =>
+    d.taskId && task && taskTarget(task, workers) === targetId ? { taskId: d.taskId } : { taskId: null };
   const pick = (entry: MenuEntry) => {
     setChipMenu(false);
     setActive(0);
     if (mention && mentionOpen && !chipMenu) {
       const rest = draft.text.slice(mention.start + mention.query.length + 1).replace(/^ /, "");
       const text = draft.text.slice(0, mention.start) + rest;
-      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id }));
+      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id, ...keepTask(d, entry.id) }));
       setCaret(mention.start);
       requestAnimationFrame(() => inputRef.current?.setSelectionRange(mention.start, mention.start));
     } else {
-      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id }));
+      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id, ...keepTask(d, entry.id) }));
     }
     inputRef.current?.focus();
+  };
+
+  const pickTask = (next: Task | null) => {
+    // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다. 작업 없이 직원만 골라 둔 상태면 그대로 둔다.
+    if (!next) patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d));
+    else patchDraft(projectId, (d) => ({ ...d, taskId: next.id, targetId: taskTarget(next, workers) }));
   };
 
   /** 메뉴가 받아 간 키면 true. 초점이 입력칸에 있든 대상 칩에 있든 같은 키로 움직인다. */
@@ -222,14 +236,15 @@ export default function Composer() {
       return;
     }
     if (!canSend) return;
-    const typed = target ? null : leadingMention(text, workers);
+    // 작업을 골랐으면 받는 사람은 그 작업의 직원으로 고정이다. 첫머리 @이름으로 바꾸지 않는다.
+    const typed = target || task ? null : leadingMention(text, workers);
     const to = typed?.member ?? target;
     const body = typed?.rest ?? text;
     const session = getCredentialGeneration();
     const result = submissions.submit(
       projectId,
       draft,
-      { text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id) },
+      { text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id), taskId: task?.id ?? null },
       { targetName: to?.name ?? leadName, attachments: ready },
     );
     // submit persists synchronously before clearing the input. A storage failure
@@ -261,7 +276,7 @@ export default function Composer() {
     attachFiles(projectId, files);
   };
 
-  const placeholder = target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
+  const placeholder = task ? `'${task.title}' 작업으로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
   const showThreadLink = notice !== null && route.tab !== "thread";
 
   if (!gate.ok) {
@@ -321,6 +336,25 @@ export default function Composer() {
               <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
+          {allTasks.length > 0 ? (
+            <div className="cmp-tasks" role="group" aria-label="작업 고르기">
+              <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
+                전체
+              </button>
+              {shownTasks.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="cmp-task"
+                  aria-pressed={task?.id === t.id}
+                  title={[t.title, t.who, t.branch, t.worktree].filter(Boolean).join(" · ")}
+                  onClick={() => pickTask(task?.id === t.id ? null : t)}
+                >
+                  {t.title}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {draft.uploads.map((u) => (
             <span key={u.key} className="cmp-chip cmp-chip--file" data-state={u.failed ? "failed" : u.attachment ? "ready" : "uploading"}>
               {u.attachment?.isImage ? <img className="cmp-chip__thumb" src={fileUrl(u.attachment)} alt="" /> : null}
@@ -363,7 +397,7 @@ export default function Composer() {
         ) : null}
         {attempts.map((attempt) => (
           <div key={attempt.id} className="cmp__error" role="status">
-            <span>{attempt.targetName ?? "원래 대상"}에게 · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
+            <span>{attempt.targetName ?? "원래 대상"}에게{attempt.payload.taskId ? ` · 작업 '${allTasks.find((t) => t.id === attempt.payload.taskId)?.title ?? attempt.payload.taskId}'` : ""} · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
             <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
             <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void submissions.reconcile(projectId)}>다시 확인</GlassButton>
             <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking" || !project} onClick={() => void submissions.retry(projectId, attempt.id)}>같은 내용 재시도</GlassButton>

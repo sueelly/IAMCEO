@@ -25,6 +25,7 @@ import type {
   FileDoc,
   FileKind,
   Member,
+  Task,
   MemberLifecycleState,
   MemberKind,
   MemberOrigin,
@@ -127,6 +128,7 @@ export interface NewDecision {
   group?: string | null;
   fileId?: string | null;
   images?: Attachment[];
+  taskId?: string | null;
 }
 
 export interface NewTodo {
@@ -135,6 +137,18 @@ export interface NewTodo {
   who?: string;
   title: string;
   detail?: string;
+  taskId?: string | null;
+}
+
+/** 작업 등록·수정. id 가 있으면 그 작업을 고친다(제목·브랜치·워크트리만, id 는 그대로). */
+export interface TaskInput {
+  id?: string;
+  projectId: string;
+  memberId: string;
+  who: string;
+  title?: string;
+  branch?: string | null;
+  worktree?: string | null;
 }
 
 export interface WorkInput {
@@ -163,6 +177,7 @@ export interface NewMessage {
   attachments?: Attachment[];
   delivery?: DeliveryStatus | null;
   deliveryNote?: string | null;
+  taskId?: string | null;
 }
 
 export interface NewFile {
@@ -177,6 +192,7 @@ export interface NewFile {
   kind?: FileKind;
   /** kind=artifact 의 원본. 화면 상태에 싣지 않는다. */
   html?: string | null;
+  taskId?: string | null;
 }
 
 export interface NewDelivery {
@@ -192,7 +208,12 @@ export interface NewDelivery {
   holdReason?: string | null;
   refType?: Delivery["refType"];
   refId?: string | null;
+  /** 이 전달이 속한 작업. 생략하면 ref(대표 글·결재·할 일)의 작업을 따른다. */
+  taskId?: string | null;
 }
+
+/** 받으면 직원의 '지금 작업'을 이 전달의 작업으로 바꾸는 종류. 작업이 없는 전달이면 지금 작업을 비운다. */
+const TASK_FOCUS_KINDS = new Set<DeliveryKind>(["user_message", "answer", "todo_done", "instruction"]);
 
 export interface DeliveryUpdate {
   holdReason?: string | null;
@@ -393,6 +414,7 @@ function toDecision(r: Row): Decision {
     closeQuote: r.close_quote ?? null,
     closedBy: r.closed_by ?? null,
     closedAt: r.closed_at ?? null,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -410,6 +432,21 @@ function toTodo(r: Row): Todo {
     outcome: r.outcome ?? (r.done ? "done" : null),
     closeReason: r.close_reason ?? null,
     closedBy: r.closed_by ?? null,
+    taskId: r.task_id ?? null,
+  };
+}
+
+function toTask(r: Row): Task {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    memberId: r.member_id,
+    who: r.who,
+    title: r.title,
+    branch: r.branch,
+    worktree: r.worktree,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -446,6 +483,7 @@ function toMessage(r: Row): Message {
     attachments: json(r.attachments),
     delivery: r.delivery,
     deliveryNote: r.delivery_note,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -474,6 +512,7 @@ function toFile(r: Row): FileDoc {
     attachments,
     createdAt: r.created_at,
     order: r.sort_order,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -1017,6 +1056,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       work: this.listWork(id),
       messages: this.listMessages(id, { limit: 200 }),
       files: this.listFiles(id),
+      tasks: this.listTasks(id),
     };
   }
 
@@ -1273,8 +1313,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = newId("d_");
       this.run(
-        `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+        `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         id,
         input.projectId,
         input.memberId ?? null,
@@ -1288,6 +1328,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         JSON.stringify(input.images ?? []),
         nowIso(),
         nowIso(),
+        this.taskRef(input.projectId, input.taskId),
       );
       const decision = this.requireDecision(id);
       this.recorder?.decision(null, decision);
@@ -1442,7 +1483,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("t_");
       const at = nowIso();
       this.run(
-        "INSERT INTO todos (id, project_id, member_id, who, title, detail, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO todos (id, project_id, member_id, who, title, detail, created_at, updated_at, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         input.projectId,
         input.memberId ?? null,
@@ -1451,6 +1492,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.detail ?? "",
         at,
         at,
+        this.taskRef(input.projectId, input.taskId),
       );
       const todo = this.requireTodo(id);
       this.bumpBoard(todo.projectId);
@@ -1601,6 +1643,96 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
+  // ---- 작업 ----
+  getTask(id: string): Task | null {
+    const r = this.row("SELECT * FROM tasks WHERE id = ?", id);
+    return r ? toTask(r) : null;
+  }
+
+  requireTask(id: string): Task {
+    const t = this.getTask(id);
+    if (!t) throw new ApiError(404, `작업을 찾을 수 없습니다: ${id}`);
+    return t;
+  }
+
+  /** 최근 등록한 작업부터. */
+  listTasks(projectId: string): Task[] {
+    return this.rows("SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC", projectId).map(toTask);
+  }
+
+  /**
+   * 등록하거나 고친다. id 를 주면 그 작업의 제목·브랜치·워크트리만 고치고 id 는 그대로 둔다.
+   * id 없이 같은 직원이 같은 브랜치(없으면 같은 워크트리)로 이미 등록한 작업이 있으면 새로 만들지 않고 그 작업을 돌려준다.
+   */
+  saveTask(input: TaskInput): { task: Task; created: boolean } {
+    return this.transaction(() => {
+      this.requireProject(input.projectId);
+      const at = nowIso();
+      const clean = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
+      const branch = clean(input.branch);
+      const worktree = clean(input.worktree);
+      const title = input.title?.trim();
+      let existing: Task | null = null;
+      if (input.id) {
+        existing = this.requireTask(input.id);
+        if (existing.projectId !== input.projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.id}`);
+      } else if (branch || worktree) {
+        const r = branch
+          ? this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, branch)
+          : this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND worktree = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, worktree!);
+        existing = r ? toTask(r) : null;
+      }
+      if (existing) {
+        const next = {
+          title: input.id && title ? title : existing.title,
+          branch: branch !== undefined ? branch : existing.branch,
+          worktree: worktree !== undefined ? worktree : existing.worktree,
+        };
+        if (next.title !== existing.title || next.branch !== existing.branch || next.worktree !== existing.worktree) {
+          this.run("UPDATE tasks SET title = ?, branch = ?, worktree = ?, updated_at = ? WHERE id = ?", next.title, next.branch, next.worktree, at, existing.id);
+          const task = this.requireTask(existing.id);
+          this.emit({ type: "task", task });
+          return { task, created: false };
+        }
+        return { task: existing, created: false };
+      }
+      if (!title) throw new ApiError(400, "새 작업에는 제목이 필요합니다");
+      const id = newId("tk_");
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, input.projectId, input.memberId, input.who, title, branch ?? null, worktree ?? null, at, at);
+      const task = this.requireTask(id);
+      this.emit({ type: "task", task });
+      return { task, created: true };
+    });
+  }
+
+  /** 직원이 지금 하는 작업. 대표 글·답·지시를 받을 때 그 전달의 작업으로 바뀐다. */
+  getTaskFocus(memberId: string): string | null {
+    const id = (this.row("SELECT task_id FROM member_task_focus WHERE member_id = ?", memberId)?.task_id as string | null | undefined) ?? null;
+    return id && this.getTask(id) ? id : null;
+  }
+
+  setTaskFocus(memberId: string, taskId: string | null): void {
+    if (!this.getMember(memberId)) return;
+    this.run("INSERT INTO member_task_focus (member_id, task_id, set_at) VALUES (?, ?, ?) ON CONFLICT(member_id) DO UPDATE SET task_id = excluded.task_id, set_at = excluded.set_at",
+      memberId, taskId, nowIso());
+  }
+
+  /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */
+  private taskRef(projectId: string, taskId: string | null | undefined): string | null {
+    if (!taskId) return null;
+    const task = this.getTask(taskId);
+    if (!task || task.projectId !== projectId) throw new ApiError(400, `이 프로젝트의 작업이 아닙니다: ${taskId}`);
+    return task.id;
+  }
+
+  private refTask(refType: Delivery["refType"], refId: string | null): string | null {
+    if (!refType || !refId) return null;
+    const table = refType === "message" ? "messages" : refType === "decision" ? "decisions" : refType === "todo" ? "todos" : null;
+    if (!table) return null;
+    return (this.row(`SELECT task_id FROM ${table} WHERE id = ?`, refId)?.task_id as string | null | undefined) ?? null;
+  }
+
   // ---- 대화 ----
   getMessage(id: string): Message | null {
     const r = this.row("SELECT * FROM messages WHERE id = ?", id);
@@ -1624,6 +1756,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   private messageScope(projectId: string, scope: MessageScope = { kind: "project" }): MessageScope {
     if (scope.kind === "project") return { kind: "project" };
+    if (scope.kind === "task") {
+      if (!scope.taskId || Buffer.byteLength(scope.taskId) > 256) throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
+      if (this.getTask(scope.taskId)?.projectId !== projectId) throw new ApiError(404, "작업을 찾을 수 없습니다");
+      return { kind: "task", taskId: scope.taskId };
+    }
     if (!scope.memberId || Buffer.byteLength(scope.memberId) > 256) throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
     const lead = this.listMembers(projectId).find((m) => m.kind === "root" || m.kind === "conductor");
     return lead?.id === scope.memberId ? { kind: "project" } : { kind: "member", memberId: scope.memberId };
@@ -1644,12 +1781,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         const bounded = (max: number) => z.string().min(1).refine((value) => Buffer.byteLength(value) <= max);
         const cursor = z.strictObject({
           v: z.literal(1), projectId: bounded(256),
-          scope: z.discriminatedUnion("kind", [z.strictObject({ kind: z.literal("project") }), z.strictObject({ kind: z.literal("member"), memberId: bounded(256) })]),
+          scope: z.discriminatedUnion("kind", [z.strictObject({ kind: z.literal("project") }), z.strictObject({ kind: z.literal("member"), memberId: bounded(256) }), z.strictObject({ kind: z.literal("task"), taskId: bounded(256) })]),
           before: z.strictObject({ at: bounded(128), id: bounded(256) }),
         }).parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
         if (cursor.projectId !== projectId) throw new Error("project");
         if (JSON.stringify(cursor.scope) !== JSON.stringify(scope)) {
-          if (opts.scope?.kind === "member" && (cursor.scope.kind === "project" || (scope.kind === "project" && cursor.scope.memberId === opts.scope.memberId))) {
+          if (opts.scope?.kind === "member" && (cursor.scope.kind === "project" || (scope.kind === "project" && cursor.scope.kind === "member" && cursor.scope.memberId === opts.scope.memberId))) {
             throw new ApiError(409, "대화 대상이 변경되었습니다", "MESSAGE_SCOPE_CHANGED");
           }
           throw new Error("scope");
@@ -1664,6 +1801,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const params = { $project: projectId, $limit: limit + 1, ...(before ? { $at: before.at, $id: before.id } : {}) };
     const rows = scope.kind === "project"
       ? this.db.query<Row, typeof params>(`SELECT * FROM messages WHERE project_id = $project${seek} ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit`).all(params)
+      : scope.kind === "task"
+      ? this.db.query<Row, typeof params & { $task: string }>(`SELECT * FROM messages WHERE project_id = $project AND task_id = $task${seek} ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit`).all({ ...params, $task: scope.taskId })
       : this.db.query<Row, typeof params & { $member: string }>(`WITH authored AS (
           SELECT id, at FROM messages WHERE project_id = $project AND member_id = $member${seek}
           ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit
@@ -1730,8 +1869,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = input.id ?? newId("msg_");
       this.run(
-        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.at ?? this.nextMessageAt(),
@@ -1748,6 +1887,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         JSON.stringify(input.attachments ?? []),
         input.delivery ?? null,
         input.deliveryNote ?? null,
+        this.taskRef(input.projectId, input.taskId),
       );
       const message = this.requireMessage(id);
       // 보관 중 늦은 manual 보고도 저장한다. 푸시는 활성 프로젝트의 실제 작성자만 대상이다.
@@ -1790,7 +1930,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("f_");
       const order = this.row("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM files WHERE project_id = ?", input.projectId)!.n as number;
       this.run(
-        "INSERT INTO files (id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, html) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO files (id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, html, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         input.projectId,
         input.title,
@@ -1804,6 +1944,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         order,
         input.kind ?? null,
         input.html ?? null,
+        this.taskRef(input.projectId, input.taskId),
       );
       const file = this.getFile(id)!;
       this.emit({ type: "file", file });
@@ -1876,7 +2017,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.refId ?? null,
         nowIso(),
       );
-      this.run("UPDATE deliveries SET source_revision = ?, next_attempt_at = ? WHERE id = ?", input.sourceRevision ?? null, input.nextAttemptAt ?? null, id);
+      this.run("UPDATE deliveries SET source_revision = ?, next_attempt_at = ?, task_id = ? WHERE id = ?", input.sourceRevision ?? null, input.nextAttemptAt ?? null,
+        input.taskId !== undefined ? this.taskRef(input.projectId, input.taskId) : this.refTask(input.refType ?? null, input.refId ?? null), id);
       this.run("INSERT INTO delivery_recovery (delivery_id, updated_at) VALUES (?, ?)", id, nowIso());
       this.emitMember(input.memberId);
       return this.requireDelivery(id);
@@ -1950,6 +2092,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         nowIso(),
         id,
       );
+      // 직원이 대표 글·답·지시를 받은 순간 그 전달의 작업이 지금 작업이 된다(작업 없는 전달이면 비운다).
+      if (status === "delivered" && before.status !== "delivered" && TASK_FOCUS_KINDS.has(before.kind)) {
+        this.setTaskFocus(before.memberId, (this.row("SELECT task_id FROM deliveries WHERE id = ?", id)?.task_id as string | null | undefined) ?? null);
+      }
       this.emitMember(before.memberId);
       return this.requireDelivery(id);
     });

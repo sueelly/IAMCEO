@@ -29,10 +29,10 @@ const validCursor = (value: unknown): value is SyncCursor => {
   const c = value as SyncCursor | null;
   return !!c && typeof c.epoch === "string" && c.epoch.length > 0 && Number.isSafeInteger(c.seq) && c.seq >= 0;
 };
-const changeTypes = new Set(["projects", "project", "member", "member_removed", "decision", "todo", "work", "message", "file", "activity", "settings", "herdr"]);
+const changeTypes = new Set(["projects", "project", "member", "member_removed", "decision", "todo", "work", "message", "file", "task", "activity", "settings", "herdr"]);
 function validChange(frame: Record<string, unknown>): boolean {
   const entity = (name: string) => !!frame[name] && typeof frame[name] === "object";
-  if (["project", "member", "decision", "todo", "message", "file"].includes(String(frame.type))) {
+  if (["project", "member", "decision", "todo", "message", "file", "task"].includes(String(frame.type))) {
     const row = frame[String(frame.type)] as { id?: unknown; projectId?: unknown } | undefined;
     return !!row && typeof row.id === "string" && (frame.type === "project" || typeof row.projectId === "string");
   }

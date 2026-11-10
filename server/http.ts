@@ -219,6 +219,7 @@ const SendMessageSchema = z.object({
   text: z.string(),
   targetMemberId: z.string().nullable().optional(),
   attachmentIds: z.array(z.string()).max(50).optional(),
+  taskId: z.string().max(256).nullable().optional(),
 });
 const AnswerSchema = z.object({
   expectedVersion: nonEmpty.optional(),
@@ -372,14 +373,16 @@ function strictLimit(raw: string | null, fallback: number, max: number): number 
 }
 
 function messagePageQuery(url: URL): MessagePageOptions {
-  strictQuery(url, ["scope", "memberId", "limit", "cursor"], "INVALID_MESSAGE_PAGE_QUERY");
+  strictQuery(url, ["scope", "memberId", "taskId", "limit", "cursor"], "INVALID_MESSAGE_PAGE_QUERY");
   const scope = url.searchParams.get("scope") ?? "project";
   const memberId = url.searchParams.get("memberId");
-  if ((scope !== "project" && scope !== "member") || (scope === "project" && memberId !== null) ||
-      (scope === "member" && (!memberId || Buffer.byteLength(memberId) > 256))) {
+  const taskId = url.searchParams.get("taskId");
+  const id = scope === "member" ? memberId : scope === "task" ? taskId : null;
+  if ((scope !== "project" && scope !== "member" && scope !== "task") || (scope !== "member" && memberId !== null) || (scope !== "task" && taskId !== null) ||
+      (scope !== "project" && (!id || Buffer.byteLength(id) > 256))) {
     throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
   }
-  return { scope: scope === "project" ? { kind: "project" } : { kind: "member", memberId: memberId! },
+  return { scope: scope === "project" ? { kind: "project" } : scope === "member" ? { kind: "member", memberId: memberId! } : { kind: "task", taskId: taskId! },
     limit: strictLimit(url.searchParams.get("limit"), 200, 500), cursor: url.searchParams.get("cursor") ?? undefined };
 }
 
@@ -758,6 +761,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (body.targetMemberId && store.getMember(body.targetMemberId)?.projectId !== id) {
         throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
       }
+      if (body.taskId && store.getTask(body.taskId)?.projectId !== id) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
       await requireReachable(id!, body.targetMemberId ?? null);
       for (const attachmentId of body.attachmentIds ?? []) {
         if (!store.getAttachment(attachmentId)) throw new ApiError(400, `없는 첨부입니다: ${attachmentId}`);

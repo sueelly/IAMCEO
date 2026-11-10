@@ -628,6 +628,32 @@ export const MIGRATIONS: string[] = [
      ended INTEGER NOT NULL DEFAULT 0
    );
    CREATE INDEX delegation_ack_member ON delegation_ack_turns(member_id, ended);`,
+  // 작업별 대화. 작업 id 는 등록 때 한 번 정해지고 브랜치·워크트리를 고쳐도 그대로다. 옛 글·카드·자료·할 일은 task_id 가 비어
+  // 전체 대화에만 남는다(소급 분류하지 않는다). focus 는 직원이 마지막으로 받은 대표 글·답의 작업이다. 직원이 작업을 밝히지 않은
+  // 보고는 이 작업에 붙고, 대표가 전체에서 보낸 글을 받으면 비워진다.
+  `CREATE TABLE tasks (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     member_id TEXT,
+     who TEXT NOT NULL DEFAULT '',
+     title TEXT NOT NULL,
+     branch TEXT,
+     worktree TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX tasks_project ON tasks(project_id, created_at);
+   CREATE TABLE member_task_focus (
+     member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+     task_id TEXT,
+     set_at TEXT NOT NULL
+   );
+   ALTER TABLE messages ADD COLUMN task_id TEXT;
+   ALTER TABLE decisions ADD COLUMN task_id TEXT;
+   ALTER TABLE files ADD COLUMN task_id TEXT;
+   ALTER TABLE todos ADD COLUMN task_id TEXT;
+   ALTER TABLE deliveries ADD COLUMN task_id TEXT;
+   CREATE INDEX messages_task ON messages(project_id, task_id, at) WHERE task_id IS NOT NULL;`,
 ];
 
 export function openDb(path: string): Database {

@@ -1,11 +1,14 @@
 import type { Attachment, Message, SendMessageReq } from "@shared/types";
 
 export interface Upload { key: string; name: string; attachment: Attachment | null; failed: boolean }
-export interface Draft { text: string; targetId: string | null; uploads: Upload[]; error: string | null }
+/** taskId: 대화에서 고른 작업(없으면 전체). 보낼 때 그 순간의 값이 글에 고정된다. */
+export interface Draft { text: string; targetId: string | null; uploads: Upload[]; error: string | null; taskId?: string | null }
+/** 보낸 순간의 요청. taskId 는 옛 기기에 남은 시도에는 없다(= 전체). */
+export type SendPayload = Required<Omit<SendMessageReq, "taskId">> & { taskId?: string | null };
 export interface MessageAttempt {
   readonly id: string;
   readonly projectId: string;
-  readonly payload: Readonly<Required<SendMessageReq>>;
+  readonly payload: Readonly<SendPayload>;
   readonly targetName: string | null;
   readonly attachments: Attachment[];
   readonly sourceRevision: string | null;
@@ -62,7 +65,8 @@ export class SubmissionManager {
       const saved = raw ? JSON.parse(raw) : null;
       const source = scoped ? saved?.draft : saved;
       const uploads = Array.isArray(source?.uploads) ? source.uploads.filter(validUpload).map((u: Upload) => ({ ...u, failed: !u.attachment || u.failed })) : [];
-      const draft: Draft = { text: typeof source?.text === "string" ? source.text : "", targetId: typeof source?.targetId === "string" ? source.targetId : null, uploads, error: uploads.some((u: Upload) => u.failed) ? uploadRecovery : null };
+      const draft: Draft = { text: typeof source?.text === "string" ? source.text : "", targetId: typeof source?.targetId === "string" ? source.targetId : null, uploads, error: uploads.some((u: Upload) => u.failed) ? uploadRecovery : null,
+        ...(typeof source?.taskId === "string" ? { taskId: source.taskId } : {}) };
       const legacy: MessageAttempt[] = scoped && Array.isArray(saved?.attempts) ? saved.attempts.filter((a: unknown) => validAttempt(a, projectId)).map((a: MessageAttempt) => freezeAttempt({ ...a, sourceRevision: null, status: "checking", error: null })) : [];
       if (!scoped && typeof source?.retry?.id === "string") {
         const attempt = this.legacyRetry(projectId, source.retry, uploads);
@@ -92,7 +96,7 @@ export class SubmissionManager {
     this.replace(projectId, next);
   }
 
-  async submit(projectId: string, expected: Draft, req: Omit<Required<SendMessageReq>, "id">, extra: { targetName?: string | null; attachments?: Attachment[] }): Promise<boolean> {
+  async submit(projectId: string, expected: Draft, req: Omit<SendPayload, "id">, extra: { targetName?: string | null; attachments?: Attachment[] }): Promise<boolean> {
     const state = this.syncAttempts(projectId);
     if (state.draft !== expected) return false;
     const id = this.options.newId();
@@ -106,7 +110,9 @@ export class SubmissionManager {
       this.replace(projectId, { ...state, draft: { ...state.draft, error: storageError } });
       return false;
     }
-    const next = { draft: emptyDraft(), attempts: [...state.attempts, attempt], revision: revision() };
+    // 작업을 골라 보냈으면 그 작업과 받는 직원은 그대로 둔다. 다음 글도 같은 작업에서 이어 쓴다. 전체에서는 예전처럼 대상도 비운다.
+    const kept: Draft = state.draft.taskId ? { ...emptyDraft(), targetId: state.draft.targetId, taskId: state.draft.taskId } : emptyDraft();
+    const next = { draft: kept, attempts: [...state.attempts, attempt], revision: revision() };
     // If this disk write fails, sourceRevision suppresses the captured old draft on
     // reload. A different tab's newer disk revision must never be cleared here.
     this.writeDraft(projectId, next, state.revision);
@@ -310,7 +316,8 @@ function validUpload(value: unknown): value is Upload {
 function validAttempt(value: unknown, projectId: string): value is MessageAttempt {
   if (!value || typeof value !== "object") return false;
   const a = value as MessageAttempt;
-  return typeof a.id === "string" && a.projectId === projectId && a.payload?.id === a.id && typeof a.payload.text === "string" && (a.payload.targetMemberId === null || typeof a.payload.targetMemberId === "string") && Array.isArray(a.payload.attachmentIds) && a.payload.attachmentIds.every((id) => typeof id === "string") && Array.isArray(a.attachments);
+  return typeof a.id === "string" && a.projectId === projectId && a.payload?.id === a.id && typeof a.payload.text === "string" && (a.payload.targetMemberId === null || typeof a.payload.targetMemberId === "string") && Array.isArray(a.payload.attachmentIds) && a.payload.attachmentIds.every((id) => typeof id === "string") && Array.isArray(a.attachments)
+    && (a.payload.taskId === undefined || a.payload.taskId === null || typeof a.payload.taskId === "string");
 }
 function freezeAttempt(attempt: MessageAttempt): MessageAttempt {
   const frozen = copy(attempt);

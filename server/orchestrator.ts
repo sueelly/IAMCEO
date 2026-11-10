@@ -51,6 +51,7 @@ import type {
   Settings,
   SettingsPatch,
   TidyResult,
+  Task,
   Todo,
   TodoOutcome,
   WorkItem,
@@ -135,11 +136,27 @@ function attachmentLines(attachments: Attachment[]): string[] {
   return attachments.map((a) => `첨부: ${normalizeSpace(a.path)} (${normalizeSpace(a.mime)}, ${humanSize(a.size)})`);
 }
 
-export function formatUserMessage(text: string, attachments: Attachment[], id: string, direct: boolean): string {
+export function formatUserMessage(text: string, attachments: Attachment[], id: string, direct: boolean, task?: string | null): string {
   const lines = [`[대표${direct ? " 직접" : ""}] "${guardLines(text)}"`];
   lines.push(...attachmentLines(attachments));
+  if (task) lines.push(task);
   lines.push(`#${id}`);
   return lines.join("\n");
+}
+
+/**
+ * 전달 글의 작업 줄. 작업 제목·브랜치·경로는 직원이 쓴 값이라 한 줄로 따옴표 안에 넣는다.
+ * task 가 null 이면 대표가 '전체'에서 보낸 글이다. 그 글의 보고를 직전 작업에 붙이지 않게 알린다.
+ */
+export function formatTaskLine(task: Task | null): string {
+  if (!task) return "작업: 전체(어느 작업에도 속하지 않는 글). 이 일의 post·ask·file·todo 에 task_id 를 넣지 않는다";
+  const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
+  return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다`;
+}
+
+/** 결재 답·할 일 알림 끝에 붙는 작업 표지. 옛 카드(작업 없음)는 붙이지 않는다. */
+function taskTag(taskId: string | null | undefined): string {
+  return taskId ? ` · 작업 #${taskId}` : "";
 }
 
 export function formatAnswer(d: Decision): string {
@@ -154,16 +171,16 @@ export function formatAnswer(d: Decision): string {
     parts.push(`"${note}"`);
   }
   if (d.batch) parts.push("(묶음 추천대로)");
-  parts.push(`#${d.id}`);
+  parts.push(`#${d.id}${taskTag(d.taskId)}`);
   return parts.join(" ");
 }
 
 export function formatTodoDone(t: Todo): string {
-  return `[대표] '${quotedInline(t.title)}' 했음 #${t.id}`;
+  return `[대표] '${quotedInline(t.title)}' 했음 #${t.id}${taskTag(t.taskId)}`;
 }
 
 export function formatTodoUndone(t: Todo): string {
-  return `[대표] '${quotedInline(t.title)}' 아직 안 했음(체크를 풀었습니다) #${t.id}`;
+  return `[대표] '${quotedInline(t.title)}' 아직 안 했음(체크를 풀었습니다) #${t.id}${taskTag(t.taskId)}`;
 }
 
 export interface QuoteSource {
@@ -342,6 +359,8 @@ export interface AssignInput {
   urgent?: boolean;
   /** 대표 메시지의 첨부 id. 그 직원 폴더로 이어 경로를 알린다. */
   attachmentIds?: string[];
+  /** 이 지시가 속한 작업. 없으면 받는 직원의 지금 작업을 비운다. */
+  taskId?: string | null;
 }
 
 export interface AssignResult {
@@ -360,6 +379,8 @@ export interface PostInput {
   fileIds?: string[];
   decisionId?: string | null;
   correctsMessageId?: string | null;
+  /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
+  taskId?: string | null;
 }
 
 export interface AskInput {
@@ -370,6 +391,7 @@ export interface AskInput {
   group?: string | null;
   fileId?: string | null;
   images?: Attachment[];
+  taskId?: string | null;
 }
 
 export interface RosterEntry {
@@ -1887,7 +1909,7 @@ export class Orchestrator implements OrchestratorApi {
         projectId,
         memberId: conductor.id,
         kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(conductor, message.attachments), message.id, false),
+        text: formatUserMessage(message.body, this.attachmentsFor(conductor, message.attachments), message.id, false, this.taskLineFor(projectId, message.taskId)),
         refType: "message",
         refId: message.id,
       });
@@ -1904,7 +1926,7 @@ export class Orchestrator implements OrchestratorApi {
     this.store.transaction(() => {
       for (const message of this.store.listMessagesMissingDeliveries(projectId)) {
         const member = message.targetMemberId ? this.store.getMember(message.targetMemberId) : null;
-        if (member) this.store.enqueue({ projectId, memberId: member.id, kind: "user_message", text: formatUserMessage(message.body, this.attachmentsFor(member, message.attachments), message.id, true), refType: "message", refId: message.id });
+        if (member) this.store.enqueue({ projectId, memberId: member.id, kind: "user_message", text: formatUserMessage(message.body, this.attachmentsFor(member, message.attachments), message.id, true, this.taskLineFor(projectId, message.taskId)), refType: "message", refId: message.id });
       }
       for (const decision of this.store.listAnswersMissingDeliveries(projectId)) {
         const member = decision.memberId ? this.store.getMember(decision.memberId) : null;
@@ -1972,11 +1994,13 @@ export class Orchestrator implements OrchestratorApi {
     const attachments = (req.attachmentIds ?? []).map(id => this.store.getAttachment(id)).filter((a): a is Attachment => a !== null);
     const target = req.targetMemberId ? this.store.requireMember(req.targetMemberId) : null;
     if (target && target.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
+    const task = req.taskId ? this.store.requireTask(req.taskId) : null;
+    if (task && task.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
     let recipient = target ?? this.store.getConductor(projectId);
     let booting: Promise<void> | null = null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => {
       const message = this.store.createMessage({ id: req.id, projectId, mine: true, who: "나", kind: "나", body: req.text,
-        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued" });
+        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued", taskId: task?.id ?? null });
       if (!recipient && project.runnerEnabled) {
         const spawn = this.beginConductor(project);
         recipient = spawn.member;
@@ -1987,10 +2011,10 @@ export class Orchestrator implements OrchestratorApi {
     }, message => {
       if (!recipient) return [];
       const intents: NewDelivery[] = [{ projectId, memberId: recipient.id, kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target), refType: "message", refId: message.id }];
+        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target, this.taskLineFor(projectId, task?.id ?? null)), refType: "message", refId: message.id }];
       const conductor = this.store.getConductor(projectId);
       if (target && conductor && conductor.id !== target.id) intents.push({ projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false });
+        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id})` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false });
       return intents;
     });
     if (booting) await (booting as Promise<void>).catch(e => console.warn(`${project.name} 총괄을 띄우지 못했습니다:`, (e as Error).message));
@@ -2610,13 +2634,17 @@ export class Orchestrator implements OrchestratorApi {
       if (!attachment || !this.store.isProjectAttachment(projectId, id)) throw new ApiError(404, `이 프로젝트에서 대표가 보낸 첨부가 아닙니다: ${id}`);
       return attachment;
     });
+    const task = input.taskId ? this.store.requireTask(input.taskId) : null;
+    if (task && task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.taskId}`);
     const delivery = this.store.transaction(() => {
+      const taskLine = this.taskLineFor(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
         projectId,
         memberId: target.id,
         kind: "instruction",
-        text: [formatInstruction(target.name, input.text, quote), ...attachmentLines(this.attachmentsFor(target, attachments))].join("\n"),
+        text: [formatInstruction(target.name, input.text, quote), ...attachmentLines(this.attachmentsFor(target, attachments)), ...(taskLine ? [taskLine] : [])].join("\n"),
         urgent: input.urgent,
+        taskId: task?.id ?? null,
       });
       if (assignedBy) this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent);
       return delivery;
@@ -3000,6 +3028,37 @@ export class Orchestrator implements OrchestratorApi {
     return member;
   }
 
+  // ---- 작업 ----
+  /** 직원이 작업을 등록하거나 고친다. 등록·수정한 작업이 그 직원의 지금 작업이 된다. */
+  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null }): { task: Task; created: boolean } {
+    return this.store.transaction(() => {
+      if (input.taskId) this.requireTaskInProject(member, input.taskId);
+      const result = this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree });
+      this.store.setTaskFocus(member.id, result.task.id);
+      return result;
+    });
+  }
+
+  private requireTaskInProject(member: Member, taskId: string): Task {
+    const task = this.store.getTask(taskId);
+    if (!task || task.projectId !== member.projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${taskId}. task 도구로 등록한 이 프로젝트의 작업 id 를 쓴다`);
+    return task;
+  }
+
+  /** 직원이 남기는 글·카드·자료·할 일의 작업. 밝히면 그 작업(null 은 전체), 아니면 마지막으로 받은 대표 글·답·지시의 작업. */
+  memberTask(member: Member, explicit?: string | null): string | null {
+    if (explicit === null) return null;
+    if (explicit !== undefined) return this.requireTaskInProject(member, explicit).id;
+    return this.store.getTaskFocus(member.id);
+  }
+
+  /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
+  private taskLineFor(projectId: string, taskId: string | null | undefined): string | null {
+    const task = taskId ? this.store.getTask(taskId) : null;
+    if (task) return formatTaskLine(task);
+    return this.store.listTasks(projectId).length ? formatTaskLine(null) : null;
+  }
+
   // ---- 보고 ----
   async recordPost(member: Member, input: PostInput): Promise<Message> {
     const rt = this.runtime(member.id);
@@ -3022,10 +3081,11 @@ export class Orchestrator implements OrchestratorApi {
       if (previous.projectId !== member.projectId || previous.memberId !== member.id || previous.mine) throw new ApiError(400, "자신이 작성한 보고만 정정할 수 있습니다");
     }
     const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
+    const taskId = this.memberTask(member, input.taskId);
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
-      body: [input.body ?? "", extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null,
+      body: [input.body ?? "", extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
     }), message => {
       this.store.noteDelegationPost(member.id);
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
@@ -3058,6 +3118,7 @@ export class Orchestrator implements OrchestratorApi {
   async registerAsk(member: Member, input: AskInput): Promise<{ decision: Decision; blocking: boolean; text: string }> {
     // 보관한 프로젝트의 카드는 화면에 없고 답도 409 다. 올리면 세션이 답 없는 대기에 묶인다.
     if (this.store.requireProject(member.projectId).archived || this.archiving.has(member.projectId)) throw new ApiError(409, "프로젝트가 보관되어 대표가 답할 수 없습니다. 묻지 말고 턴을 끝내세요");
+    const taskId = this.memberTask(member, input.taskId);
     const { value: decision, deliveries } = this.store.withDeliveryIntents(() => {
       const decision = this.store.createDecision({
         projectId: member.projectId,
@@ -3070,6 +3131,7 @@ export class Orchestrator implements OrchestratorApi {
         group: input.group,
         fileId: input.fileId,
         images: input.images,
+        taskId,
       });
       this.store.createMessage({
         projectId: member.projectId,
@@ -3081,6 +3143,7 @@ export class Orchestrator implements OrchestratorApi {
         decisionId: decision.id,
         fileId: input.fileId ?? null,
         attachments: input.images,
+        taskId,
       });
       this.store.patchMember(member.id, { status: "waiting" });
       return decision;
@@ -4227,13 +4290,13 @@ export class Orchestrator implements OrchestratorApi {
   /** post 를 안 부른 턴의 마지막 글(§6). 직원은 총괄에게 보고, 총괄·본사 AI 는 대표에게 하는 말. */
   private async fallbackReport(member: Member, finalText: string, direct: boolean): Promise<void> {
     if (member.kind !== "worker") {
-      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText });
+      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText, taskId: this.memberTask(member) });
       return;
     }
     const firstLine = normalizeSpace(finalText.split("\n")[0] ?? "").slice(0, 60);
     const title = `${direct ? "(직접) " : ""}(자동) ${firstLine}`;
     const conductor = this.store.getConductor(member.projectId);
-    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText }), message => conductor && conductor.id !== member.id ? [{
+    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId: this.memberTask(member) }), message => conductor && conductor.id !== member.id ? [{
       projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText), wake: true, refType: "message", refId: message.id,
     }] : []);
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));

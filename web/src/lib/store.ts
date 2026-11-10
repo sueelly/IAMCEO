@@ -191,6 +191,11 @@ export function applyToProject(p: ProjectState, e: WsEvent): ProjectState {
       return e.message.projectId === id ? { ...p, messages: upsertMessage(p.messages, e.message) } : p;
     case "file":
       return e.file.projectId === id ? { ...p, files: upsert(p.files, e.file) } : p;
+    case "task": {
+      if (e.task.projectId !== id) return p;
+      const tasks = upsertNewer(p.tasks ?? [], e.task);
+      return { ...p, tasks: [...tasks].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
+    }
     default:
       return p;
   }
@@ -576,7 +581,7 @@ function syncRoute(): void {
 
 /** 낙관적으로 먼저 보이고 서버 응답·이벤트로 바꾼다. 실패하면 delivery='failed'. id 가 멱등 키라 재시도해도 안전하다. */
 export async function sendMessage(
-  req: { text: string; targetMemberId?: string | null; attachmentIds?: string[]; id?: string },
+  req: { text: string; targetMemberId?: string | null; attachmentIds?: string[]; id?: string; taskId?: string | null },
   extra: { targetName?: string | null; attachments?: Attachment[]; onRejected?: (e: ApiError) => boolean } = {},
 ): Promise<Message | null> {
   const credentialGeneration = getCredentialGeneration();
@@ -584,7 +589,7 @@ export async function sendMessage(
   if (!p) return null;
   const projectId = p.project.id;
   const id = req.id ?? newId();
-  const body: SendMessageReq = { id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [] };
+  const body: SendMessageReq = { id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [], ...(req.taskId ? { taskId: req.taskId } : {}) };
   const draft: Message = {
     id,
     projectId,
@@ -602,6 +607,7 @@ export async function sendMessage(
     attachments: extra.attachments ?? [],
     delivery: "queued",
     deliveryNote: null,
+    taskId: req.taskId ?? null,
   };
   applyLocal({ type: "message", message: draft });
   try {
