@@ -2,8 +2,7 @@
 //   읽기: useStore(s => s.xxx) · useProject() · useRoute() · useSummary() · useBootstrap()
 //   쓰기: navigate · login · logout · refresh · sendMessage · loadOlderMessages · loadActivity · applyLocal
 // 주소: #/p/<id>/<tab>[/<sub>] · #/settings. 주소가 원본이고 route 는 그 사본이다(<sub>: 자료 id, 직원 id 처럼 화면이 정해 쓴다).
-// 동기화: WebSocket 이 (다시) 열릴 때마다 bootstrap·state 를 다시 받는다. 받는 동안 온 이벤트는 모아 두었다가 받은 값 위에 다시 입힌다
-// (안 그러면 먼저 시작한 응답이 그 사이 도착한 이벤트를 덮어쓴다).
+// 동기화: v2 커서·주기 신호를 검증하고 변경을 모아 스냅샷을 받는다. 옛 서버는 bootstrap·state 길을 쓴다.
 import { useSyncExternalStore } from "react";
 import type {
   Activity,
@@ -16,14 +15,19 @@ import type {
   ProjectState,
   ProjectSummary,
   SendMessageReq,
+  SyncSnapshot,
   WsEvent,
 } from "@shared/types";
+import type { ServerCapabilities, SyncRevisions } from "@shared/operations";
+import { CursorHistory, compareMessages, mergeHistoryMessages } from "./history";
+import { BrowserSyncCoordinator, type SyncContext, type SyncSocket } from "./sync";
 import {
   ApiError,
   api,
   clearAccessCode,
   errorText,
   getAccessCode,
+  getCredentialGeneration,
   isUnauthorized,
   setAccessCode,
   setUnauthorizedHandler,
@@ -59,6 +63,10 @@ export interface AppState {
   activity: Record<string, Activity[]>;
   /** 화면 위 띠에 잠깐 보일 안내 */
   notice: string | null;
+  capabilities: ServerCapabilities | null;
+  syncRevisions: SyncRevisions | null;
+  syncProjectId: string | null;
+  historyError: string | null;
 }
 
 // ---- 주소 ----
@@ -111,14 +119,13 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
 export function upsertMessage(list: Message[], m: Message): Message[] {
   const without = list.filter((x) => x.id !== m.id);
   let i = without.length;
-  while (i > 0 && without[i - 1]!.at > m.at) i--;
+  while (i > 0 && compareMessages(without[i - 1]!, m) > 0) i--;
   return [...without.slice(0, i), m, ...without.slice(i)];
 }
 
 /** 다시 받은 최근 글과 이미 가진 글(더 오래된 쪽·아직 서버에 없는 쪽)을 합친다. */
 export function mergeMessages(local: Message[], fresh: Message[]): Message[] {
-  const ids = new Set(fresh.map((m) => m.id));
-  return local.filter((m) => !ids.has(m.id)).reduce(upsertMessage, fresh);
+  return mergeHistoryMessages(local, fresh);
 }
 
 /**
@@ -131,12 +138,11 @@ export function hasMessageGap(local: Message[], fresh: Message[], pageSize: numb
   const newest = known.at(-1);
   const oldestFresh = fresh[0];
   if (!newest || !oldestFresh) return false;
-  return !fresh.some((m) => m.id === newest.id) && newest.at < oldestFresh.at;
+  return !fresh.some((m) => m.id === newest.id) && compareMessages(newest, oldestFresh) < 0;
 }
 
 /** 소켓이 이만큼 조용하면 망이 바뀌어 멈춘 것으로 본다. 서버는 15초마다 신호를 보낸다. */
 export const WS_STALE_MS = 45_000;
-const WS_PING_MS = 20_000;
 export const isSocketStale = (lastSeen: number, now: number): boolean => now - lastSeen > WS_STALE_MS;
 
 const DECISION_RANK: Record<DecisionStatus, number> = { open: 0, answered: 1, delivered: 2, closed: 3 };
@@ -185,6 +191,11 @@ export function applyToProject(p: ProjectState, e: WsEvent): ProjectState {
       return e.message.projectId === id ? { ...p, messages: upsertMessage(p.messages, e.message) } : p;
     case "file":
       return e.file.projectId === id ? { ...p, files: upsert(p.files, e.file) } : p;
+    case "task": {
+      if (e.task.projectId !== id) return p;
+      const tasks = upsertNewer(p.tasks ?? [], e.task);
+      return { ...p, tasks: [...tasks].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
+    }
     default:
       return p;
   }
@@ -247,10 +258,14 @@ let state: AppState = {
   hasOlderMessages: false,
   activity: {},
   notice: null,
+  capabilities: null,
+  syncRevisions: null,
+  syncProjectId: null,
+  historyError: null,
 };
 
 const listeners = new Set<() => void>();
-const subscribe = (fn: () => void) => {
+export const subscribe = (fn: () => void) => {
   listeners.add(fn);
   return () => {
     listeners.delete(fn);
@@ -279,26 +294,61 @@ export function findMember(p: ProjectState | null, id: string | null | undefined
 // ---- 동기화 ----
 
 const MSG_PAGE = 200;
-const RECONNECT_MIN = 500;
-const RECONNECT_MAX = 15_000;
-const RESYNC_RETRY = 3_000;
+let wanted = false;
+let sessionGeneration = 0;
+let buffered: WsEvent[] | null = null;
+let historyRange: CursorHistory | null = null;
+let remoteEvents: WsEvent[] = [];
+let remoteTimer: ReturnType<typeof setTimeout> | null = null;
+const usesCursorHistory = () => coordinator.usesSnapshots && (state.capabilities?.capabilities.paging === true || state.capabilities?.capabilities.browserRealtime === true);
 
-let ws: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let resyncTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectDelay = RECONNECT_MIN;
-let wanted = false; // 로그아웃·접속 코드 거부 뒤에는 다시 잇지 않는다
-let syncToken = 0; // 가장 최근 동기화만 결과를 쓴다
-let buffered: WsEvent[] | null = null; // 동기화 중 도착한 이벤트
-let lastSeen = 0; // 소켓에서 마지막으로 무엇이든 받은 시각
-let staleTimer: ReturnType<typeof setInterval> | null = null;
+function clearRemoteEvents(): void {
+  if (remoteTimer !== null) clearTimeout(remoteTimer);
+  remoteTimer = null; remoteEvents = [];
+}
+function drainRemoteEvents(base: AppState): AppState {
+  const events = remoteEvents; clearRemoteEvents();
+  return events.reduce(reduce, base);
+}
+function withHistory(next: AppState): AppState {
+  return usesCursorHistory() && next.project && historyRange?.projectId === next.project.project.id
+    ? { ...next, project: { ...next.project, messages: historyRange.items } } : next;
+}
 
-function handleEvent(e: WsEvent): void {
+function historyFor(projectId: string): CursorHistory {
+  if (historyRange?.projectId !== projectId) {
+    historyRange?.cancel();
+    historyRange = new CursorHistory(projectId);
+    for (const message of state.project?.project.id === projectId ? state.project.messages : []) {
+      if (message.mine && (message.delivery === "queued" || message.delivery === "failed")) historyRange.receive(message, true);
+    }
+  }
+  return historyRange;
+}
+
+function handleEvent(e: WsEvent, local = false): void {
   if (e.type === "hello" || e.type === "ping") return;
   if (buffered) buffered.push(e);
-  const next = reduce(state, e);
+  if (usesCursorHistory() && e.type === "message" && historyRange?.projectId === e.message.projectId) {
+    historyRange.receive(e.message, local);
+  }
+  const next = withHistory(reduce(drainRemoteEvents(state), e));
   if (next !== state) set(next);
-  if (e.type === "projects") leaveIfArchived();
+  leaveIfArchived();
+}
+
+function receiveRemote(event: WsEvent): void {
+  if (coordinator.protocol !== 2) { handleEvent(event); return; }
+  if (buffered) buffered.push(event);
+  if (event.type === "message" && historyRange?.projectId === event.message.projectId) historyRange.receive(event.message);
+  remoteEvents.push(event);
+  if (remoteTimer !== null) return;
+  remoteTimer = setTimeout(() => {
+    if (!coordinator.active) { clearRemoteEvents(); return; }
+    const next = withHistory(drainRemoteEvents(state));
+    if (next !== state) set(next);
+    leaveIfArchived();
+  }, 250);
 }
 
 /** 다른 기기에서 보관하면 제목이 빈 채 보관된 프로젝트에 계속 지시하게 된다. */
@@ -314,187 +364,135 @@ export function clearNotice(): void {
   if (state.notice) set({ notice: null });
 }
 
-/** bootstrap 과 현재 프로젝트를 함께 다시 받는다. 받는 동안 온 이벤트는 받은 값 위에 다시 입힌다. */
-export async function refresh(): Promise<void> {
-  const token = ++syncToken;
-  const projectId = state.route.projectId;
-  const sameProject = state.project?.project.id === projectId;
-  buffered = [];
-  if (!sameProject) set({ project: null, projectLoading: true, projectError: null, hasOlderMessages: false });
-  if (resyncTimer) {
-    clearTimeout(resyncTimer);
-    resyncTimer = null;
-  }
-
-  const [boot, proj] = await Promise.allSettled([api.bootstrap(), api.projectState(projectId)]);
-  if (token !== syncToken) return;
-  const pending = buffered ?? [];
-  buffered = null;
-
-  if (boot.status === "rejected") {
-    // 401 은 setUnauthorizedHandler 가 이미 처리했다
-    if (!isUnauthorized(boot.reason)) {
-      const text = errorText(boot.reason);
-      set({
-        projectLoading: false,
-        projectError: state.project ? null : text,
-        authError: state.auth === "need_code" ? text : null,
-        connection: ws ? state.connection : "offline",
-      });
-      scheduleResync();
-    }
-    return;
-  }
-
-  let next: AppState = { ...state, auth: "ok", authError: null, bootstrap: boot.value, projectLoading: false };
-
-  if (proj.status === "fulfilled") {
-    const fresh = proj.value;
-    const local = next.project?.project.id === projectId ? next.project.messages : [];
-    const gap = hasMessageGap(local, fresh.messages, MSG_PAGE);
-    next = {
-      ...next,
-      // 틈이 있으면 옛 글을 버린다. 아직 서버에 없는 내 글(실패·보내는 중)만 남긴다.
-      project: { ...fresh, messages: mergeMessages(gap ? local.filter((m) => m.mine && (m.delivery === "failed" || m.delivery === "queued")) : local, fresh.messages) },
-      projectError: null,
-      hasOlderMessages: gap || local.length === 0 ? fresh.messages.length >= MSG_PAGE : next.hasOlderMessages,
-    };
-  } else if (proj.reason instanceof ApiError && proj.reason.status === 404) {
-    // 없는 프로젝트(주소를 직접 쳤거나 보관됨)면 본사로 돌린다
-    if (projectId !== HQ_ID) {
-      // 설정 화면에서는 돌아갈 곳만 본사로 바꾼다. 주소는 #/settings 그대로다(거기서 보던 프로젝트를 보관한 경우).
-      if (next.route.settings) {
-        set({ ...next, route: { ...next.route, projectId: HQ_ID, tab: "home" } });
-        void refresh();
-        return;
-      }
-      set(next);
-      navigate({ projectId: HQ_ID, tab: "home" }, { replace: true });
-      return;
-    }
-    next = { ...next, projectError: errorText(proj.reason) };
-  } else {
-    next = { ...next, projectError: next.project ? null : errorText(proj.reason) };
-    scheduleResync();
-  }
-
-  for (const e of pending) next = reduce(next, e);
-  set(next);
-  leaveIfArchived();
-  if (wanted && !ws) connect();
-}
-
-function scheduleResync(): void {
-  if (resyncTimer || !wanted) return;
-  resyncTimer = setTimeout(() => {
-    resyncTimer = null;
-    void refresh();
-  }, RESYNC_RETRY);
-}
-
-function connect(): void {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  if (ws || !wanted) return;
-  set({ connection: state.connection === "offline" ? "offline" : "connecting" });
-  let sock: WebSocket;
-  try {
-    sock = new WebSocket(wsUrl());
-  } catch {
-    scheduleReconnect();
-    return;
-  }
-  ws = sock;
-  sock.onopen = () => {
-    if (ws !== sock) return;
-    lastSeen = Date.now();
-    reconnectDelay = RECONNECT_MIN;
-    set({ connection: "online" });
-    void refresh();
-  };
-  sock.onmessage = (ev) => {
-    if (ws !== sock || typeof ev.data !== "string") return;
-    lastSeen = Date.now();
-    let parsed: WsEvent;
+async function readHistory(context: SyncContext, kind: "refresh" | "older"): Promise<void> {
+  const range = historyFor(context.projectId);
+  let request = range.begin(kind === "older" ? range.isBridging ? "bridge" : "older" : range.isBridging ? "bridge" : range.initialized ? "latest" : "initial");
+  while (request && context.isCurrent()) {
     try {
-      parsed = JSON.parse(ev.data) as WsEvent;
-    } catch {
-      return; // 형식이 어긋난 한 건 때문에 연결을 버리지 않는다
+      const page = await api.messagePage(context.projectId, { cursor: request.cursor, limit: request.limit, scope: { kind: "project" } }, context.signal);
+      if (!context.isCurrent()) return;
+      if (!range.apply(page, request)) throw new Error(range.error ?? "대화 기록을 받지 못했습니다");
+    } catch (error) {
+      if (context.isCurrent()) range.fail(error, request);
+      throw error;
     }
-    handleEvent(parsed);
-  };
-  sock.onclose = () => {
-    if (ws !== sock) return;
-    ws = null;
-    if (!wanted) return;
-    set({ connection: "offline" });
-    scheduleReconnect();
-    // 브라우저는 소켓이 거부된 까닭(401)을 알려 주지 않는다. REST 로 물어봐야 접속 코드가 바뀐 줄 안다.
-    scheduleResync();
-  };
-  sock.onerror = () => sock.close();
-}
-
-/** 살아 있어 보여도 멈췄을 수 있는 소켓을 버리고 새로 잇는다. 닫힘 이벤트를 기다리지 않는다(멈춘 소켓은 안 온다). */
-function replaceSocket(): void {
-  const sock = ws;
-  ws = null;
-  sock?.close();
-  reconnectDelay = RECONNECT_MIN;
-  connect();
-}
-
-function watchSocket(): void {
-  if (staleTimer) return;
-  staleTimer = setInterval(() => {
-    if (wanted && ws?.readyState === WebSocket.OPEN && isSocketStale(lastSeen, Date.now())) {
-      set({ connection: "connecting" });
-      replaceSocket();
-    }
-  }, 5000);
-}
-
-function scheduleReconnect(): void {
-  if (reconnectTimer || !wanted) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connect();
-  }, reconnectDelay);
-  reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
-}
-
-/** 지금 바로 다시 잇는다(연결 끊김 띠의 '다시 연결', 화면 복귀, 온라인 복귀). */
-export function reconnectNow(): void {
-  if (!wanted) {
-    if (getAccessCode()) void startSession();
-    return;
+    request = range.isBridging ? range.begin("bridge") : null;
   }
-  reconnectDelay = RECONNECT_MIN;
-  if (!ws) connect();
-  // 서버가 살아 있는데 소켓만 거부되면(접속 코드 변경) REST 만 그 까닭을 안다.
-  if (state.connection === "offline") void refresh();
+  if (context.isCurrent() && range.error) throw new Error(range.error);
+}
+
+async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Promise<void> {
+  let runtime = state.bootstrap?.runtime;
+  if (!runtime) {
+    try { runtime = await api.runtime(context.signal); } catch (error) { if (isUnauthorized(error)) throw error; }
+    if (!context.isCurrent()) return;
+  }
+  if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh");
+  if (!context.isCurrent()) return;
+  const pending = buffered ?? [];
+  buffered = null; clearRemoteEvents();
+  const oldMessages = state.project?.project.id === context.projectId ? state.project.messages : [];
+  let next: AppState = {
+    ...state, auth: "ok", authError: null, bootstrap: { ...snapshot.bootstrap, runtime },
+    project: snapshot.state ? { ...snapshot.state, messages: usesCursorHistory() ? historyFor(context.projectId).items : mergeMessages(oldMessages, snapshot.state.messages) } : null,
+    projectLoading: false, projectError: null, historyError: null,
+    hasOlderMessages: snapshot.state ? usesCursorHistory() ? historyFor(context.projectId).hasOlder : snapshot.state.messages.length >= MSG_PAGE : false,
+    syncRevisions: snapshot.revisions, syncProjectId: context.projectId,
+  };
+  for (const event of pending) next = reduce(next, event);
+  set(next);
+  if (!snapshot.state && context.projectId !== HQ_ID && state.route.settings) {
+    set({ route: { ...state.route, projectId: HQ_ID, tab: "home" } });
+    coordinator.select(HQ_ID);
+  } else leaveIfArchived();
+}
+
+async function readLegacy(projectId: string, context: SyncContext): Promise<void> {
+  buffered = [];
+  const bootstrap = await api.bootstrap(context.signal);
+  if (!context.isCurrent()) return;
+  let fresh: ProjectState | null = null;
+  try { fresh = await api.projectState(projectId, context.signal); }
+  catch (error) {
+    if (!context.isCurrent()) return;
+    if (!(error instanceof ApiError) || error.status !== 404 || projectId === HQ_ID) throw error;
+  }
+  if (!context.isCurrent()) return;
+  const pending = buffered ?? []; buffered = null;
+  const local = state.project?.project.id === projectId ? state.project.messages : [];
+  const gap = fresh ? hasMessageGap(local, fresh.messages, MSG_PAGE) : false;
+  let next: AppState = {
+    ...state, auth: "ok", authError: null, bootstrap, projectLoading: false, projectError: null,
+    project: fresh ? { ...fresh, messages: mergeMessages(gap ? local.filter((m) => m.mine && (m.delivery === "queued" || m.delivery === "failed")) : local, fresh.messages) } : null,
+    hasOlderMessages: fresh ? gap || !local.length ? fresh.messages.length >= MSG_PAGE : state.hasOlderMessages : false,
+    syncRevisions: null, syncProjectId: null,
+  };
+  for (const event of pending) next = reduce(next, event);
+  set(next);
+  if (!fresh && projectId !== HQ_ID && next.route.settings) {
+    set({ route: { ...next.route, projectId: HQ_ID, tab: "home" } }); coordinator.select(HQ_ID);
+  } else leaveIfArchived();
+}
+
+const coordinator = new BrowserSyncCoordinator({
+  capabilities: (signal) => api.capabilities(signal),
+  realtimeSession: (signal) => api.realtimeSession(signal),
+  socket: (protocol) => new WebSocket(wsUrl(protocol)) as unknown as SyncSocket,
+  readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal); },
+  readLegacy,
+  onSnapshot: acceptSnapshot,
+  onEvent: receiveRemote,
+  onError: (error) => {
+    buffered = null;
+    if (isUnauthorized(error)) return;
+    set({
+      projectLoading: false, projectError: state.project ? null : errorText(error),
+      authError: state.auth === "need_code" ? errorText(error) : null,
+      historyError: historyRange?.error ?? null,
+    });
+  },
+  onConnection: (connection) => set({ connection }),
+  onCapabilities: (capabilities) => set({ capabilities: capabilities as ServerCapabilities | null ?? {
+    contractVersion: 2, capabilities: { paging: false, archive: false, delivery: false, realtime: false, browserRealtime: false, push: false, operations: false },
+  } }),
+});
+
+/** Resolves after the coordinator has reconciled the selected project's read. */
+export async function refresh(): Promise<void> {
+  const projectId = state.route.projectId;
+  if (state.project?.project.id !== projectId) {
+    set({ project: null, projectLoading: true, projectError: null, historyError: null, hasOlderMessages: false, syncRevisions: null, syncProjectId: null });
+  }
+  await coordinator.refresh();
+}
+function scheduleResync(): void { coordinator.invalidate(); }
+
+export function reconnectNow(): void {
+  if (!wanted) { if (getAccessCode()) void startSession(); return; }
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+  historyRange?.cancel(); clearRemoteEvents();
+  if (historyRange?.needsReset) historyRange = null;
+  if (state.auth !== "ok") void startSession();
+  else if (!coordinator.active) coordinator.resume();
+  else void coordinator.reconnect();
 }
 
 function disconnect(): void {
-  wanted = false;
-  syncToken++;
-  buffered = null;
-  for (const t of [reconnectTimer, resyncTimer]) if (t) clearTimeout(t);
-  reconnectTimer = resyncTimer = null;
-  const sock = ws;
-  ws = null;
-  sock?.close();
+  for (const fn of sessionInvalidationHooks) fn();
+  wanted = false; sessionGeneration++; buffered = null; clearRemoteEvents();
+  historyRange?.cancel(); historyRange = null; coordinator.stop();
 }
 
 async function startSession(): Promise<void> {
-  wanted = true;
-  watchSocket();
-  // 첨부 쿠키가 먼저다. 망 오류면 지난번 쿠키로 그리고, 끊김 표시는 refresh 가 맡는다.
+  for (const fn of sessionInvalidationHooks) fn();
+  const generation = ++sessionGeneration;
+  wanted = true; coordinator.stop(); clearRemoteEvents(); historyRange?.cancel(); historyRange = null;
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") { coordinator.suspend(); return; }
+  coordinator.resume();
+  // Keep an old login's cookie completion from starting a new session after logout.
   await api.filesSession().catch(() => {});
-  if (!wanted) return; // 코드가 틀려 이미 나갔다
-  await refresh();
+  if (!wanted || generation !== sessionGeneration) return;
+  await coordinator.start(state.route.projectId);
 }
 
 // ---- 동작 ----
@@ -518,7 +516,12 @@ export async function login(code: string): Promise<boolean> {
 }
 
 const logoutHooks = new Set<() => void>();
-/** 저장소 밖 메모리에 글을 든 모듈(입력칸 초안)이 함께 비우도록 등록한다. */
+const sessionInvalidationHooks = new Set<() => void>();
+/** Fence in-flight work on authentication changes while retaining durable drafts and attempts. */
+export function onSessionInvalidated(fn: () => void): void {
+  sessionInvalidationHooks.add(fn);
+}
+/** Explicit '이 기기에서 나가기' clears persisted and in-memory drafts. */
 export function onLogout(fn: () => void): void {
   logoutHooks.add(fn);
 }
@@ -540,7 +543,7 @@ export function logout(): void {
   // 공용 기기에 쓰던 글을 남기지 않는다. 메모리에 든 글도 함께 지워야 같은 탭에서 다시 들어왔을 때 나타나지 않는다.
   for (const key of Object.keys(localStorage)) if (isSavedDraft(key)) localStorage.removeItem(key);
   for (const fn of logoutHooks) fn();
-  set({ auth: "need_code", authError: null, bootstrap: null, project: null, connection: "connecting", activity: {} });
+  set({ auth: "need_code", authError: null, bootstrap: null, project: null, projectLoading: false, hasOlderMessages: false, connection: "connecting", activity: {}, capabilities: null, syncRevisions: null, syncProjectId: null, historyError: null });
 }
 
 export function navigate(to: { projectId?: string; tab?: Tab; sub?: string | null; settings?: boolean }, opts: { replace?: boolean } = {}): void {
@@ -569,19 +572,24 @@ function syncRoute(): void {
     : parsed;
   const changedProject = route.projectId !== state.route.projectId;
   set({ route });
-  if (changedProject && state.auth === "ok") void refresh();
+  if (changedProject && wanted) {
+    historyRange?.cancel(); historyRange = null; buffered = null; clearRemoteEvents();
+    set({ project: null, projectLoading: true, projectError: null, hasOlderMessages: false, syncRevisions: null, syncProjectId: null, historyError: null });
+    coordinator.select(route.projectId);
+  }
 }
 
 /** 낙관적으로 먼저 보이고 서버 응답·이벤트로 바꾼다. 실패하면 delivery='failed'. id 가 멱등 키라 재시도해도 안전하다. */
 export async function sendMessage(
-  req: { text: string; targetMemberId?: string | null; attachmentIds?: string[]; id?: string },
+  req: { text: string; targetMemberId?: string | null; attachmentIds?: string[]; id?: string; taskId?: string | null },
   extra: { targetName?: string | null; attachments?: Attachment[]; onRejected?: (e: ApiError) => boolean } = {},
 ): Promise<Message | null> {
+  const credentialGeneration = getCredentialGeneration();
   const p = state.project;
   if (!p) return null;
   const projectId = p.project.id;
   const id = req.id ?? newId();
-  const body: SendMessageReq = { id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [] };
+  const body: SendMessageReq = { id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [], ...(req.taskId ? { taskId: req.taskId } : {}) };
   const draft: Message = {
     id,
     projectId,
@@ -599,20 +607,25 @@ export async function sendMessage(
     attachments: extra.attachments ?? [],
     delivery: "queued",
     deliveryNote: null,
+    taskId: req.taskId ?? null,
   };
   applyLocal({ type: "message", message: draft });
   try {
     const saved = await api.sendMessage(projectId, body);
+    if (credentialGeneration !== getCredentialGeneration()) return null;
     // 응답보다 이벤트가 먼저 왔으면(받음 등) 그쪽이 더 새 값이다
     const cur = state.project?.messages.find((m) => m.id === id);
     if (!cur || cur === draft) applyLocal({ type: "message", message: saved });
-    return saved;
+    return cur && cur !== draft ? cur : saved;
   } catch (e) {
+    if (credentialGeneration !== getCredentialGeneration()) return null;
     // 응답만 잃었고 서버가 받았다는 이벤트가 이미 왔으면 실패가 아니다.
     const cur = state.project?.messages.find((m) => m.id === id);
     if (cur && cur !== draft && cur.delivery !== "failed") return cur;
     // 서버가 받지 않겠다고 답했다(연결 없음). 부른 쪽이 글을 맡으면 낙관적으로 보인 줄을 걷는다. 실패 글로 남기면 보낸 줄 안다.
     if (e instanceof ApiError && extra.onRejected?.(e)) {
+      if (historyRange?.projectId === projectId) historyRange.removeOptimistic(id);
+      if (buffered) buffered = buffered.filter((event) => event.type !== "message" || event.message.id !== id);
       const open = state.project;
       if (open?.project.id === projectId) set({ project: { ...open, messages: open.messages.filter((m) => m.id !== id) } });
       void refresh();
@@ -626,15 +639,29 @@ export async function sendMessage(
 }
 
 export async function loadOlderMessages(limit = 100): Promise<void> {
+  if (usesCursorHistory()) {
+    await coordinator.readExtra(async (context) => {
+      try {
+        await readHistory(context, "older");
+        if (!context.isCurrent() || state.project?.project.id !== context.projectId) return;
+        const range = historyFor(context.projectId);
+        set({ project: { ...state.project, messages: range.items }, hasOlderMessages: range.hasOlder, historyError: null });
+      } catch (error) {
+        if (context.isCurrent()) set({ historyError: historyRange?.error ?? errorText(error) });
+        throw error;
+      }
+    });
+    return;
+  }
   const p = state.project;
   const oldest = p?.messages.find((m) => m.delivery !== "failed");
   if (!p || !oldest) return;
   const projectId = p.project.id;
-  const older = await api.messages(projectId, { before: oldest.at, limit });
-  if (state.project?.project.id !== projectId) return;
-  set({
-    project: { ...state.project, messages: older.reduce(upsertMessage, state.project.messages) },
-    hasOlderMessages: older.length >= limit,
+  await coordinator.readExtra(async (context) => {
+    if (context.projectId !== projectId) return;
+    const older = await api.messages(projectId, { before: oldest.at, limit }, context.signal);
+    if (!context.isCurrent() || state.project?.project.id !== projectId) return;
+    set({ project: { ...state.project, messages: older.reduce(upsertMessage, state.project.messages) }, hasOlderMessages: older.length >= limit });
   });
 }
 
@@ -643,9 +670,11 @@ const singlyLoaded = new Set<string>();
 
 /** 목록(처리된 최근 50건) 밖의 결재를 하나 받는다. 옛 대화의 링크가 갈 곳을 잃지 않게 한다. */
 export async function loadDecision(id: string): Promise<void> {
-  const decision = await api.decision(id);
-  singlyLoaded.add(id);
-  applyLocal({ type: "decision", decision });
+  await coordinator.readExtra(async (context) => {
+    const decision = await api.decision(id, context.signal);
+    if (!context.isCurrent()) return;
+    singlyLoaded.add(id); applyLocal({ type: "decision", decision });
+  });
 }
 
 /** 처리된 결재를 더 받는다. 더 있을 수 있으면 true. */
@@ -655,24 +684,33 @@ export async function loadOlderDecisions(limit = 50): Promise<boolean> {
   const done = p.decisions.filter((d) => d.status !== "open" && !singlyLoaded.has(d.id));
   const oldest = done.map((d) => d.answeredAt ?? d.createdAt).sort()[0];
   const projectId = p.project.id;
-  const rows = await api.doneDecisions(projectId, { before: oldest, limit });
-  if (state.project?.project.id !== projectId) return false;
-  set({ project: { ...state.project, decisions: rows.reduce((list, d) => (list.some((x) => x.id === d.id) ? list : [...list, d]), state.project.decisions) } });
-  return rows.length >= limit;
+  let hasMore = false;
+  await coordinator.readExtra(async (context) => {
+    if (context.projectId !== projectId) return;
+    const rows = await api.doneDecisions(projectId, { before: oldest, limit }, context.signal);
+    if (!context.isCurrent() || state.project?.project.id !== projectId) return;
+    set({ project: { ...state.project, decisions: rows.reduce((list, d) => (list.some((x) => x.id === d.id) ? list : [...list, d]), state.project.decisions) } });
+    hasMore = rows.length >= limit;
+  });
+  return hasMore;
 }
 
 /** 직원 활동을 처음 받고, 이후 이벤트로 이어 쌓는다. */
 export async function loadActivity(memberId: string, limit = 200): Promise<void> {
-  const rows = await api.activity(memberId, limit);
-  const live = state.activity[memberId] ?? [];
-  const ids = new Set(rows.map((a) => a.id));
-  const merged = [...rows, ...live.filter((a) => !ids.has(a.id))].sort((a, b) => a.id - b.id).slice(-ACTIVITY_CAP);
-  set({ activity: { ...state.activity, [memberId]: merged } });
+  await coordinator.readExtra(async (context) => {
+    const rows = await api.activity(memberId, limit, context.signal);
+    if (!context.isCurrent()) return;
+    const live = state.activity[memberId] ?? [];
+    const ids = new Set(rows.map((a) => a.id));
+    const merged = [...rows, ...live.filter((a) => !ids.has(a.id))].sort((a, b) => a.id - b.id).slice(-ACTIVITY_CAP);
+    set({ activity: { ...state.activity, [memberId]: merged } });
+  });
 }
 
 /** REST 응답을 이벤트와 같은 길로 바로 반영한다. 예: applyLocal({type:'decision', decision}) */
 export function applyLocal(e: WsEvent): void {
-  handleEvent(e);
+  handleEvent(e, true);
+  if (coordinator.usesSnapshots) coordinator.invalidate();
 }
 
 /** 평문 http(Tailscale IP 접속)에서는 crypto.randomUUID 가 없다. */
@@ -698,22 +736,22 @@ export function initStore(): void {
       bootstrap: null,
       project: null,
       projectLoading: false,
+      activity: {}, capabilities: null, syncRevisions: null, syncProjectId: null, historyError: null,
     });
   });
   window.addEventListener("hashchange", syncRoute);
-  // 폰이 잠들었다 깨면 소켓이 조용히 죽어 있거나 그동안의 이벤트를 놓쳤을 수 있다
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible" || !wanted) return;
-    if (ws?.readyState !== WebSocket.OPEN) reconnectNow();
-    // 신호가 한 번 이상 안 왔으면 망이 바뀌어 멈췄을 수 있다. 소켓까지 새로 잇는다(열리면 다시 받는다).
-    else if (Date.now() - lastSeen > WS_PING_MS) replaceSocket();
-    else void refresh();
+    if (!wanted) return;
+    if (document.visibilityState !== "visible") {
+      sessionGeneration++; buffered = null; clearRemoteEvents(); historyRange?.cancel(); coordinator.suspend();
+    } else if (state.auth !== "ok") void startSession();
+    else coordinator.resume();
   });
-  // 망이 돌아왔으면 살아 있어 보여도 옛 경로의 소켓이다. 닫힘 이벤트는 오지 않는다.
-  window.addEventListener("online", () => {
-    if (wanted && ws) replaceSocket();
-    else reconnectNow();
+  window.addEventListener("pagehide", () => {
+    sessionGeneration++; buffered = null; clearRemoteEvents(); historyRange?.cancel(); coordinator.suspend();
   });
+  window.addEventListener("pageshow", () => { if (wanted && document.visibilityState === "visible") reconnectNow(); });
+  window.addEventListener("online", reconnectNow);
 
   syncRoute();
   if (getAccessCode()) void startSession();

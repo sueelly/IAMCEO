@@ -25,6 +25,7 @@ import type {
   FileDoc,
   FileKind,
   Member,
+  Task,
   MemberLifecycleState,
   MemberKind,
   MemberOrigin,
@@ -53,6 +54,30 @@ import { newId, nowIso } from "./db.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
+
+export interface MemoryUpload {
+  eventId: string;
+  projectId: string;
+  refType: string;
+  refId: string;
+  body: string;
+  /** pending: 보낼 차례를 기다림 · sent: 게이트웨이가 받음 · rejected: 게이트웨이가 거절(같은 본문으로 다시 보내도 같다) */
+  status: "pending" | "sent" | "rejected";
+  attempts: number;
+  nextAt: string;
+  lastError: string | null;
+  remoteId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function toMemoryUpload(r: Row): MemoryUpload {
+  return {
+    eventId: r.event_id as string, projectId: r.project_id as string, refType: r.ref_type as string, refId: r.ref_id as string, body: r.body as string,
+    status: r.status as MemoryUpload["status"], attempts: r.attempts as number, nextAt: r.next_at as string, lastError: (r.last_error as string | null) ?? null,
+    remoteId: (r.remote_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+  };
+}
 
 /** status 가 그대로 HTTP 응답 코드가 되는 오류. */
 export class ApiError extends Error {
@@ -86,6 +111,7 @@ export type ProjectPatch = Partial<
 export interface NewMember {
   cli?: CliProvider;
   modelOverride?: string | null;
+  effortOverride?: string | null;
   projectId: string;
   handle: string;
   name: string;
@@ -127,6 +153,7 @@ export interface NewDecision {
   group?: string | null;
   fileId?: string | null;
   images?: Attachment[];
+  taskId?: string | null;
 }
 
 export interface NewTodo {
@@ -135,6 +162,18 @@ export interface NewTodo {
   who?: string;
   title: string;
   detail?: string;
+  taskId?: string | null;
+}
+
+/** 작업 등록·수정. id 가 있으면 그 작업을 고친다(제목·브랜치·워크트리만, id 는 그대로). */
+export interface TaskInput {
+  id?: string;
+  projectId: string;
+  memberId: string;
+  who: string;
+  title?: string;
+  branch?: string | null;
+  worktree?: string | null;
 }
 
 export interface WorkInput {
@@ -163,6 +202,7 @@ export interface NewMessage {
   attachments?: Attachment[];
   delivery?: DeliveryStatus | null;
   deliveryNote?: string | null;
+  taskId?: string | null;
 }
 
 export interface NewFile {
@@ -177,6 +217,7 @@ export interface NewFile {
   kind?: FileKind;
   /** kind=artifact 의 원본. 화면 상태에 싣지 않는다. */
   html?: string | null;
+  taskId?: string | null;
 }
 
 export interface NewDelivery {
@@ -192,7 +233,12 @@ export interface NewDelivery {
   holdReason?: string | null;
   refType?: Delivery["refType"];
   refId?: string | null;
+  /** 이 전달이 속한 작업. 생략하면 ref(대표 글·결재·할 일)의 작업을 따른다. */
+  taskId?: string | null;
 }
+
+/** 대표 글·답·할 일 알림·지시: 턴 마지막 글(자동 보고)의 출처가 되는 전달. */
+export const TASK_SOURCE_KINDS = new Set<DeliveryKind>(["user_message", "answer", "todo_done", "instruction"]);
 
 export interface DeliveryUpdate {
   holdReason?: string | null;
@@ -240,7 +286,8 @@ const MEMBER_SELECT = `SELECT m.*, (SELECT COUNT(*) FROM deliveries d WHERE d.me
   e.run_id AS execution_run_id, e.turn AS execution_turn, e.delivery_ids_json AS execution_delivery_ids_json,
   e.phase AS execution_phase, e.input_received_at AS execution_input_received_at, e.started_at AS execution_started_at,
   e.last_progress_at AS execution_last_progress_at, e.ended_at AS execution_ended_at,
-  e.result AS execution_result, e.reason AS execution_reason, e.exit_code AS execution_exit_code
+  e.result AS execution_result, e.reason AS execution_reason, e.exit_code AS execution_exit_code,
+  (SELECT json_group_array(t.task_id) FROM (SELECT DISTINCT d.task_id FROM json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id = j.value WHERE d.task_id IS NOT NULL) t) AS execution_task_ids_json
   FROM members m
   LEFT JOIN lifecycle_journal l ON l.rowid = (
     SELECT j.rowid FROM lifecycle_journal j
@@ -271,6 +318,7 @@ function toProject(r: Row, connection: ProjectConnection): Project {
     id: r.id,
     name: r.name,
     isHq: !!r.is_hq,
+    chiefCli: r.chief_cli === "codex" || r.chief_cli === "antigravity" ? r.chief_cli : "claude",
     cwd: r.cwd,
     runnerEnabled: !!r.runner_enabled,
     now: r.now,
@@ -358,6 +406,7 @@ function toMember(r: Row): Member {
       result: r.execution_result,
       reason: r.execution_reason,
       exitCode: r.execution_exit_code,
+      taskIds: r.execution_task_ids_json ? json<string[]>(r.execution_task_ids_json) : [],
     },
     ...(r.context_member_id ? { contextState: { measurement: r.measurement_json === null ? null : json<CoreContextState["measurement"]>(r.measurement_json), compaction: r.compaction_json === null ? null : json<CoreContextState["compaction"]>(r.compaction_json) } } : {}),
   };
@@ -392,6 +441,7 @@ function toDecision(r: Row): Decision {
     closeQuote: r.close_quote ?? null,
     closedBy: r.closed_by ?? null,
     closedAt: r.closed_at ?? null,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -409,6 +459,21 @@ function toTodo(r: Row): Todo {
     outcome: r.outcome ?? (r.done ? "done" : null),
     closeReason: r.close_reason ?? null,
     closedBy: r.closed_by ?? null,
+    taskId: r.task_id ?? null,
+  };
+}
+
+function toTask(r: Row): Task {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    memberId: r.member_id,
+    who: r.who,
+    title: r.title,
+    branch: r.branch,
+    worktree: r.worktree,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -445,6 +510,7 @@ function toMessage(r: Row): Message {
     attachments: json(r.attachments),
     delivery: r.delivery,
     deliveryNote: r.delivery_note,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -473,6 +539,7 @@ function toFile(r: Row): FileDoc {
     attachments,
     createdAt: r.created_at,
     order: r.sort_order,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -755,6 +822,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return (CLI_PROVIDERS as readonly string[]).includes(cli) ? cli as CliProvider : "claude";
   }
 
+  defaultMemberCli(projectId: string): CliProvider {
+    return this.getConductor(projectId)?.cli ?? this.chiefCli(projectId);
+  }
+
   setChiefCli(projectId: string, cli: CliProvider): void {
     this.requireProject(projectId);
     this.run("UPDATE projects SET chief_cli = ? WHERE id = ?", cli, projectId);
@@ -894,8 +965,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = input.id ?? newId("p_");
       const now = input.now ?? "";
       this.run(
-        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.name,
         id === "hq" ? 1 : 0,
@@ -906,8 +977,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         at,
         input.creationGoal ?? null,
+        input.chiefCli ?? "codex",
       );
-      if (input.chiefCli) this.setChiefCli(id, input.chiefCli);
       const project = this.requireProject(id);
       this.emit({ type: "project", project });
       this.emitProjects();
@@ -1013,6 +1084,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       work: this.listWork(id),
       messages: this.listMessages(id, { limit: 200 }),
       files: this.listFiles(id),
+      tasks: this.listTasks(id),
     };
   }
 
@@ -1090,8 +1162,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("m_");
       const at = nowIso();
       this.run(
-        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override, effort_override)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.handle,
@@ -1108,8 +1180,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         `tk_${newId("")}${newId("")}`,
         at,
         at,
-        input.cli ?? "claude",
+        input.cli ?? this.defaultMemberCli(input.projectId),
         input.modelOverride ?? null,
+        input.effortOverride ?? null,
       );
       const member = this.requireMember(id);
       this.emit({ type: "member", member });
@@ -1269,8 +1342,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = newId("d_");
       this.run(
-        `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+        `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
         id,
         input.projectId,
         input.memberId ?? null,
@@ -1284,6 +1357,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         JSON.stringify(input.images ?? []),
         nowIso(),
         nowIso(),
+        this.taskRef(input.projectId, input.taskId),
       );
       const decision = this.requireDecision(id);
       this.recorder?.decision(null, decision);
@@ -1438,7 +1512,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("t_");
       const at = nowIso();
       this.run(
-        "INSERT INTO todos (id, project_id, member_id, who, title, detail, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO todos (id, project_id, member_id, who, title, detail, created_at, updated_at, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         input.projectId,
         input.memberId ?? null,
@@ -1447,6 +1521,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.detail ?? "",
         at,
         at,
+        this.taskRef(input.projectId, input.taskId),
       );
       const todo = this.requireTodo(id);
       this.bumpBoard(todo.projectId);
@@ -1597,6 +1672,119 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
+  // ---- 작업 ----
+  getTask(id: string): Task | null {
+    const r = this.row("SELECT * FROM tasks WHERE id = ?", id);
+    return r ? toTask(r) : null;
+  }
+
+  requireTask(id: string): Task {
+    const t = this.getTask(id);
+    if (!t) throw new ApiError(404, `작업을 찾을 수 없습니다: ${id}`);
+    return t;
+  }
+
+  /** 최근 등록한 작업부터. */
+  listTasks(projectId: string): Task[] {
+    return this.rows("SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC", projectId).map(toTask);
+  }
+
+  /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */
+  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string }): boolean {
+    const at = new Date().toISOString();
+    const before = this.row("SELECT 1 AS hit FROM memory_outbox WHERE event_id = ?", input.eventId);
+    if (before) return false;
+    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)",
+      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at);
+    return true;
+  }
+
+  dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {
+    return this.rows("SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ? ORDER BY created_at LIMIT ?", now, limit).map(toMemoryUpload);
+  }
+
+  listMemoryUploads(projectId?: string): MemoryUpload[] {
+    return (projectId ? this.rows("SELECT * FROM memory_outbox WHERE project_id = ? ORDER BY created_at", projectId) : this.rows("SELECT * FROM memory_outbox ORDER BY created_at")).map(toMemoryUpload);
+  }
+
+  settleMemoryUpload(eventId: string, patch: { status: MemoryUpload["status"]; attempts: number; nextAt?: string; lastError?: string | null; remoteId?: string | null }): void {
+    const at = new Date().toISOString();
+    this.run("UPDATE memory_outbox SET status = ?, attempts = ?, next_at = COALESCE(?, next_at), last_error = ?, remote_id = COALESCE(?, remote_id), updated_at = ? WHERE event_id = ?",
+      patch.status, patch.attempts, patch.nextAt ?? null, patch.lastError ?? null, patch.remoteId ?? null, at, eventId);
+  }
+
+  /**
+   * 등록하거나 고친다. id 를 주면 그 작업의 제목·브랜치·워크트리만 고치고 id 는 그대로 둔다.
+   * id 없이 같은 직원이 같은 브랜치(없으면 같은 워크트리)로 이미 등록한 작업이 있으면 새로 만들지 않고 그 작업을 돌려준다.
+   */
+  saveTask(input: TaskInput): { task: Task; created: boolean } {
+    return this.transaction(() => {
+      this.requireProject(input.projectId);
+      const at = nowIso();
+      const clean = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
+      const branch = clean(input.branch);
+      const worktree = clean(input.worktree);
+      const title = input.title?.trim();
+      let existing: Task | null = null;
+      if (input.id) {
+        existing = this.requireTask(input.id);
+        if (existing.projectId !== input.projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.id}`);
+      } else if (branch || worktree) {
+        const r = branch
+          ? this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, branch)
+          : this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND worktree = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, worktree!);
+        existing = r ? toTask(r) : null;
+      }
+      if (existing) {
+        const next = {
+          title: input.id && title ? title : existing.title,
+          branch: branch !== undefined ? branch : existing.branch,
+          worktree: worktree !== undefined ? worktree : existing.worktree,
+        };
+        if (next.title !== existing.title || next.branch !== existing.branch || next.worktree !== existing.worktree) {
+          this.run("UPDATE tasks SET title = ?, branch = ?, worktree = ?, updated_at = ? WHERE id = ?", next.title, next.branch, next.worktree, at, existing.id);
+          const task = this.requireTask(existing.id);
+          this.emit({ type: "task", task });
+          return { task, created: false };
+        }
+        return { task: existing, created: false };
+      }
+      if (!title) throw new ApiError(400, "새 작업에는 제목이 필요합니다");
+      const id = newId("tk_");
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, input.projectId, input.memberId, input.who, title, branch ?? null, worktree ?? null, at, at);
+      const task = this.requireTask(id);
+      this.emit({ type: "task", task });
+      return { task, created: true };
+    });
+  }
+
+  /** 이 직원이 작업을 쓰는가: 작업을 등록했거나 작업이 붙은 대표 글·답·지시를 받은 적이 있다. 그러면 출력마다 작업을 밝혀야 한다. */
+  memberUsesTasks(memberId: string): boolean {
+    return !!this.row("SELECT 1 FROM tasks WHERE member_id = ? LIMIT 1", memberId)
+      || !!this.row("SELECT 1 FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL AND status = 'delivered' LIMIT 1", memberId);
+  }
+
+  /** 전달의 작업(없으면 null). */
+  deliveryTaskId(id: string): string | null {
+    return (this.row("SELECT task_id FROM deliveries WHERE id = ?", id)?.task_id as string | null | undefined) ?? null;
+  }
+
+  /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */
+  private taskRef(projectId: string, taskId: string | null | undefined): string | null {
+    if (!taskId) return null;
+    const task = this.getTask(taskId);
+    if (!task || task.projectId !== projectId) throw new ApiError(400, `이 프로젝트의 작업이 아닙니다: ${taskId}`);
+    return task.id;
+  }
+
+  private refTask(refType: Delivery["refType"], refId: string | null): string | null {
+    if (!refType || !refId) return null;
+    const table = refType === "message" ? "messages" : refType === "decision" ? "decisions" : refType === "todo" ? "todos" : null;
+    if (!table) return null;
+    return (this.row(`SELECT task_id FROM ${table} WHERE id = ?`, refId)?.task_id as string | null | undefined) ?? null;
+  }
+
   // ---- 대화 ----
   getMessage(id: string): Message | null {
     const r = this.row("SELECT * FROM messages WHERE id = ?", id);
@@ -1620,6 +1808,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   private messageScope(projectId: string, scope: MessageScope = { kind: "project" }): MessageScope {
     if (scope.kind === "project") return { kind: "project" };
+    if (scope.kind === "task") {
+      if (!scope.taskId || Buffer.byteLength(scope.taskId) > 256) throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
+      if (this.getTask(scope.taskId)?.projectId !== projectId) throw new ApiError(404, "작업을 찾을 수 없습니다");
+      return { kind: "task", taskId: scope.taskId };
+    }
     if (!scope.memberId || Buffer.byteLength(scope.memberId) > 256) throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
     const lead = this.listMembers(projectId).find((m) => m.kind === "root" || m.kind === "conductor");
     return lead?.id === scope.memberId ? { kind: "project" } : { kind: "member", memberId: scope.memberId };
@@ -1640,12 +1833,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         const bounded = (max: number) => z.string().min(1).refine((value) => Buffer.byteLength(value) <= max);
         const cursor = z.strictObject({
           v: z.literal(1), projectId: bounded(256),
-          scope: z.discriminatedUnion("kind", [z.strictObject({ kind: z.literal("project") }), z.strictObject({ kind: z.literal("member"), memberId: bounded(256) })]),
+          scope: z.discriminatedUnion("kind", [z.strictObject({ kind: z.literal("project") }), z.strictObject({ kind: z.literal("member"), memberId: bounded(256) }), z.strictObject({ kind: z.literal("task"), taskId: bounded(256) })]),
           before: z.strictObject({ at: bounded(128), id: bounded(256) }),
         }).parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
         if (cursor.projectId !== projectId) throw new Error("project");
         if (JSON.stringify(cursor.scope) !== JSON.stringify(scope)) {
-          if (opts.scope?.kind === "member" && (cursor.scope.kind === "project" || (scope.kind === "project" && cursor.scope.memberId === opts.scope.memberId))) {
+          if (opts.scope?.kind === "member" && (cursor.scope.kind === "project" || (scope.kind === "project" && cursor.scope.kind === "member" && cursor.scope.memberId === opts.scope.memberId))) {
             throw new ApiError(409, "대화 대상이 변경되었습니다", "MESSAGE_SCOPE_CHANGED");
           }
           throw new Error("scope");
@@ -1660,6 +1853,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const params = { $project: projectId, $limit: limit + 1, ...(before ? { $at: before.at, $id: before.id } : {}) };
     const rows = scope.kind === "project"
       ? this.db.query<Row, typeof params>(`SELECT * FROM messages WHERE project_id = $project${seek} ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit`).all(params)
+      : scope.kind === "task"
+      ? this.db.query<Row, typeof params & { $task: string }>(`SELECT * FROM messages WHERE project_id = $project AND task_id = $task${seek} ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit`).all({ ...params, $task: scope.taskId })
       : this.db.query<Row, typeof params & { $member: string }>(`WITH authored AS (
           SELECT id, at FROM messages WHERE project_id = $project AND member_id = $member${seek}
           ORDER BY at COLLATE BINARY DESC, id COLLATE BINARY DESC LIMIT $limit
@@ -1726,8 +1921,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = input.id ?? newId("msg_");
       this.run(
-        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.at ?? this.nextMessageAt(),
@@ -1744,6 +1939,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         JSON.stringify(input.attachments ?? []),
         input.delivery ?? null,
         input.deliveryNote ?? null,
+        this.taskRef(input.projectId, input.taskId),
       );
       const message = this.requireMessage(id);
       // 보관 중 늦은 manual 보고도 저장한다. 푸시는 활성 프로젝트의 실제 작성자만 대상이다.
@@ -1786,7 +1982,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("f_");
       const order = this.row("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM files WHERE project_id = ?", input.projectId)!.n as number;
       this.run(
-        "INSERT INTO files (id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, html) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO files (id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, html, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         input.projectId,
         input.title,
@@ -1800,6 +1996,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         order,
         input.kind ?? null,
         input.html ?? null,
+        this.taskRef(input.projectId, input.taskId),
       );
       const file = this.getFile(id)!;
       this.emit({ type: "file", file });
@@ -1872,7 +2069,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.refId ?? null,
         nowIso(),
       );
-      this.run("UPDATE deliveries SET source_revision = ?, next_attempt_at = ? WHERE id = ?", input.sourceRevision ?? null, input.nextAttemptAt ?? null, id);
+      this.run("UPDATE deliveries SET source_revision = ?, next_attempt_at = ?, task_id = ? WHERE id = ?", input.sourceRevision ?? null, input.nextAttemptAt ?? null,
+        input.taskId !== undefined ? this.taskRef(input.projectId, input.taskId) : this.refTask(input.refType ?? null, input.refId ?? null), id);
       this.run("INSERT INTO delivery_recovery (delivery_id, updated_at) VALUES (?, ?)", id, nowIso());
       this.emitMember(input.memberId);
       return this.requireDelivery(id);

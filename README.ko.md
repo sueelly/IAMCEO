@@ -1,5 +1,9 @@
 # IAMCEO
 
+> Codex 브랜치: 기존 웹 화면에서도 v2 동기화, 화면 숨김 시 통신 중지, 커서 기반 대화 복구, 전송 기록 보존과 변경 충돌 확인을 지원합니다. 브라우저에서 사용할 수 있으며 네이티브 설치나 Apple 개발자 등록이 필요하지 않습니다.
+
+> `codex/native-codex` 작업 브랜치: 새 프로젝트와 본사의 기본 AI는 Codex입니다. 새 직원은 총괄의 제공자를 따르며, 명시적으로 고른 Claude와 기존 세션은 유지합니다.
+
 [English](README.md)
 
 **당신은 대표, AI는 직원입니다.** IAMCEO는 Claude Code·Codex 세션 여럿을 하나의 회사처럼 부리는 Mac·iPhone 업무 창구입니다. 대표는 말하고 결정만 합니다. 일을 나누는 것은 총괄, 실제 일은 직원, 전달과 기록은 서버가 맡습니다.
@@ -116,7 +120,7 @@ flowchart LR
         D["IAMCEO 데몬 (Bun)<br/>REST · WebSocket<br/>오케스트레이터 · 전달 대기열"]
         DB[("SQLite<br/>+ 첨부 파일")]
         CORE["herdr-core<br/>터미널 보관(PTY)"]
-        CLI1["Claude Code<br/>총괄"]
+        CLI1["Codex (기본)<br/>총괄"]
         CLI2["Claude Code / Codex<br/>직원들"]
         D <--> DB
         D -- "JSON-RPC (Unix 소켓)" --> CORE

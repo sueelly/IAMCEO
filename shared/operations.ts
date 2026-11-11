@@ -21,6 +21,8 @@ export interface ServerCapabilities {
     archive: boolean;
     delivery: boolean;
     realtime: boolean;
+    /** Browser v2 handshake through a separate HttpOnly /ws session cookie. */
+    browserRealtime?: boolean;
     push: boolean;
     operations: boolean;
   };

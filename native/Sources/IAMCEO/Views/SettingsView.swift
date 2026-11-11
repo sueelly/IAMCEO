@@ -1963,7 +1963,7 @@ struct NewProjectView: View {
     /// Set when the folder came from "GitHub에서 가져오기", so the chosen-folder tile can say where it came from.
     @State private var clonedRepository: String?
     @State private var legacyFolderInput = false
-    @State private var provider = "claude"
+    @State private var provider = "codex"
     @State private var working = false
     @State private var error: String?
     /// The daemon keeps a project whose conductor failed to start; retrying "만들기" would make a second one.

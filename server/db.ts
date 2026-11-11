@@ -628,6 +628,44 @@ export const MIGRATIONS: string[] = [
      ended INTEGER NOT NULL DEFAULT 0
    );
    CREATE INDEX delegation_ack_member ON delegation_ack_turns(member_id, ended);`,
+  // 작업별 대화. 작업 id 는 등록 때 한 번 정해지고 브랜치·워크트리를 고쳐도 그대로다. 옛 글·카드·자료·할 일은 task_id 가 비어
+  // 전체 대화에만 남는다(소급 분류하지 않는다). 직원 출력의 작업은 직원이 밝힌 task_id 나 바뀌지 않는 출처(결재·자료·정정 대상 글,
+  // 자동 보고는 그 턴에 받은 전달의 deliveries.task_id)로만 정한다. 마지막으로 받은 작업으로 추측하지 않는다.
+  `CREATE TABLE tasks (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     member_id TEXT,
+     who TEXT NOT NULL DEFAULT '',
+     title TEXT NOT NULL,
+     branch TEXT,
+     worktree TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX tasks_project ON tasks(project_id, created_at);
+   ALTER TABLE messages ADD COLUMN task_id TEXT;
+   ALTER TABLE decisions ADD COLUMN task_id TEXT;
+   ALTER TABLE files ADD COLUMN task_id TEXT;
+   ALTER TABLE todos ADD COLUMN task_id TEXT;
+   ALTER TABLE deliveries ADD COLUMN task_id TEXT;
+   CREATE INDEX messages_task ON messages(project_id, task_id, at) WHERE task_id IS NOT NULL;`,
+  // 개발 기억(Hindsight 게이트웨이) 업로드 대기열. 원본(결재·작업·전달 상태)은 IAMCEO 에 남고, 여기에는 보낼 기록과 결과만 둔다.
+  // event_id 는 게이트웨이의 같은 사건 재시도 키다. 같은 사건은 한 줄만 생기고, 같은 본문으로만 다시 보낸다.
+  `CREATE TABLE memory_outbox (
+     event_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     ref_type TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     body TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'pending',
+     attempts INTEGER NOT NULL DEFAULT 0,
+     next_at TEXT NOT NULL,
+     last_error TEXT,
+     remote_id TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX memory_outbox_due ON memory_outbox(status, next_at);`,
 ];
 
 export function openDb(path: string): Database {

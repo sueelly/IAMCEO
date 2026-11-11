@@ -204,6 +204,11 @@ const AnswerApprovalSchema = z.strictObject({
 });
 const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
+const TerminalSendSchema = z.strictObject({
+  operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  text: z.string().min(1).max(131072).optional(),
+  key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional(),
+});
 const TerminalControlSchema = z.strictObject({
   action: z.enum(["claim", "release", "input", "key"]),
   leaseId: nonEmpty.max(256).optional(),
@@ -219,6 +224,7 @@ const SendMessageSchema = z.object({
   text: z.string(),
   targetMemberId: z.string().nullable().optional(),
   attachmentIds: z.array(z.string()).max(50).optional(),
+  taskId: z.string().max(256).nullable().optional(),
 });
 const AnswerSchema = z.object({
   expectedVersion: nonEmpty.optional(),
@@ -228,6 +234,7 @@ const AnswerSchema = z.object({
 });
 const TodoDoneSchema = z.object({ done: z.boolean() });
 const SleepSchema = z.object({ force: z.boolean().optional() });
+const StopSchema = z.strictObject({ expectRunId: z.string().trim().min(1).max(100).nullable().optional(), expectGeneration: z.number().int().min(0).nullable().optional() });
 const AdoptSchema = z.object({
   paneId: nonEmpty,
   name: nonEmpty,
@@ -372,14 +379,16 @@ function strictLimit(raw: string | null, fallback: number, max: number): number 
 }
 
 function messagePageQuery(url: URL): MessagePageOptions {
-  strictQuery(url, ["scope", "memberId", "limit", "cursor"], "INVALID_MESSAGE_PAGE_QUERY");
+  strictQuery(url, ["scope", "memberId", "taskId", "limit", "cursor"], "INVALID_MESSAGE_PAGE_QUERY");
   const scope = url.searchParams.get("scope") ?? "project";
   const memberId = url.searchParams.get("memberId");
-  if ((scope !== "project" && scope !== "member") || (scope === "project" && memberId !== null) ||
-      (scope === "member" && (!memberId || Buffer.byteLength(memberId) > 256))) {
+  const taskId = url.searchParams.get("taskId");
+  const id = scope === "member" ? memberId : scope === "task" ? taskId : null;
+  if ((scope !== "project" && scope !== "member" && scope !== "task") || (scope !== "member" && memberId !== null) || (scope !== "task" && taskId !== null) ||
+      (scope !== "project" && (!id || Buffer.byteLength(id) > 256))) {
     throw new ApiError(400, "대화 조회 조건이 잘못되었습니다", "INVALID_MESSAGE_PAGE_QUERY");
   }
-  return { scope: scope === "project" ? { kind: "project" } : { kind: "member", memberId: memberId! },
+  return { scope: scope === "project" ? { kind: "project" } : scope === "member" ? { kind: "member", memberId: memberId! } : { kind: "task", taskId: taskId! },
     limit: strictLimit(url.searchParams.get("limit"), 200, 500), cursor: url.searchParams.get("cursor") ?? undefined };
 }
 
@@ -602,7 +611,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("GET", "/api/capabilities", (_req, url) => {
       strictQuery(url, []);
       const body: ServerCapabilities = { contractVersion: 2, capabilities: {
-        paging: true, archive: true, realtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
+        paging: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
         // 네이티브는 이 값으로 엄격 쓰기를 켠다. 결과 조회와 모든 쓰기 포트가 있어야 한다.
         operations: (["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const)
           .every(port => port in orch && !!orch[port]),
@@ -758,6 +767,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (body.targetMemberId && store.getMember(body.targetMemberId)?.projectId !== id) {
         throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
       }
+      if (body.taskId && store.getTask(body.taskId)?.projectId !== id) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
       await requireReachable(id!, body.targetMemberId ?? null);
       for (const attachmentId of body.attachmentIds ?? []) {
         if (!store.getAttachment(attachmentId)) throw new ApiError(400, `없는 첨부입니다: ${attachmentId}`);
@@ -830,6 +840,13 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (!orch.terminalControl) throw new ApiError(501, "터미널 조작을 지원하지 않습니다");
       return Response.json(await orch.terminalControl(id!, await parseBody(req, TerminalControlSchema)));
     }),
+    // 대표 화면의 '터미널에 보내기'. 총괄의 terminal_input 과 같은 경로(조작권·세대·입력 순번·operationId)다.
+    route("POST", "/api/members/:id/terminal/send", async (req, _url, [id]) => {
+      store.requireMember(id!);
+      if (!orch.terminalSend) throw new ApiError(501, "터미널 보내기를 지원하지 않습니다");
+      const body = await parseBody(req, TerminalSendSchema);
+      return Response.json(await orch.terminalSend(id!, { ...body, by: "rep" }));
+    }),
     route("GET", "/api/members/:id", (_req, _url, [id]) => Response.json(store.requireMember(id!))),
     route("PATCH", "/api/members/:id", async (req, _url, [id]) => {
       store.requireMember(id!);
@@ -884,6 +901,12 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("POST", "/api/members/:id/resume", memberAction((id) => orch.memberResume(id))),
     route("POST", "/api/members/:id/compact", memberAction((id) => orch.memberCompact(id))),
     route("POST", "/api/members/:id/interrupt", memberAction((id) => orch.memberInterrupt(id))),
+    route("POST", "/api/members/:id/stop", async (req, _url, [id]) => {
+      store.requireMember(id!);
+      if (!orch.stopMember) throw new ApiError(501, "멈춤을 지원하지 않습니다");
+      const body = (await req.clone().text()).trim() ? await parseBody(req, StopSchema) : {};
+      return Response.json(await orch.stopMember(id!, { by: "user", expectRunId: body.expectRunId ?? null, expectGeneration: body.expectGeneration ?? null }));
+    }),
     route("POST", "/api/members/:id/close", memberAction(async (id) => {
       if (!orch.memberClose) throw new ApiError(501, "지원하지 않습니다");
       await orch.memberClose(id);
@@ -1027,6 +1050,8 @@ async function handleJoin(req: Request, { config, store }: ServerContext): Promi
     role: body.role ?? "",
     kind: "worker",
     origin: "manual",
+    // The legacy join contract and CLI instructions register Claude sessions.
+    cli: "claude",
     status: "idle",
     cwd: cwd ?? undefined,
     sessionId: body.sessionId ?? null,
@@ -1047,6 +1072,14 @@ const filesCookieName = (url: URL) => `iamceo_files_${url.port || (url.protocol 
 const filesCookieValue = (accessCode: string) => createHmac("sha256", accessCode).update("iamceo-files").digest("hex");
 function filesCookie(url: URL, value: string, maxAge: number): string {
   return `${filesCookieName(url)}=${value}; Path=/files; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${url.protocol === "https:" ? "; Secure" : ""}`;
+}
+const REALTIME_COOKIE_MAX_AGE = 8 * 60 * 60;
+const realtimeCookieName = (url: URL) => `iamceo_realtime_${url.port || (url.protocol === "https:" ? "443" : "80")}`;
+function realtimeCookie(req: Request, url: URL, value: string, maxAge: number): string {
+  // Tailscale Serve terminates TLS before the loopback request. A matching HTTPS
+  // Origin also requires Secure; the common Origin/Host gate ran before this.
+  const secure = url.protocol === "https:" || req.headers.get("origin")?.startsWith("https://");
+  return `${realtimeCookieName(url)}=${value}; Path=/ws; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
 }
 function readCookie(req: Request, name: string): string | null {
   for (const part of (req.headers.get("cookie") ?? "").split(";")) {
@@ -1144,6 +1177,10 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
   const hosts: string[] = [];
   const bindings = new Map<string, HostBinding>();
   let authGeneration = 0;
+  // Separate from file/API credentials and invalidated by both daemon restart
+  // and access-code rotation. Only Bearer-authenticated HTTP can mint a cookie.
+  const realtimeSecret = randomBytes(32);
+  const realtimeCredential = () => createHmac("sha256", realtimeSecret).update(config.accessCode).digest("hex");
   let boundPort = 0;
   const pairing = new Pairing();
   const terminalStreams = new TerminalStreams(config, store, ctx.orch);
@@ -1186,15 +1223,26 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       const version = url.searchParams.get("v");
       if (version !== null && version !== "2") return fail(400, "실시간 연결 버전이 잘못되었습니다");
       if (version === "2" && url.searchParams.has("t")) return fail(400, "실시간 연결 주소에 접속 코드를 넣지 마세요");
-      if (!hasAccessCode(req, url, version === null)) return fail(401, "인증이 필요합니다");
+      const cookie = version === "2" ? readCookie(req, realtimeCookieName(url)) : null;
+      const cookieAuth = !req.headers.has("authorization") && cookie !== null && safeEqual(cookie, realtimeCredential());
+      if (!hasAccessCode(req, url, version === null) && !cookieAuth) return fail(401, "인증이 필요합니다");
       return server.upgrade(req, { data: { kind: "realtime", protocol: version === "2" ? 2 : 1, authGeneration } }) ? undefined : fail(400, "WebSocket 요청이 아닙니다");
     }
     // 코드가 틀려 나가는 기기도 지울 수 있어야 하므로 인증 앞에 둔다. 지우기뿐이고 바깥 사이트는 Origin 검사에 걸린다.
     if (path === "/api/files-session" && req.method === "DELETE") {
       return new Response(null, { status: 204, headers: { "Set-Cookie": filesCookie(url, "", 0) } });
     }
+    if (path === "/api/realtime-session" && req.method === "DELETE") {
+      strictQuery(url, []);
+      return new Response(null, { status: 204, headers: { "Set-Cookie": realtimeCookie(req, url, "", 0) } });
+    }
     if (path.startsWith("/api/")) {
       if (!hasAccessCode(req, url, false)) return fail(401, "인증이 필요합니다");
+      if (path === "/api/realtime-session") {
+        strictQuery(url, []);
+        if (req.method !== "POST") return fail(405, "허용되지 않는 메서드입니다");
+        return new Response(null, { status: 204, headers: { "Set-Cookie": realtimeCookie(req, url, realtimeCredential(), REALTIME_COOKIE_MAX_AGE) } });
+      }
       const terminal = /^\/api\/members\/([^/]+)\/terminal\/stream$/.exec(path);
       if (terminal) {
         if (req.method !== "GET") return fail(405, "허용되지 않는 메서드입니다");

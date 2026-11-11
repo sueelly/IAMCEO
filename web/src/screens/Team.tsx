@@ -1,15 +1,19 @@
 // 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { EFFORTS, memberRank, type Activity, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import { PROVIDERS } from "../lib/runtime";
 import ApprovalPanel from "../components/ApprovalPanel";
 import { enterSends, isComposing } from "../components/Composer";
-import ConnectGate, { isGateRejection, useGate } from "../components/ConnectGate";
+import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
 import { Glass, GlassButton, cx } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
-import { applyLocal, findMember, loadActivity, navigate, newId, refresh, routeHash, sendMessage, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
+import { applyLocal, findMember, getState, loadActivity, navigate, newId, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
+import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, type WriteReview } from "../lib/reviewed-writes";
+import { readWriteContext, useWriteContext } from "../lib/review-context";
+import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
+import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/team.css";
 
 const SCREEN_POLL_MS = 2000;
@@ -95,10 +99,12 @@ function StartPanel({ project, hasMembers }: { project: Project; hasMembers: boo
 }
 
 function CreateMember({ project }: { project: Project }) {
+  const members = useProject()?.members ?? [];
+  const inheritedCli = members.find(member => member.kind === "conductor" || member.kind === "root")?.cli ?? project.chiefCli ?? "claude";
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
-  const [cli, setCli] = useState<CliProvider>("claude");
+  const [cli, setCli] = useState<CliProvider>(inheritedCli);
   const [model, setModel] = useState("");
   const { busy, error, run, setError } = useAction();
   const diagnostics = useRuntime();
@@ -118,7 +124,7 @@ function CreateMember({ project }: { project: Project }) {
   };
   return (
     <div className="tm-adopt-entry">
-      <GlassButton variant="glass" size="m" onClick={() => { setError(null); setOpen(true); }}>직원 추가</GlassButton>
+      <GlassButton variant="glass" size="m" onClick={() => { setError(null); setCli(inheritedCli); setOpen(true); }}>직원 추가</GlassButton>
       <Overlay open={open} onClose={() => { if (!busy) setOpen(false); }} title="직원 추가">
         <form className="form" onSubmit={submit}>
           <label className="field"><span className="field__label">이름</span><input className="input" value={name} disabled={!!busy} onChange={(e) => setName(e.target.value)} placeholder="개발 담당" data-autofocus="" /></label>
@@ -430,6 +436,51 @@ function ScreenPane({ memberId }: { memberId: string }) {
   );
 }
 
+type TerminalKeyName = "enter" | "up" | "down" | "esc" | "tab" | "ctrl+c" | "backspace";
+const TERMINAL_KEYS: { key: TerminalKeyName; label: string }[] = [
+  { key: "enter", label: "Enter" }, { key: "up", label: "↑" }, { key: "down", label: "↓" }, { key: "tab", label: "Tab" },
+  { key: "esc", label: "Esc" }, { key: "ctrl+c", label: "Ctrl+C" }, { key: "backspace", label: "⌫" },
+];
+
+/**
+ * 웹에서 직원 터미널에 글·키를 넣는다. 서버가 조작권·세션 세대·입력 순번을 확인하는 경로(총괄의 terminal_input 과 같다)만 쓴다.
+ * 응답을 잃으면 같은 입력은 같은 operationId 로 다시 확인해 두 번 들어가지 않게 한다.
+ */
+function TerminalInput({ member }: { member: Member }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const pending = useRef<{ op: string; payload: string } | null>(null);
+  const working = member.status === "working";
+  const send = async (payload: { text?: string; key?: TerminalKeyName }) => {
+    const key = JSON.stringify(payload);
+    const op = pending.current?.payload === key ? pending.current.op : `web-${newId()}`;
+    pending.current = { op, payload: key };
+    setBusy(true);
+    try {
+      const r = await api.terminalSend(member.id, { operationId: op, ...payload });
+      pending.current = null;
+      if (r.status === "applied") { setNote("넣었습니다. 위 화면에서 결과를 확인하세요"); if (payload.text) setText(""); }
+      else if (r.status === "unknown") setNote("들어갔는지 확실하지 않습니다. 화면을 먼저 확인하세요");
+      else setNote(`넣지 못했습니다: ${r.error ?? "거절"}`);
+    } catch (e) {
+      setNote(`보내지 못했습니다: ${errorText(e)}. 같은 버튼을 다시 누르면 같은 입력인지 서버가 확인합니다`);
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="tm-term-input">
+      <form className="tm-term-input__row" onSubmit={(e) => { e.preventDefault(); if (text.trim() && !working) void send({ text }); }}>
+        <input className="input t-code" aria-label="터미널에 넣을 글" value={text} disabled={busy || working} onChange={(e) => setText(e.target.value)} placeholder={working ? "일하는 중에는 글을 보내지 않습니다(키만)" : "보내면 바로 제출됩니다(직원에게 메시지로 감)"} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        <GlassButton variant="primary" size="m" type="submit" disabled={busy || working || !text.trim()}>{busy ? "보내는 중" : "보내기"}</GlassButton>
+      </form>
+      <div className="tm-term-input__keys" role="group" aria-label="터미널 키">
+        {TERMINAL_KEYS.map((k) => <GlassButton key={k.key} variant="glass" size="s" disabled={busy} onClick={() => void send({ key: k.key })}>{k.label}</GlassButton>)}
+      </div>
+      {note ? <p className="tm-note tm-note--left" role="status">{note}</p> : null}
+    </div>
+  );
+}
+
 /** 명령 한 줄과 복사 버튼. */
 function CopyBox({ command, label, onCopied }: { command: string; label: string; onCopied?: () => void }) {
   const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
@@ -475,13 +526,30 @@ const ANTIGRAVITY_MODELS = ["gemini-4-argon-medium", "gemini-4-argon-high", "gem
 /** 제공자 전환은 서버가 이전 세션을 닫고 새 세션에 인계한다. */
 function MemberConfig({ m }: { m: Member }) {
   const rank = useBootstrap()?.settings.ranks[memberRank(m.kind)];
+  const context = useWriteContext();
   const diagnostics = useRuntime();
-  const { busy, error, run } = useAction();
-  const [model, setModel] = useState(m.modelOverride ?? "");
-  useEffect(() => setModel(m.modelOverride ?? ""), [m.modelOverride]);
-  const save = (patch: PatchMemberReq) => run("config", async () => {
-    applyLocal({ type: "member", member: await api.patchMember(m.id, patch) });
-    await refresh();
+  const { busy, error, run, setError } = useAction();
+  const [modelDraft, setModelDraft] = useState<{ value: string; review: WriteReview } | null>(null);
+  const [conflict, setConflict] = useState<{ patch: PatchMemberReq; review: WriteReview; serverMember: Member; ready?: boolean } | null>(null);
+  const model = modelDraft?.value ?? m.modelOverride ?? "";
+  const capture = () => captureWriteReview(context, { kind: "member", projectId: m.projectId, id: m.id });
+  const save = (patch: PatchMemberReq, reviewed = capture()) => run("config", async () => {
+    try {
+      const member = await executeReviewedWrite(reviewed, readWriteContext(),
+        revision => api.patchMemberV2(m.id, patch, Number(revision)).then(result => result.member),
+        () => api.patchMember(m.id, patch));
+      if (!reviewStillCurrent(reviewed, readWriteContext())) return;
+      applyLocal({ type: "member", member });
+      if (patch.modelOverride !== undefined) setModelDraft(null);
+      setConflict(null);
+      await refresh();
+    } catch (e) {
+      if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) {
+        setConflict({ patch, review: reviewed, serverMember: getState().project?.members.find(member => member.id === m.id) ?? m });
+        void refresh();
+      }
+      throw e;
+    }
   });
   const changing = m.status === "working" || m.status === "blocked" || m.queuedCount > 0;
   const legacy = !!m.backend && m.backend !== "core";
@@ -494,22 +562,128 @@ function MemberConfig({ m }: { m: Member }) {
       <p className="tm-label">AI CLI · 모델 · effort</p>
       <label className="field">
         <span className="field__label">AI CLI</span>
-        <select className="input tm-select" aria-label="직원 AI CLI" disabled={busy !== null || !!changing || legacy || !!blocked} value={m.cli ?? "claude"} onChange={(e) => void save({ cli: e.target.value as CliProvider })}>
+        <select className="input tm-select" aria-label="직원 AI CLI" disabled={busy !== null || !!conflict || !!changing || legacy || !!blocked} value={m.cli ?? "claude"} onChange={(e) => void save({ cli: e.target.value as CliProvider })}>
           {PROVIDERS.map((cli) => <option key={cli} value={cli} disabled={!!runtimeBlock(diagnostics.runtime, cli)}>{providerName(cli)}{diagnostics.runtime && !diagnostics.runtime.providers[cli]?.installed ? " · 설치 필요" : ""}</option>)}
         </select>
       </label>
       <p className="tm-note tm-note--left">{legacy ? "이전 실행기의 세션은 여기서 CLI를 전환할 수 없습니다." : changing ? "일이나 전달 대기가 끝나면 CLI를 바꿀 수 있습니다." : blocked ?? "CLI를 바꾸면 이전 세션을 닫고 현재 일과 상황을 새 세션에 인계합니다."}</p>
       <div className="tm-config__row">
-        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => setModel(e.target.value)} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : m.cli === "antigravity" ? ANTIGRAVITY_MODELS : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
-        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || legacy || agy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
+        <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => {
+          const value = e.target.value;
+          setModelDraft(current => ({ value, review: current?.review ?? capture() }));
+        }} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : m.cli === "antigravity" ? ANTIGRAVITY_MODELS : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
+        <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || !!conflict || legacy || agy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
           <option value="">{agy ? "모델 이름에 포함" : base(rank?.effort)}</option>
           {EFFORTS.map((x) => <option key={x} value={x} disabled={m.cli === "codex" && x === "max"}>{x}{m.cli === "codex" && x === "max" ? " · Codex 미지원" : ""}</option>)}
         </select></label>
       </div>
-      <GlassButton variant="glass" size="m" disabled={busy !== null || legacy || (model.trim() || null) === m.modelOverride} onClick={() => void save({ modelOverride: model.trim() || null })}>{busy ? "저장하는 중" : "모델 저장"}</GlassButton>
+      <GlassButton variant="glass" size="m" disabled={busy !== null || !!conflict || legacy || (model.trim() || null) === m.modelOverride} onClick={() => void save({ modelOverride: model.trim() || null }, modelDraft?.review ?? capture())}>{busy ? "저장하는 중" : "모델 저장"}</GlassButton>
+      {conflict ? <div role="status">
+        <p className="tm-note tm-note--left">입력한 값은 남겨 두었습니다. 현재 설정: {providerName(m.cli ?? "claude")} · 모델 {m.modelOverride ?? "직급 기본값"} · effort {m.effortOverride ?? "직급 기본값"}</p>
+        <p className="tm-note tm-note--left">저장하려던 값: {conflict.patch.cli ? `CLI ${providerName(conflict.patch.cli)}` : conflict.patch.effortOverride !== undefined ? `effort ${conflict.patch.effortOverride ?? "직급 기본값"}` : `모델 ${model.trim() || "직급 기본값"}`}</p>
+        {conflict.ready ? (
+          <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void save(conflict.patch.modelOverride !== undefined ? { modelOverride: model.trim() || null } : conflict.patch, conflict.review)}>검토한 변경 저장</GlassButton>
+        ) : (
+          <GlassButton variant="glass" size="m" disabled={busy !== null || m === conflict.serverMember || capture().mode === "unavailable"} onClick={() => {
+            const nextReview = capture();
+            setModelDraft(current => current ? { ...current, review: nextReview } : current);
+            setConflict({ ...conflict, review: nextReview, ready: true });
+            setError(null);
+          }}>현재 값 확인했습니다</GlassButton>
+        )}
+      </div> : null}
+      {modelDraft ? <GlassButton variant="ghost" size="m" disabled={busy !== null} onClick={() => { setModelDraft(null); setConflict(null); setError(null); }}>모델 입력 되돌리기</GlassButton> : null}
       <p className="tm-note tm-note--left">모델·effort 변경은 세션을 잠재운 뒤 다시 열 때 적용됩니다. 빈 모델은 직급 기본값을 씁니다.</p>
       <ErrorLine>{error}</ErrorLine>
     </div>
+  );
+}
+
+// ---- 전달 알림 ----
+
+const NOTICE_POLL_MS = 10_000;
+const NOTICE_PHASE: Record<DeliveryNoticeItem["phase"], string> = { none: "전달 대기", checking: "전달 확인 중", waiting: "확인 기다리는 중", retry_wait: "다시 보낼 차례 기다리는 중", needs_owner: "대표 확인 필요" };
+const NOTICE_KIND: Record<DeliveryNoticeItem["kind"], string> = { user_message: "대표 메시지", answer: "결재 답변", todo_done: "할 일 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" };
+
+/** 이 직원에게 아직 닿지 않은 전달과 '다시 확인'. 앱의 전달 알림 패널과 같은 서버 API·검사를 쓴다.
+ * 웹은 '다시 확인'만 내놓는다(중복 위험 재전송·중지는 앱/서버 정책 그대로 두고 여기서는 열지 않는다). */
+function DeliveryNotices({ m }: { m: Member }) {
+  const [page, setPage] = useState<DeliveryNoticePage | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // 응답을 못 받은 요청은 같은 operationId 로 다시 보낸다(서버 멱등). 결과를 받으면 지운다.
+  const ops = useRef(new Map<string, { op: string; version: number }>());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [actError, setActError] = useState<string | null>(null);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setPage(await api.deliveryNotices(m.id, signal));
+      setLoadError(null);
+    } catch (e) {
+      if (!signal?.aborted) setLoadError(errorText(e));
+    }
+  }, [m.id]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    void load(ac.signal);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") void load(ac.signal); }, NOTICE_POLL_MS);
+    return () => { ac.abort(); clearInterval(timer); };
+  }, [load]);
+
+  const recheck = async (item: DeliveryNoticeItem) => {
+    const id = item.deliveryId;
+    if (!id || busy) return;
+    const prev = ops.current.get(id);
+    const tracked = prev && prev.version === item.version ? prev : { op: newId(), version: item.version };
+    ops.current.set(id, tracked);
+    setBusy(id); setActError(null); setDone(null);
+    try {
+      await api.recoverDelivery(id, { operationId: tracked.op, expectedVersion: tracked.version, action: "recheck" });
+      ops.current.delete(id);
+      setDone(`${NOTICE_KIND[item.kind]}(${id})을 다시 확인하도록 요청했습니다. 조건이 맞으면 같은 내용 그대로 다시 보냅니다.`);
+    } catch (e) {
+      // 서버가 답한 거절(상태가 바뀜 등)은 결과가 확정됐으니 새로 읽고 새 요청으로 다시 누를 수 있게 한다. 연결 오류는 같은 id 로 다시 보낸다.
+      if (e instanceof ApiError && e.status !== 0) ops.current.delete(id);
+      setActError(errorText(e));
+    } finally {
+      setBusy(null);
+      void load();
+    }
+  };
+
+  const items = page?.items ?? [];
+  if (!items.length && !loadError) return null;
+  return (
+    <section className="tm-delivery" aria-label="전달 알림">
+      <p className="tm-label">전달 알림 {items.length ? <span className="tm-delivery__count">{items.length}건</span> : null}</p>
+      {loadError ? <p className="tm-error" role="alert">전달 알림을 읽지 못했습니다: {loadError}</p> : null}
+      <ul className="tm-delivery__list">
+        {items.map((item) => (
+          <li key={item.id} className="tm-delivery__item" data-phase={item.phase} data-delivery-id={item.deliveryId ?? undefined}>
+            <div className="tm-delivery__head">
+              <Badge>{NOTICE_PHASE[item.phase]}</Badge>
+              <span className="tm-delivery__kind">{NOTICE_KIND[item.kind]}</span>
+              <Time iso={item.createdAt} className="tm-delivery__time" />
+            </div>
+            {/* 메시지·결재가 없는 지시는 서버가 종류 이름만 준다. 같은 말을 두 번 보이지 않는다. */}
+            {item.preview && item.preview !== NOTICE_KIND[item.kind] ? <blockquote className="tm-delivery__preview">{item.preview}</blockquote> : null}
+            <p className="tm-note tm-note--left">{item.note}</p>
+            {item.deliveryId ? <p className="tm-delivery__id">전달 ID <code>{item.deliveryId}</code></p> : null}
+            {item.deliveryId && item.version > 0 && item.allowedActions.includes("recheck") ? (
+              <div className="tm-actions">
+                <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void recheck(item)}>
+                  {busy === item.deliveryId ? "요청하는 중" : "다시 확인"}
+                </GlassButton>
+              </div>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {done ? <p className="tm-note tm-note--left" role="status">{done}</p> : null}
+      <ErrorLine>{actError}</ErrorLine>
+    </section>
   );
 }
 
@@ -524,6 +698,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
   // 대기열·열린 결재로 거부되면 대표만 무릅쓸 수 있다.
   const [sleepRefused, setSleepRefused] = useState<string | null>(null);
   const manual = m.origin === "manual";
+  const tasks = useProject()?.tasks ?? [];
   const asleep = m.status === "asleep" || m.status === "offline";
   const legacy = !!m.backend && m.backend !== "core";
 
@@ -583,8 +758,21 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
             )
           ) : (
             <>
-              {m.status === "working" || m.status === "blocked" ? (
-                <GlassButton variant="glass" size="m" disabled={busy !== null || legacy} onClick={() => memberAct("interrupt", api.interrupt, "멈추라고 보냈습니다. 지금 턴이 끊기면 쉼으로 바뀝니다.")}>
+              {canStop(m) ? (
+                <GlassButton
+                  variant="glass"
+                  size="m"
+                  disabled={busy !== null || legacy}
+                  title={`멈출 것: ${runLabel(m, tasks)}`}
+                  onClick={() =>
+                    run("interrupt", async () => {
+                      setNotice(null);
+                      const r = await api.stop(m.id, stopExpectation(m));
+                      applyLocal({ type: "member", member: r.member });
+                      setNotice(stopNotice(r, tasks, false));
+                    })
+                  }
+                >
                   {busy === "interrupt" ? "멈추는 중" : "중단"}
                 </GlassButton>
               ) : null}
@@ -651,6 +839,8 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
         </p>
       ) : null}
 
+      <DeliveryNotices m={m} />
+
       {manual ? null : <MemberConfig m={m} />}
       {(m.sessionId || (m.backend === "core" && m.paneId)) && m.status !== "blocked" ? <CopyCommand m={m} /> : null}
 
@@ -667,127 +857,50 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
         ) : (
           <p className="tm-label">활동</p>
         )}
-        {shownPane === "screen" ? <ScreenPane memberId={m.id} /> : <ActivityList memberId={m.id} />}
+        {shownPane === "screen" ? <><ScreenPane memberId={m.id} />{m.backend === "core" ? <TerminalInput member={m} /> : null}</> : <ActivityList memberId={m.id} />}
       </div>
     </div>
   );
 }
 
-const directKey = (memberId: string) => `iamceo.draft.direct.${memberId}`;
-
-/** 창을 닫아도(바깥 누름·Esc) 쓰던 지시가 남는다. '이 기기에서 나가기'가 함께 지운다. */
-function loadDirect(memberId: string): { text: string; retry: { id: string; text: string } | null } {
-  try {
-    const raw = localStorage.getItem(directKey(memberId));
-    if (raw) return { text: "", retry: null, ...(JSON.parse(raw) as object) };
-  } catch {
-    // 깨진 값이면 빈 칸으로 시작한다.
-  }
-  return { text: "", retry: null };
-}
-
-function saveDirect(memberId: string, text: string, retry: { id: string; text: string } | null): void {
-  try {
-    if (!text && !retry) localStorage.removeItem(directKey(memberId));
-    else localStorage.setItem(directKey(memberId), JSON.stringify({ text, retry }));
-  } catch {
-    // 저장 공간이 없어도 입력은 계속된다.
-  }
-}
-
+/** Direct inputs share durable submission handling with the bottom composer, with
+ * independent per-member drafts and the real project ID retained in every request. */
 function DirectInput({ m }: { m: Member }) {
   const gate = useGate();
-  const [saved] = useState(() => loadDirect(m.id));
-  const [text, setTextState] = useState(saved.text);
-  // 실패한 글과 내용이 같으면 같은 id 로 다시 보낸다. 응답만 잃었을 때 지시가 둘이 되지 않는다.
-  const [retry, setRetryState] = useState(saved.retry);
-  const [sentId, setSentId] = useState<string | null>(saved.retry?.id ?? null);
-  const [busy, setBusy] = useState(false);
-  // 연결 때문에 서버가 받지 않았다. 없는 글이 실패 줄로 남지 않게 줄을 걷고 이유만 칸 위에 보인다.
-  const [rejected, setRejected] = useState<string | null>(null);
-  const sent = useProject()?.messages.find((x) => x.id === sentId) ?? null;
+  const manager = memberSubmissions(m);
+  const { draft, attempts } = useSubmissionDraft(m.projectId, manager);
+  const [sentId, setSentId] = useState<string | null>(null);
+  const sent = useProject()?.messages.find((message) => message.id === sentId) ?? null;
   const asleep = m.status === "asleep" || m.status === "offline";
-  const latest = useRef({ text, retry });
-  const update = (nextText: string, nextRetry: { id: string; text: string } | null) => {
-    latest.current = { text: nextText, retry: nextRetry };
-    setTextState(nextText);
-    setRetryState(nextRetry);
-    saveDirect(m.id, nextText, nextRetry);
+  const submit = () => {
+    const text = draft.text.trim();
+    if (!text) return;
+    // A conductor uses the project path; workers retain their exact member ID.
+    const result = manager.submit(m.projectId, draft, { text, targetMemberId: m.kind === "worker" ? m.id : null, attachmentIds: [] }, { targetName: m.name });
+    const staged = manager.snapshot(m.projectId).attempts.at(-1);
+    if (staged && !manager.snapshot(m.projectId).draft.error) setSentId(staged.id);
+    void result;
   };
-
-  // 응답만 잃었고 서버는 받았다(재동기화로 알았다). 칸에 남은 글을 또 보내면 지시가 둘이 된다.
-  const delivery = sent?.delivery;
-  useEffect(() => {
-    if (!retry || sent?.id !== retry.id || !delivery || delivery === "failed") return;
-    update(latest.current.text === retry.text ? "" : latest.current.text, null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retry, sent?.id, delivery]);
-
-  const submit = async () => {
-    const body = text.trim();
-    if (!body || busy) return;
-    setBusy(true);
-    const id = retry?.text === body ? retry.id : newId();
-    setSentId(id);
-    setRejected(null);
-    update("", null);
-    // 총괄은 대상을 비워야 '대표 말' 경로로 간다. @총괄 로 보내면 같은 사실을 자기에게 또 알린다
-    const worker = m.kind === "worker";
-    let gateRefused = false;
-    const result = await sendMessage(
-      { id, text: body, targetMemberId: worker ? m.id : null },
-      {
-        targetName: worker ? m.name : null,
-        onRejected: (e) => {
-          if (!isGateRejection(e)) return false;
-          gateRefused = true;
-          setRejected(e.message);
-          return true;
-        },
-      },
-    );
-    // 저장되지 않았으니 같은 id 를 이어 쓸 이유가 없다.
-    if (gateRefused) update(latest.current.text || body, null);
-    else if (!result) update(latest.current.text || body, latest.current.text ? null : { id, text: body });
-    setBusy(false);
-  };
-
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // 한글 조합 중 Enter 는 글자를 확정할 뿐이다. 터치 기기는 입력칸과 같게 Enter 가 줄바꿈이다.
-    if (!isComposing(e) && enterSends(e)) {
-      e.preventDefault();
-      void submit();
-    }
+    if (!isComposing(e) && enterSends(e)) { e.preventDefault(); submit(); }
   };
-
   const placeholder = asleep ? `${m.name}에게 직접 지시 (보내면 깨워서 전달합니다)` : `${m.name}에게 직접 지시`;
-
-  // 연결되기 전에는 칸을 열어 두지 않는다. 쓰던 글은 기기에 남아 있다.
   if (!gate.ok) return <ConnectGate className="tm-send" />;
-
   return (
-    <form
-      className="tm tm-send"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      {rejected ? (
-        <p className="tm-send__state" data-state="failed" role="alert">
-          {rejected}
-        </p>
-      ) : sent?.delivery ? (
-        <p className="tm-send__state" data-state={sent.delivery} role="status">
-          보낸 지시: {DELIVERY_LABEL[sent.delivery]}
-          {sent.deliveryNote ? ` (${sent.deliveryNote})` : ""}
-        </p>
-      ) : null}
+    <form className="tm tm-send" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+      {draft.error ? <p className="tm-send__state" data-state="failed" role="alert">{draft.error}</p> : null}
+      {attempts.map((attempt) => (
+        <div key={attempt.id} className="tm-send__state" data-state={attempt.status === "checking" ? "queued" : "failed"} role="status">
+          <span>{attempt.payload.text.slice(0, 60)}{attempt.payload.text.length > 60 ? "…" : ""}</span>
+          <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
+          <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void manager.reconcile(m.projectId)}>다시 확인</GlassButton>
+          <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void manager.retry(m.projectId, attempt.id)}>같은 내용 재시도</GlassButton>
+        </div>
+      ))}
+      {!attempts.length && sent?.delivery ? <p className="tm-send__state" data-state={sent.delivery} role="status">보낸 지시: {DELIVERY_LABEL[sent.delivery]}{sent.deliveryNote ? ` (${sent.deliveryNote})` : ""}</p> : null}
       <div className="tm-send__row">
-        <textarea className="input tm-send__input" rows={1} value={text} placeholder={placeholder} aria-label={placeholder} onChange={(e) => update(e.target.value, latest.current.retry)} onKeyDown={onKey} />
-        <GlassButton variant="primary" size="m" type="submit" disabled={!text.trim() || busy}>
-          보내기
-        </GlassButton>
+        <textarea className="input tm-send__input" rows={1} value={draft.text} placeholder={placeholder} aria-label={placeholder} onChange={(e) => manager.patchDraft(m.projectId, (d) => ({ ...d, text: e.target.value, error: null }))} onKeyDown={onKey} />
+        <GlassButton variant="primary" size="m" type="submit" disabled={!draft.text.trim()}>보내기</GlassButton>
       </div>
     </form>
   );

@@ -185,3 +185,20 @@ textarea.input.tm-send__input { resize:none; }
 }
 
 .tm-adopt-entry { display:flex; justify-content:flex-end; }
+
+/* 전달 알림: 직원에게 아직 닿지 않은 전달과 '다시 확인' */
+.tm-delivery { display:flex; flex-direction:column; gap:8px; }
+.tm-delivery__count { font-weight:500; color:var(--ink-3, var(--ink-2)); }
+.tm-delivery__list { display:flex; flex-direction:column; gap:10px; margin:0; padding:0; list-style:none; }
+.tm-delivery__item { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:12px; border:1px solid var(--line, rgb(0 0 0 / .1)); background:rgb(255 255 255 / .6); }
+.tm-delivery__item[data-phase="needs_owner"] { border-color:rgb(var(--danger-rgb) / .35); }
+.tm-delivery__head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-2); }
+.tm-delivery__time { margin-left:auto; }
+.tm-delivery__preview { margin:0; padding:8px 10px; border-radius:10px; background:rgb(0 0 0 / .04); font-size:13.5px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:7.5em; overflow:hidden; }
+.tm-delivery__id { font-size:12px; color:var(--ink-2); overflow-wrap:anywhere; }
+
+/* 웹 터미널 입력: 화면 아래 한 줄 입력과 키 버튼 */
+.tm-term-input { display: grid; gap: 8px; margin-top: 8px; }
+.tm-term-input__row { display: flex; gap: 8px; min-width: 0; }
+.tm-term-input__row .input { flex: 1; min-width: 0; }
+.tm-term-input__keys { display: flex; flex-wrap: wrap; gap: 6px; }

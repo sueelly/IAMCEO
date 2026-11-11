@@ -566,7 +566,7 @@ describe("새 읽기 계약", () => {
       }
     }
     const capabilities = await json(api("/api/capabilities"));
-    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, archive: true, realtime: true, delivery: false, push: false, operations: false } });
+    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
   });
 
   test("예외 로그에 비밀 query·헤더·오류 본문이 남지 않는다", async () => {
@@ -882,7 +882,7 @@ describe("/agent", () => {
     expect((await join_({ project: projectId })).status).toBe(400);
 
     const created = await json<{ member: Member; token: string; project: Project }>(join_({ project: projectId, name: "직접 세션", handle: "manual1", role: "조사", sessionId: SESSION_1 }));
-    expect(created.member).toMatchObject({ origin: "manual", kind: "worker", handle: "manual1", sessionId: SESSION_1, status: "idle", role: "조사" });
+    expect(created.member).toMatchObject({ origin: "manual", kind: "worker", cli: "claude", handle: "manual1", sessionId: SESSION_1, status: "idle", role: "조사" });
     expect(created.project.id).toBe(projectId);
     expect(store.getMemberByToken(created.token)!.id).toBe(created.member.id);
 

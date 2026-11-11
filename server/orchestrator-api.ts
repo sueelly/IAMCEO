@@ -21,6 +21,8 @@ import type {
   SendMessageReq,
   Settings,
   SettingsPatch,
+  StopReq,
+  StopResult,
   TidyResult,
   Todo,
   DeliveryRecoveryRequest,
@@ -39,7 +41,7 @@ import type {
   RevisionPrecondition,
   SettingsWriteRequest,
   SettingsWriteResult,
-  TerminalControlRequestV2,
+  TerminalControlRequestV2, TerminalKey,
   TodoDoneRequest,
   TodoWriteResult,
 } from "../shared/operations.ts";
@@ -98,6 +100,8 @@ export interface OrchestratorApi {
   freshMemberSessionV2?(memberId: string, request: FreshSessionRequest): Promise<OperationReceipt<"fresh_session">>;
   /** claim ID와 입력 순번은 영속 lease에 결합한다. unknown 입력은 조회만 한다. */
   terminalControlV2?(memberId: string, request: TerminalControlRequestV2): Promise<OperationReceipt<"terminal_control">>;
+  /** 조작권 얻기→글 보내기(바로 제출)→키→놓기를 한 번에. 대표 화면과 총괄 도구가 같은 경로를 쓴다. */
+  terminalSend?(memberId: string, req: { operationId: string; text?: string; key?: TerminalKey; by: string }): Promise<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }>;
   /** 내부 요청/토큰 없이 허용된 결과만 반환하며 소속은 매번 검사한다. */
   operation?(operationId: string): Promise<OperationReceipt>;
   recoverDelivery?(deliveryId: string, request: DeliveryRecoveryRequest): Promise<DeliveryRecoveryResult>;
@@ -121,6 +125,8 @@ export interface OrchestratorApi {
   memberResume(memberId: string): Promise<Member | void>;
   memberCompact(memberId: string): Promise<Member | void>;
   memberInterrupt(memberId: string): Promise<Member | void>;
+  /** 지금 CLI 턴을 멈춘다(대표 화면). 화면에서 본 실행 id·세대와 다르면 멈추지 않는다. */
+  stopMember?(memberId: string, opts: { by: string } & StopReq): Promise<StopResult>;
   /** 직접 띄운 세션을 명부에서 뺀다. */
   memberClose?(memberId: string): Promise<void>;
   /** 직접 띄운 CLI 의 도구 호출로 상태를 고친다. */

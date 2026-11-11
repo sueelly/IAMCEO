@@ -1,5 +1,9 @@
 # IAMCEO
 
+> Codex branch: the existing web UI also supports v2 synchronization, hidden-tab suspension, cursor history recovery, durable message attempts and reviewed writes. Browser use requires no native installation or Apple developer membership.
+
+> On `codex/native-codex`, new projects and headquarters default to Codex. New workers inherit their chief’s provider; explicit Claude choices and existing sessions are preserved.
+
 [한국어](README.ko.md)
 
 **You are the CEO; the AI sessions are your staff.** IAMCEO is a Mac and iPhone desk for running several Claude Code and Codex sessions as one company. The CEO only talks and decides. A lead splits the work, staff do it, and the server owns delivery and records.

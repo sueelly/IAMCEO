@@ -5,9 +5,11 @@ import type { Decision, FileDoc, Member, MemberStatus, Message, MessageKind, Pro
 import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Markdown, StatusDot, Time, useMediaQuery } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
-import { errorText, api } from "../lib/api";
-import { applyLocal, routeHash, useProject } from "../lib/store";
+import { ApiError, errorText, api } from "../lib/api";
+import { applyLocal, getState, refresh, routeHash, useProject } from "../lib/store";
 import { kindTone } from "../lib/tone";
+import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, rollbackTodo } from "../lib/reviewed-writes";
+import { readWriteContext, useWriteContext } from "../lib/review-context";
 import "../styles/home.css";
 
 const TOP_DECISIONS = 3;
@@ -100,19 +102,27 @@ function TodoRow({ todo, onToggled, onError }: { todo: Todo; onToggled: (todo: T
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const foldId = useId();
+  const review = captureWriteReview(useWriteContext(), { kind: "todo", projectId: todo.projectId, id: todo.id });
   const toggle = async () => {
     if (busy || Date.now() - shiftedAt < AFTER_SHIFT_MS) return;
     const next = !todo.done;
+    const optimistic = { ...todo, done: next };
     setBusy(true);
     onError(null);
     onToggled(todo, next);
-    applyLocal({ type: "todo", todo: { ...todo, done: next } });
+    applyLocal({ type: "todo", todo: optimistic });
     try {
-      applyLocal({ type: "todo", todo: await api.todoDone(todo.id, next) });
+      const saved = await executeReviewedWrite(review, readWriteContext(),
+        revision => api.todoDoneV2(todo.id, next, Number(revision)).then(result => result.todo),
+        () => api.todoDone(todo.id, next));
+      if (reviewStillCurrent(review, readWriteContext()) && getState().project?.todos.find(t => t.id === todo.id) === optimistic) applyLocal({ type: "todo", todo: saved });
+      void refresh();
     } catch (e) {
-      applyLocal({ type: "todo", todo });
-      onToggled(todo, todo.done);
+      if (!reviewStillCurrent(review, readWriteContext())) return;
+      const rollback = rollbackTodo(getState().project?.todos.find(t => t.id === todo.id), optimistic, todo);
+      if (rollback) { applyLocal({ type: "todo", todo: rollback }); onToggled(todo, todo.done); }
       onError(errorText(e));
+      if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) void refresh();
     } finally {
       setBusy(false);
     }

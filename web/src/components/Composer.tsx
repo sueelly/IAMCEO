@@ -1,110 +1,38 @@
 // 모든 화면 아래 입력칸. Enter 전송 · Shift+Enter 줄바꿈(터치 기기는 소프트 키보드에 Shift 가 없어 Enter 가 줄바꿈, 보내기 버튼으로 전송) · 첨부(버튼·붙여넣기·드래그) · @직원 지정.
 // 글·대상·첨부는 프로젝트별로 틀 밖과 localStorage 에 둔다: 프로젝트를 오가거나 틀이 다시 그려져도, 새로고침·앱 재시작 뒤에도 쓰던 글이 남아야 한다.
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
-import type { Attachment, MemberStatus } from "@shared/types";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
+import type { Member, MemberStatus, StopReq, Task } from "@shared/types";
 import { GlassButton, Glass } from "../glass";
-import { api, errorText, fileUrl } from "../lib/api";
+import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
-import { getState, newId, onLogout, refresh, routeHash, sendMessage, useProject, useRoute } from "../lib/store";
+import { getState, newId, refresh, routeHash, useProject, useRoute } from "../lib/store";
+import type { Draft } from "../lib/submissions";
+import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
+import { taskTarget, visibleTasks } from "../lib/tasks";
+import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const NOTICE_MS = 4000;
+const STOP_NOTICE_MS = 15000;
 
-interface Upload {
-  key: string;
-  name: string;
-  attachment: Attachment | null; // null 이면 아직 올리는 중이거나 실패
-  failed: boolean;
-}
-
-interface Draft {
-  text: string;
-  targetId: string | null;
-  uploads: Upload[];
-  /** 실패한 전송과 내용이 같으면 같은 id 로 다시 보낸다: 응답만 잃었을 때 두 번 전달되지 않고, 대화의 실패 글도 그 자리에서 바뀐다 */
-  retry: { id: string; signature: string; text: string } | null;
-  error: string | null;
-}
-
-const EMPTY: Draft = { text: "", targetId: null, uploads: [], retry: null, error: null };
-
-let drafts: Record<string, Draft> = {};
-const draftListeners = new Set<() => void>();
-const draftKey = (projectId: string) => `iamceo.draft.${projectId}`;
-
-function loadDraft(projectId: string): Draft {
-  const known = drafts[projectId];
-  if (known) return known;
-  let draft = EMPTY;
-  try {
-    const raw = localStorage.getItem(draftKey(projectId));
-    if (raw) {
-      const saved = JSON.parse(raw) as Partial<Draft>;
-      // 올리는 중이던 첨부는 이어 올릴 수 없다. 끝난 것만 되살린다.
-      draft = { ...EMPTY, ...saved, uploads: (saved.uploads ?? []).filter((u) => u.attachment) };
-    }
-  } catch {
-    // 깨진 값이면 빈 칸으로 시작한다.
-  }
-  drafts = { ...drafts, [projectId]: draft };
-  return draft;
-}
-
-// 메모리의 초안도 함께 지운다. 안 지우면 같은 탭에서 다시 들어왔을 때 나타나고, 글자를 치면 저장소로 되돌아간다.
-onLogout(() => {
-  drafts = {};
-  for (const fn of draftListeners) fn();
-});
-
-function saveDraft(projectId: string, d: Draft): void {
-  try {
-    const uploads = d.uploads.filter((u) => u.attachment);
-    if (!d.text && !d.targetId && uploads.length === 0 && !d.retry) localStorage.removeItem(draftKey(projectId));
-    else localStorage.setItem(draftKey(projectId), JSON.stringify({ ...d, uploads }));
-  } catch {
-    // 저장 공간이 없어도 입력은 계속된다.
-  }
-}
-
-function patchDraft(projectId: string, patch: (d: Draft) => Draft): void {
-  const next = patch(loadDraft(projectId));
-  drafts = { ...drafts, [projectId]: next };
-  saveDraft(projectId, next);
-  for (const fn of draftListeners) fn();
-}
-
-function subscribeDrafts(fn: () => void): () => void {
-  draftListeners.add(fn);
-  return () => draftListeners.delete(fn);
-}
-
-const useDraft = (projectId: string): Draft => useSyncExternalStore(subscribeDrafts, () => loadDraft(projectId));
+const patchDraft = (projectId: string, patch: (draft: Draft) => Draft) => submissions.patchDraft(projectId, patch);
 
 function attachFiles(projectId: string, files: File[]): void {
   for (const file of files) {
-    const key = newId();
     const name = file.name || "첨부";
-    const finish = (attachment: Attachment | null, error: string | null) =>
-      patchDraft(projectId, (d) => ({
-        ...d,
-        uploads: d.uploads.map((u) => (u.key === key ? { ...u, attachment, failed: !attachment } : u)),
-        error: error ? `${name}: ${error}` : d.error,
-      }));
-    patchDraft(projectId, (d) => ({ ...d, uploads: [...d.uploads, { key, name, attachment: null, failed: false }], error: null }));
+    const ticket = submissions.beginUpload(projectId, { key: newId(), name });
     if (file.size > MAX_UPLOAD_BYTES) {
-      finish(null, "파일은 50MB 까지 올릴 수 있습니다");
+      submissions.finishUpload(ticket, null, "파일은 50MB 까지 올릴 수 있습니다");
       continue;
     }
-    api.upload(file, name, { project: projectId, target: loadDraft(projectId).targetId }).then(
-      (attachment) => finish(attachment, null),
+    api.upload(file, name, { project: projectId, target: ticket.targetId }).then(
+      (attachment) => submissions.finishUpload(ticket, attachment),
       (e) => {
-        if (isGateRejection(e)) {
-          // 첨부까지 막힌 것이다. 칩을 실패로 남기지 않고 어디에 막혔는지만 알린다.
-          patchDraft(projectId, (d) => ({ ...d, uploads: d.uploads.filter((u) => u.key !== key), error: e.message }));
-          void refresh();
-        } else finish(null, errorText(e));
+        // A failed upload remains visible. Selecting the file again is required
+        // because browsers cannot restore a File after a page reload.
+        if (submissions.finishUpload(ticket, null, errorText(e)) && isGateRejection(e)) void refresh();
       },
     );
   }
@@ -195,7 +123,7 @@ export default function Composer() {
   const state = useProject();
   const projectId = route.projectId;
   const project = state?.project.id === projectId ? state : null;
-  const draft = useDraft(projectId);
+  const { draft, attempts } = useSubmissionDraft(projectId);
   const gate = useGate();
   const dragging = useWindowFileDrag(projectId, gate.ok);
 
@@ -207,20 +135,12 @@ export default function Composer() {
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 멈춤을 보내는 중인 직원. 결과가 올 때까지 멈춤 버튼은 눌리지 않는다(서버도 겹친 요청을 한 번으로 합친다). */
+  const [stopping, setStopping] = useState<string | null>(null);
+  const [stopResult, setStopResult] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
 
   // 게이트가 열리면 칸이 새로 그려진다. 값이 그대로여도 높이를 다시 잰다.
   useAutoGrow(inputRef, gate.ok ? draft.text : "");
-
-  // 다시 보내기가 성공했거나 응답만 잃은 글이었다. 실패로 믿고 고쳐 보내면 지시가 둘이 된다.
-  const retriedDelivery = project?.messages.find((m) => m.id === draft.retry?.id)?.delivery;
-  useEffect(() => {
-    if (!draft.retry || !retriedDelivery || retriedDelivery === "failed") return;
-    patchDraft(projectId, (d) => {
-      if (!d.retry) return d;
-      const same = d.text === d.retry.text;
-      return { ...d, text: same ? "" : d.text, targetId: same ? null : d.targetId, uploads: same ? [] : d.uploads, retry: null, error: null };
-    });
-  }, [projectId, draft.retry, retriedDelivery]);
 
   useEffect(() => {
     if (!notice) return;
@@ -229,9 +149,16 @@ export default function Composer() {
   }, [notice]);
 
   useEffect(() => {
+    if (!stopResult) return;
+    const t = setTimeout(() => setStopResult(null), STOP_NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [stopResult]);
+
+  useEffect(() => {
     setChipMenu(false);
     setNotice(null);
     setDismissedAt(null);
+    setStopResult(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -248,6 +175,10 @@ export default function Composer() {
   const lead = members.find((m) => m.kind === "root" || m.kind === "conductor") ?? null;
   const workers = members.filter((m) => m.kind === "worker");
   const target = workers.find((m) => m.id === draft.targetId) ?? null;
+  const allTasks = project?.tasks ?? [];
+  const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
+  // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원의 작업만.
+  const shownTasks = visibleTasks(allTasks, task ? null : target?.id ?? null);
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
     { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
@@ -262,19 +193,28 @@ export default function Composer() {
   const menuOpen = chipMenu || (mentionOpen && matches.length > 0);
   const activeIndex = Math.min(active, Math.max(matches.length - 1, 0));
 
+  // 고른 작업의 직원이 아닌 사람을 대상으로 고르면 작업 선택을 푼다(그 사람에게 보내는 글은 이 작업의 글이 아니다).
+  const keepTask = (d: { taskId?: string | null }, targetId: string | null) =>
+    d.taskId && task && taskTarget(task, workers) === targetId ? { taskId: d.taskId } : { taskId: null };
   const pick = (entry: MenuEntry) => {
     setChipMenu(false);
     setActive(0);
     if (mention && mentionOpen && !chipMenu) {
       const rest = draft.text.slice(mention.start + mention.query.length + 1).replace(/^ /, "");
       const text = draft.text.slice(0, mention.start) + rest;
-      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id }));
+      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id, ...keepTask(d, entry.id) }));
       setCaret(mention.start);
       requestAnimationFrame(() => inputRef.current?.setSelectionRange(mention.start, mention.start));
     } else {
-      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id }));
+      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id, ...keepTask(d, entry.id) }));
     }
     inputRef.current?.focus();
+  };
+
+  const pickTask = (next: Task | null) => {
+    // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다. 작업 없이 직원만 골라 둔 상태면 그대로 둔다.
+    if (!next) patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d));
+    else patchDraft(projectId, (d) => ({ ...d, taskId: next.id, targetId: taskTarget(next, workers) }));
   };
 
   /** 메뉴가 받아 간 키면 true. 초점이 입력칸에 있든 대상 칩에 있든 같은 키로 움직인다. */
@@ -301,54 +241,54 @@ export default function Composer() {
   const ready = draft.uploads.flatMap((u) => (u.attachment ? [u.attachment] : []));
   const text = draft.text.trim();
   const canSend = !!project && !uploading && !failedUpload && (text.length > 0 || ready.length > 0);
+  // 지금 글이 갈 사람. 그 사람이 일하는 중이면 입력칸 위에 멈춤 줄을 보인다.
+  const recipient: Member | null = target ?? lead;
 
-  const send = async () => {
+  /** 멈춤 요청. 결과(멈춤 확인·멈출 턴 없음·실행이 바뀜·실패)를 그대로 보인다. 결과를 모르면 다시 보내지 않고 상태를 보라고 한다. */
+  const stopRun = async (m: Member, req: StopReq, followUp: boolean) => {
+    setStopping(m.id);
+    setStopResult(null);
+    try {
+      const r = await api.stop(m.id, req);
+      setStopResult({ text: stopNotice(r, allTasks, followUp), tone: r.outcome === "stopped" || r.outcome === "not_running" ? "ok" : "warn" });
+    } catch (e) {
+      setStopResult({ text: `${m.name}: 멈춤 결과를 확인하지 못했습니다(${errorText(e)}). 다시 누르기 전에 팀 화면에서 상태를 보세요.${followUp ? " 보낸 글은 대기열에 있습니다." : ""}`, tone: "warn" });
+    } finally {
+      setStopping(null);
+    }
+  };
+
+  /** stop: '멈추고 이 글로 이어가기'. 글을 먼저 대기열에 고정(받는 사람·작업·원문)하고, 서버가 받은 뒤에만 멈춘다. */
+  const send = async (opts: { stop?: boolean } = {}) => {
     if (uploading || failedUpload) {
       patchDraft(projectId, (d) => ({ ...d, error: uploading ? "첨부를 올리는 중입니다. 끝나면 보내 주세요" : "올리지 못한 첨부를 지운 뒤 보내 주세요" }));
       return;
     }
     if (!canSend) return;
-    const sent = draft;
-    const typed = target ? null : leadingMention(text, workers);
+    // 작업을 골랐으면 받는 사람은 그 작업의 직원으로 고정이다. 첫머리 @이름으로 바꾸지 않는다.
+    const typed = target || task ? null : leadingMention(text, workers);
     const to = typed?.member ?? target;
     const body = typed?.rest ?? text;
-    const targetId = to?.id ?? null;
-    const signature = JSON.stringify([body, targetId, ready.map((a) => a.id)]);
-    const id = sent.retry?.signature === signature ? sent.retry.id : newId();
-    // 먼저 비워 바로 다음 말을 칠 수 있게 하고, 실패하면 아래에서 되돌린다.
-    // 대상도 기본으로 돌린다. 남아 있으면 이어 쓴 말이 모르는 사이 직원에게 바로 간다.
-    patchDraft(projectId, () => EMPTY);
+    const session = getCredentialGeneration();
+    // 누른 순간에 본 실행. 글이 늦게 닿아 그 턴이 끝났으면 서버가 새 턴을 끊지 않는다.
+    const receiver = to ?? lead;
+    const stopWith = opts.stop && canStop(receiver) && !stopping ? { member: receiver, req: stopExpectation(receiver) } : null;
+    const result = submissions.submit(
+      projectId,
+      draft,
+      { text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id), taskId: task?.id ?? null },
+      { targetName: to?.name ?? leadName, attachments: ready },
+    );
+    // submit persists synchronously before clearing the input. A storage failure
+    // leaves the draft intact and blocks the network request.
+    if (submissions.snapshot(projectId).draft.error) return;
     setCaret(0);
     setNotice(null);
     inputRef.current?.focus();
-
-    let rejected: string | null = null;
-    const saved = await sendMessage(
-      { id, text: body, targetMemberId: targetId, attachmentIds: ready.map((a) => a.id) },
-      {
-        targetName: to?.name ?? null,
-        attachments: ready,
-        onRejected: (e) => {
-          if (!isGateRejection(e)) return false;
-          rejected = e.message;
-          return true;
-        },
-      },
-    );
-    if (saved) {
-      setNotice(`${to?.name ?? leadName}에게 보냈습니다`);
-      return;
-    }
-    const failure = getState().project?.messages.find((m) => m.id === id)?.deliveryNote;
-    patchDraft(projectId, (d) => ({
-      ...d,
-      // 멘션을 뗀 글로 되돌린다. 원문(@이름 글)으로 두면 다시 보낼 때 글이 달라져 새 id 가 되고 두 번 전달된다.
-      text: d.text ? `${body}\n${d.text}` : body,
-      targetId,
-      uploads: [...sent.uploads, ...d.uploads],
-      retry: d.text ? null : { id, signature, text: body },
-      error: rejected ? `${rejected}. 글은 그대로 두었습니다` : `보내지 못했습니다${failure ? `: ${failure}` : ""}. 글은 그대로 두었습니다`,
-    }));
+    const saved = await result;
+    if (!saved || getCredentialGeneration() !== session || getState().route.projectId !== projectId) return;
+    if (stopWith) await stopRun(stopWith.member, stopWith.req, true);
+    else setNotice(`${to?.name ?? leadName}에게 보냈습니다${canStop(receiver) ? " · 지금 턴이 끝나면 전달됩니다" : ""}`);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -370,11 +310,11 @@ export default function Composer() {
     attachFiles(projectId, files);
   };
 
-  const placeholder = target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
+  const placeholder = task ? `'${task.title}' 작업으로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
   const showThreadLink = notice !== null && route.tab !== "thread";
 
   if (!gate.ok) {
-    const kept = draft.text.trim().length > 0 || draft.uploads.length > 0;
+    const kept = draft.text.trim().length > 0 || draft.uploads.length > 0 || attempts.length > 0;
     return (
       <div ref={rootRef} className="cmp">
         <ConnectGate />
@@ -430,6 +370,25 @@ export default function Composer() {
               <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
+          {allTasks.length > 0 ? (
+            <div className="cmp-tasks" role="group" aria-label="작업 고르기">
+              <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
+                전체
+              </button>
+              {shownTasks.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="cmp-task"
+                  aria-pressed={task?.id === t.id}
+                  title={[t.title, t.who, t.branch, t.worktree].filter(Boolean).join(" · ")}
+                  onClick={() => pickTask(task?.id === t.id ? null : t)}
+                >
+                  {t.title}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {draft.uploads.map((u) => (
             <span key={u.key} className="cmp-chip cmp-chip--file" data-state={u.failed ? "failed" : u.attachment ? "ready" : "uploading"}>
               {u.attachment?.isImage ? <img className="cmp-chip__thumb" src={fileUrl(u.attachment)} alt="" /> : null}
@@ -465,11 +424,44 @@ export default function Composer() {
             </span>
           ) : null}
         </div>
+        {canStop(recipient) || stopResult ? (
+          <div className="cmp-stop" role="group" aria-label="지금 실행 멈추기">
+            {canStop(recipient) ? (
+              <>
+                <span className="cmp-stop__what">
+                  <StatusDot status={recipient.status} /> {recipient.name} {recipient.status === "blocked" ? "승인 창 앞" : "일하는 중"} · {runLabel(recipient, allTasks)}
+                </span>
+                <span className="cmp-stop__actions">
+                  <GlassButton variant="ghost" size="s" disabled={stopping !== null} onClick={() => void stopRun(recipient, stopExpectation(recipient), false)}>
+                    {stopping === recipient.id ? "멈추는 중…" : "멈춤"}
+                  </GlassButton>
+                  <GlassButton variant="glass" size="s" disabled={stopping !== null || !canSend} title="글을 먼저 대기열에 넣고 지금 턴을 멈춥니다. 멈춘 뒤 한 번만 전달됩니다" onClick={() => void send({ stop: true })}>
+                    멈추고 이 글로 이어가기
+                  </GlassButton>
+                </span>
+                <span className="cmp-stop__hint">그냥 보내면 지금 턴이 끝난 뒤 전달됩니다. 멈춤은 이 직원의 지금 턴 전체를 멈춥니다.</span>
+              </>
+            ) : null}
+            {stopResult ? (
+              <p className="cmp-stop__result" role="status" data-tone={stopResult.tone}>
+                {stopResult.text}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {draft.error ? (
           <p className="cmp__error" role="alert">
             {draft.error}
           </p>
         ) : null}
+        {attempts.map((attempt) => (
+          <div key={attempt.id} className="cmp__error" role="status">
+            <span>{attempt.targetName ?? "원래 대상"}에게{attempt.payload.taskId ? ` · 작업 '${allTasks.find((t) => t.id === attempt.payload.taskId)?.title ?? attempt.payload.taskId}'` : ""} · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
+            <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void submissions.reconcile(projectId)}>다시 확인</GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking" || !project} onClick={() => void submissions.retry(projectId, attempt.id)}>같은 내용 재시도</GlassButton>
+          </div>
+        ))}
         <div className="cmp__row">
           <GlassButton variant="ghost" size="m" className="cmp__icon" ariaLabel="첨부" title="첨부" onClick={() => fileRef.current?.click()}>
             <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">

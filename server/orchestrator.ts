@@ -50,13 +50,17 @@ import type {
   SendMessageReq,
   Settings,
   SettingsPatch,
+  StopReq,
+  StopResult,
+  MemberExecutionState,
   TidyResult,
+  Task,
   Todo,
   TodoOutcome,
   WorkItem,
   WorkSec,
 } from "../shared/types.ts";
-import { adoptRefusal, memberConfig } from "../shared/types.ts";
+import { adoptRefusal, memberConfig, memberRank } from "../shared/types.ts";
 import type { Config } from "./config.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
@@ -65,7 +69,7 @@ import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
-import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
+import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TerminalKey, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
 import { ANTIGRAVITY_MODEL_RE, antigravityMemberHome, existingAntigravityTranscript } from "./runner/antigravity.ts";
@@ -78,8 +82,9 @@ import { detectHerdr, HerdrRunner, inspectPane, listAgents, type PaneInspection 
 import { approvalSummary } from "./runner/approval.ts";
 import { exactSource, measureContext, validWindow } from "./runner/context.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, RunnerStartResult, RunnerTerminalIdentity, DeliveryRepair } from "./runner/types.ts";
-import { ApiError, type AppliedConfig, type ExecutionJournal, type NewDelivery, type Store } from "./store.ts";
+import { ApiError, TASK_SOURCE_KINDS, type AppliedConfig, type ExecutionJournal, type NewDelivery, type Store } from "./store.ts";
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
+import { clip, DevMemory, devMemoryConfigFromEnv, memoryTaskId, MemoryError, stableEventId, type ExperienceInput } from "./integrations/dev-memory.ts";
 import { conductorHandle, conductorName } from "./text.ts";
 
 // ---- 전달 글(§4). 서버만 만든다 ----
@@ -137,11 +142,27 @@ function attachmentLines(attachments: Attachment[]): string[] {
   return attachments.map((a) => `첨부: ${normalizeSpace(a.path)} (${normalizeSpace(a.mime)}, ${humanSize(a.size)})`);
 }
 
-export function formatUserMessage(text: string, attachments: Attachment[], id: string, direct: boolean): string {
+export function formatUserMessage(text: string, attachments: Attachment[], id: string, direct: boolean, task?: string | null): string {
   const lines = [`[대표${direct ? " 직접" : ""}] "${guardLines(text)}"`];
   lines.push(...attachmentLines(attachments));
+  if (task) lines.push(task);
   lines.push(`#${id}`);
   return lines.join("\n");
+}
+
+/**
+ * 전달 글의 작업 줄. 작업 제목·브랜치·경로는 직원이 쓴 값이라 한 줄로 따옴표 안에 넣는다.
+ * task 가 null 이면 대표가 '전체'에서 보낸 글이다. 그 글의 보고를 직전 작업에 붙이지 않게 알린다.
+ */
+export function formatTaskLine(task: Task | null): string {
+  if (!task) return "작업: 전체(어느 작업에도 속하지 않는 글). 이 일의 post·ask·file·todo 에 task_id 를 넣지 않는다";
+  const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
+  return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다`;
+}
+
+/** 결재 답·할 일 알림 끝에 붙는 작업 표지. 옛 카드(작업 없음)는 붙이지 않는다. */
+function taskTag(taskId: string | null | undefined): string {
+  return taskId ? ` · 작업 #${taskId}` : "";
 }
 
 export function formatAnswer(d: Decision): string {
@@ -156,16 +177,16 @@ export function formatAnswer(d: Decision): string {
     parts.push(`"${note}"`);
   }
   if (d.batch) parts.push("(묶음 추천대로)");
-  parts.push(`#${d.id}`);
+  parts.push(`#${d.id}${taskTag(d.taskId)}`);
   return parts.join(" ");
 }
 
 export function formatTodoDone(t: Todo): string {
-  return `[대표] '${quotedInline(t.title)}' 했음 #${t.id}`;
+  return `[대표] '${quotedInline(t.title)}' 했음 #${t.id}${taskTag(t.taskId)}`;
 }
 
 export function formatTodoUndone(t: Todo): string {
-  return `[대표] '${quotedInline(t.title)}' 아직 안 했음(체크를 풀었습니다) #${t.id}`;
+  return `[대표] '${quotedInline(t.title)}' 아직 안 했음(체크를 풀었습니다) #${t.id}${taskTag(t.taskId)}`;
 }
 
 export interface QuoteSource {
@@ -240,13 +261,18 @@ export function formatTidy(kind: MemberKind, manual: boolean): string {
   ].join("\n");
 }
 
+/** 실행 기록·활동에 남기는 멈춤 이유. by 는 "user" 또는 "agent-<직원 id>". */
+function stopReason(by: string | null): string {
+  return by === "user" ? "대표가 멈췄습니다" : by?.startsWith("agent-") ? "총괄이 멈췄습니다" : "멈춤 요청으로 턴이 끝났습니다";
+}
+
 function isTidy(d: Pick<Delivery, "kind" | "text">): boolean {
   return d.kind === "system" && d.text.startsWith(TIDY_HEAD);
 }
 
 // ---- 공개 타입 ----
 export interface AgentToolsImpl {
-  listAgentTools(member: Member): AgentToolDef[] | Promise<AgentToolDef[]>;
+  listAgentTools(member: Member, opts?: { memory?: boolean }): AgentToolDef[] | Promise<AgentToolDef[]>;
   handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult>;
 }
 
@@ -322,11 +348,15 @@ export interface OrchestratorDeps {
   deliveryRecovery?: DeliveryRecovery;
   /** 주입한 CoreRunner와 같은 기록 루트. 시험은 임시 경로만 사용한다. */
   providerHomes?: { claudeHome: string; codexHome: string; antigravityRoot?: string };
+  /** 개발 기억(Hindsight 게이트웨이) 연결. 없으면 외부 호출 0건이고 기억 도구도 보이지 않는다. */
+  devMemory?: DevMemory | null;
 }
 
 export interface NewMemberInput {
   cli?: CliProvider;
   modelOverride?: string | null;
+  /** 직원별 effort. 그 CLI·모델이 지원하지 않으면 거절한다(바꿔 끼우지 않는다). */
+  effortOverride?: string | null;
   name: string;
   role?: string;
   handle?: string;
@@ -344,6 +374,8 @@ export interface AssignInput {
   urgent?: boolean;
   /** 대표 메시지의 첨부 id. 그 직원 폴더로 이어 경로를 알린다. */
   attachmentIds?: string[];
+  /** 이 지시가 속한 작업. 없으면 받는 직원의 지금 작업을 비운다. */
+  taskId?: string | null;
 }
 
 export interface AssignResult {
@@ -364,6 +396,8 @@ export interface PostInput {
   correctsMessageId?: string | null;
   /** 대표가 할 일 한 줄. 서버가 본문 첫 줄에 '● 대표 차례: …'로 쓴다(shared/owner-lines.ts). */
   ownerAction?: string | null;
+  /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
+  taskId?: string | null;
 }
 
 export interface AskInput {
@@ -376,6 +410,8 @@ export interface AskInput {
   images?: Attachment[];
   /** 권장 이유 한 줄. rec 가 있으면 서버가 detail 첫 줄에 '★ 권장: <label> — <이유>'로 쓴다(shared/owner-lines.ts). */
   recReason?: string | null;
+  /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
+  taskId?: string | null;
 }
 
 /** 같은 안건인지 볼 때 제목에서 빈칸·문장부호·대소문자 차이를 지운다. */
@@ -410,6 +446,8 @@ export interface RosterEntry {
   /** 서브에이전트에 쓰는 값. */
   subagentModel: string | null;
   subagentEffort: Effort | null;
+  /** 지금(또는 마지막) 실행. team_stop 의 expect_run_id 로 쓴다. 한 턴이 여러 작업을 받을 수 있다. */
+  run: { id: string; phase: MemberExecutionState["phase"]; taskIds: string[] } | null;
 }
 
 interface Turn {
@@ -458,6 +496,8 @@ interface Runtime {
   configGaveUp: string | null;
   /** 턴을 마치고 뒤 작업(워크플로 등)을 기다리는 중이면 그 작업. 그 팀은 일하는 중이고 세션은 글을 바로 받는다(herdr). */
   background: string | null;
+  /** 대표·총괄이 멈춘 실행. CLI 가 멈춤을 확인하면 confirmed. 그 턴이 끝날 때 실행 기록을 '중단'으로 남기고 보고 보완을 요청하지 않는다. */
+  stopRequest: { runId: string | null; by: string; at: string; confirmed: boolean } | null;
 }
 
 const HOLD_NOTES: Record<string, string> = {
@@ -556,7 +596,8 @@ export function createOrchestrator(config: Config, store: Store): Orchestrator {
     quiescence: (_memberId, dispatch) => ({ originalWrite: dispatch.transportState === "rejected" ? "rejected" : dispatch.transportState === "accepted" ? "settled" : "unresolved", externalInput: null }),
   }));
   const herdr: HerdrQueries = { info: () => detectHerdr(config.herdrSocket), agents: () => listAgents(config.herdrSocket), inspect: (a) => inspectPane(config.herdrSocket, a) };
-  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"), antigravityRoot: config.antigravityRoot }, notifier: macNotifier() });
+  const memoryConfig = devMemoryConfigFromEnv(process.env);
+  orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"), antigravityRoot: config.antigravityRoot }, notifier: macNotifier(), devMemory: memoryConfig ? new DevMemory(memoryConfig) : null });
   return orchestrator;
 }
 
@@ -585,8 +626,11 @@ export class Orchestrator implements OrchestratorApi {
   private readonly timings: OrchestratorTimings;
   private readonly herdr: HerdrQueries | null;
   private agentTools: AgentToolsImpl | null;
+  readonly devMemory: DevMemory | null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
+  /** 직원별로 도는 멈춤 요청. 겹쳐 누르면 같은 결과를 받는다. */
+  private stopping = new Map<string, Promise<StopResult>>();
   /** 동시 턴 상한에 걸려 기다리는 직원. 턴이 끝나면 차례로 다시 민다. */
   private waiting = new Set<string>();
   private askWaiters = new Map<string, Set<() => void>>();
@@ -630,6 +674,8 @@ export class Orchestrator implements OrchestratorApi {
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
     this.herdr = deps.herdr ?? null;
     this.agentTools = deps.agentTools ?? null;
+    this.devMemory = deps.devMemory ?? null;
+    this.devMemory?.start(this.store);
     this.notifier = deps.notifier ?? null;
     this.serverUrl = deps.serverUrl ?? `http://127.0.0.1:${deps.config.port}`;
     const core = this.runners.get("core");
@@ -1022,7 +1068,7 @@ export class Orchestrator implements OrchestratorApi {
     return false;
   }
 
-  private endExecution(member: Member, result: "success" | "error" | "interrupted", reason: string | null, exitCode: number | null = null, turn?: number | null): void {
+  private endExecution(member: Member, result: "success" | "error" | "interrupted", reason: string | null, exitCode: number | null = null, turn?: number | null, stoppedBy?: string | null): void {
     const at = new Date().toISOString();
     this.store.transaction(() => {
       for (const run of this.store.listPendingExecutions().filter(r => r.memberId === member.id && r.identity.sessionGeneration === this.store.memberRevisions(member.id).sessionGeneration)) {
@@ -1037,7 +1083,10 @@ export class Orchestrator implements OrchestratorApi {
         if (outcome === "interrupted") this.store.claimExecutionNotice(run.runId, "interruption", () => {
           this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} 중단 — ${reason ?? "종료 근거 없이 세션이 사라졌습니다"}`);
           const conductor = this.store.getConductor(member.projectId);
-          if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
+          // 대표가 멈춘 것은 대표가 이어서 지시한다. 총괄을 깨워 같은 일을 다시 시키게 하지 않는다. 총괄이 멈춘 것은 총괄이 이미 안다.
+          if (stoppedBy === "user") {
+            if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${member.name}의 실행 ${run.runId}을 직접 멈췄습니다. 전달 ${run.deliveryIds.join(", ")}. 이어서 할 지시는 대표가 직접 보냈거나 보냅니다. 같은 일을 다시 시키지 말고 판만 맞추세요.`), wake: false });
+          } else if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
         });
       }
     });
@@ -1116,6 +1165,39 @@ export class Orchestrator implements OrchestratorApi {
       const unknown = attempted && !(error instanceof ApiError && error.code === "TERMINAL_REFUSED");
       return this.store.finishOperation({ ...receipt, status: unknown ? "unknown" : "refused", code: unknown ? "TERMINAL_UNKNOWN" : "TERMINAL_REFUSED", error: (error as Error).message.slice(0, 500) }) as OperationReceipt<"terminal_control">;
     }
+  }
+
+  /**
+   * 한 번에 보내기: 조작권 얻기 → 글 보내기(core terminal.send 는 글을 넣고 바로 제출한다) → 키 → 조작권 놓기. 모두 terminalControlV2(세대·조작권·입력 순번·operation ID)를 거친다.
+   * 같은 operationId 로 다시 부르면 단계마다 저장된 결과를 돌려줘 글이 두 번 들어가지 않는다. 결과가 불명확하면 화면을 먼저 읽으라고 돌려준다.
+   * AI 가 일하는 중(working)에는 글을 넣지 않는다(키만: 멈추기·승인 창 조작용).
+   */
+  async terminalSend(memberId: string, req: { operationId: string; text?: string; key?: TerminalKey; by: string }): Promise<{ status: "applied" | "refused" | "unknown"; steps: string[]; error?: string; sessionGeneration: number }> {
+    const member = this.store.requireMember(memberId);
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(req.operationId)) throw new ApiError(400, "operationId 형식이 잘못되었습니다");
+    if (!req.text && !req.key) throw new ApiError(400, "보낼 글이나 키가 필요합니다");
+    if (req.text && (member.status === "working" || this.runtime(memberId).turn)) throw new ApiError(409, `${josa(member.name, "은")} 일하는 중이라 글을 넣지 않습니다. 끝난 뒤 다시 하거나, 멈추려면 key 'esc'/'ctrl+c' 만 보냅니다`, "TERMINAL_REFUSED");
+    const generation = this.store.memberRevisions(memberId).sessionGeneration;
+    const claimId = `${req.by}-${req.operationId}`.slice(0, 120);
+    const steps: string[] = [];
+    const run = async (suffix: string, body: { action: "claim" | "release" } | { action: "input"; text: string } | { action: "key"; key: TerminalKey }) => {
+      // 다시 부른 같은 단계는 저장된 결과를 그대로 돌려준다(순번을 다시 셈하지 않는다: 두 번 넣지 않기 위해).
+      const done = this.store.getOperation(`${req.operationId}-${suffix}`) as OperationReceipt<"terminal_control"> | null;
+      if (done) { steps.push(`${suffix}:${done.status}(이전 결과)`); return done; }
+      const lease = this.store.inputState(memberId).lease;
+      const seq = body.action === "input" || body.action === "key" ? (lease?.lastInputSequence ?? 0) + 1 : undefined;
+      const receipt = await this.terminalControlV2(memberId, { operationId: `${req.operationId}-${suffix}`, expectedSessionGeneration: generation, claimId, ...body, ...(seq !== undefined ? { inputSequence: seq } : {}) } as TerminalControlRequestV2);
+      steps.push(`${suffix}:${receipt.status}`);
+      return receipt;
+    };
+    let failed: OperationReceipt<"terminal_control"> | null = null;
+    const claim = await run("claim", { action: "claim" });
+    if (claim.status !== "applied") failed = claim;
+    if (!failed && req.text) { const r = await run("input", { action: "input", text: req.text }); if (r.status !== "applied") failed = r; }
+    if (!failed && req.key) { const r = await run("key", { action: "key", key: req.key }); if (r.status !== "applied") failed = r; }
+    if (claim.status === "applied") await run("release", { action: "release" }).catch(() => undefined);
+    if (!failed) return { status: "applied", steps, sessionGeneration: generation };
+    return { status: failed.status === "unknown" ? "unknown" : "refused", steps, error: failed.error ?? undefined, sessionGeneration: generation };
   }
 
   async patchMemberConfigV2(memberId: string, patch: PatchMemberReq, precondition: RevisionPrecondition): Promise<MemberConfigWriteResult> {
@@ -1472,6 +1554,7 @@ export class Orchestrator implements OrchestratorApi {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.devMemory?.stop();
     await Promise.all([...this.terminalStreamClosers].map(close => close()));
     await this.coreSupervisor?.shutdown();
     await Promise.all([...this.eventQueues.values()]);
@@ -1491,8 +1574,7 @@ export class Orchestrator implements OrchestratorApi {
   // ---- REST 겉면 ----
   async createProject(req: CreateProjectReq): Promise<Project> {
     const goal = req.goal?.trim();
-    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null });
-    this.store.setChiefCli(project.id, req.chiefCli ?? "claude");
+    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null, chiefCli: req.chiefCli });
     if (req.startConductor) {
       const conductor = await this.ensureConductor(project.id);
       if (goal) await this.deliver({ projectId: project.id, memberId: conductor.id, kind: "system", text: formatSystem(`프로젝트 목표: ${guardLines(goal)}`) });
@@ -1804,6 +1886,23 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 직원별 모델·effort. null 이면 직급 기본으로 돌아간다. */
+  /**
+   * 총괄이 직원의 CLI·모델·effort 를 바꾼다(대표 화면의 직원 설정과 같은 저장·검증 경로).
+   * CLI 를 바꾸면 맞지 않게 되는 기존 지정을 서버가 몰래 비우지 않는다: 그런 경우 거절하고 model·effort 를 함께 밝히게 한다.
+   */
+  async configureMember(memberId: string, patch: PatchMemberReq): Promise<{ member: Member; applied: string }> {
+    const target = this.store.requireMember(memberId);
+    if (patch.cli === undefined && patch.modelOverride === undefined && patch.effortOverride === undefined) throw new ApiError(400, "바꿀 cli·model·effort 중 하나는 필요합니다");
+    const cli = patch.cli ?? target.cli ?? "claude";
+    if (cli === "antigravity" && patch.effortOverride != null) throw new ApiError(400, "Antigravity 는 effort 를 따로 받지 않습니다. 모델 이름에 들어 있는 값을 고르세요");
+    const { resetOverrides } = this.models.memberPatch(target, patch, this.store.getSettings());
+    if (resetOverrides.length) throw new ApiError(400, `CLI 를 ${cli}(으)로 바꾸면 지금 지정한 ${resetOverrides.map((k) => k === "modelOverride" ? `model(${target.modelOverride})` : `effort(${target.effortOverride})`).join("·")}을 그 CLI 가 지원하지 않습니다. 새 CLI 에 맞는 값을 함께 넣거나 null(직급 기본값)로 밝혀 다시 부르세요`);
+    const member = await this.patchMemberConfig(memberId, patch);
+    const config = memberConfig(member, this.store.getSettings().ranks, this.store.getSettings().codexRanks);
+    const live = member.status !== "asleep" && member.status !== "offline";
+    return { member, applied: `CLI ${member.cli ?? "claude"} · 모델 ${config.model ?? "CLI 기본"} · effort ${config.effort ?? (member.cli === "antigravity" ? "모델 이름에 포함" : "CLI 기본")}${live && patch.cli === undefined ? ". 모델·effort 는 세션을 다시 열 때 적용됩니다(team_sleep 뒤 team_resume)" : ""}` };
+  }
+
   async patchMemberConfig(memberId: string, patch: PatchMemberReq): Promise<Member> {
     this.requireActive(this.store.requireProject(this.store.requireMember(memberId).projectId));
     if (this.configWrites.has(memberId)) throw new ApiError(409, "직원 설정을 적용하는 중입니다");
@@ -1908,7 +2007,7 @@ export class Orchestrator implements OrchestratorApi {
         projectId,
         memberId: conductor.id,
         kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(conductor, message.attachments), message.id, false),
+        text: formatUserMessage(message.body, this.attachmentsFor(conductor, message.attachments), message.id, false, this.taskLineFor(projectId, message.taskId)),
         refType: "message",
         refId: message.id,
       });
@@ -1925,7 +2024,7 @@ export class Orchestrator implements OrchestratorApi {
     this.store.transaction(() => {
       for (const message of this.store.listMessagesMissingDeliveries(projectId)) {
         const member = message.targetMemberId ? this.store.getMember(message.targetMemberId) : null;
-        if (member) this.store.enqueue({ projectId, memberId: member.id, kind: "user_message", text: formatUserMessage(message.body, this.attachmentsFor(member, message.attachments), message.id, true), refType: "message", refId: message.id });
+        if (member) this.store.enqueue({ projectId, memberId: member.id, kind: "user_message", text: formatUserMessage(message.body, this.attachmentsFor(member, message.attachments), message.id, true, this.taskLineFor(projectId, message.taskId)), refType: "message", refId: message.id });
       }
       for (const decision of this.store.listAnswersMissingDeliveries(projectId)) {
         const member = decision.memberId ? this.store.getMember(decision.memberId) : null;
@@ -1993,11 +2092,13 @@ export class Orchestrator implements OrchestratorApi {
     const attachments = (req.attachmentIds ?? []).map(id => this.store.getAttachment(id)).filter((a): a is Attachment => a !== null);
     const target = req.targetMemberId ? this.store.requireMember(req.targetMemberId) : null;
     if (target && target.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
+    const task = req.taskId ? this.store.requireTask(req.taskId) : null;
+    if (task && task.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
     let recipient = target ?? this.store.getConductor(projectId);
     let booting: Promise<void> | null = null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => {
       const message = this.store.createMessage({ id: req.id, projectId, mine: true, who: "나", kind: "나", body: req.text,
-        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued" });
+        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued", taskId: task?.id ?? null });
       if (!recipient && project.runnerEnabled) {
         const spawn = this.beginConductor(project);
         recipient = spawn.member;
@@ -2008,10 +2109,10 @@ export class Orchestrator implements OrchestratorApi {
     }, message => {
       if (!recipient) return [];
       const intents: NewDelivery[] = [{ projectId, memberId: recipient.id, kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target), refType: "message", refId: message.id }];
+        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target, this.taskLineFor(projectId, task?.id ?? null)), refType: "message", refId: message.id }];
       const conductor = this.store.getConductor(projectId);
       if (target && conductor && conductor.id !== target.id) intents.push({ projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false });
+        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id})` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false });
       return intents;
     });
     if (booting) await (booting as Promise<void>).catch(e => console.warn(`${project.name} 총괄을 띄우지 못했습니다:`, (e as Error).message));
@@ -2062,6 +2163,7 @@ export class Orchestrator implements OrchestratorApi {
       return intents;
     });
     if (!changed) return decision;
+    this.queueDecisionMemory(decision);
     if (booting) await (booting as Promise<void>).catch(e => console.warn("결재 답을 받을 총괄을 띄우지 못했습니다:", (e as Error).message));
     this.wakeAll(this.askWaiters, decisionId);
     if (decision.memberId) this.wakeAll(this.inboxWaiters, decision.memberId);
@@ -2138,15 +2240,70 @@ export class Orchestrator implements OrchestratorApi {
     return this.compactMember(memberId);
   }
 
+  /** 예전 화면·앱의 '중단'. 같은 멈춤 경로를 쓰고, 멈추지 못했으면 409 로 알린다. */
   async memberInterrupt(memberId: string): Promise<Member> {
+    const result = await this.stopMember(memberId, { by: "user" });
+    if (result.outcome === "failed") throw new ApiError(409, result.detail ?? "멈추지 못했습니다");
+    return result.member;
+  }
+
+  /**
+   * 직원의 지금 CLI 턴을 멈춘다. 대표 화면·총괄 도구가 같은 경로를 쓴다.
+   * - 한 직원의 턴 단위다. 그 턴이 받은 작업이 여럿이면 모두 함께 멈춘다(taskIds 로 보인다).
+   * - 화면에서 본 실행 id·세션 세대와 지금이 다르면 멈추지 않는다(다른 턴을 끊지 않는다).
+   * - 같은 직원에 대한 멈춤이 이미 도는 중이면 그 결과를 함께 받는다(두 번 눌러도 키는 한 번).
+   * - CLI 대화·바뀐 파일은 그대로다. 끊긴 턴은 다시 보내지 않고, 대기열의 지시는 입력이 가능해지면 차례로 나간다.
+   */
+  async stopMember(memberId: string, opts: { by: string } & StopReq): Promise<StopResult> {
+    const inflight = this.stopping.get(memberId);
+    if (inflight) return inflight;
+    const run = this.stopOnce(memberId, opts).finally(() => this.stopping.delete(memberId));
+    this.stopping.set(memberId, run);
+    return run;
+  }
+
+  private async stopOnce(memberId: string, opts: { by: string } & StopReq): Promise<StopResult> {
     const member = this.store.requireMember(memberId);
-    const rt = this.runtime(memberId);
     const project = this.store.requireProject(member.projectId);
     this.requireActive(project);
     const runner = this.runners.get(this.backendOf(member));
     if (member.origin === "manual" || !runner) throw new ApiError(400, "실행기가 관리하지 않는 세션입니다");
-    if (rt.turn) rt.turn.interrupted = true;
-    await runner.interrupt(this.runnerMember(member, project));
+    const generation = this.store.memberRevisions(memberId).sessionGeneration;
+    const rt = this.runtime(memberId);
+    const exec = member.executionState ?? null;
+    const live = exec && !["ended", "interrupted"].includes(exec.phase) ? exec : null;
+    const result = (outcome: StopResult["outcome"], detail: string | null = null, shown: MemberExecutionState | null = live ?? exec): StopResult => {
+      const now = this.store.requireMember(memberId);
+      return { outcome, memberId, memberName: now.name, runId: shown?.runId ?? null, sessionGeneration: generation, taskIds: shown?.taskIds ?? [], detail, member: now };
+    };
+    if (opts.expectGeneration !== undefined && opts.expectGeneration !== null && opts.expectGeneration !== generation) return result("changed", "세션이 바뀌어 멈추지 않았습니다");
+    if (opts.expectRunId && opts.expectRunId !== live?.runId) {
+      const seen = this.store.getExecutionJournal(opts.expectRunId);
+      if (seen && seen.memberId === memberId && ["ended", "interrupted"].includes(seen.phase)) {
+        const shown = { ...seen, sessionGeneration: seen.identity.sessionGeneration, taskIds: [] } as unknown as MemberExecutionState;
+        return result(seen.result === "interrupted" ? "stopped" : "not_running", seen.result === "interrupted" ? "이미 멈췄습니다" : "그 턴은 이미 끝났습니다", shown);
+      }
+      return result("changed", "화면에서 본 실행과 지금 실행이 달라 멈추지 않았습니다");
+    }
+    // core 압축은 턴(rt.turn) 없이 문맥 상태로만 돈다. 끝나지 않은 압축도 멈출 대상이다.
+    const compaction = runner.kind === "core" ? this.store.getContextState(memberId)?.compaction : null;
+    const compacting = !!compaction && !["succeeded", "failed"].includes(compaction.phase);
+    const working = member.status === "working" || member.status === "blocked" || rt.turn?.kind === "work" || rt.turn?.kind === "compact" || compacting;
+    if (!working) return result("not_running", "지금 하는 턴이 없습니다");
+    if (rt.stopRequest?.confirmed && rt.stopRequest.runId === (live?.runId ?? null)) return result("stopped", "이미 멈췄습니다");
+    const turn = rt.turn;
+    rt.stopRequest = { runId: live?.runId ?? null, by: opts.by, at: new Date().toISOString(), confirmed: false };
+    if (turn) turn.interrupted = true;
+    try {
+      await runner.interrupt(this.runnerMember(member, project));
+    } catch (error) {
+      if (turn && rt.turn === turn) turn.interrupted = false;
+      if (rt.stopRequest?.confirmed === false) rt.stopRequest = null;
+      const after = this.store.requireMember(memberId);
+      if (after.status !== "working" && after.status !== "blocked") return result("not_running", "멈추기 전에 턴이 끝났습니다");
+      return result("failed", `멈추지 못했습니다: ${(error as Error).message}`);
+    }
+    if (rt.stopRequest) rt.stopRequest.confirmed = true;
     if (runner.kind === "core") {
       this.interruptCoreCompaction(member);
       const state = this.store.getContextState(memberId);
@@ -2154,7 +2311,8 @@ export class Orchestrator implements OrchestratorApi {
       rt.compactRequest = null;
       if (rt.turn?.kind === "compact") this.endCompact(memberId, rt, "대표가 압축을 중단했습니다");
     }
-    return this.store.requireMember(memberId);
+    this.store.appendActivity(memberId, "system", `${stopReason(opts.by)}${live ? ` (실행 ${live.runId})` : ""}`);
+    return result("stopped");
   }
 
   /** 화면의 '명부에서 빼기'. 직접 띄운 세션만. 실행기 세션은 총괄이 team_close 로 닫는다. */
@@ -2278,7 +2436,7 @@ export class Orchestrator implements OrchestratorApi {
     const placeholder = [req.handle, req.name]
       .map((ref) => (ref ? this.store.findMember(projectId, ref) : null))
       .find((m) => m && m.origin === "adopted" && m.kind === kind && m.status === "offline" && !m.paneId && !m.sessionId);
-    const placed = { status: "idle", backend: "herdr", cwd: live.cwd ?? project.cwd, sessionId: live.sessionId, paneId: req.paneId } as const;
+    const placed = { cli: "claude", status: "idle", backend: "herdr", cwd: live.cwd ?? project.cwd, sessionId: live.sessionId, paneId: req.paneId } as const;
     let member: Member | undefined;
     try {
       member = placeholder
@@ -2366,7 +2524,71 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async listAgentTools(member: Member): Promise<AgentToolDef[]> {
-    return (await this.tools()).listAgentTools(member);
+    return (await this.tools()).listAgentTools(member, { memory: this.memoryEnabledFor(member) });
+  }
+
+  // ---- 개발 기억 ----
+  memoryEnabledFor(member: Member): boolean {
+    return !!this.devMemory?.enabledFor(member.projectId) && member.origin !== "manual";
+  }
+
+  requireMemory(member: Member): DevMemory {
+    if (!this.devMemory || !this.memoryEnabledFor(member)) throw new ApiError(400, "이 프로젝트는 개발 기억 연결이 켜져 있지 않습니다");
+    return this.devMemory;
+  }
+
+  /** 기억 범위의 작업: 직원이 밝힌 task_id 만 쓴다(없으면 직원별 전체 범위). 검색·조회는 프로젝트 범위라 글 귀속 규칙과 따로 둔다. */
+  memoryScope(member: Member, taskId?: string | null): string {
+    return memoryTaskId(taskId ? this.requireTaskInProject(member, taskId).id : null, member.id);
+  }
+
+  /**
+   * 대표가 결재 카드에 답하면 그 결정을 개발 기억에 올린다. 직원이 쓴 배경은 대표 결정과 구분해 적는다.
+   * 같은 카드의 같은 답은 한 번만 올라간다(event_id 고정). 다시 열린 뒤 다른 답이면 새 사건이다.
+   */
+  private queueDecisionMemory(decision: Decision): void {
+    const memory = this.devMemory;
+    if (!memory?.enabledFor(decision.projectId) || decision.status !== "answered") return;
+    try {
+      const project = this.store.requireProject(decision.projectId);
+      const task = decision.taskId ? this.store.getTask(decision.taskId) : null;
+      const option = decision.options.find((o) => o.k === decision.choice);
+      const answer = option ? `"${option.label}"${option.desc ? ` (${option.desc})` : ""}` : "(선택지 없이 메모로 답함)";
+      const lines = [
+        `분류: 대표 명시 결정 — 대표가 IAMCEO 결재 카드에 직접 답했다${decision.batch ? "(묶음 추천을 한꺼번에 승인)" : ""}.`,
+        `IAMCEO 프로젝트: ${project.name} (${project.id})`,
+        `작업: ${task ? `${task.title} (#${task.id}${task.branch ? ` · ${task.branch}` : ""})` : "전체(작업 없음)"}`,
+        `물은 직원: ${decision.who}`,
+        `결재 질문: ${decision.title}`,
+        `대표 답(원문): ${answer}`,
+        ...(decision.note ? [`대표 메모(원문): ${decision.note}`] : []),
+        `답한 시각: ${decision.answeredAt ?? ""}`,
+        "적용 범위: 이 프로젝트에서 이 질문에 대한 결정이다. 다른 프로젝트·이후 지시보다 앞서지 않는다.",
+        "",
+        "선택지(직원이 제안한 것):",
+        ...decision.options.map((o) => `- ${o.label}${o.desc ? `: ${o.desc}` : ""}${decision.rec === o.k ? " (직원 추천)" : ""}${o.k === decision.choice ? " ← 대표 선택" : ""}`),
+        "",
+        "배경(직원이 쓴 설명이며 대표 결정이 아니다):",
+        decision.detail,
+      ];
+      const { content, capture } = clip(lines.join("\n"));
+      const eventId = stableEventId("iamceo-decision", decision.id, decision.choice ?? "", decision.note ?? "", decision.answeredAt ?? "");
+      const experience: ExperienceInput = {
+        event_id: eventId,
+        kind: "decision",
+        summary: `대표 결정: ${decision.title}`.slice(0, 300),
+        content,
+        capture,
+        source: { task_id: memoryTaskId(decision.taskId ?? null, decision.memberId ?? "rep"), item_id: decision.id, service: "iamceo" },
+        evidence: [
+          { kind: "classification", text: "explicit_user_decision" },
+          { kind: "iamceo_ref", text: `project_id=${project.id}; decision_id=${decision.id}; task_id=${decision.taskId ?? "none"}; answered_at=${decision.answeredAt ?? ""}` },
+        ],
+      };
+      if (this.store.enqueueMemoryUpload({ eventId, projectId: decision.projectId, refType: "decision", refId: decision.id, body: JSON.stringify(experience) })) void memory.flush(this.store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message));
+    } catch (e) {
+      console.warn("개발 기억 업로드를 준비하지 못했습니다:", e instanceof MemoryError ? e.message : (e as Error).message);
+    }
   }
 
   async handleAgentTool(member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
@@ -2495,8 +2717,15 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async addMember(projectId: string, input: NewMemberInput, assignedBy?: Member): Promise<{ member: Member; assigned: AssignResult | null }> {
-    this.models.requireModel(input.cli ?? "claude", input.modelOverride);
     const project = this.store.requireProject(projectId);
+    const cli = input.cli ?? this.store.defaultMemberCli(projectId);
+    this.models.requireModel(cli, input.modelOverride);
+    if (input.effortOverride != null) {
+      if (cli === "antigravity") throw new ApiError(400, "Antigravity 는 effort 를 따로 받지 않습니다. 모델 이름에 들어 있는 값을 고르세요");
+      const kind = input.kind ?? "worker";
+      const rank = (cli === "codex" ? this.store.getSettings().codexRanks : this.store.getSettings().ranks)[memberRank(kind)];
+      this.models.requireEffort(cli, input.modelOverride ?? rank.model, input.effortOverride);
+    }
     if (!project.runnerEnabled) throw new ApiError(409, "이 프로젝트는 실행이 꺼져 있습니다");
     const name = input.name.trim();
     if (!name) throw new ApiError(400, "이름이 필요합니다");
@@ -2508,8 +2737,9 @@ export class Orchestrator implements OrchestratorApi {
         handle: input.handle ?? this.deriveHandle(projectId, name),
         name,
         role: input.role ?? "",
-        cli: input.cli ?? "claude",
+        cli,
         modelOverride: input.modelOverride,
+        effortOverride: input.effortOverride,
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
@@ -2528,7 +2758,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 명부에 올리고 세션을 띄우기 시작한다. 끝나기 전에는 pump 가 건너뛰고, 끝나면 다시 민다. */
-  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null }): { member: Member; ready: Promise<void> } {
+  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null }): { member: Member; ready: Promise<void> } {
     this.requireActive(this.store.requireProject(project.id));
     this.requireNotSwitching(); // 옮기는 명단에 없는 칸이 옛 실행기에 남는다.
     const member = this.store.createMember({ projectId: project.id, ...input, origin: "runner", status: "idle" });
@@ -2630,13 +2860,17 @@ export class Orchestrator implements OrchestratorApi {
       if (!attachment || !this.store.isProjectAttachment(projectId, id)) throw new ApiError(404, `이 프로젝트에서 대표가 보낸 첨부가 아닙니다: ${id}`);
       return attachment;
     });
+    const task = input.taskId ? this.store.requireTask(input.taskId) : null;
+    if (task && task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.taskId}`);
     const delivery = this.store.transaction(() => {
+      const taskLine = this.taskLineFor(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
         projectId,
         memberId: target.id,
         kind: "instruction",
-        text: [formatInstruction(target.name, input.text, quote), ...attachmentLines(this.attachmentsFor(target, attachments))].join("\n"),
+        text: [formatInstruction(target.name, input.text, quote), ...attachmentLines(this.attachmentsFor(target, attachments)), ...(taskLine ? [taskLine] : [])].join("\n"),
         urgent: input.urgent,
+        taskId: task?.id ?? null,
       });
       if (assignedBy) this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent);
       return delivery;
@@ -3016,6 +3250,7 @@ export class Orchestrator implements OrchestratorApi {
       updatedAt: m.updatedAt,
       ...memberConfig(m, ranks, codexRanks),
       ...staffSubagent(m.cli, ranks, codexRanks),
+      run: m.executionState ? { id: m.executionState.runId, phase: m.executionState.phase, taskIds: m.executionState.taskIds ?? [] } : null,
     }));
   }
 
@@ -3023,6 +3258,49 @@ export class Orchestrator implements OrchestratorApi {
     const member = this.store.findMember(projectId, memberRef);
     if (!member) throw new ApiError(404, `이 프로젝트에 없는 직원입니다: ${memberRef}`);
     return member;
+  }
+
+  // ---- 작업 ----
+  /** 직원이 작업을 등록하거나 고친다. 이후 그 직원의 출력은 task_id 를 밝혀야 한다. */
+  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null }): { task: Task; created: boolean } {
+    return this.store.transaction(() => {
+      if (input.taskId) this.requireTaskInProject(member, input.taskId);
+      return this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree });
+    });
+  }
+
+  private requireTaskInProject(member: Member, taskId: string): Task {
+    const task = this.store.getTask(taskId);
+    if (!task || task.projectId !== member.projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${taskId}. task 도구로 등록한 이 프로젝트의 작업 id 를 쓴다`);
+    return task;
+  }
+
+  /**
+   * 직원이 남기는 글·카드·자료·할 일의 작업. 서버는 출처가 증명하는 것만 쓴다(마지막으로 받은 작업으로 추측하지 않는다).
+   * 1) 직원이 밝힌 task_id(null 은 일부러 전체). 2) 바뀌지 않는 출처: 이어 준 결재·자료·정정 대상 글의 작업(작업이 붙은 것만,
+   * 서로 다르면 거절). 3) 둘 다 없으면: 작업을 쓰는 직원은 누락으로 보고 거절해 다시 부르게 하고, 작업을 쓴 적 없는 직원은 예전대로 전체.
+   */
+  memberTask(member: Member, explicit?: string | null, sources: (string | null | undefined)[] = []): string | null {
+    if (explicit === null) return null;
+    if (explicit !== undefined) return this.requireTaskInProject(member, explicit).id;
+    const fixed = [...new Set(sources.filter((id): id is string => !!id))];
+    if (fixed.length === 1) return fixed[0]!;
+    if (fixed.length > 1) throw new ApiError(400, `이어 준 결재·자료가 서로 다른 작업(${fixed.join(", ")})이라 어느 작업의 글인지 정할 수 없습니다. task_id 를 넣어 다시 부르세요`);
+    if (!this.store.memberUsesTasks(member.id)) return null;
+    throw new ApiError(400, "task_id 가 없습니다. 작업을 쓰는 중이라 작업을 밝히지 않은 글을 서버가 어느 작업에 둘지 정하지 않습니다. 이 글이 속한 작업의 id(받은 글의 '작업 #' 줄)를 task_id 로 넣거나, 어느 작업에도 속하지 않는 글이면 task_id: null 로 다시 부르세요");
+  }
+
+  /** 턴 마지막 글(자동 보고)의 작업: 그 턴에 받은 대표 글·답·지시가 모두 같은 작업일 때만 그 작업, 아니면 전체. */
+  private turnTask(deliveries: Delivery[] | undefined): string | null {
+    const ids = new Set((deliveries ?? []).filter((d) => TASK_SOURCE_KINDS.has(d.kind)).map((d) => this.store.deliveryTaskId(d.id)));
+    return ids.size === 1 ? [...ids][0]! : null;
+  }
+
+  /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
+  private taskLineFor(projectId: string, taskId: string | null | undefined): string | null {
+    const task = taskId ? this.store.getTask(taskId) : null;
+    if (task) return formatTaskLine(task);
+    return this.store.listTasks(projectId).length ? formatTaskLine(null) : null;
   }
 
   // ---- 보고 ----
@@ -3047,10 +3325,16 @@ export class Orchestrator implements OrchestratorApi {
       if (previous.projectId !== member.projectId || previous.memberId !== member.id || previous.mine) throw new ApiError(400, "자신이 작성한 보고만 정정할 수 있습니다");
     }
     const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
+    // 고정 출처: 이어 준 결재·자료, 정정하는 자신의 이전 보고
+    const taskId = this.memberTask(member, input.taskId, [
+      input.decisionId ? this.store.getDecision(input.decisionId)?.taskId : null,
+      ...files.map((f) => f.taskId),
+      input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
+    ]);
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
-      body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null,
+      body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
     }), message => {
       this.store.noteDelegationPost(member.id);
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
@@ -3092,6 +3376,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     const recLabel = input.rec ? input.options?.find((o) => o.k === input.rec)?.label : undefined;
     const detail = withRecLine(input.detail, recLabel, input.recReason);
+    const taskId = this.memberTask(member, input.taskId, [input.fileId ? this.store.getFile(input.fileId)?.taskId : null]);
     const { value: decision, deliveries } = this.store.withDeliveryIntents(() => {
       const decision = this.store.createDecision({
         projectId: member.projectId,
@@ -3104,6 +3389,7 @@ export class Orchestrator implements OrchestratorApi {
         group: input.group,
         fileId: input.fileId,
         images: input.images,
+        taskId,
       });
       this.store.createMessage({
         projectId: member.projectId,
@@ -3115,6 +3401,7 @@ export class Orchestrator implements OrchestratorApi {
         decisionId: decision.id,
         fileId: input.fileId ?? null,
         attachments: input.images,
+        taskId,
       });
       this.store.patchMember(member.id, { status: "waiting" });
       return decision;
@@ -4089,7 +4376,16 @@ export class Orchestrator implements OrchestratorApi {
           const due = new Date(Date.now() + this.timings.turnErrorRetryMs).toISOString();
           for (const run of pending) for (const id of run.deliveryIds) this.store.patchDeliveryRetry(id, { nextAttemptAt: due, retryScope: `member:${member.id}`, retryReason: reason });
         }
-        this.endExecution(member, e.isError ? "error" : "success", e.errorText ?? e.reason ?? null, e.exitCode ?? null, e.turn);
+        {
+          // 멈춤을 CLI 가 확인한 턴은 성공으로 치지 않는다(보고 보완을 요청하지 않고, 끊긴 일을 끝난 일로 남기지 않는다).
+          const rt = this.runtime(member.id);
+          // 멈춤 키를 보내는 사이에 턴이 끝나도 그 멈춤 때문에 끝난 것으로 본다.
+          const stop = rt.stopRequest;
+          const stopped = !!stop || !!rt.turn?.interrupted;
+          rt.stopRequest = null;
+          if (stopped) this.endExecution(member, "interrupted", stopReason(stop?.by ?? null), e.exitCode ?? null, e.turn, stop?.by ?? null);
+          else this.endExecution(member, e.isError ? "error" : "success", e.errorText ?? e.reason ?? null, e.exitCode ?? null, e.turn);
+        }
         if (e.isError && !pending.length && member.status === "error" && member.lastError === (e.errorText ?? "오류")) return;
         return this.onTurnEnd(member, e);
       case "activity":
@@ -4238,7 +4534,7 @@ export class Orchestrator implements OrchestratorApi {
       const tidyOnly = tidied && !!turn?.deliveries?.every((d) => d.kind === "system");
       if (!posted && e.finalText.trim()) {
         if (tidyOnly) this.store.appendActivity(member.id, "system", `판 정리: ${normalizeSpace(e.finalText).slice(0, 300)}`);
-        else await this.fallbackReport(member, e.finalText, direct);
+        else await this.fallbackReport(member, e.finalText, direct, turn?.deliveries);
       }
     }
     await this.pump(member.id);
@@ -4260,15 +4556,16 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** post 를 안 부른 턴의 마지막 글(§6). 직원은 총괄에게 보고, 총괄·본사 AI 는 대표에게 하는 말. */
-  private async fallbackReport(member: Member, finalText: string, direct: boolean): Promise<void> {
+  private async fallbackReport(member: Member, finalText: string, direct: boolean, turnDeliveries?: Delivery[]): Promise<void> {
+    const taskId = this.turnTask(turnDeliveries);
     if (member.kind !== "worker") {
-      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText });
+      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText, taskId });
       return;
     }
     const firstLine = normalizeSpace(finalText.split("\n")[0] ?? "").slice(0, 60);
     const title = `${direct ? "(직접) " : ""}(자동) ${firstLine}`;
     const conductor = this.store.getConductor(member.projectId);
-    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText }), message => conductor && conductor.id !== member.id ? [{
+    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId }), message => conductor && conductor.id !== member.id ? [{
       projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText), wake: true, refType: "message", refId: message.id,
     }] : []);
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
@@ -4403,7 +4700,7 @@ export class Orchestrator implements OrchestratorApi {
   private runtime(memberId: string): Runtime {
     let rt = this.runtimes.get(memberId);
     if (!rt) {
-      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, background: null };
+      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, background: null, stopRequest: null };
       this.runtimes.set(memberId, rt);
     }
     return rt;

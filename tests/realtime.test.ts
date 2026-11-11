@@ -273,3 +273,53 @@ describe("v1/v2 WebSocket", () => {
     await expect(fetch(`${f.base}/api/health`)).rejects.toThrow();
   });
 });
+
+
+describe("browser realtime session", () => {
+  test("Bearer creates a scoped cookie and browser v2 authenticates without URL secrets", async () => {
+    const f = await fixture();
+    const capabilities = await (await fetch(`${f.base}/api/capabilities`, { headers: auth })).json() as { capabilities: { browserRealtime?: boolean } };
+    expect(capabilities.capabilities.browserRealtime).toBe(true);
+    const response = await fetch(`${f.base}/api/realtime-session`, { method: "POST", headers: auth });
+    expect(response.status).toBe(204);
+    const cookie = response.headers.get("set-cookie")!;
+    expect(cookie).toContain("Path=/ws");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).not.toContain(CODE);
+    const headers = { Cookie: cookie.split(";")[0]!, Origin: f.base };
+    const browser = connect(`${f.wsURL}?v=2`, headers);
+    await browser.opened;
+    expect(await browser.next(event => event.type === "hello")).toMatchObject({ protocol: 2 });
+    expect((await fetch(`${f.base}/api/bootstrap`, { headers })).status).toBe(401);
+    expect((await fetch(`${f.base}/files/missing/missing.txt`, { headers })).status).toBe(401);
+    expect((await fetch(`${f.base}/ws`, { headers })).status).toBe(401);
+    expect((await fetch(`${f.base}/ws?v=2`, { headers: { ...headers, Authorization: "Bearer wrong" } })).status).toBe(401);
+  });
+
+  test("missing auth, foreign Origin, unsupported method and query cannot mint sessions", async () => {
+    const f = await fixture();
+    expect((await fetch(`${f.base}/api/realtime-session`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${f.base}/api/realtime-session?t=${CODE}`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${f.base}/api/realtime-session`, { method: "POST", headers: { ...auth, Origin: "https://foreign.example" } })).status).toBe(403);
+    expect((await fetch(`${f.base}/api/realtime-session`, { headers: auth })).status).toBe(405);
+    expect((await fetch(`${f.base}/api/realtime-session?unknown=1`, { method: "POST", headers: auth })).status).toBe(400);
+    const clear = await fetch(`${f.base}/api/realtime-session`, { method: "DELETE" });
+    expect(clear.status).toBe(204);
+    expect(clear.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  test("cookie auth rejects foreign origins and is invalid after code rotation", async () => {
+    const f = await fixture();
+    const issue = await fetch(`${f.base}/api/realtime-session`, { method: "POST", headers: auth });
+    expect(issue.status).toBe(204);
+    const headers = { Cookie: issue.headers.get("set-cookie")!.split(";")[0]! };
+    expect((await fetch(`${f.base}/ws?v=2`, { headers: { ...headers, Origin: "https://foreign.example" } })).status).toBe(403);
+    const browser = connect(`${f.wsURL}?v=2`, headers);
+    await browser.opened;
+    const rotate = await fetch(`${f.base}/api/auth/rotate`, { method: "POST", headers: auth, body: "{}" });
+    expect(rotate.status).toBe(200);
+    expect(await browser.closed).toBe(4001);
+    expect((await fetch(`${f.base}/ws?v=2`, { headers })).status).toBe(401);
+  });
+});

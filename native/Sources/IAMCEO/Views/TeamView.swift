@@ -1813,7 +1813,7 @@ struct NewMemberView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var role = ""
-    @State private var provider = "claude"
+    @State private var provider = "codex"
     @State private var model = ""
     @State private var failure: String?
     @FocusState private var focus: NewMemberField?
@@ -1844,6 +1844,7 @@ struct NewMemberView: View {
             addButton.controlSize(.regular).keyboardShortcut(.defaultAction)
         }
         .interactiveDismissDisabled(busy)
+        .onAppear { provider = store.defaultMemberCLI }
     }
 
     private var addButton: some View {

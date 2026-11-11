@@ -10,6 +10,8 @@ import { Glass, GlassButton, glassClass } from "../glass";
 import { ApiError, api, errorText, fileUrl, saveAttachment } from "../lib/api";
 import { splitDetail, type RecBandText } from "../lib/decision-view";
 import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute } from "../lib/store";
+import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, sameDecisionReview, type WriteReview } from "../lib/reviewed-writes";
+import { readWriteContext, useWriteContext } from "../lib/review-context";
 import "../styles/inbox.css";
 
 /** 처리된 결재는 서버가 이만큼씩 준다. */
@@ -54,7 +56,8 @@ const hasRec = (d: Decision) => d.rec !== null && d.options.some((o) => o.k === 
 
 /** 고른 것. 선택지 k, 또는 글만 보내는 NOTE_ONLY. */
 const NOTE_ONLY = "\0note";
-type Picks = Readonly<Record<string, string>>;
+type DecisionPick = { value: string; updatedAt: string; review: WriteReview };
+type Picks = Readonly<Record<string, DecisionPick>>;
 
 /** 2단계의 둘째: 이 버튼을 눌러야 나간다. 나타난 직후(더블탭의 둘째)와 자리가 밀린 직후의 누름은 받지 않는다. */
 function ConfirmBar({ quoted, label, hint, busy, disabled, pickKey, onConfirm, onCancel }: { quoted?: string; label: string; hint?: string; busy: boolean; disabled: boolean; pickKey?: string; onConfirm: () => void; onCancel: () => void }) {
@@ -99,7 +102,7 @@ function ConfirmBar({ quoted, label, hint, busy, disabled, pickKey, onConfirm, o
 function useAnswer(decision: Decision, onKeep: (id: string) => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (choice: string | null, note: string) => {
+  const submit = async (review: WriteReview, choice: string | null, note: string) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -108,14 +111,18 @@ function useAnswer(decision: Decision, onKeep: (id: string) => void) {
     const card = document.querySelector<HTMLElement>(`[data-decision="${decision.id}"]`);
     const hadFocus = !!card && !!active && card.contains(active);
     try {
-      const answered = await api.answer(decision.id, { choice, note: note.trim() || null });
-      memoDrafts.delete(decision.id);
+      const request = { choice, note: note.trim() || null };
+      const answered = await executeReviewedWrite(review, readWriteContext(),
+        version => api.answer(decision.id, { ...request, expectedVersion: String(version) }),
+        () => api.answer(decision.id, request));
+      if (!reviewStillCurrent(review, readWriteContext())) return;
+      if (memoDrafts.get(decision.id) === note) memoDrafts.delete(decision.id);
       if (hadFocus) focusAfterAnswer = decision.id;
       applyLocal({ type: "decision", decision: answered });
     } catch (e) {
       setError(errorText(e));
       // 다른 곳에서 이미 답했거나, 연결이 끊겼거나, 응답만 잃었을 수 있다. 서버에 물어 화면을 실제 상태로 바꾼다.
-      if (e instanceof ApiError && (e.status === 409 || e.status === 0)) void refresh();
+      if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) void refresh();
     } finally {
       setBusy(false);
     }
@@ -174,7 +181,7 @@ function Background({ decision, detail, fileTitle, onZoom }: { decision: Decisio
 interface CardProps {
   decision: Decision;
   fileTitle: string | null;
-  pick: string | null;
+  pick: DecisionPick | null;
   locked: boolean;
   onPick: (id: string, pick: string | null) => void;
   onKeep: (id: string) => void;
@@ -192,9 +199,10 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
   useAutoGrow(memoRef, note);
   const free = decision.options.length === 0;
   const typed = note.trim().length > 0;
-  const option = decision.options.find((o) => o.k === pick);
+  const reviewedPick = pick?.updatedAt === decision.updatedAt ? pick : null;
+  const option = decision.options.find((o) => o.k === reviewedPick?.value);
   // 글만 보내려던 참인데 글을 다 지웠으면 고를 것이 없다.
-  const noteOnly = pick === NOTE_ONLY && typed;
+  const noteOnly = reviewedPick?.value === NOTE_ONLY && typed;
   const choosing = !!option || noteOnly;
   const armNote = () => {
     if (typed && !busy && !locked) onPick(decision.id, NOTE_ONLY);
@@ -228,14 +236,14 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
               type="button"
               className="ibx-opt"
               data-rec={o.k === decision.rec ? "" : undefined}
-              aria-pressed={pick === o.k}
+              aria-pressed={reviewedPick?.value === o.k}
               disabled={busy || locked}
               onClick={() => onPick(decision.id, o.k)}
             >
               <span className="ibx-opt__label">
                 {o.label}
                 {o.k === decision.rec ? <Badge tone="accent">권장</Badge> : null}
-                {pick === o.k ? (
+                {reviewedPick?.value === o.k ? (
                   <svg className="ibx-opt__check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                     <path d="M3 8.5l3.2 3.2L13 4.8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
@@ -277,7 +285,7 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
           disabled={locked}
           pickKey={option?.k ?? NOTE_ONLY}
           onCancel={() => onPick(decision.id, null)}
-          onConfirm={() => void submit(option?.k ?? null, note)}
+          onConfirm={() => { if (reviewedPick) void submit(reviewedPick.review, option?.k ?? null, note); }}
         />
       ) : null}
       {error ? (
@@ -413,44 +421,51 @@ function DoneRow({ decision, fileTitle, expanded, onToggle, onZoom }: { decision
 }
 
 function DecisionGroup({ name, decisions, picks, locked, render, onKeep, single }: { single: boolean; name: string; decisions: Decision[]; picks: Picks; locked: boolean; render: (d: Decision) => ReactNode; onKeep: (id: string) => void }) {
+  const reviewContext = useWriteContext();
   const open = decisions.filter((d) => d.status === "open");
   // 직접 다른 것을 고른 카드를 권장안으로 덮지 않는다.
-  const targets = open.filter((d) => hasRec(d) && (picks[d.id] === undefined || picks[d.id] === d.rec));
+  const targets = open.filter((d) => hasRec(d) && (picks[d.id] === undefined || picks[d.id].value === d.rec));
   const skipped = open.length - targets.length;
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 묻기 시작할 때 대표가 본 카드. 확인은 이 카드들에만 간다. */
-  const armedIds = useRef<ReadonlySet<string>>(new Set());
+  const armedDecisions = useRef<(Decision & { review: WriteReview })[]>([]);
   const sectionRef = useRef<HTMLElement>(null);
 
-  // 묻는 사이 새 카드가 왔거나 대상이 빠졌다. 안 읽은 카드까지 승인되거나 버튼의 건수가 실제와 어긋나면 안 되니 처음부터 다시 묻는다. 보내는 중에 줄어드는 것은 답이 나간 것이다.
-  const changed = armed && !busy && (targets.length !== armedIds.current.size || targets.some((d) => !armedIds.current.has(d.id)));
+  // 묻는 사이 카드의 내용·대상이 바뀌었다. 안 읽은 카드까지 승인되거나 버튼의 건수가 실제와 어긋나면 안 되니 처음부터 다시 묻는다. 보내는 중에 줄어드는 것은 답이 나간 것이다.
+  const changed = armed && !busy && !sameDecisionReview(armedDecisions.current, targets);
   useEffect(() => {
     if (changed) setArmed(false);
   }, [changed]);
 
   const arm = () => {
-    armedIds.current = new Set(targets.map((d) => d.id));
+    armedDecisions.current = targets.map(d => ({ ...d, review: captureWriteReview(reviewContext, { kind: "decision", projectId: d.projectId, updatedAt: d.updatedAt }) }));
     setError(null);
     setArmed(true);
   };
 
   const confirm = async () => {
-    const confirmed = targets.filter((d) => armedIds.current.has(d.id));
+    if (busy || locked || !sameDecisionReview(armedDecisions.current, targets)) { setArmed(false); return; }
+    const confirmed = armedDecisions.current;
     setBusy(true);
     setError(null);
     confirmed.forEach((d) => onKeep(d.id));
     const results = await Promise.allSettled(
       confirmed.map(async (d) => {
-        const answered = await api.answer(d.id, { choice: d.rec, note: (memoDrafts.get(d.id) ?? d.lastNote)?.trim() || null, batch: true });
-        memoDrafts.delete(d.id);
+        const memo = memoDrafts.get(d.id);
+        const request = { choice: d.rec, note: (memo ?? d.lastNote)?.trim() || null, batch: true };
+        const answered = await executeReviewedWrite(d.review, readWriteContext(),
+          version => api.answer(d.id, { ...request, expectedVersion: String(version) }),
+          () => api.answer(d.id, request));
+        if (!reviewStillCurrent(d.review, readWriteContext())) return;
+        if (memoDrafts.get(d.id) === memo) memoDrafts.delete(d.id);
         applyLocal({ type: "decision", decision: answered });
       }),
     );
     const failed = results.flatMap((r) => (r.status === "rejected" ? [r.reason as unknown] : []));
     if (failed.length > 0) setError(`${failed.length}건을 보내지 못했습니다: ${errorText(failed[0])}`);
-    if (failed.some((e) => e instanceof ApiError && (e.status === 409 || e.status === 0))) void refresh();
+    if (failed.some((e) => e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0))) void refresh();
     setArmed(false);
     setBusy(false);
     // 눌렀던 버튼이 사라졌다. 키보드로 눌렀으면 초점이 문서 처음으로 가지 않게 묶음 안으로 옮긴다.
@@ -476,7 +491,7 @@ function DecisionGroup({ name, decisions, picks, locked, render, onKeep, single 
         ) : null}
       </div>
       {showConfirm && !single ? (
-        <ConfirmBar label={`묶음 ${armedIds.current.size}건 결정`} hint="각 카드의 권장안으로 결정합니다" busy={busy} disabled={locked} onCancel={() => setArmed(false)} onConfirm={() => void confirm()} />
+        <ConfirmBar label={`묶음 ${armedDecisions.current.length}건 결정`} hint="각 카드의 권장안으로 결정합니다" busy={busy} disabled={locked} onCancel={() => setArmed(false)} onConfirm={() => void confirm()} />
       ) : null}
       {error ? (
         <p className="ibx-error" role="alert">
@@ -543,6 +558,7 @@ function measureCards(root: HTMLElement | null) {
 
 export default function Inbox() {
   const state = useProject();
+  const reviewContext = useWriteContext();
   const route = useRoute();
   const gate = useGate();
   const [kept, setKept] = useState<ReadonlySet<string>>(() => new Set());
@@ -628,7 +644,7 @@ export default function Inbox() {
   const decisionList = state?.decisions;
   useEffect(() => {
     setPicks((all) => {
-      const stale = decisionList?.filter((d) => d.status !== "open" && all[d.id] !== undefined) ?? [];
+      const stale = decisionList?.filter((d) => (d.status !== "open" || all[d.id]?.updatedAt !== d.updatedAt) && all[d.id] !== undefined) ?? [];
       if (stale.length === 0) return all;
       const next = { ...all };
       for (const d of stale) delete next[d.id];
@@ -643,7 +659,10 @@ export default function Inbox() {
     setPicks((all) => {
       const next = { ...all };
       if (value === null) delete next[id];
-      else next[id] = value;
+      else {
+        const decision = state.decisions.find(d => d.id === id);
+        if (decision) next[id] = { value, updatedAt: decision.updatedAt, review: captureWriteReview(reviewContext, { kind: "decision", projectId: decision.projectId, updatedAt: decision.updatedAt }) };
+      }
       return next;
     });
   const fileTitleOf = (d: Decision) => state.files.find((f) => f.id === d.fileId)?.title ?? null;

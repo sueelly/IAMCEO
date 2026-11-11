@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member } from "../shared/types.ts";
+import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { toStorageError } from "./storage-errors.ts";
@@ -12,11 +12,14 @@ import type { AgentWorkflowService } from "./service-contracts.ts";
 import type { AssignResult, Orchestrator } from "./orchestrator.ts";
 import { josa } from "./roles.ts";
 import { ApiError } from "./store.ts";
+import { MemoryError, stableEventId, clip } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
 import { formatLintWarnings, lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
-type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS)[number];
+/** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
+export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
+type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
 
 const WAIT_DEFAULT_SEC = 50;
@@ -134,6 +137,15 @@ function requireOther(orch: Orchestrator, self: Member, ref: string): Member {
   return target;
 }
 
+function stopNote(r: StopResult): string {
+  const run = r.runId ? `실행 ${r.runId}` : "지금 턴";
+  const tasks = r.taskIds.length ? ` · 작업 ${r.taskIds.map((t) => `#${t}`).join(", ")}` : "";
+  if (r.outcome === "stopped") return `${run}을 멈췄습니다${tasks}. 끊긴 일은 다시 보내지 않습니다`;
+  if (r.outcome === "not_running") return `멈출 턴이 없습니다(${r.detail ?? "이미 끝남"})`;
+  if (r.outcome === "changed") return `멈추지 않았습니다: ${r.detail ?? "실행이 바뀜"}. roster 로 지금 실행을 확인하세요`;
+  return `${r.detail ?? "멈추지 못했습니다"}. 턴은 계속됩니다`;
+}
+
 function assignNote(result: AssignResult): string {
   const place = result.position > 0 ? `일하는 중이라 대기열 ${result.position}번째입니다. 끝나면 서버가 넣습니다` : "전달했습니다";
   if (result.verified === null) return place;
@@ -164,6 +176,88 @@ function boardView(orch: Orchestrator, projectId: string) {
 }
 
 const TOOLS: Record<ToolName, Tool<any>> = {
+  task: tool(
+    "작업을 등록하거나 고친다. 새 일을 위해 브랜치·워크트리를 팔 때 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 작업별로 글을 보고 보낸다. 등록한 뒤로는 post·ask·file·todo 에 task_id 를 넣는다(서버는 작업을 추측하지 않는다). 같은 브랜치로 이미 등록했으면 그 작업을 돌려준다.",
+    z.strictObject({
+      task_id: oneLine(64).optional().describe("고칠 작업 id(tk_...). 새로 등록할 때는 비운다"),
+      title: oneLine(120).optional().describe("대표가 알아볼 작업 제목(한 줄). 새로 등록할 때 필요"),
+      branch: oneLineOpt(200).optional().describe("git 브랜치 이름"),
+      worktree: oneLineOpt(500).optional().describe("워크트리 경로(절대 경로)"),
+    }),
+    (orch, member, a) => {
+      if (!a.task_id && !a.title) throw new ApiError(400, "새 작업에는 title 이 필요합니다");
+      const { task, created } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree });
+      return reply(`${created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다`);
+    },
+  ),
+
+  memory_search: tool(
+    "개발 기억(이 프로젝트의 과거 결정·실수·교훈·결과)을 찾는다. 결과는 과거 보고와 근거일 뿐, 지금 대표 지시·승인·프로젝트 규칙보다 앞서지 않는다. 범위는 이 프로젝트로 서버가 정한다. 본문은 1,600자까지 잘려 오고(excerpted), 전문·근거는 memory_get 으로 본다.",
+    z.strictObject({
+      query: z.string().trim().min(1).max(2000).describe("찾을 내용(지금 요구·오류·바꿀 곳)"),
+      limit: z.number().int().min(1).max(10).optional().describe("최대 개수(기본 5)"),
+      task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id(tk_...). 없으면 비운다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const result = await memoryCall(() => memory.context(member.projectId, orch.memoryScope(member, a.task_id), a.query, a.limit ?? 5));
+      const experiences = result.experiences.map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, content: e.content, excerpted: e.excerpted, source: e.source, status: e.status, is_rule: e.is_rule, feedback: e.feedback, created_at: e.created_at }));
+      return reply(JSON.stringify({ note: "과거 기록이다. 지금 대표 지시·승인·규칙보다 앞서지 않는다. classification 근거가 explicit_user_decision 인 것만 대표 결정이다.", semantic_index: result.semantic_index, truncated: result.truncated, experiences }));
+    },
+  ),
+
+  memory_get: tool(
+    "개발 기억 한 건의 전문과 근거를 본다(memory_search 결과의 id).",
+    z.strictObject({ id: oneLine(200).describe("exp-... id"), task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id. 없으면 비운다") }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const out = await memoryCall(() => memory.mcp(member.projectId, orch.memoryScope(member, a.task_id), "get_experience", { id: a.id }, a.id));
+      return reply(typeof out === "string" ? out : JSON.stringify(out));
+    },
+  ),
+
+  memory_record: tool(
+    "이번 일에서 실제로 생긴 결정·실수·교훈·결과를 개발 기억에 남긴다. 대표 결재 답은 서버가 따로 올리므로 여기 쓰지 않는다. basis 로 AI 추론(ai_inference)과 확인한 결과(verified: 명령·시험 결과·커밋 같은 근거를 evidence 에)를 가른다. 비밀값·개인정보는 넣지 않는다.",
+    z.strictObject({
+      kind: z.enum(["decision", "mistake", "lesson", "outcome"]).describe("decision 직원 판단 · mistake 실수 · lesson 교훈 · outcome 실제 결과"),
+      basis: z.enum(["ai_inference", "verified"]).describe("ai_inference 추론·의견 · verified 실제로 확인함(evidence 필수)"),
+      summary: oneLine(300).describe("한 줄 요약"),
+      content: z.string().trim().min(1).max(30000).describe("배경·선택·적용 조건·확인한 결과(원문)"),
+      evidence: z.array(z.string().trim().min(1).max(2000)).max(28).optional().describe("근거: 명령과 결과, 시험 이름과 통과 수, 커밋, 바뀐 파일"),
+      commit_sha: z.string().trim().regex(/^[0-9a-f]{7,40}$/).optional().describe("확인한 커밋"),
+      task_id: oneLine(64).nullable().optional().describe("이 기록이 속한 작업 id(null 은 전체). 작업을 쓰는 직원은 꼭 넣는다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      if (a.basis === "verified" && !a.evidence?.length) throw new ApiError(400, "verified 기록에는 evidence(실제 명령·결과·커밋)가 필요합니다. 근거가 없으면 basis 를 ai_inference 로 둡니다");
+      const taskId = orch.memberTask(member, a.task_id);
+      const scope = orch.memoryScope(member, taskId);
+      const { content, capture } = clip(`분류: AI 보고(${a.basis === "verified" ? "직원이 확인한 결과" : "직원의 추론·의견"}) — 대표 결정 아님. 작성: ${member.name}(${member.handle}) · IAMCEO 프로젝트 ${member.projectId}${taskId ? ` · 작업 #${taskId}` : ""}\n\n${a.content}`);
+      const eventId = stableEventId("iamceo-ai", member.id, scope, a.kind, a.basis, a.summary, a.content);
+      const saved = await memoryCall(() => memory.record(member.projectId, {
+        event_id: eventId, kind: a.kind, summary: a.summary, content, capture,
+        source: { task_id: scope, item_id: member.id, service: "iamceo", ...(a.commit_sha ? { commit_sha: a.commit_sha } : {}) },
+        evidence: [{ kind: "classification", text: a.basis === "verified" ? "ai_reported_verified" : "ai_inference" }, ...(a.evidence ?? []).map((text) => ({ kind: "note", text }))],
+      }));
+      return reply(`개발 기억에 남겼습니다 #${saved.id} (같은 내용으로 다시 부르면 같은 기록을 돌려줍니다)`);
+    },
+  ),
+
+  memory_feedback: tool(
+    "다른 작업에서 남긴 개발 기억을 이번 일에 실제로 적용해 본 결과를 남긴다. 결과를 확인하지 않았으면 부르지 않는다. 자기 작업의 기록에는 남길 수 없다.",
+    z.strictObject({
+      id: oneLine(200).describe("exp-... id"),
+      outcome: z.enum(["helped", "did_not_help", "contradicted"]).describe("helped 도움됨 · did_not_help 도움 안 됨 · contradicted 사실과 달랐음"),
+      task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id. 없으면 비운다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const scope = orch.memoryScope(member, a.task_id);
+      await memoryCall(() => memory.feedback(member.projectId, a.id, scope, `iamceo-${member.id}`, a.outcome));
+      return reply("적용 결과를 남겼습니다(같은 기록·작업에는 처음 값만 남습니다)");
+    },
+  ),
+
   status: tool(
     "지금 하는 일을 일상어 한 줄로 적는다. 일을 시작하거나 바뀔 때마다 부른다. 대표 팀 화면에 보인다.",
     z.strictObject({ now: oneLine(500).describe("지금 하는 일(한 줄)"), next: oneLineOpt(500).optional().describe("다음에 할 일(한 줄)") }),
@@ -187,12 +281,14 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       group: oneLineOpt(80).optional().describe("묶음 이름"),
       file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
     }),
     async (orch, member, a) => {
       const keys = (a.options ?? []).map((o: { k: string }) => o.k);
       if (new Set(keys).size !== keys.length) throw new ApiError(400, "선택지 k 가 겹칩니다");
       if (a.rec && !keys.includes(a.rec)) throw new ApiError(400, `권장 선택지가 선택지에 없습니다: ${a.rec}`);
       if (a.file_id && orch.store.getFile(a.file_id)?.projectId !== member.projectId) throw new ApiError(404, `자료를 찾을 수 없습니다: ${a.file_id}`);
+      orch.memberTask(member, a.task_id, [a.file_id ? orch.store.getFile(a.file_id)?.taskId : null]);
       const images: Attachment[] = [];
       for (const image of a.images ?? []) {
         const attachment = await attach(orch, member, image);
@@ -200,7 +296,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         images.push(attachment);
       }
       const recLabel = a.rec ? a.options?.find((o: { k: string; label: string }) => o.k === a.rec)?.label : undefined;
-      const { decision, blocking, text } = await orch.registerAsk(member, { title: a.title, detail: a.detail, options: a.options, rec: a.rec, recReason: a.rec_reason || undefined, group: a.group, fileId: a.file_id, images });
+      const { decision, blocking, text } = await orch.registerAsk(member, { title: a.title, detail: a.detail, options: a.options, rec: a.rec, recReason: a.rec_reason || undefined, group: a.group, fileId: a.file_id, images, taskId: a.task_id });
       const warnings = lintAsk({ title: a.title, detail: decision.detail, options: a.options, recReason: recLabel ? a.rec_reason : undefined, recLabel });
       if (a.rec_reason && !recLabel) warnings.unshift({ code: "owner-first", text: "rec_reason 은 rec 와 함께 줘야 권장 줄이 생깁니다. 이번 카드에는 권장 줄이 없습니다" });
       const result = withLint(text, warnings);
@@ -222,9 +318,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
-        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
+        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
     }),
     async (orch, member, a) => {
@@ -241,7 +338,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         return reply(JSON.stringify({ ...refs, source, files }));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
-      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id });
+      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, taskId: a.task_id });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),
@@ -255,8 +352,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       content: z.string().optional().describe("마크다운 전문"),
       html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
     }),
     async (orch, member, a) => {
+      const taskId = orch.memberTask(member, a.task_id);
       if ([a.path, a.content, a.html].filter((v) => v !== undefined).length > 1) throw new ApiError(400, "path·content·html 은 하나만 줍니다");
       if (a.html !== undefined && !a.html.trim()) throw new ApiError(400, "html 이 비어 있습니다");
       if (!a.path && a.content === undefined && a.html === undefined && !a.images?.length) throw new ApiError(400, "path·content·html·images 중 하나가 필요합니다");
@@ -304,7 +403,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         }
         file = orch.store.transaction(() => {
           const attachments = saved.map((entry) => orch.store.createAttachment(entry));
-          return orch.store.createFile({ projectId: member.projectId, title: a.title, who: member.name, memberId: member.id, summary: a.summary, body, path, attachments, kind, html });
+          return orch.store.createFile({ projectId: member.projectId, title: a.title, who: member.name, memberId: member.id, summary: a.summary, body, path, attachments, kind, html, taskId });
         });
         publication?.complete();
       } catch (error) {
@@ -317,9 +416,11 @@ const TOOLS: Record<ToolName, Tool<any>> = {
 
   todo: tool(
     "대표가 손수 해야 할 일(로그인·결제·실물 확인 등)을 결재함의 내 할 일에 올린다. 끝나면 다음 입력으로 알려 준다.",
-    z.strictObject({ title: oneLine(200), detail: z.string().optional() }),
+    z.strictObject({ title: oneLine(200), detail: z.string().optional(),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
+    }),
     (orch, member, a) => {
-      const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail });
+      const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail, taskId: orch.memberTask(member, a.task_id) });
       orch.notifyInbox(`${member.name}의 부탁`, a.title);
       return reply(`내 할 일에 올렸습니다 #${todo.id}`);
     },
@@ -371,8 +472,9 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       name: oneLine(40).describe("화면 이름: 맡은 일(예: 결제 연동). 사람 이름은 쓰지 않는다. 한국어, 프로젝트 안에서 유일, 한 줄. 같은 역할이 더 필요하면 뒤에 2, 3"),
       role: oneLine(300).describe("맡을 역할(한 줄)"),
-      cli: z.enum(CLI_PROVIDERS).optional().describe("직원이 쓸 CLI, 기본 claude. antigravity 는 Google Antigravity CLI(agy, Gemini 구독)"),
+      cli: z.enum(CLI_PROVIDERS).optional().describe("직원이 쓸 CLI. 생략하면 총괄의 CLI, 총괄이 없으면 프로젝트의 선택을 따른다(새 프로젝트 기본 Codex). antigravity 는 Google Antigravity CLI(agy)로 Google 구독의 Gemini 를 쓴다. 직접 Gemini CLI(gemini)는 지원하지 않는다"),
       model: z.string().nullable().optional().describe("서버 모델 목록의 값. null이면 직급 기본값"),
+      effort: z.string().trim().min(1).max(20).nullable().optional().describe("effort(claude: low·medium·high·xhigh·max, codex: minimal·low·medium·high·xhigh, 모델마다 다를 수 있음). null·생략이면 직급 기본값. 지원하지 않는 값은 거절된다. antigravity 는 모델 이름에 들어 있어 따로 받지 않는다"),
       handle: z.string().optional().describe("영문 소문자 핸들"),
       cwd: z.string().optional().describe("작업 폴더. 기본은 프로젝트 폴더. 프로젝트 폴더 안이어야 한다. 밖이 꼭 필요하면 ask 로 묻고, 대표가 그 경로를 쓴 글을 user_quote 에 싣는다"),
       first_instruction: z.string().optional().describe("첫 지시. 끝났다고 볼 기준 포함"),
@@ -385,6 +487,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         role: a.role,
         cli: a.cli,
         modelOverride: a.model,
+        effortOverride: a.effort,
         handle: a.handle,
         cwd: a.cwd ? requireMemberCwd(orch, member, a.cwd, a.user_quote) : undefined,
         firstInstruction: a.first_instruction,
@@ -404,10 +507,28 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
+      task_id: z.string().trim().min(1).max(64).optional().describe("대표가 특정 작업에서 보낸 글을 잇는 지시면 그 작업 id(받은 글의 '작업 #' 줄). 생략하면 작업 없는 지시"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
-      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments }, member))}`);
+      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId: a.task_id }, member))}`);
+    },
+  ),
+
+  team_stop: tool(
+    "직원의 지금 CLI 턴을 멈춘다(대표가 멈추라고 했거나, 잘못 맡긴 일을 끊어야 할 때). 직원 한 명의 턴 단위라 그 턴이 받은 작업이 여럿이면 함께 멈춘다. CLI 대화·바뀐 파일은 남고 끊긴 일은 다시 보내지 않는다. 이어서 시킬 일은 then 에 넣는다: 서버가 먼저 대기열에 고정한 뒤 멈추고, 입력이 가능해지면 한 번만 보낸다. 멈춤 키(esc·ctrl+c)를 terminal_input 으로 따로 넣지 않는다. 결과가 changed·not_running 이면 roster 로 지금 실행을 다시 본다.",
+    z.strictObject({
+      member: memberRef,
+      expect_run_id: oneLine(100).optional().describe("roster 의 run.id. 지금 실행이 이것과 다르면 멈추지 않는다"),
+      then: z.string().trim().min(1).max(20000).optional().describe("멈춘 뒤 이어서 할 지시(끝났다고 볼 기준 포함)"),
+      user_quote: userQuote,
+      task_id: z.string().trim().min(1).max(64).optional().describe("then 이 특정 작업의 지시면 그 작업 id"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId: a.task_id }, member) : null;
+      const r = await orch.stopMember(target.id, { by: `agent-${member.id}`, expectRunId: a.expect_run_id ?? null });
+      return { text: `${target.name}: ${stopNote(r)}${queued ? ` · 이어서 할 지시: ${assignNote(queued)}` : ""}`, ...(r.outcome === "failed" ? { isError: true } : {}) };
     },
   ),
 
@@ -430,11 +551,65 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   team_resume: tool(
-    "잠든 직원을 대화 기록 그대로 다시 연다.",
-    z.strictObject({ member: memberRef, first_instruction: z.string().optional() }),
+    "잠든(asleep)·꺼진(offline) 직원을 대화 기록 그대로 다시 연다. 대화가 한 번도 저장되지 않아 이어 열 수 없는 세션이면 fresh: true 로 새 세션을 연다(역할·지금 일은 인계된다).",
+    z.strictObject({ member: memberRef, first_instruction: z.string().optional(), fresh: z.boolean().optional().describe("대화 기록 없이 새 세션으로 연다. 이어 열기가 실패했거나 기록이 없을 때만") }),
     async (orch, member, a) => {
-      const target = await orch.resumeMember(requireOther(orch, member, a.member).id, a.first_instruction, member);
-      return reply(`${josa(target.name, "을")} 다시 열었습니다`);
+      const id = requireOther(orch, member, a.member).id;
+      if (a.fresh) {
+        const target = await orch.freshMemberSession(id);
+        if (a.first_instruction?.trim()) await orch.assign(member.projectId, target.handle, { text: a.first_instruction }, member);
+        return reply(`${josa(target.name, "을")} 새 세션으로 열었습니다(${target.status}${target.cli ? ` · ${target.cli}` : ""})`);
+      }
+      try {
+        const target = await orch.resumeMember(id, a.first_instruction, member);
+        return reply(`${josa(target.name, "을")} 다시 열었습니다(${target.status})`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 502) throw new ApiError(502, `${e.message}. 대화 기록이 없어 이어 열 수 없는 세션이면 fresh: true 로 다시 부르세요(같은 실패를 반복하지 않는다)`);
+        throw e;
+      }
+    },
+  ),
+
+  team_config: tool(
+    "직원의 CLI·모델·effort 를 바꾼다(대표 화면의 직원 설정과 같은 저장). 지원하지 않는 값은 거절되고 바꿔 끼우지 않는다. 모델·effort 는 세션을 다시 열 때 적용된다.",
+    z.strictObject({
+      member: memberRef,
+      cli: z.enum(CLI_PROVIDERS).optional().describe("claude · codex · antigravity(agy, Google 구독의 Gemini). 직접 Gemini CLI(gemini)는 지원하지 않는다"),
+      model: z.string().trim().min(1).nullable().optional().describe("서버 모델 목록의 값. null 은 직급 기본값"),
+      effort: z.string().trim().min(1).max(20).nullable().optional().describe("effort. null 은 직급 기본값"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const { member: updated, applied } = await orch.configureMember(target.id, { ...(a.cli !== undefined ? { cli: a.cli } : {}), ...(a.model !== undefined ? { modelOverride: a.model } : {}), ...(a.effort !== undefined ? { effortOverride: a.effort } : {}) });
+      return reply(`${updated.name}(${updated.handle}) 설정: ${applied}. 상태 ${updated.status}`);
+    },
+  ),
+
+  terminal_read: tool(
+    "직원 터미널 화면(마지막 줄들)과 상태·세션 세대·조작권을 읽는다. 입력하기 전, 그리고 입력 결과가 불명확할 때 먼저 부른다.",
+    z.strictObject({ member: memberRef, lines: z.number().int().min(5).max(200).optional().describe("끝에서 몇 줄(기본 60)") }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const screen = await orch.memberScreen(target.id);
+      const lines = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").filter((l, i, all) => l.trim() || i < all.length - 1);
+      const lease = orch.store.inputState(target.id).lease;
+      return reply(JSON.stringify({ member: target.handle, name: target.name, status: target.status, cli: target.cli ?? "claude", pane: target.paneId, sessionGeneration: orch.store.memberRevisions(target.id).sessionGeneration, controlHeld: lease ? { claimId: lease.claimId, expiresAt: new Date(lease.expiresAt).toISOString() } : null, screen: lines.slice(-(a.lines ?? 60)).join("\n") }));
+    },
+  ),
+
+  terminal_input: tool(
+    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 글은 넣는 즉시 제출(Enter)되어 그 직원에게 메시지로 간다. 일하는 중에는 글을 넣지 않고 키만(승인 창 고르기). 턴을 멈추는 것은 team_stop 이다(여기서 esc·ctrl+c 를 넣으면 멈춤 기록이 남지 않는다). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
+    z.strictObject({
+      member: memberRef,
+      text: z.string().min(1).max(4000).optional().describe("보낼 글. 바로 제출된다(입력칸에 넣어 두기만 하는 기능은 없다)"),
+      key: z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]).optional().describe("누를 키 하나(글이 있으면 그 뒤에)"),
+      operation_key: oneLine(80).regex(/^[A-Za-z0-9_-]+$/).describe("이 입력의 고유 키. 같은 입력을 응답 유실로 다시 부를 때만 같은 값을 쓴다"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const result = await orch.terminalSend(target.id, { operationId: `agent-${member.id}-${a.operation_key}`, text: a.text, key: a.key, by: `agent-${member.id}` });
+      const note = result.status === "applied" ? "넣었습니다. terminal_read 로 결과를 확인하세요" : result.status === "unknown" ? "들어갔는지 확실하지 않습니다. terminal_read 로 먼저 확인하고, 같은 입력을 새 operation_key 로 반복하지 마세요" : `넣지 못했습니다: ${result.error ?? "거절"}`;
+      return { text: `${target.name}: ${note} (${result.steps.join(", ")}; 세대 ${result.sessionGeneration})`, ...(result.status === "applied" ? {} : { isError: true }) };
     },
   ),
 
@@ -488,7 +663,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       cwd: text.describe("이미 있는 프로젝트 폴더"),
       goal: z.string().optional().describe("프로젝트 목표. 대표의 말 그대로"),
       start_conductor: z.boolean().optional().describe("총괄을 바로 띄운다"),
-      chief_cli: z.enum(CLI_PROVIDERS).optional(),
+      chief_cli: z.enum(CLI_PROVIDERS).optional().describe("총괄이 쓸 CLI. 생략하면 Codex"),
     }),
     async (orch, member, a) => {
       const cwd = expandPath(a.cwd, member.cwd);
@@ -527,24 +702,33 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 };
 
-function namesFor(member: Member): readonly ToolName[] {
+/** 게이트웨이 오류는 직원이 읽을 수 있는 거절로 바꾼다. 키·주소 원문은 싣지 않는다. */
+async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
+  try { return await run(); } catch (e) {
+    if (e instanceof MemoryError) throw new ApiError(e.code === "not_configured" ? 400 : 502, e.message);
+    throw e;
+  }
+}
+
+function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
   return [
     ...WORKER_TOOLS,
+    ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
     ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
     ...(member.kind === "root" ? ROOT_TOOLS : []),
     ...(member.origin === "manual" ? MANUAL_TOOLS : []),
   ];
 }
 
-export function listAgentTools(member: Member): AgentToolDef[] {
-  return namesFor(member).map((name) => {
+export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
+  return namesFor(member, opts).map((name) => {
     const { $schema: _, ...inputSchema } = z.toJSONSchema(TOOLS[name].schema) as Record<string, unknown>;
     return { name, description: TOOLS[name].description, inputSchema };
   });
 }
 
 export async function handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
-  if (!(namesFor(member) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
+  if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {

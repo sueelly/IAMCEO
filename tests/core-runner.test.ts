@@ -86,7 +86,7 @@ describe("core Claude folder trust approval", () => {
       providerHomes: { claudeHome: join(f.dir, "claude-home"), codexHome: join(f.dir, "codex-home") }, timings: { healthMs: 1, tickMs: 60000 } });
     try {
       const project = store.createProject({ name: "신뢰", cwd: f.dir });
-      const m = await orch.createMember(project.id, { name: "worker" });
+      const m = await orch.createMember(project.id, { name: "worker", cli: "claude" });
       f.terminals.get(m.paneId!)!.status = null; f.setScreen(trustScreen(f.dir));
       await until(() => store.requireMember(m.id).statusObservation?.error?.code === "folder_trust");
       expect(store.requireMember(m.id).blockedReason).toBe("setup");
