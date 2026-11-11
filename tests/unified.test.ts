@@ -424,7 +424,10 @@ describe("자료 종류", () => {
     for (const kind of ["worker", "conductor", "root"] as const) {
       const text = renderRole(kind, { PROJECT: "P", NAME: "N", ROLE: "R", CONDUCTOR: "C" });
       expect(text).toContain("글만으로 보기 힘든");
-      expect(text).toContain("card, grid, callout, kpi, steps, flow, tabs, tag, compare");
+      // 키트 클래스는 글 지침의 '자료 틀 부품' 한 곳에 적는다. 탭은 꼭 볼 내용에 쓰지 않는다(지침).
+      expect(text).toContain("'자료 틀 부품'의 클래스만 써도 깔끔하다");
+      for (const cls of ["card", "grid", "callout", "kpi", "steps", "flow", "tag", "compare", "owner", "hero", "rec"]) expect(text).toContain(`\`${cls}\``);
+      expect(text).toContain("`tabs`에는 꼭 볼 내용을 넣지 않는다");
       expect(text).toContain("외부 사이트에 따로 게시하지 않는다");
       expect(text).not.toContain("아티팩트를 만들지 않는다");
       expect(text).not.toContain("다른 아티팩트");
