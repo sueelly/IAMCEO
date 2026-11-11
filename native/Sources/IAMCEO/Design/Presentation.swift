@@ -331,12 +331,13 @@ func closeKindName(_ kind: String?) -> String? {
     }
 }
 
+/// '읽는 힘 줄이기' B안 colour budget: green 완료, red 막힘, violet 질문 (it asks, it is not a state). 진행·알림 carry no
+/// colour (plain grey text, see `MessageKindLabel`). Orange is kept for the owner's turn (`OwnerTurnBand`).
 func messageKindTone(_ kind: String) -> Tone {
     switch kind {
     case "완료": .success
-    case "질문": .attention
+    case "질문": .accent
     case "막힘": .danger
-    case "진행": .live
     default: .neutral
     }
 }

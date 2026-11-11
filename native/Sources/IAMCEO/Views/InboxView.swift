@@ -887,6 +887,13 @@ private struct DecisionCard: View {
     private var showsConfirm: Bool {
         decision.status == "open" && !stale && (picked != nil || (memoOnly && typed))
     }
+    /// B안: a background that opens with the guide's "★ 권장: …" line gets the fixed order (the line becomes the band,
+    /// tables come under the buttons, the rest folds). Other cards keep the background above the buttons.
+    private var guided: (label: String, reason: String, parts: DecisionDetailParts)? {
+        guard let line = RecommendationLine.parse(decision.detail) else { return nil }
+        return (line.label, line.reason, DecisionDetailParts.split(line.rest))
+    }
+    private var recLabel: String? { decision.options.first { $0.k == decision.rec }?.label }
 
     var body: some View {
         // Web .ibx-card: padding 16 18 (14 on iPhone), 12 between blocks.
@@ -904,12 +911,31 @@ private struct DecisionCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .accessibilityAddTraits(.isHeader)
-                    if !decision.detail.isEmpty {
-                        ClampedDetail(text: decision.detail, expanded: detailExpanded, onToggle: onToggleDetail)
+                    if let guided {
+                        // B안 order: title → 권장 band → answer buttons → tables → background (folded).
+                        RecommendationBand(label: recLabel ?? guided.label, reason: guided.reason)
+                        answerArea
+                        ForEach(Array(guided.parts.tables.enumerated()), id: \.offset) { _, table in
+                            MarkdownText(text: table, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if !decision.images.isEmpty { ImageStrip(images: decision.images) }
+                        if let fileID = decision.fileId { FileChip(title: fileTitle) { onOpenFile(fileID) } }
+                        if !guided.parts.background.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            DisclosureLink(title: detailExpanded ? "배경 접기" : "배경 보기", expanded: detailExpanded, action: onToggleDetail)
+                            if detailExpanded {
+                                MarkdownText(text: guided.parts.background, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    } else {
+                        if !decision.detail.isEmpty {
+                            ClampedDetail(text: decision.detail, expanded: detailExpanded, onToggle: onToggleDetail)
+                        }
+                        if !decision.images.isEmpty { ImageStrip(images: decision.images) }
+                        if let fileID = decision.fileId { FileChip(title: fileTitle) { onOpenFile(fileID) } }
+                        answerArea
                     }
-                    if !decision.images.isEmpty { ImageStrip(images: decision.images) }
-                    if let fileID = decision.fileId { FileChip(title: fileTitle) { onOpenFile(fileID) } }
-                    answerArea
                 } else {
                     // The person reviewed the latest version and it is no longer open.
                     AnsweredBody(decision: decision, asker: asker)
@@ -1140,6 +1166,37 @@ struct OptionTile: View {
         if picked { return (CE.focus, 2) }
         if recommended { return somethingPicked ? (CE.focus.opacity(0.45), 1) : (CE.focus, 1.5) }
         return (CE.softRing, 1)
+    }
+}
+
+/// B안 권장 band under the title: "★ 권장 {안} — {이유}" on the soft violet in the selected ring. Violet marks the
+/// recommendation, never a state.
+private struct RecommendationBand: View {
+    let label: String
+    let reason: String
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        Text(text)
+            .font(isMac ? .system(size: 14) : CEFont.note)
+            .foregroundStyle(CE.ink)
+            .lineSpacing(CELeading.spacing(14, 1.55))
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .padding(.horizontal, 13).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CE.soft, in: shape)
+            .overlay { shape.strokeBorder(CE.selectedRing) }
+            .accessibilityLabel("권장: \(label)\(reason.isEmpty ? "" : ". \(reason)")")
+    }
+
+    private var text: AttributedString {
+        var head = AttributedString("★ 권장 ")
+        head.swiftUI.foregroundColor = CE.accent
+        head.swiftUI.font = isMac ? .system(size: 14, weight: .bold) : CEFont.note.weight(.bold)
+        var name = AttributedString(label)
+        name.swiftUI.font = isMac ? .system(size: 14, weight: .semibold) : CEFont.note.weight(.semibold)
+        let tail = AttributedString(reason.isEmpty ? "" : " — \(reason)")
+        return head + name + tail
     }
 }
 

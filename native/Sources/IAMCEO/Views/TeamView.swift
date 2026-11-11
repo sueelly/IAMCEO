@@ -1598,7 +1598,7 @@ private struct TeamTalkRow: View {
         if message.mine {
             Text("나").font(CEFont.meta.weight(.semibold)).foregroundStyle(CE.accent)
         } else if !message.kind.isEmpty {
-            Tag(message.kind, tone: messageKindTone(message.kind))
+            MessageKindLabel(kind: message.kind)
         } else {
             Text(message.who).font(CEFont.meta).foregroundStyle(CE.ink3).lineLimit(1)
         }

@@ -56,7 +56,7 @@ enum DemoFixtures {
 
         let decisions = [
             Decision(id: "d-pg", projectId: pid, memberId: "m-research", who: "자료 조사", title: "PG사를 어디로 할지 정해 주세요",
-                     detail: "결제 연동을 시작하려면 PG사를 하나 정해야 합니다. 비교표를 자료에 올렸습니다.\n\n- 고객 문의 1위가 '결제됐나요?'라서 정산·알림이 빠른 쪽이 유리합니다\n- 기존 KG이니시스 계약은 내년 3월에 끝납니다",
+                     detail: "**★ 권장: 토스페이먼츠.** 연동 문서가 가장 좋아 구현이 이틀 빠릅니다. 감수할 것: 수수료가 0.2%p 높습니다.\n\n| PG사 | 수수료 | 정산 |\n|---|---|---|\n| 토스페이먼츠 | 2.9% | D+2 |\n| KG이니시스 | 2.7% | D+3 |\n\n확정: 결제 연동을 시작하려면 PG사를 하나 정해야 합니다. 비교표를 자료에 올렸습니다.\n\n- 고객 문의 1위가 '결제됐나요?'라서 정산·알림이 빠른 쪽이 유리합니다\n- 기존 KG이니시스 계약은 내년 3월에 끝납니다",
                      options: [DecisionOption(k: "a", label: "토스페이먼츠", desc: "수수료 2.9%, 정산 D+2. 연동 문서가 가장 좋아 구현이 이틀 빠릅니다."),
                                DecisionOption(k: "b", label: "KG이니시스", desc: "수수료 2.7%, 정산 D+3. 기존 계약을 그대로 씁니다."),
                                DecisionOption(k: "c", label: "둘 다 붙이고 비교", desc: "구현이 3일 늘고, 2주 뒤 전환율로 고릅니다.")],
@@ -102,7 +102,7 @@ enum DemoFixtures {
         let messages = [
             Message(id: "x1", projectId: pid, at: ago(40), memberId: "m-chief", who: "결제 총괄", kind: "진행", title: "오늘 계획", body: "1. PG사 결정 받기\n2. 완료·실패 문구 확정\n3. 카드 결제 화면 시험 통과"),
             Message(id: "x2", projectId: pid, at: ago(38), mine: true, who: "나", kind: "나", body: "PG 연동은 이번 주 안에 끝내 주세요.", delivery: "delivered"),
-            Message(id: "x3", projectId: pid, at: ago(20), memberId: "m-research", who: "자료 조사", kind: "완료", title: "결제 방식 비교표를 올렸습니다", body: "수수료·정산 주기·연동 난이도를 비교했습니다. PG사 결정은 결재함에 올렸습니다.", fileId: fee.id),
+            Message(id: "x3", projectId: pid, at: ago(20), memberId: "m-research", who: "자료 조사", kind: "완료", title: "결제 방식 비교표를 올렸습니다", body: "● 대표 차례: PG사를 골라 주세요(결재함 1건).\n\n수수료·정산 주기·연동 난이도를 비교했습니다.", decisionId: "d-pg", fileId: fee.id),
             Message(id: "x4", projectId: pid, at: ago(14), memberId: "m-card", who: "카드 결제 구현", kind: "알림", title: "테스트 실행 권한이 필요합니다", body: "Codex가 `bun test` 실행 승인을 묻고 있습니다. 터미널에서 직접 승인해 주세요."),
             Message(id: "x5", projectId: pid, at: ago(12), memberId: "m-pg", who: "결제 연동", kind: "질문", title: "결제 완료 문구 결정 요청", body: "두 안 중 하나를 골라 주세요.", decisionId: "d-done-copy"),
             Message(id: "x6", projectId: pid, at: ago(8), mine: true, who: "나", kind: "나", body: "실패 화면에는 고객센터 번호도 넣어 주세요.", targetMemberId: "m-copy", targetName: "화면 문구", delivery: "delivered"),
