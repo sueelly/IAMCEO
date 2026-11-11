@@ -85,19 +85,30 @@ enum ThreadFolding {
     private static let processKinds: Set<String> = ["진행", "알림"]
     private static let reportKinds: Set<String> = ["완료", "막힘", "진행", "알림"]
     private static let assignCue = try! NSRegularExpression(pattern: "맡겼|맡김|맡깁|맡기겠|배정했|나눠 맡")
+    /// News (a failure, a block, a report that differs, a cause): such a lead post is not a repeat, so it stays open.
+    private static let newsCue = try! NSRegularExpression(
+        pattern: "실패|막힘|막혔|막힙|아직|다르|다릅|달리|달라|오류|에러|안\\s?됩|안\\s?돼|못\\s?했|못\\s?합|문제|틀렸|틀립|빠졌|빠집|다시 맡|되돌|취소|멈췄|멈춥|중단|원인|때문")
+    /// The owner's message is a question: a lead post answering it is a reply, not an assignment, even when it hands off.
+    private static let questionCue = try! NSRegularExpression(
+        pattern: "[?？]|왜|어떻게|뭐|무엇|무슨|언제|어디|얼마|나요|까요|ㄹ까|는지|인가|가요\\s*$|니\\s*$")
+    /// A re-notice folds only when its body is this short (non-blank lines); a longer one may carry news.
+    static let renotifyMaxLines = 2
 
     /// Whether `list[i]` is a lead process post to fold, and which kind. Only earlier posts count, so a fold never opens
     /// again when later posts arrive.
     static func kind(_ list: [Message], _ i: Int, kindOf: (String?) -> String?, date: (String) -> Date?) -> Kind? {
         let m = list[i]
         guard isLeadProcess(m, kindOf: kindOf), let at = date(m.at) else { return nil }
+        // News (a failure, a block, a report that differs, a cause) stays open.
+        if matches(newsCue, "\(m.title)\n\(m.body)") { return nil }
         // Assignment: the lead's first 진행 right after the owner's message (only system notices between), naming a hand-off.
         if m.kind == "진행", m.fileId == nil, matches(assignCue, "\(m.title)\n\(firstLine(m.body))") {
             var j = i - 1
             while j >= 0 {
                 let p = list[j]
                 if p.kind == "시스템" && !p.mine { j -= 1; continue }
-                if p.mine, let pAt = date(p.at), at.timeIntervalSince(pAt) >= 0, at.timeIntervalSince(pAt) <= assignWindow { return .assign }
+                if p.mine, !matches(questionCue, p.body.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   let pAt = date(p.at), at.timeIntervalSince(pAt) >= 0, at.timeIntervalSince(pAt) <= assignWindow { return .assign }
                 break
             }
         }
@@ -111,6 +122,7 @@ enum ThreadFolding {
             let gap = at.timeIntervalSince(pAt)
             guard gap >= 0, gap <= renotifyWindow else { return nil }
             if let file = m.fileId, file != p.fileId { return nil }
+            if m.fileId == nil && lineCount(m.body) > renotifyMaxLines { return nil }
             return .renotify
         }
         return nil
@@ -120,6 +132,13 @@ enum ThreadFolding {
     static func label(assign: Int, renotify: Int) -> String {
         let parts = [assign > 0 ? "맡김 \(assign)건" : nil, renotify > 0 ? "다시 알림 \(renotify)건" : nil].compactMap { $0 }
         return "총괄 · " + parts.joined(separator: ", ")
+    }
+
+    /// The first post's title (or its body's first line), shown on the fold so it says what it hides (web foldPreview).
+    static func preview(_ messages: [Message]) -> String {
+        guard let m = messages.first else { return "" }
+        let title = m.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ReadingLines.oneLine(title.isEmpty ? firstLine(m.body) : title)
     }
 
     private static func isLeadProcess(_ m: Message, kindOf: (String?) -> String?) -> Bool {
@@ -135,6 +154,10 @@ enum ThreadFolding {
 
     private static func firstLine(_ text: String) -> String {
         text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+    }
+
+    private static func lineCount(_ text: String) -> Int {
+        text.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
     }
 
     private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {

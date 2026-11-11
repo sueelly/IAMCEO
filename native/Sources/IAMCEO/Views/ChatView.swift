@@ -203,10 +203,11 @@ struct ChatDecisionCopyRow: View {
     }
 }
 
-/// B안 (web .th-fold): the lead's folded process posts, "총괄 · 맡김 1건, 다시 알림 2건 (접힘)" with the last one's time.
-/// A tap opens them as ordinary rows below.
+/// B안 (web .th-fold): the lead's folded process posts, "총괄 · 맡김 1건, 다시 알림 2건 (접힘)", the first post's title
+/// (one line, cut short) and the last one's time. A tap opens them as ordinary rows below.
 struct ChatFoldRow: View {
     let label: String
+    var preview = ""
     let lastAt: String
     let open: Bool
     let toggle: () -> Void
@@ -215,7 +216,10 @@ struct ChatFoldRow: View {
     var body: some View {
         Button(action: toggle) {
             HStack(spacing: 8) {
-                Text("\(label) (\(open ? "펼침" : "접힘"))").lineLimit(2)
+                Text("\(label) (\(open ? "펼침" : "접힘"))").lineLimit(1).fixedSize()
+                if !preview.isEmpty {
+                    Text(preview).lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                }
                 Text(clockTime(lastAt)).font(CEFont.caption.monospacedDigit()).foregroundStyle(CE.ink3).fixedSize()
                 Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                     .rotationEffect(.degrees(open ? 180 : 0))
@@ -230,7 +234,7 @@ struct ChatFoldRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(parseISODate(lastAt).map(koDateTime) ?? "")
-        .accessibilityLabel("\(label), \(open ? "펼침" : "접힘")")
+        .accessibilityLabel(preview.isEmpty ? "\(label), \(open ? "펼침" : "접힘")" : "\(label), \(preview), \(open ? "펼침" : "접힘")")
         .accessibilityHint(open ? "접기" : "펼쳐서 보기")
     }
 }
@@ -632,8 +636,8 @@ private struct ChatConversation: View {
                     ForEach(chatThreadRows(displayed, members: store.members, unfolded: unfolded, keepOpen: router.chatMessageID)) { row in
                         switch row {
                         case .day(_, let label, let gap): ChatDaySeparator(label: label).padding(.top, gap)
-                        case .fold(let id, let label, let lastAt, let open, let gap):
-                            ChatFoldRow(label: label, lastAt: lastAt, open: open) {
+                        case .fold(let id, let label, let preview, let lastAt, let open, let gap):
+                            ChatFoldRow(label: label, preview: preview, lastAt: lastAt, open: open) {
                                 // Opening adds rows under the line just tapped; stop following the bottom so it stays put.
                                 if unfolded.insert(id).inserted { pinned = false } else { unfolded.remove(id) }
                             }
@@ -966,12 +970,12 @@ private enum ChatThreadRow: Identifiable {
     case day(id: String, label: String, gap: CGFloat)
     case message(Message, gap: CGFloat)
     /// B안: the lead's process posts folded into one line (`id` is "fold:" + the first post's row id).
-    case fold(id: String, label: String, lastAt: String, open: Bool, gap: CGFloat)
+    case fold(id: String, label: String, preview: String, lastAt: String, open: Bool, gap: CGFloat)
     var id: String {
         switch self {
         case .day(let id, _, _): id
         case .message(let message, _): chatMessageRowID(message.id)
-        case .fold(let id, _, _, _, _): id
+        case .fold(let id, _, _, _, _, _): id
         }
     }
 }
@@ -1038,7 +1042,8 @@ private func chatMessageRowID(_ id: String) -> String { "m:" + Data(id.utf8).bas
                 }
             }
             let gap: CGFloat = afterDay || previous == nil ? 10 : previous?.side != .system ? 16 : 10
-            rows.append(.fold(id: id, label: ThreadFolding.label(assign: assign, renotify: renotify), lastAt: group.last?.at ?? message.at,
+            rows.append(.fold(id: id, label: ThreadFolding.label(assign: assign, renotify: renotify), preview: ThreadFolding.preview(group),
+                              lastAt: group.last?.at ?? message.at,
                               open: open, gap: gap))
             previous = (.system, ChatDates.parse(group.last?.at ?? ""))
             afterDay = false
