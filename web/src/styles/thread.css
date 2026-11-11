@@ -90,8 +90,9 @@
 /* ── 총괄 과정 글을 접은 줄 ── */
 .th-fold { display:inline-flex; align-items:center; gap:8px; min-height:44px; max-width:100%; padding:4px 10px; border-radius:10px; font-size:13px; line-height:1.4; color:var(--ink-2); }
 @media (hover:hover) { .th-fold:hover { background:var(--hover); color:var(--ink-1); } }
-.th-fold__time { font-size:12px; color:var(--ink-3); }
+/* 접은 줄의 시각·제목은 작은 글자라 ink-3 으로는 대비 4.5 에 못 미친다(4.41). ink-2 로 둔다. */
+.th-fold__time { font-size:12px; color:var(--ink-2); }
 .th-fold__label { flex:none; }
-.th-fold__preview { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-3); }
+.th-fold__preview { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2); }
 .th-fold svg { flex:none; transition:rotate 180ms var(--ease-out); }
 .th-fold[aria-expanded="true"] svg { rotate:180deg; }
