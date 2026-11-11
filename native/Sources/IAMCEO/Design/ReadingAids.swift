@@ -1,162 +1,201 @@
 import Foundation
 
-// '읽는 힘 줄이기' B안: the pieces the writing guide puts in fixed places, read back out of the text so the screens can
-// draw them in fixed places too. A report's first line "● 대표 차례: …" becomes a band at the top of its card; a decision's
-// first line "★ 권장: …" becomes a band right under the title; tables move under the answer buttons and the rest of the
-// background folds away. Text that does not follow the guide is shown as before.
+// '읽는 힘 줄이기' B안: the first-line conventions of reports and decision cards, read back so the screens can draw them
+// in fixed places. A port of shared/owner-lines.ts and web/src/lib/thread-view.ts · decision-view.ts; keep them in step
+// (the same lines must read the same on the web and in the app).
+//   report body first line:    "● 대표 차례: <owner_action>"
+//   decision detail first line: "★ 권장: <recommended option label> — <rec_reason>"
 
-/// "● 대표 차례: 커밋할지 정해 주세요(결재함 1건)." → text "커밋할지 정해 주세요", place "결재함 1건", and the body without the line.
+/// The report's "● 대표 차례" line: what the owner has to do, and the body without that line.
 struct OwnerTurn: Equatable, Sendable {
-    /// What the owner has to do.
+    /// What the owner has to do, without the trailing "결재함 N건".
     let text: String
-    /// Where to do it ("결재함 1건", "결재함", "터미널"…), when the line names it.
-    let place: String?
-    /// The body without the owner line (and without the blank lines right after it).
+    /// "결재함 N건" when the line ends with it (drawn as the band's link to the inbox).
+    let inbox: String?
+    /// The body without the owner line (and without the blank lines after it).
     let rest: String
 
-    /// The place names the inbox, so the band can open it.
-    var pointsToInbox: Bool { place?.contains("결재") == true || text.contains("결재함") }
-
-    /// Reads the first non-blank line of a report body. Nil when it is not an owner line.
+    /// shared/owner-lines.ts parseOwnerLine + thread-view.ts splitOwnerAction.
     static func parse(_ body: String) -> OwnerTurn? {
-        var lines = body.components(separatedBy: "\n")
-        guard let index = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return nil }
-        guard let content = stripLabel(lines[index], label: "대표 차례", marks: ["●", "•", "*", "-"]) else { return nil }
-        let (text, place) = splitPlace(content)
-        guard !text.isEmpty else { return nil }
-        lines.removeSubrange(0...index)
-        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-        return OwnerTurn(text: text, place: place, rest: lines.joined(separator: "\n"))
+        guard !body.isEmpty else { return nil }
+        let (first, rest) = ReadingLines.splitFirstLine(body)
+        guard let action = ReadingLines.match(ReadingLines.owner, ReadingLines.unbold(first)) else { return nil }
+        let (text, inbox) = splitAction(action)
+        return OwnerTurn(text: text, inbox: inbox, rest: rest)
     }
 
-    /// "할 일(결재함 1건)." / "할 일 · 결재함 1건" / "할 일, 결재함에서" → ("할 일", "결재함 1건").
-    static func splitPlace(_ value: String) -> (String, String?) {
-        var text = value.trimmingCharacters(in: .whitespaces)
-        while let last = text.last, ".。".contains(last) { text.removeLast() }
-        if text.hasSuffix(")") || text.hasSuffix("）"), let open = text.lastIndex(where: { $0 == "(" || $0 == "（" }) {
-            let inner = text[text.index(after: open)..<text.index(before: text.endIndex)].trimmingCharacters(in: .whitespaces)
-            let head = text[..<open].trimmingCharacters(in: .whitespaces)
-            if !inner.isEmpty && !head.isEmpty { return (trimEnd(head), inner) }
-        }
-        if let dot = text.range(of: " · ", options: .backwards) {
-            let tail = text[dot.upperBound...].trimmingCharacters(in: .whitespaces)
-            let head = text[..<dot.lowerBound].trimmingCharacters(in: .whitespaces)
-            if !tail.isEmpty && !head.isEmpty && tail.count <= 16 { return (trimEnd(head), tail) }
-        }
-        return (text, nil)
-    }
-
-    private static func trimEnd(_ value: String) -> String {
-        var text = value
-        while let last = text.last, ".。,".contains(last) { text.removeLast() }
-        return text
+    /// '정해 주세요 · 결재함 1건', '정해 주세요(결재함 1건).' → ("정해 주세요", "결재함 1건").
+    static func splitAction(_ action: String) -> (String, String?) {
+        let value = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = NSRange(value.startIndex..., in: value)
+        guard let m = ReadingLines.ownerInbox.firstMatch(in: value, range: range),
+              let headRange = Range(m.range(at: 1), in: value), let inboxRange = Range(m.range(at: 2), in: value) else { return (value, nil) }
+        let head = value[headRange].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !head.isEmpty else { return (value, nil) }
+        var inbox = String(value[inboxRange]).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        inbox = inbox.replacingOccurrences(of: "(\\d+) 건", with: "$1건", options: .regularExpression)
+        return (head, inbox)
     }
 }
 
-/// "**★ 권장: 유료 API 키.** 공식 안내로 지금 되는 방법입니다. 감수할 것: 쓴 만큼 요금이 나옵니다." → label "유료 API 키",
-/// reason "공식 안내로 … 나옵니다.", and the detail without that paragraph.
+/// The decision's "★ 권장" line: the band under the title, and the detail without that line.
 struct RecommendationLine: Equatable, Sendable {
-    /// The recommended answer as the line names it (the card shows the option's own label when it has one).
+    /// The recommended answer.
     let label: String
-    /// Why, and what to accept with it.
+    /// Why (empty when the line gives none).
     let reason: String
-    /// The detail without the ★ paragraph.
+    /// A hand-written line whose answer and reason could not be told apart: drawn as plain text, not bold.
+    let plain: Bool
+    /// The detail without the ★ line.
     let rest: String
 
-    static func parse(_ detail: String) -> RecommendationLine? {
-        var lines = detail.components(separatedBy: "\n")
-        guard let index = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return nil }
-        // The paragraph runs until the first blank line.
-        var end = index
-        while end + 1 < lines.count, !lines[end + 1].trimmingCharacters(in: .whitespaces).isEmpty,
-              !lines[end + 1].trimmingCharacters(in: .whitespaces).hasPrefix("|") { end += 1 }
-        let paragraph = lines[index...end].joined(separator: " ")
-        let raw = paragraph.trimmingCharacters(in: .whitespaces)
-        // "**★ 권장: 안.** 이유" keeps the bold part as the label; without bold the first sentence is the label.
-        var label = ""
-        var reason = ""
-        if raw.hasPrefix("**"), let close = raw.range(of: "**", range: raw.index(raw.startIndex, offsetBy: 2)..<raw.endIndex) {
-            let bold = String(raw[raw.index(raw.startIndex, offsetBy: 2)..<close.lowerBound])
-            guard let content = stripLabel(bold, label: "권장", marks: ["★", "☆"]) else { return nil }
-            label = content
-            reason = String(raw[close.upperBound...])
+    /// shared/owner-lines.ts parseRecLine + decision-view.ts splitDetail. `recLabel` is the card's recommended option.
+    static func parse(_ detail: String, recLabel: String?) -> RecommendationLine? {
+        guard !detail.isEmpty else { return nil }
+        let (first, rest) = ReadingLines.splitFirstLine(detail)
+        guard let text = ReadingLines.match(ReadingLines.rec, ReadingLines.unbold(first)) else { return nil }
+        let known = recLabel.map(ReadingLines.oneLine) ?? ""
+        let sep = " — "
+        var label: String
+        var reason: String
+        if !known.isEmpty && text.hasPrefix(known + sep) {
+            label = known; reason = String(text.dropFirst(known.count + sep.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if !known.isEmpty && text == known {
+            label = known; reason = ""
+        } else if let at = text.range(of: sep) {
+            label = text[..<at.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            reason = text[at.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
-            guard let content = stripLabel(raw, label: "권장", marks: ["★", "☆"]) else { return nil }
-            if let stop = content.range(of: ". ") ?? content.range(of: " — ") ?? content.range(of: " - ") {
-                label = String(content[..<stop.lowerBound])
-                reason = String(content[stop.upperBound...])
-            } else {
-                label = content
-            }
+            label = text; reason = ""
         }
-        label = label.trimmingCharacters(in: .whitespaces)
-        while let last = label.last, ".。:".contains(last) { label.removeLast() }
-        reason = reason.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespaces)
-        if reason.hasPrefix("— ") || reason.hasPrefix("- ") { reason = String(reason.dropFirst(2)) }
-        guard !label.isEmpty else { return nil }
-        lines.removeSubrange(0...end)
-        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-        return RecommendationLine(label: label, reason: reason, rest: lines.joined(separator: "\n"))
+        let plain = reason.isEmpty && label != (recLabel ?? "")
+        return RecommendationLine(label: label, reason: reason, plain: plain, rest: rest)
     }
 }
 
-/// A decision's background split for the B card: the markdown tables (drawn under the answer buttons) and everything
-/// else (folded under "배경 보기"). Tables inside code fences stay where they are.
-struct DecisionDetailParts: Equatable, Sendable {
-    let tables: [String]
-    let background: String
+/// The lead's process posts folded into one line (web thread-view.ts processKind / foldThread / foldLabel).
+enum ThreadFolding {
+    enum Kind { case assign, renotify }
 
-    static func split(_ markdown: String) -> DecisionDetailParts {
-        var tables: [String] = []
-        var rest: [String] = []
-        var current: [String] = []
-        var fenced = false
-        func flush() {
-            if current.count >= 2 { tables.append(current.joined(separator: "\n")) } else { rest.append(contentsOf: current) }
-            current = []
-        }
-        for line in markdown.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { flush(); fenced.toggle(); rest.append(line); continue }
-            if !fenced && trimmed.hasPrefix("|") {
-                current.append(line)
-            } else {
-                flush()
-                rest.append(line)
+    /// A worker report followed by the lead within this time is a re-notice.
+    static let renotifyWindow: TimeInterval = 2 * 60
+    /// Only an assignment posted this soon after the owner's message folds.
+    static let assignWindow: TimeInterval = 10 * 60
+
+    private static let processKinds: Set<String> = ["진행", "알림"]
+    private static let reportKinds: Set<String> = ["완료", "막힘", "진행", "알림"]
+    private static let assignCue = try! NSRegularExpression(pattern: "맡겼|맡김|맡깁|맡기겠|배정했|나눠 맡")
+
+    /// Whether `list[i]` is a lead process post to fold, and which kind. Only earlier posts count, so a fold never opens
+    /// again when later posts arrive.
+    static func kind(_ list: [Message], _ i: Int, kindOf: (String?) -> String?, date: (String) -> Date?) -> Kind? {
+        let m = list[i]
+        guard isLeadProcess(m, kindOf: kindOf), let at = date(m.at) else { return nil }
+        // Assignment: the lead's first 진행 right after the owner's message (only system notices between), naming a hand-off.
+        if m.kind == "진행", m.fileId == nil, matches(assignCue, "\(m.title)\n\(firstLine(m.body))") {
+            var j = i - 1
+            while j >= 0 {
+                let p = list[j]
+                if p.kind == "시스템" && !p.mine { j -= 1; continue }
+                if p.mine, let pAt = date(p.at), at.timeIntervalSince(pAt) >= 0, at.timeIntervalSince(pAt) <= assignWindow { return .assign }
+                break
             }
         }
-        flush()
-        // Fold the blank lines a table leaves behind.
-        var background: [String] = []
-        for line in rest {
-            let blank = line.trimmingCharacters(in: .whitespaces).isEmpty
-            if blank && (background.last?.trimmingCharacters(in: .whitespaces).isEmpty ?? true) { continue }
-            background.append(line)
+        // Re-notice: within two minutes after a worker report, only the same lead's process posts or system notices between.
+        var j = i - 1
+        while j >= 0 {
+            let p = list[j]
+            if p.kind == "시스템" && !p.mine { j -= 1; continue }
+            if p.memberId == m.memberId && isLeadProcess(p, kindOf: kindOf) { j -= 1; continue }
+            guard isWorkerReport(p, kindOf: kindOf), let pAt = date(p.at) else { return nil }
+            let gap = at.timeIntervalSince(pAt)
+            guard gap >= 0, gap <= renotifyWindow else { return nil }
+            if let file = m.fileId, file != p.fileId { return nil }
+            return .renotify
         }
-        while background.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { background.removeLast() }
-        return DecisionDetailParts(tables: tables, background: background.joined(separator: "\n"))
+        return nil
+    }
+
+    /// "총괄 · 맡김 1건, 다시 알림 2건".
+    static func label(assign: Int, renotify: Int) -> String {
+        let parts = [assign > 0 ? "맡김 \(assign)건" : nil, renotify > 0 ? "다시 알림 \(renotify)건" : nil].compactMap { $0 }
+        return "총괄 · " + parts.joined(separator: ", ")
+    }
+
+    private static func isLeadProcess(_ m: Message, kindOf: (String?) -> String?) -> Bool {
+        !m.mine && kindOf(m.memberId) == "conductor" && processKinds.contains(m.kind) && m.decisionId == nil
+            && m.targetMemberId == nil && m.attachments.isEmpty && OwnerTurn.parse(m.body) == nil
+    }
+
+    private static func isWorkerReport(_ m: Message, kindOf: (String?) -> String?) -> Bool {
+        guard !m.mine, m.memberId != nil, reportKinds.contains(m.kind) else { return false }
+        let kind = kindOf(m.memberId)
+        return kind != "conductor" && kind != "root"
+    }
+
+    private static func firstLine(_ text: String) -> String {
+        text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+    }
+
+    private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }
 
-/// "● 대표 차례: x" → "x" when the line carries `label` behind one of `marks` (or none), with ":" or "：".
-/// Bold around the label ("**대표 차례:** x", "**대표 차례**: x") is allowed.
-private func stripLabel(_ line: String, label: String, marks: [String]) -> String? {
-    var text = line.trimmingCharacters(in: .whitespaces)
-    if text.hasPrefix("**") && !text.hasPrefix("**" + label) && marks.contains(where: { text.dropFirst(2).hasPrefix($0) }) {
-        text = String(text.dropFirst(2))
+/// "결재 1건: 제목 · 권장 안 → 결재함" (web cardCopyText). Answered: "· 답함 안"; closed: "· 닫힘".
+func decisionCopyText(_ message: Message, _ decision: Decision?) -> String {
+    let title = (decision?.title ?? message.title).trimmingCharacters(in: .whitespacesAndNewlines)
+    var tail = ""
+    if let decision {
+        switch decision.status {
+        case "open":
+            if let rec = decision.options.first(where: { $0.k == decision.rec })?.label { tail = " · 권장 \(rec)" }
+        case "closed":
+            tail = " · 닫힘"
+        default:
+            let answer = decision.options.first { $0.k == decision.choice }?.label ?? decision.note
+            tail = answer.map { " · 답함 \($0)" } ?? " · 답함"
+        }
     }
-    for mark in marks where text.hasPrefix(mark) && !text.hasPrefix("**") {
-        text = String(text.dropFirst(mark.count)).trimmingCharacters(in: .whitespaces)
-        break
+    return "결재 1건: \(title.isEmpty ? "제목 없음" : title)\(tail) → 결재함"
+}
+
+enum ReadingLines {
+    static let owner = try! NSRegularExpression(pattern: "^●\\s*대표\\s*차례\\s*[:：]\\s*(.*\\S)\\s*$")
+    static let rec = try! NSRegularExpression(pattern: "^★\\s*권장\\s*[:：]\\s*(.*\\S)\\s*$")
+    static let ownerInbox = try! NSRegularExpression(pattern: "^(.*?)[\\s.]*(?:·\\s*|\\(\\s*)(결재함\\s*\\d+\\s*건)\\s*\\)?\\s*\\.?\\s*$")
+
+    /// The first capture group, when the whole line matches.
+    static func match(_ regex: NSRegularExpression, _ line: String) -> String? {
+        guard let m = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let r = Range(m.range(at: 1), in: line) else { return nil }
+        return String(line[r])
     }
-    if text.hasPrefix("**") { text = String(text.dropFirst(2)) }
-    guard text.hasPrefix(label) else { return nil }
-    text = String(text.dropFirst(label.count))
-    if text.hasPrefix("**") { text = String(text.dropFirst(2)) }
-    text = text.trimmingCharacters(in: .whitespaces)
-    guard let first = text.first, first == ":" || first == "：" else { return nil }
-    text = String(text.dropFirst())
-    if text.hasPrefix("**") { text = String(text.dropFirst(2)) }
-    text = text.replacingOccurrences(of: "**", with: "")
-    return text.trimmingCharacters(in: .whitespaces)
+
+    /// The first non-blank line and the rest (blank lines before the rest removed). CRLF and CR read as LF.
+    static func splitFirstLine(_ text: String) -> (String, String) {
+        var src = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        src = dropBlankLines(src)
+        guard let at = src.firstIndex(of: "\n") else { return (src, "") }
+        return (String(src[..<at]), dropBlankLines(String(src[src.index(after: at)...])))
+    }
+
+    /// Bold marks off ("**", "__").
+    static func unbold(_ line: String) -> String {
+        line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Runs of white space become one space.
+    static func oneLine(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Leading lines made only of spaces and tabs.
+    private static func dropBlankLines(_ text: String) -> String {
+        var rest = Substring(text)
+        while let nl = rest.firstIndex(of: "\n"), rest[..<nl].allSatisfy({ $0 == " " || $0 == "\t" }) {
+            rest = rest[rest.index(after: nl)...]
+        }
+        return String(rest)
+    }
 }

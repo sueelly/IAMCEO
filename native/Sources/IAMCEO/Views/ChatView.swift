@@ -67,7 +67,6 @@ struct ChatView: View {
 
 /// One thread entry: my bubble, a centred system pill, or a team report card.
 struct ChatMessageRow: View {
-    @Environment(AppStore.self) private var store
     let message: Message
     /// This is my latest message to its target and its delivery is failed/held, so it still needs me.
     var isLatestProblem = false
@@ -79,28 +78,16 @@ struct ChatMessageRow: View {
         } else if message.kind == "시스템" {
             ChatSystemRow(message: message)
         } else if message.kind == "질문", let id = message.decisionId {
-            // B안: the decision card lives in the inbox; its copy in the thread is one line.
+            // B안: the card itself is answered in the inbox; its copy in the thread is one line (web isCardCopy).
             ChatDecisionCopyRow(message: message, decisionID: id)
-        } else if chatIsLeadProcess(message, members: store.members) {
-            ChatProcessRow(message: message)
         } else {
             ChatReportRow(message: message)
         }
     }
 }
 
-/// B안: the lead's process posts (맡김, 다시 알림, 진행 상황) are not results; they fold into one quiet grey line that opens
-/// the full card on a tap. Anything that links a decision, a file or attachments stays a card.
-func chatIsLeadProcess(_ message: Message, members: [Member]) -> Bool {
-    guard !message.mine, message.kind == "진행" || message.kind == "알림",
-          message.decisionId == nil, message.fileId == nil, message.attachments.isEmpty,
-          let id = message.memberId, let member = members.first(where: { $0.id == id }) else { return false }
-    guard member.kind == "conductor" || member.kind == "root" else { return false }
-    // A lead post that hands the owner a turn is not process.
-    return OwnerTurn.parse(message.body) == nil
-}
-
-/// B안 kind mark: 완료 green, 막힘 red and 질문 violet as small pills; 진행·알림 as plain grey text without a pill.
+/// B안 kind mark (web lib/tone.ts): 완료 green, 막힘 red and 질문 orange (the owner answers) as small pills; every other
+/// kind (진행·알림…) as plain grey text without a pill.
 struct MessageKindLabel: View {
     let kind: String
     var body: some View {
@@ -120,68 +107,67 @@ struct MessageKindLabel: View {
     }
 }
 
-/// B안 owner band: the report's "● 대표 차례" line, drawn first at the top of its card in the waiting (orange) family:
-/// "● 대표 차례 · {where} ›" over the task. It opens the decision the report links, or the inbox when the line names it.
+/// B안 owner band (web .th-owner): the report's "● 대표 차례" line, first in its card in the waiting (orange) family.
+/// "● 대표 차례" with the trailing "결재함 N건" as a link on the right, then the task (14.5 / 600).
 struct OwnerTurnBand: View {
     let turn: OwnerTurn
-    var action: (() -> Void)?
+    var openInbox: (() -> Void)?
     @State private var hovering = false
 
     var body: some View {
-        if let action {
-            Button(action: action) { content }
-                .buttonStyle(.plain)
-                .onHover { hovering = $0 }
-                .accessibilityHint(turn.place.map { "\($0) 열기" } ?? "열기")
-        } else {
-            content
-        }
-    }
-
-    private var content: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Circle().fill(CE.attentionDot).frame(width: 8, height: 8).accessibilityHidden(true)
-                Text("대표 차례").font(OwnerTurnFont.label).foregroundStyle(CE.attention)
-                Spacer(minLength: 6)
-                if let place = turn.place {
-                    Text(place).font(OwnerTurnFont.place).foregroundStyle(CE.attention).lineLimit(1)
+                HStack(spacing: 7) {
+                    Circle().fill(CE.attentionDot).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text("대표 차례")
                 }
-                if action != nil {
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.attention)
-                        .accessibilityHidden(true)
+                .font(OwnerTurnFont.head).foregroundStyle(CE.attention)
+                Spacer(minLength: 6)
+                if let inbox = turn.inbox, let openInbox {
+                    Button(action: openInbox) {
+                        HStack(spacing: 4) {
+                            Text(inbox).lineLimit(1)
+                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                        }
+                        .font(OwnerTurnFont.head).foregroundStyle(CE.attention)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: isMac ? 28 : 44)
+                        .background(CE.attentionDot.opacity(hovering ? 0.14 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .padding(.vertical, isMac ? -6 : -12).padding(.trailing, -6)
+                    .accessibilityLabel("\(inbox), 결재함 열기")
                 }
             }
             Text(turn.text)
                 .font(OwnerTurnFont.text).foregroundStyle(CE.ink)
-                .ceLineHeight(14, 1.4)
+                .ceLineHeight(14.5, 1.5)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 16)
+                .textSelection(.enabled)
         }
-        .padding(.horizontal, 16).padding(.vertical, 9)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(CE.attentionDot.opacity(hovering ? 0.24 : 0.16))
-        .overlay(alignment: .bottom) { Rectangle().fill(CE.attentionDot.opacity(0.38)).frame(height: 1) }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("대표 차례: \(turn.text)\(turn.place.map { ", \($0)" } ?? "")")
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CE.attentionDot.opacity(0.16))
+        .overlay(alignment: .bottom) { Rectangle().fill(CE.attentionDot.opacity(0.3)).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("대표 차례: \(turn.text)")
     }
 }
 
 private enum OwnerTurnFont {
     #if os(macOS)
-    static let label: Font = .system(size: 14, weight: .semibold)
-    static let place: Font = .system(size: 13, weight: .semibold)
-    static let text: Font = .system(size: 14, weight: .semibold)
+    static let head: Font = .system(size: 13, weight: .semibold)
+    static let text: Font = .system(size: 14.5, weight: .semibold)
     #else
-    static let label: Font = .subheadline.weight(.semibold)
-    static let place: Font = .footnote.weight(.semibold)
+    static let head: Font = .footnote.weight(.semibold)
     static let text: Font = .subheadline.weight(.semibold)
     #endif
 }
 
-/// B안: a 질문 card copied into the thread reads as one line, "결재 1건 {title} · 권장 {label}  결재함 ›" (the card itself
-/// is answered in the inbox). Once answered it says what was chosen.
+/// B안 (web .th-ask): a 질문 card copied into the thread is one line, "결재 1건: 제목 · 권장 안 → 결재함" with the time after
+/// it; an orange dot while it still waits for the owner. The card itself is answered in the inbox.
 struct ChatDecisionCopyRow: View {
     @Environment(AppStore.self) private var store
     @Environment(Router.self) private var router
@@ -194,79 +180,58 @@ struct ChatDecisionCopyRow: View {
         HStack(spacing: 0) {
             Button { router.openDecision(decisionID) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(line(decision)).lineLimit(2).ceLineHeight(13.5, 1.4)
+                    if open {
+                        Circle().fill(CE.attentionDot).frame(width: 8, height: 8).offset(y: -1).accessibilityHidden(true)
+                    }
+                    (Text(decisionCopyText(message, decision))
+                        + Text("  " + clockTime(message.at)).font(CEFont.meta.weight(.regular)).foregroundColor(CE.ink2))
+                        .ceLineHeight(14, 1.45)
+                        .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(store.isArchive ? "기록" : "결재함").font(ChatFont.chip).foregroundStyle(CE.accent).fixedSize()
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.accent)
                 }
                 .font(ChatFont.copyLine)
                 .foregroundStyle(CE.ink)
-                .padding(.leading, 14).padding(.trailing, 12).padding(.vertical, 8)
-                .frame(minHeight: isMac ? 36 : 44)
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .frame(minHeight: 44)
             }
-            .buttonStyle(ChatJumpStyle(prominent: open && !store.isArchive))
+            .buttonStyle(ChatJumpStyle())
             .help(parseISODate(message.at).map(koDateTime) ?? "")
             .chatMessageMenu(message)
             .frame(maxWidth: 720, alignment: .leading)
             Spacer(minLength: 0)
         }
     }
-
-    private func line(_ decision: Decision?) -> AttributedString {
-        let title = plainOneLine(decision?.title ?? message.title)
-        var head: AttributedString
-        var tail = ""
-        switch decision?.status {
-        case "open", nil:
-            head = AttributedString(message.who.isEmpty ? "결재 1건" : "결재 1건 · \(message.who)")
-            if let decision, let rec = decision.options.first(where: { $0.k == decision.rec })?.label { tail = " · 권장 \(rec)" }
-        case "closed":
-            head = AttributedString("닫힌 결재")
-        default:
-            head = AttributedString("결재함")
-            let chosen = decision?.options.first { $0.k == decision?.choice }?.label ?? decision?.note
-            if let chosen, !chosen.isEmpty { tail = " · 답함: \(plainOneLine(chosen))" }
-        }
-        head.swiftUI.font = ChatFont.copyLineHead
-        head.swiftUI.foregroundColor = CE.accent
-        return head + AttributedString("  \(title)\(tail)")
-    }
 }
 
-/// B안: one quiet line for a lead's process post ("{총괄} · {제목} · 접힘"); a tap opens the whole card in place.
-struct ChatProcessRow: View {
-    let message: Message
-    @State private var open = false
+/// B안 (web .th-fold): the lead's folded process posts, "총괄 · 맡김 1건, 다시 알림 2건 (접힘)" with the last one's time.
+/// A tap opens them as ordinary rows below.
+struct ChatFoldRow: View {
+    let label: String
+    let lastAt: String
+    let open: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button { open.toggle() } label: {
-                HStack(spacing: 6) {
-                    Text(summary).lineLimit(1).truncationMode(.tail)
-                    Text(clockTime(message.at)).font(CEFont.caption.monospacedDigit()).foregroundStyle(CE.ink3).fixedSize()
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(open ? 180 : 0)).foregroundStyle(CE.ink3)
-                }
-                .font(CEFont.secondary)
-                .foregroundStyle(CE.ink2)
-                .padding(.horizontal, 12).padding(.vertical, 4)
-                .frame(minHeight: isMac ? 24 : 44)
-                .overlay { Capsule().strokeBorder(CE.line) }
-                .contentShape(Capsule())
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                Text("\(label) (\(open ? "펼침" : "접힘"))").lineLimit(2)
+                Text(clockTime(lastAt)).font(CEFont.caption.monospacedDigit()).foregroundStyle(CE.ink3).fixedSize()
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(open ? 180 : 0))
             }
-            .buttonStyle(.plain)
-            .help(parseISODate(message.at).map(koDateTime) ?? "")
-            .accessibilityLabel("\(summary), 접힘")
-            .accessibilityHint(open ? "접기" : "펼쳐서 보기")
-            .frame(maxWidth: .infinity)
-            if open { ChatReportRow(message: message) }
+            .font(CEFont.secondary)
+            .foregroundStyle(hovering ? CE.ink : CE.ink2)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .frame(minHeight: 44)
+            .background(CE.wash(hovering ? 0.05 : 0), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
         }
-    }
-
-    private var summary: String {
-        let title = plainOneLine(message.title.isEmpty ? message.body : message.title)
-        let who = message.who.isEmpty ? "총괄" : message.who
-        return title.isEmpty ? "\(who) · \(message.kind)" : "\(who) · \(title)"
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(parseISODate(lastAt).map(koDateTime) ?? "")
+        .accessibilityLabel("\(label), \(open ? "펼침" : "접힘")")
+        .accessibilityHint(open ? "접기" : "펼쳐서 보기")
     }
 }
 
@@ -480,18 +445,17 @@ struct ChatReportRow: View {
         return !body.isEmpty && body != strip(message.title)
     }
 
-    /// The band opens the decision this report links, else the inbox when the line names it.
-    private func turnAction(_ turn: OwnerTurn) -> (() -> Void)? {
+    /// The band's "결재함 N건" opens the decision this report links, else the inbox (web: the inbox route with the decision).
+    private var openInbox: (() -> Void)? {
         if store.isArchive { return nil }
         if let id = message.decisionId { return { router.openDecision(id) } }
-        if turn.pointsToInbox { return { router.go(.inbox) } }
-        return nil
+        return { router.go(.inbox) }
     }
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                if let turn { OwnerTurnBand(turn: turn, action: turnAction(turn)) }
+                if let turn { OwnerTurnBand(turn: turn, openInbox: openInbox) }
                 card
             }
             .environment(\.ceInsideGlass, true)
@@ -535,18 +499,9 @@ struct ChatReportRow: View {
 
     /// Web .th-jumps: chips wrap onto new lines with an 8pt gap, directly in the card's 8pt rhythm.
     @ViewBuilder private var jumps: some View {
-        if (message.decisionId != nil && !bandOpensDecision) || message.fileId != nil {
-            TeamWrapLayout(spacing: 8, lineSpacing: 8) {
-                if !bandOpensDecision { decisionJump }
-                fileJump
-            }
+        if message.decisionId != nil || message.fileId != nil {
+            TeamWrapLayout(spacing: 8, lineSpacing: 8) { decisionJump; fileJump }
         }
-    }
-
-    /// The owner band already opens this report's open decision; a second "결재함에서 답하기" chip would repeat it.
-    private var bandOpensDecision: Bool {
-        guard turn != nil, !store.isArchive, let id = message.decisionId else { return false }
-        return store.decisions.first { $0.id == id }?.status == "open"
     }
 
     /// Web wording: 결재함에서 답하기 (open, highlighted) · 답함: {선택지 | 메모} · 답한 결재 보기 · 닫힌 결재 보기 ·
@@ -626,6 +581,8 @@ private struct ChatConversation: View {
     @State private var lastLoad: ChatHistoryLoad = .initial
     @State private var followID: String?
     @State private var positionError = false
+    /// B안: the fold rows the person opened (by fold row id).
+    @State private var unfolded: Set<String> = []
     private static let bottomID = "chat-thread-bottom"
 
     init(scopeID: String, targetMemberID: String?, projectID: String?, namespace: String) {
@@ -672,9 +629,18 @@ private struct ChatConversation: View {
                         ChatEmpty(title: "아직 대화가 없습니다", detail: emptyDetail)
                             .padding(.top, 10)
                     }
-                    ForEach(chatThreadRows(displayed)) { row in
+                    ForEach(chatThreadRows(displayed, members: store.members, unfolded: unfolded, keepOpen: router.chatMessageID)) { row in
                         switch row {
                         case .day(_, let label, let gap): ChatDaySeparator(label: label).padding(.top, gap)
+                        case .fold(let id, let label, let lastAt, let open, let gap):
+                            ChatFoldRow(label: label, lastAt: lastAt, open: open) {
+                                // Opening adds rows under the line just tapped; stop following the bottom so it stays put.
+                                if unfolded.insert(id).inserted { pinned = false } else { unfolded.remove(id) }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .chatScrollRow(id: row.id, coordinateSpace: scopeID)
+                            .id(row.id)
+                            .padding(.top, gap)
                         case .message(let message, let gap):
                             ChatMessageRow(message: message, isLatestProblem: scope.unresolvedIDs.contains(message.id), showsTarget: scope.isProjectThread)
                                 .chatScrollRow(id: row.id, coordinateSpace: scopeID)
@@ -999,10 +965,13 @@ private struct ChatEmpty: View {
 private enum ChatThreadRow: Identifiable {
     case day(id: String, label: String, gap: CGFloat)
     case message(Message, gap: CGFloat)
+    /// B안: the lead's process posts folded into one line (`id` is "fold:" + the first post's row id).
+    case fold(id: String, label: String, lastAt: String, open: Bool, gap: CGFloat)
     var id: String {
         switch self {
         case .day(let id, _, _): id
         case .message(let message, _): chatMessageRowID(message.id)
+        case .fold(let id, _, _, _, _): id
         }
     }
 }
@@ -1028,7 +997,10 @@ private func chatMessageRowID(_ id: String) -> String { "m:" + Data(id.utf8).bas
 /// Chronological rows with a day separator whenever the calendar day changes (rows only show a clock time).
 /// Spacing reads in turns: 10 between rows (web .th-list), 16 where the side changes (mine ↔ report ↔ system),
 /// 6 between two of my bubbles sent less than two minutes apart; 20 above a day separator (10 for the first).
-@MainActor private func chatThreadRows(_ messages: [Message]) -> [ChatThreadRow] {
+/// B안: runs of the lead's process posts (web foldThread) become one fold row; an open fold (or one holding `keepOpen`,
+/// the message a notification points at) is followed by its posts as ordinary rows.
+@MainActor private func chatThreadRows(_ messages: [Message], members: [Member] = [], unfolded: Set<String> = [],
+                                       keepOpen: String? = nil) -> [ChatThreadRow] {
     var rows: [ChatThreadRow] = []
     rows.reserveCapacity(messages.count + 4)
     var lastDay: String?
@@ -1036,7 +1008,50 @@ private func chatMessageRowID(_ id: String) -> String { "m:" + Data(id.utf8).bas
     var previous: (side: ChatSide, date: Date?)?
     var afterDay = false
     let calendar = Calendar.current
-    for message in messages {
+    let kinds = Dictionary(members.map { ($0.id, $0.kind) }, uniquingKeysWith: { first, _ in first })
+    let kindOf: (String?) -> String? = { id in id.flatMap { kinds[$0] } }
+    let folded = messages.indices.map { ThreadFolding.kind(messages, $0, kindOf: kindOf, date: ChatDates.parse) }
+    var index = 0
+    while index < messages.count {
+        let message = messages[index]
+        if let kind = folded[index] {
+            // A run of folded posts.
+            var end = index
+            var assign = 0, renotify = 0
+            while end < messages.count, let k = folded[end] {
+                if k == .assign { assign += 1 } else { renotify += 1 }
+                end += 1
+            }
+            _ = kind
+            let group = Array(messages[index..<end])
+            let id = "fold:" + chatMessageRowID(message.id)
+            let open = unfolded.contains(id) || group.contains { $0.id == keepOpen }
+            if let date = ChatDates.parse(message.at) {
+                let parts = calendar.dateComponents([.year, .month, .day], from: date)
+                let day = "day:\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+                if day != lastDay {
+                    let dayID = used.contains(day) ? "\(day)#\(rows.count)" : day
+                    used.insert(day)
+                    rows.append(.day(id: dayID, label: ChatDates.dayLabel(date), gap: rows.isEmpty ? 10 : 20))
+                    lastDay = day
+                    afterDay = true
+                }
+            }
+            let gap: CGFloat = afterDay || previous == nil ? 10 : previous?.side != .system ? 16 : 10
+            rows.append(.fold(id: id, label: ThreadFolding.label(assign: assign, renotify: renotify), lastAt: group.last?.at ?? message.at,
+                              open: open, gap: gap))
+            previous = (.system, ChatDates.parse(group.last?.at ?? ""))
+            afterDay = false
+            if open {
+                for item in group {
+                    rows.append(.message(item, gap: 10))
+                    previous = (.report, ChatDates.parse(item.at))
+                }
+            }
+            index = end
+            continue
+        }
+        index += 1
         let date = ChatDates.parse(message.at)
         if let date {
             let parts = calendar.dateComponents([.year, .month, .day], from: date)
@@ -1752,9 +1767,8 @@ private enum ChatFont {
     static let footerAction: Font = .system(size: 13, weight: .semibold)
     /// .atv-file 13.5, name 550.
     static let fileName: Font = .system(size: 13.5, weight: .medium)
-    /// B안 one-line decision copy: 13.5 at 1.4, the "결재 1건" head 700 in the link violet.
-    static let copyLine: Font = .system(size: 13.5)
-    static let copyLineHead: Font = .system(size: 13.5, weight: .bold)
+    /// B안 one-line decision copy (web .th-ask: 14 / 600).
+    static let copyLine: Font = .system(size: 14, weight: .semibold)
     #else
     static let cardTitle: Font = .callout.weight(.semibold)
     static let who: Font = .footnote.weight(.semibold)
@@ -1764,8 +1778,7 @@ private enum ChatFont {
     static let emptyBody: Font = .subheadline
     static let footerAction: Font = .footnote.weight(.semibold)
     static let fileName: Font = .footnote.weight(.medium)
-    static let copyLine: Font = .footnote
-    static let copyLineHead: Font = .footnote.weight(.bold)
+    static let copyLine: Font = .subheadline.weight(.semibold)
     #endif
 }
 
