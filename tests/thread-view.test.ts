@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Decision, MemberKind, Message } from "../shared/types";
 import { buildOwnerLine, buildRecLine } from "../shared/owner-lines";
-import { cardCopyText, foldLabel, foldThread, isCardCopy, processKind, splitOwnerAction, splitOwnerLine, type KindOf } from "../web/src/lib/thread-view";
+import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, processKind, splitOwnerAction, splitOwnerLine, type KindOf } from "../web/src/lib/thread-view";
 import { splitDetail } from "../web/src/lib/decision-view";
 import { KIND_TONE, STATUS_TONES, kindTone } from "../web/src/lib/tone";
 
@@ -108,6 +108,34 @@ describe("총괄 과정 글 접기", () => {
     const after = foldThread(more, kindOf).filter((i) => i.type === "fold").map((i) => i.type === "fold" && i.id);
     expect(after).toEqual(before);
     expect(before).toEqual(["fold:assign", "fold:re1"]);
+  });
+
+  test("새 소식(실패·앞 보고와 다름·원인)이 있는 총괄 글은 접지 않는다", () => {
+    const done = web("w", "2026-11-09T02:00:00Z", { kind: "완료", title: "로그인 고침" });
+    const differs = lead("l", "2026-11-09T02:00:30Z", { kind: "알림", title: "민수 보고와 달리 시험 2개가 실패합니다. 다시 맡겼습니다" });
+    expect(processKind([done, differs], 1, kindOf)).toBeNull();
+    const still = lead("l2", "2026-11-09T02:00:30Z", { kind: "알림", title: "웹은 끝, 네이티브는 아직 앱 만들기에서 막혔습니다" });
+    expect(processKind([done, still], 1, kindOf)).toBeNull();
+    // 같은 2분 안이라도 본문이 길면(3줄 이상) 새 소식이 있을 수 있어 그대로 둔다.
+    const long = lead("l3", "2026-11-09T02:00:30Z", { kind: "알림", title: "정리", body: "웹: 끝\n맥: 시험 중\n아이폰: 서명 기다림" });
+    expect(processKind([done, long], 1, kindOf)).toBeNull();
+    // 같은 자료를 잇는 글은 되풀이다.
+    expect(processKind([{ ...done, fileId: "f1" }, { ...long, fileId: "f1" }], 1, kindOf)).toBe("renotify");
+  });
+
+  test("맡김: 대표의 물음에 답한 글은 맡겼다는 말이 있어도 접지 않는다", () => {
+    const ask = msg("o", "2026-11-09T01:00:00Z", { mine: true, kind: "나", who: "나", body: "로그인이 왜 안 돼?" });
+    const reply = lead("l", "2026-11-09T01:00:30Z", { title: "원인은 토큰 만료입니다. 수정은 민수에게 맡겼습니다" });
+    expect(processKind([ask, reply], 1, kindOf)).toBeNull();
+    const plain = lead("l2", "2026-11-09T01:00:30Z", { title: "수정은 민수에게 맡겼습니다" });
+    expect(processKind([ask, plain], 1, kindOf)).toBeNull();
+    expect(processKind([owner("o2", "2026-11-09T01:00:00Z"), plain], 1, kindOf)).toBe("assign");
+  });
+
+  test("접은 줄에는 첫 글의 제목이 함께 보인다", () => {
+    const fold = foldThread(nov9(), kindOf).find((i) => i.type === "fold");
+    expect(fold && fold.type === "fold" && foldPreview(fold)).toBe("웹·네이티브 앱 적용 맡겼습니다");
+    expect(foldPreview({ messages: [lead("x", "2026-11-09T01:00:00Z", { title: "", body: "\n  첫 줄\n둘째 줄" })] })).toBe("첫 줄");
   });
 
   test("명부에서 빠진 직원의 보고 뒤 총괄 글도 다시 알림으로 접는다", () => {

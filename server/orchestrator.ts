@@ -384,6 +384,12 @@ export function askTitleKey(title: string): string {
   return plain.replace(/[\s\p{P}\p{S}]+/gu, "") || plain.trim();
 }
 
+/** 같은 안건인지 볼 때 제목 말고도 묶음·자료·그림이 같아야 한다. 같은 제목으로 시안 여러 장을 묻는 일은 다른 안건이다. */
+export function askSameItem(d: Pick<Decision, "title" | "group" | "fileId" | "images">, input: AskInput): boolean {
+  const imgs = (list: readonly Attachment[] | undefined) => (list ?? []).map((a) => `${a.name}:${a.size}`).sort().join("|");
+  return askTitleKey(d.title) === askTitleKey(input.title) && (d.group ?? null) === (input.group ?? null) && (d.fileId ?? null) === (input.fileId ?? null) && imgs(d.images) === imgs(input.images);
+}
+
 export interface RosterEntry {
   handle: string;
   name: string;
@@ -3078,11 +3084,11 @@ export class Orchestrator implements OrchestratorApi {
     // 보관한 프로젝트의 카드는 화면에 없고 답도 409 다. 올리면 세션이 답 없는 대기에 묶인다.
     if (this.store.requireProject(member.projectId).archived || this.archiving.has(member.projectId)) throw new ApiError(409, "프로젝트가 보관되어 대표가 답할 수 없습니다. 묻지 말고 턴을 끝내세요");
     // 같은 안건으로 결재 카드가 두 장 오르면 대표가 같은 질문에 두 번 답한다. 열린 카드가 있으면 새 카드를 받지 않는다.
-    const key = askTitleKey(input.title);
-    const same = this.store.listOpenDecisionsByMember(member.id).find((d) => d.projectId === member.projectId && askTitleKey(d.title) === key);
+    // 제목·묶음·자료·그림이 모두 같아야 같은 안건으로 본다.
+    const same = this.store.listOpenDecisionsByMember(member.id).find((d) => d.projectId === member.projectId && askSameItem(d, input));
     if (same) {
-      const wait = member.origin === "manual" ? " 답은 wait 로 받습니다." : " 턴을 끝내고 답을 기다리세요.";
-      throw new ApiError(409, `같은 제목의 결재 카드가 이미 열려 있습니다 #${same.id}. 새 카드를 올리지 않았습니다.${wait} 내용을 바꿔야 하면 ask_close(obsolete)로 그 카드를 닫은 뒤 다시 올리세요`);
+      const wait = member.origin === "manual" ? " 같은 질문이면 답은 wait 로 받습니다." : " 같은 질문이면 턴을 끝내고 답을 기다리세요.";
+      throw new ApiError(409, `다른 안건이면 제목을 구체적으로 바꿔 다시 올리세요. 같은 제목의 결재 카드가 이미 열려 있어 새 카드를 올리지 않았습니다 #${same.id}.${wait} 같은 질문의 내용만 바꿀 때만 ask_close(obsolete)로 그 카드를 닫고 다시 올립니다`);
     }
     const recLabel = input.rec ? input.options?.find((o) => o.k === input.rec)?.label : undefined;
     const detail = withRecLine(input.detail, recLabel, input.recReason);

@@ -779,6 +779,30 @@ describe("아티팩트", () => {
     }
   }, 40_000);
 
+  test("예전 자료의 흔한 클래스(.col·.status·.bar·.page·.owner·.rec)는 키트 부품으로 바뀌지 않는다", async () => {
+    const LEGACY = `<style>.row{display:flex}.col{flex:1}</style><div class="page"><div class="row"><div class="col" id="c1"><p>왼쪽 글</p></div><div class="col"><p>오른쪽 글</p></div></div>
+<p>상태는 <span class="status" id="st">완료</span>입니다.</p><div class="bar" id="bar" style="height:8px;background:#ccc"></div>
+<p class="owner" id="ow">담당: 민수</p><div class="rec" id="rec">추천 글</div></div>`;
+    const f = await upload({ title: "예전 자료", html: LEGACY });
+    const page = await open(desk, fileHash(f.id));
+    await inner(page).locator("#c1").waitFor();
+    const got = await inner(page).locator("body").evaluate(() => {
+      const q = (s: string) => document.querySelector(s)!;
+      const after = (s: string) => getComputedStyle(q(s), "::after").content;
+      const before = (s: string) => getComputedStyle(q(s), "::before").content;
+      return {
+        col: [getComputedStyle(q("#c1")).display, getComputedStyle(q("#c1")).alignItems, after("#c1")],
+        status: [getComputedStyle(q("#st")).display, getComputedStyle(q("#st")).marginBottom],
+        bar: [after("#bar"), q("#bar").getBoundingClientRect().height],
+        page: getComputedStyle(q(".page")).maxWidth,
+        owner: [getComputedStyle(q("#ow")).display, before("#ow")],
+        rec: getComputedStyle(q("#rec")).borderTopStyle,
+      };
+    });
+    expect(got).toEqual({ col: ["block", "normal", "none"], status: ["inline", "0px"], bar: ["none", 8], page: "none", owner: ["block", "none"], rec: "none" });
+    await page.close();
+  }, 30_000);
+
   /** # 대상이 화면 위쪽에 왔는지. 칸 위치 + 칸 안 위치가 창 안 위쪽이면 된다. 부드럽게 굴러가니 3초까지 기다린다. */
   const nearTop = async (page: Page, selector: string, wait = 3000) => {
     const view = page.viewportSize()!;

@@ -412,10 +412,21 @@ function StaticStage({ html, title }: { html: string; title: string }) {
       if (report(Math.ceil(n))) setPainted(true);
     };
 
-    const onClick = (e: MouseEvent) => {
+    // 링크는 composedPath 로 찾는다. 그림자 DOM 안의 클릭은 e.target 이 바깥 주인으로 바뀌어 closest 로는 못 찾는다
+    // (선언형 그림자 DOM 자료는 isScriptlessArtifact 가 '실행' 길로 보내지만, 칸이 넘어가지 않게 한 번 더 막는다).
+    const linkOf = (e: MouseEvent): Element | null => {
+      for (const n of e.composedPath()) {
+        if ((n as Node).nodeType !== 1) continue;
+        const el = n as Element;
+        if (E.matches.call(el, "a, area")) return el;
+      }
       const t = e.target as Node | null;
       const start = t && t.nodeType === 1 ? (t as Element) : (t?.parentElement ?? null);
-      const a = start ? E.closest.call(start, "a, area") : null;
+      return start ? E.closest.call(start, "a, area") : null;
+    };
+
+    const onClick = (e: MouseEvent) => {
+      const a = linkOf(e);
       if (!a) return;
       // 칸이 넘어가지 않게 늘 막는다. srcdoc 의 '#x' 는 부모 주소로 풀려 칸에 앱 화면이 뜬다.
       e.preventDefault();

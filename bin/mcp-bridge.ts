@@ -24,6 +24,11 @@ class BridgeError extends Error {
   }
 }
 
+/** 답 글 뒤에 서버가 준 덧글(글 검사 경고)을 붙인다. */
+export function withNote(text: string, note: string | undefined): string {
+  return note ? `${text}\n\n${note}` : text;
+}
+
 function toolError(text: string) {
   return { content: [{ type: "text" as const, text }], isError: true };
 }
@@ -110,7 +115,8 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
         if (extra.signal.aborted || !(e instanceof BridgeError && e.connection)) throw e;
         result = await call<AgentToolResult>("/agent/tool", body, extra.signal);
       }
-      const text = result.wait ? await waitForAnswer(result.wait.decisionId, extra.signal) : result.text;
+      // ask(manual): 결과 글은 대표의 답이다. 서버가 준 note(글 검사 경고)는 답 뒤에 붙인다.
+      const text = result.wait ? withNote(await waitForAnswer(result.wait.decisionId, extra.signal), result.wait.note) : result.text;
       return { content: [{ type: "text" as const, text }], ...(result.isError ? { isError: true } : {}) };
     } catch (e) {
       if (extra.signal.aborted) return toolError(`호출이 취소되었습니다. 이미 접수되었을 수 있습니다. operation_id: ${operationId}`);

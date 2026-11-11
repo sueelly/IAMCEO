@@ -107,6 +107,20 @@ describe("자료 검사", () => {
   });
 });
 
+describe("헛경고 줄이기", () => {
+  test("제품 이름·'아마존'은 걸리지 않고, 경고 글의 조사는 이름에 맞춘다", () => {
+    expect(lintPost({ title: "Next.js 화면 시안을 올렸습니다", body: "아마존 웹서비스 요금표를 확인했습니다." })).toEqual([]);
+    expect(codes(lintPost({ title: "iCloud 동기화를 고쳤습니다", body: "watchOS·Node.js 화면도 시험으로 확인했습니다." }))).not.toContain("codeish");
+    // 낱말 '아마'는 여전히 흐린 말로 본다.
+    expect(codes(lintPost({ title: "로그인 오류 원인", body: "아마 토큰 만료 때문입니다." }))).toContain("hedge");
+    const file = lintPost({ title: "웹 화면을 고쳤습니다", body: "server/roles.ts 와 roles.ts 를 고쳤고 시험으로 확인했습니다." }).map((w) => w.text).join("\n");
+    expect(file).toContain("파일 이름은 본문에");
+    expect(file).not.toContain("이름는");
+    const hash = lintPost({ title: "커밋했습니다", body: "커밋 3f9a2c1 을 시험으로 확인했습니다." }).map((w) => w.text).join("\n");
+    expect(hash).toContain("커밋 해시는 본문에");
+  });
+});
+
 describe("결과 글", () => {
   test("경고가 없으면 결과 글 그대로", () => {
     expect(withLint("보고했습니다 #m_1", [])).toBe("보고했습니다 #m_1");

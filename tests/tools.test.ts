@@ -197,6 +197,10 @@ describe("공통 도구", () => {
     const m = store.createMember({ projectId: project.id, handle: "m", name: "손", kind: "worker", origin: "manual" });
     const r = await call(m, "ask", { title: "물음", detail: "배경" });
     expect(r.wait?.decisionId).toBe(store.listDecisions(project.id)[0]!.id);
+    expect(r.wait?.note).toBeUndefined();
+    // 글 검사 경고는 note 로 따로 준다(브리지가 답 뒤에 붙인다).
+    const warned = await call(m, "ask", { title: "가".repeat(50), detail: "**하나** **둘** **셋** **넷**" });
+    expect(warned.wait?.note).toContain("글 검사 경고");
   });
 
   test("ask: 권장이 선택지에 없거나 k 가 겹치거나 자료가 다른 프로젝트면 거부", async () => {
@@ -295,6 +299,7 @@ describe("공통 도구", () => {
       expect(again.isError).toBe(true);
       expect(again.text).toContain(`#${first.id}`);
       expect(again.text).toContain("ask_close");
+      expect(again.text.startsWith("다른 안건이면 제목을 구체적으로 바꿔")).toBe(true);
     }
     expect(store.listDecisions(project.id).filter(d => d.status === "open")).toHaveLength(1);
     // 같은 질문 사본도 대화에 하나만 있다.
@@ -308,6 +313,25 @@ describe("공통 도구", () => {
     const reasked = store.listDecisions(project.id).find(d => d.title === "커밋할까요?" && d.memberId === w.id && d.status === "open")!;
     await orch.answerDecision(reasked.id, { choice: null, note: "해" });
     expect((await call(w, "ask", { title: "커밋할까요?", detail: "또 묻기" })).isError).toBeUndefined();
+  });
+
+  test("ask: 같은 제목이라도 묶음이나 그림이 다르면 다른 안건으로 받는다", async () => {
+    const { store, project, orch, call } = await setup();
+    const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "디자인" });
+    const opts = [{ k: "y", label: "이 시안으로" }, { k: "n", label: "다른 시안" }];
+    expect((await call(w, "ask", { title: "이 시안으로 갈까요?", detail: "1안", options: opts, group: "로고 시안" })).isError).toBeUndefined();
+    // 같은 묶음 안의 같은 제목은 그림이 없으면 같은 질문이다.
+    expect((await call(w, "ask", { title: "이 시안으로 갈까요?", detail: "2안", options: opts, group: "로고 시안" })).isError).toBe(true);
+    // 묶음이 다르면 받는다.
+    expect((await call(w, "ask", { title: "이 시안으로 갈까요?", detail: "앱 아이콘", options: opts, group: "앱 아이콘 시안" })).isError).toBeUndefined();
+    expect(store.listDecisions(project.id).filter(d => d.status === "open")).toHaveLength(2);
+    // 같은 묶음이라도 카드 그림이나 자료가 다르면 다른 안건이다.
+    const { askSameItem } = await import("../server/orchestrator.ts");
+    const img = (name: string) => ({ id: `a_${name}`, name, mime: "image/png", size: 10, url: `/x/${name}`, path: `/x/${name}`, isImage: true });
+    const card = { title: "이 시안으로 갈까요?", group: "로고 시안", fileId: null, images: [img("1안.png")] };
+    expect(askSameItem(card, { title: "이 시안으로 갈까요 ?", group: "로고 시안", images: [{ ...img("1안.png"), id: "a_new" }] })).toBe(true);
+    expect(askSameItem(card, { title: "이 시안으로 갈까요?", group: "로고 시안", images: [img("2안.png")] })).toBe(false);
+    expect(askSameItem(card, { title: "이 시안으로 갈까요?", group: "로고 시안", fileId: "f_2", images: [img("1안.png")] })).toBe(false);
   });
 
   test("file: 마크다운 자료의 글 검사 경고는 결과에만 붙는다", async () => {

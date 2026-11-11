@@ -13,7 +13,7 @@ import type { AssignResult, Orchestrator } from "./orchestrator.ts";
 import { josa } from "./roles.ts";
 import { ApiError } from "./store.ts";
 import { oneLineProblem } from "./text.ts";
-import { lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
+import { formatLintWarnings, lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
 type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS)[number];
@@ -204,7 +204,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       const warnings = lintAsk({ title: a.title, detail: decision.detail, options: a.options, recReason: recLabel ? a.rec_reason : undefined, recLabel });
       if (a.rec_reason && !recLabel) warnings.unshift({ code: "owner-first", text: "rec_reason 은 rec 와 함께 줘야 권장 줄이 생깁니다. 이번 카드에는 권장 줄이 없습니다" });
       const result = withLint(text, warnings);
-      return blocking ? { text: result, wait: { decisionId: decision.id } } : { text: result };
+      if (!blocking) return { text: result };
+      // manual 은 브리지가 text 를 대표의 답으로 바꾼다. 경고는 note 로 따로 줘 답 뒤에 붙게 한다.
+      const note = formatLintWarnings(warnings);
+      return { text: result, wait: note ? { decisionId: decision.id, note } : { decisionId: decision.id } };
     },
   ),
 
@@ -250,7 +253,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       summary: z.string().optional().describe("세 줄 요약. 첫 줄은 대표 차례나 결론. 자료의 '찾는 말' 낱말도 넣는다"),
       path: z.string().optional().describe("파일 경로. 작업 폴더 안의 파일만. 상대 경로는 작업 폴더 기준"),
       content: z.string().optional().describe("마크다운 전문"),
-      html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>"),
+      html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
     }),
     async (orch, member, a) => {

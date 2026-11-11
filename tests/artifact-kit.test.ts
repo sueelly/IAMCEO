@@ -66,8 +66,14 @@ describe("buildArtifactSrcdoc", () => {
 });
 
 describe("키트 화면 부품 12개", () => {
+  test("흔한 클래스 이름은 부품 짜임 안에서만 잡는다(예전 자료의 .col·.bar·.status·.page 를 바꾸지 않는다)", () => {
+    for (const bare of [".page", ".src", ".owner", ".toc", ".find", ".no", ".hero", ".delta", ".bars", ".bar", ".ticks", ".cols", ".col", ".ba", ".why", ".rec", ".opts", ".gantt", ".status", ".dg"]) {
+      expect([bare, new RegExp(`(?:^|[(,\\s])${bare.replaceAll(".", "\\.")}(?=[){,:\\s>.\\[])`, "m").test(ARTIFACT_KIT_CSS)]).toEqual([bare, false]);
+    }
+  });
+
   test("부품마다 선택자가 있고, 예전 조각은 그대로다", () => {
-    for (const piece of [".page", ".src", ".owner", ".toc", ".find", ".no", ".hero", ".delta", ".bars", ".bar", ".has-limit", ".ticks", ".cols", ".cols-plot", ".col", ".cols-x", ".ba", ".ba-before", ".ba-label", "sup.n", ".why", ".rec", ".rec-head", ".rec-cost", ".tag.pick", ".rec-cell", ".opts", ".gantt", ".g-row", ".g-axis", ".status", ".dg", ".dg-box", ".dg-t", ".dg-s", ".dg-line", ".dg-head", ".dg-l"]) expect(ARTIFACT_KIT_CSS.includes(`:where(${piece}`) || ARTIFACT_KIT_CSS.includes(`>${piece}`) || ARTIFACT_KIT_CSS.includes(` ${piece}`)).toBe(true);
+    for (const piece of [".page", ".src", ".owner", ".toc", ".find", ".no", ".hero", ".delta", ".bars", ".bar", ".has-limit", ".ticks", ".cols", ".cols-plot", ".col", ".cols-x", ".ba", ".ba-before", ".ba-label", "sup.n", ".why", ".rec", ".rec-head", ".rec-cost", ".tag.pick", ".rec-cell", ".opts", ".gantt", ".g-row", ".g-axis", ".status", ".dg", ".dg-box", ".dg-t", ".dg-s", ".dg-line", ".dg-head", ".dg-l"]) expect([piece, new RegExp(`${piece.replaceAll(".", "\\.")}(?![\\w-])`).test(ARTIFACT_KIT_CSS)]).toEqual([piece, true]);
     for (const old of [":where(.compare>.pick){border-color:rgb(122 91 255 / .55);background:rgb(122 91 255 / .07)}", ":where(.tag.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .35);color:#A8530A}"]) expect(ARTIFACT_KIT_CSS).toContain(old);
   });
 
@@ -140,6 +146,8 @@ describe("스크립트 없는 자료", () => {
     "<meta http-equiv='refresh' content='0;url=https://evil.example'>",
     "<meta name='x>' HTTP-EQUIV=refresh content='0'>",
     "<scr\0ipt>1</script>",
+    "<div><template shadowrootmode='open'><a href='#sec'>a</a></template></div><h2 id='sec'>s</h2>",
+    "<div><template SHADOWROOT=open><p>x</p></template></div>",
   ];
   test.each(ACTIVE)("'실행' 칸으로 보낸다: %s", (html) => {
     expect(isScriptlessArtifact(html)).toBe(false);

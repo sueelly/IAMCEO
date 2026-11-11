@@ -7,7 +7,7 @@ import { getState, loadOlderMessages, routeHash, sendMessage, useProject, useSto
 import { Attachments } from "../components/Attachments";
 import { Badge, Empty, Markdown, Time } from "../components/ui";
 import { kindTone } from "../lib/tone";
-import { cardCopyText, foldLabel, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
+import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
 import { useGate } from "../components/ConnectGate";
 import { HqLeadStrip } from "./Inbox";
 import "../styles/thread.css";
@@ -189,9 +189,10 @@ function FoldRow({ item, open, onToggle }: { item: Extract<ThreadItem, { type: "
   return (
     <div className="th-row th-row--fold">
       <button type="button" className="th-fold" aria-expanded={open} onClick={onToggle}>
-        <span>
+        <span className="th-fold__label">
           {foldLabel(item)} ({open ? "펼침" : "접힘"})
         </span>
+        {foldPreview(item) ? <span className="th-fold__preview">{foldPreview(item)}</span> : null}
         <Time iso={last?.at} className="th-fold__time" />
         <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
           <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

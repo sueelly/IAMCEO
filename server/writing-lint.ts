@@ -6,6 +6,7 @@
 // 규칙의 근거는 역할 글에 붙는 지침(server/roles/writing.md)이다.
 
 import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
+import { josa } from "./roles.ts";
 
 export const LIMITS = { title: 45, askTitle: 40, req: 40, desc: 60 } as const;
 /** 도구 결과에 붙일 경고 줄 수(머리 줄 제외). */
@@ -49,10 +50,12 @@ const CODEISH: { name: string; pat: RegExp }[] = [
   { name: "커밋 해시", pat: /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g },
   { name: "색 코드", pat: /#(?:[0-9A-Fa-f]{6}|(?=\d*[A-Fa-f])[0-9A-Fa-f]{3})\b/g },
   { name: "경로", pat: /(?<![\w\/~.])(?:~\/|\.{1,2}\/|\/)[\w.\-]+(?:\/[\w.\-]*)*|(?<![\w\/])[A-Za-z_][\w.\-]*\/[\w.\-]+\/[\w.\-\/]*/g },
-  { name: "파일 이름", pat: /\b[\w\-]+\.(?:tsx?|jsx?|swift|json|html?|md|css|py|sh|ya?ml|plist)\b/g },
+  // Next.js·Node.js 같은 제품 이름(대문자로 시작하는 낱말 + .js)은 파일 이름이 아니다.
+  { name: "파일 이름", pat: /\b(?![A-Z][a-z]+\.js\b)[\w\-]+\.(?:tsx?|jsx?|swift|json|html?|md|css|py|sh|ya?ml|plist)\b/g },
   { name: "내부 번호", pat: /\b(?:[a-z]{1,4}_[A-Za-z0-9_\-]{8,}|msg_[A-Za-z0-9]+)\b/g },
   { name: "포트", pat: /:\d{4,5}\b|\b\d{4,5}\s?(?:번\s?)?포트|포트\s?\d{4,5}/g },
-  { name: "코드 이름", pat: /\b(?!iPhone|iPad|macOS|iOS)(?:[a-z]+_[a-z_]+|[a-z]+[A-Z][A-Za-z]+)\b/g },
+  // iPhone·iCloud 같은 i 제품 이름과 macOS·watchOS 같은 OS 이름은 코드 이름이 아니다.
+  { name: "코드 이름", pat: /\b(?!i[A-Z]|[a-z]+OS\b)(?:[a-z]+_[a-z_]+|[a-z]+[A-Z][A-Za-z]+)\b/g },
 ];
 
 // ---------- 3판 검사 ----------
@@ -60,7 +63,8 @@ const CODEISH: { name: string; pat: RegExp }[] = [
 const DONE = /((?<!['‘])완료(?![·'’]|\s?보고)|끝났|끝냈|마쳤|다\s?됐|구현했|적용했|반영했|통과했)/;
 const VERIFY = /(시험|확인|검사|쟀|측정|캡처|대비|열어|돌려|통과)/;
 // '~할 수 있습니다'는 능력을 말할 때가 많아 오탐이 잦다. 시안의 그 항목은 옮기지 않았다.
-const UNSURE = /(것 같|로 보입니다|듯합니다|듯하다|로 보인다|아마)/;
+// '아마'는 낱말일 때만 본다(아마존·아마추어는 아니다).
+const UNSURE = /(것 같|로 보입니다|듯합니다|듯하다|로 보인다|(?<![가-힣])아마(?:도)?(?=\s|$|[,.]))/;
 const UNSURE_LABEL = /(미정|가정|확인하지 못|확인 전|위험)/;
 const BOLD = /\*\*[^*\n]+\*\*/g;
 const HEADING = /^\s{0,3}#{1,6}\s|^\s*\*\*[^*\n]{1,14}\*\*\s*[:：]?\s*$/m;
@@ -142,7 +146,7 @@ function codeish(bag: Bag, plain: string) {
   for (const c of CODEISH) {
     c.pat.lastIndex = 0;
     const hit = plain.match(c.pat);
-    if (hit?.length) bag.push({ code: "codeish", text: `${c.name}는 본문에 쓰지 않습니다(필요하면 자료의 '세부'에): "${clip(hit[0], 30)}"` });
+    if (hit?.length) bag.push({ code: "codeish", text: `${josa(c.name, "은")} 본문에 쓰지 않습니다(필요하면 자료의 '세부'에): "${clip(hit[0], 30)}"` });
   }
 }
 
