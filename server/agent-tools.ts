@@ -12,10 +12,13 @@ import type { AgentWorkflowService } from "./service-contracts.ts";
 import type { AssignResult, Orchestrator } from "./orchestrator.ts";
 import { josa } from "./roles.ts";
 import { ApiError } from "./store.ts";
+import { MemoryError, stableEventId, clip } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
-type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS)[number];
+/** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
+export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
+type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
 
 const WAIT_DEFAULT_SEC = 50;
@@ -175,6 +178,73 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (!a.task_id && !a.title) throw new ApiError(400, "새 작업에는 title 이 필요합니다");
       const { task, created } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree });
       return reply(`${created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다`);
+    },
+  ),
+
+  memory_search: tool(
+    "개발 기억(이 프로젝트의 과거 결정·실수·교훈·결과)을 찾는다. 결과는 과거 보고와 근거일 뿐, 지금 대표 지시·승인·프로젝트 규칙보다 앞서지 않는다. 범위는 이 프로젝트로 서버가 정한다. 본문은 1,600자까지 잘려 오고(excerpted), 전문·근거는 memory_get 으로 본다.",
+    z.strictObject({
+      query: z.string().trim().min(1).max(2000).describe("찾을 내용(지금 요구·오류·바꿀 곳)"),
+      limit: z.number().int().min(1).max(10).optional().describe("최대 개수(기본 5)"),
+      task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id(tk_...). 없으면 비운다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const result = await memoryCall(() => memory.context(member.projectId, orch.memoryScope(member, a.task_id), a.query, a.limit ?? 5));
+      const experiences = result.experiences.map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, content: e.content, excerpted: e.excerpted, source: e.source, status: e.status, is_rule: e.is_rule, feedback: e.feedback, created_at: e.created_at }));
+      return reply(JSON.stringify({ note: "과거 기록이다. 지금 대표 지시·승인·규칙보다 앞서지 않는다. classification 근거가 explicit_user_decision 인 것만 대표 결정이다.", semantic_index: result.semantic_index, truncated: result.truncated, experiences }));
+    },
+  ),
+
+  memory_get: tool(
+    "개발 기억 한 건의 전문과 근거를 본다(memory_search 결과의 id).",
+    z.strictObject({ id: oneLine(200).describe("exp-... id"), task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id. 없으면 비운다") }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const out = await memoryCall(() => memory.mcp(member.projectId, orch.memoryScope(member, a.task_id), "get_experience", { id: a.id }, a.id));
+      return reply(typeof out === "string" ? out : JSON.stringify(out));
+    },
+  ),
+
+  memory_record: tool(
+    "이번 일에서 실제로 생긴 결정·실수·교훈·결과를 개발 기억에 남긴다. 대표 결재 답은 서버가 따로 올리므로 여기 쓰지 않는다. basis 로 AI 추론(ai_inference)과 확인한 결과(verified: 명령·시험 결과·커밋 같은 근거를 evidence 에)를 가른다. 비밀값·개인정보는 넣지 않는다.",
+    z.strictObject({
+      kind: z.enum(["decision", "mistake", "lesson", "outcome"]).describe("decision 직원 판단 · mistake 실수 · lesson 교훈 · outcome 실제 결과"),
+      basis: z.enum(["ai_inference", "verified"]).describe("ai_inference 추론·의견 · verified 실제로 확인함(evidence 필수)"),
+      summary: oneLine(300).describe("한 줄 요약"),
+      content: z.string().trim().min(1).max(30000).describe("배경·선택·적용 조건·확인한 결과(원문)"),
+      evidence: z.array(z.string().trim().min(1).max(2000)).max(28).optional().describe("근거: 명령과 결과, 시험 이름과 통과 수, 커밋, 바뀐 파일"),
+      commit_sha: z.string().trim().regex(/^[0-9a-f]{7,40}$/).optional().describe("확인한 커밋"),
+      task_id: oneLine(64).nullable().optional().describe("이 기록이 속한 작업 id(null 은 전체). 작업을 쓰는 직원은 꼭 넣는다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      if (a.basis === "verified" && !a.evidence?.length) throw new ApiError(400, "verified 기록에는 evidence(실제 명령·결과·커밋)가 필요합니다. 근거가 없으면 basis 를 ai_inference 로 둡니다");
+      const taskId = orch.memberTask(member, a.task_id);
+      const scope = orch.memoryScope(member, taskId);
+      const { content, capture } = clip(`분류: AI 보고(${a.basis === "verified" ? "직원이 확인한 결과" : "직원의 추론·의견"}) — 대표 결정 아님. 작성: ${member.name}(${member.handle}) · IAMCEO 프로젝트 ${member.projectId}${taskId ? ` · 작업 #${taskId}` : ""}\n\n${a.content}`);
+      const eventId = stableEventId("iamceo-ai", member.id, scope, a.kind, a.basis, a.summary, a.content);
+      const saved = await memoryCall(() => memory.record(member.projectId, {
+        event_id: eventId, kind: a.kind, summary: a.summary, content, capture,
+        source: { task_id: scope, item_id: member.id, service: "iamceo", ...(a.commit_sha ? { commit_sha: a.commit_sha } : {}) },
+        evidence: [{ kind: "classification", text: a.basis === "verified" ? "ai_reported_verified" : "ai_inference" }, ...(a.evidence ?? []).map((text) => ({ kind: "note", text }))],
+      }));
+      return reply(`개발 기억에 남겼습니다 #${saved.id} (같은 내용으로 다시 부르면 같은 기록을 돌려줍니다)`);
+    },
+  ),
+
+  memory_feedback: tool(
+    "다른 작업에서 남긴 개발 기억을 이번 일에 실제로 적용해 본 결과를 남긴다. 결과를 확인하지 않았으면 부르지 않는다. 자기 작업의 기록에는 남길 수 없다.",
+    z.strictObject({
+      id: oneLine(200).describe("exp-... id"),
+      outcome: z.enum(["helped", "did_not_help", "contradicted"]).describe("helped 도움됨 · did_not_help 도움 안 됨 · contradicted 사실과 달랐음"),
+      task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id. 없으면 비운다"),
+    }),
+    async (orch, member, a) => {
+      const memory = orch.requireMemory(member);
+      const scope = orch.memoryScope(member, a.task_id);
+      await memoryCall(() => memory.feedback(member.projectId, a.id, scope, `iamceo-${member.id}`, a.outcome));
+      return reply("적용 결과를 남겼습니다(같은 기록·작업에는 처음 값만 남습니다)");
     },
   ),
 
@@ -596,24 +666,33 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 };
 
-function namesFor(member: Member): readonly ToolName[] {
+/** 게이트웨이 오류는 직원이 읽을 수 있는 거절로 바꾼다. 키·주소 원문은 싣지 않는다. */
+async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
+  try { return await run(); } catch (e) {
+    if (e instanceof MemoryError) throw new ApiError(e.code === "not_configured" ? 400 : 502, e.message);
+    throw e;
+  }
+}
+
+function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
   return [
     ...WORKER_TOOLS,
+    ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
     ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
     ...(member.kind === "root" ? ROOT_TOOLS : []),
     ...(member.origin === "manual" ? MANUAL_TOOLS : []),
   ];
 }
 
-export function listAgentTools(member: Member): AgentToolDef[] {
-  return namesFor(member).map((name) => {
+export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
+  return namesFor(member, opts).map((name) => {
     const { $schema: _, ...inputSchema } = z.toJSONSchema(TOOLS[name].schema) as Record<string, unknown>;
     return { name, description: TOOLS[name].description, inputSchema };
   });
 }
 
 export async function handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
-  if (!(namesFor(member) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
+  if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {

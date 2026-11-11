@@ -55,6 +55,30 @@ import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
 
+export interface MemoryUpload {
+  eventId: string;
+  projectId: string;
+  refType: string;
+  refId: string;
+  body: string;
+  /** pending: 보낼 차례를 기다림 · sent: 게이트웨이가 받음 · rejected: 게이트웨이가 거절(같은 본문으로 다시 보내도 같다) */
+  status: "pending" | "sent" | "rejected";
+  attempts: number;
+  nextAt: string;
+  lastError: string | null;
+  remoteId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function toMemoryUpload(r: Row): MemoryUpload {
+  return {
+    eventId: r.event_id as string, projectId: r.project_id as string, refType: r.ref_type as string, refId: r.ref_id as string, body: r.body as string,
+    status: r.status as MemoryUpload["status"], attempts: r.attempts as number, nextAt: r.next_at as string, lastError: (r.last_error as string | null) ?? null,
+    remoteId: (r.remote_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+  };
+}
+
 /** status 가 그대로 HTTP 응답 코드가 되는 오류. */
 export class ApiError extends Error {
   constructor(
@@ -1661,6 +1685,30 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** 최근 등록한 작업부터. */
   listTasks(projectId: string): Task[] {
     return this.rows("SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC", projectId).map(toTask);
+  }
+
+  /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */
+  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string }): boolean {
+    const at = new Date().toISOString();
+    const before = this.row("SELECT 1 AS hit FROM memory_outbox WHERE event_id = ?", input.eventId);
+    if (before) return false;
+    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)",
+      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at);
+    return true;
+  }
+
+  dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {
+    return this.rows("SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ? ORDER BY created_at LIMIT ?", now, limit).map(toMemoryUpload);
+  }
+
+  listMemoryUploads(projectId?: string): MemoryUpload[] {
+    return (projectId ? this.rows("SELECT * FROM memory_outbox WHERE project_id = ? ORDER BY created_at", projectId) : this.rows("SELECT * FROM memory_outbox ORDER BY created_at")).map(toMemoryUpload);
+  }
+
+  settleMemoryUpload(eventId: string, patch: { status: MemoryUpload["status"]; attempts: number; nextAt?: string; lastError?: string | null; remoteId?: string | null }): void {
+    const at = new Date().toISOString();
+    this.run("UPDATE memory_outbox SET status = ?, attempts = ?, next_at = COALESCE(?, next_at), last_error = ?, remote_id = COALESCE(?, remote_id), updated_at = ? WHERE event_id = ?",
+      patch.status, patch.attempts, patch.nextAt ?? null, patch.lastError ?? null, patch.remoteId ?? null, at, eventId);
   }
 
   /**

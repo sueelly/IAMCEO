@@ -649,6 +649,23 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE todos ADD COLUMN task_id TEXT;
    ALTER TABLE deliveries ADD COLUMN task_id TEXT;
    CREATE INDEX messages_task ON messages(project_id, task_id, at) WHERE task_id IS NOT NULL;`,
+  // 개발 기억(Hindsight 게이트웨이) 업로드 대기열. 원본(결재·작업·전달 상태)은 IAMCEO 에 남고, 여기에는 보낼 기록과 결과만 둔다.
+  // event_id 는 게이트웨이의 같은 사건 재시도 키다. 같은 사건은 한 줄만 생기고, 같은 본문으로만 다시 보낸다.
+  `CREATE TABLE memory_outbox (
+     event_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     ref_type TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     body TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'pending',
+     attempts INTEGER NOT NULL DEFAULT 0,
+     next_at TEXT NOT NULL,
+     last_error TEXT,
+     remote_id TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX memory_outbox_due ON memory_outbox(status, next_at);`,
 ];
 
 export function openDb(path: string): Database {
