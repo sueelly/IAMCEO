@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member } from "../shared/types.ts";
+import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { toStorageError } from "./storage-errors.ts";
@@ -134,6 +134,15 @@ function requireOther(orch: Orchestrator, self: Member, ref: string): Member {
   const target = orch.requireInProject(self.projectId, ref);
   if (target.id === self.id) throw new ApiError(400, "자기 자신은 지정할 수 없습니다");
   return target;
+}
+
+function stopNote(r: StopResult): string {
+  const run = r.runId ? `실행 ${r.runId}` : "지금 턴";
+  const tasks = r.taskIds.length ? ` · 작업 ${r.taskIds.map((t) => `#${t}`).join(", ")}` : "";
+  if (r.outcome === "stopped") return `${run}을 멈췄습니다${tasks}. 끊긴 일은 다시 보내지 않습니다`;
+  if (r.outcome === "not_running") return `멈출 턴이 없습니다(${r.detail ?? "이미 끝남"})`;
+  if (r.outcome === "changed") return `멈추지 않았습니다: ${r.detail ?? "실행이 바뀜"}. roster 로 지금 실행을 확인하세요`;
+  return `${r.detail ?? "멈추지 못했습니다"}. 턴은 계속됩니다`;
 }
 
 function assignNote(result: AssignResult): string {
@@ -496,6 +505,23 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     },
   ),
 
+  team_stop: tool(
+    "직원의 지금 CLI 턴을 멈춘다(대표가 멈추라고 했거나, 잘못 맡긴 일을 끊어야 할 때). 직원 한 명의 턴 단위라 그 턴이 받은 작업이 여럿이면 함께 멈춘다. CLI 대화·바뀐 파일은 남고 끊긴 일은 다시 보내지 않는다. 이어서 시킬 일은 then 에 넣는다: 서버가 먼저 대기열에 고정한 뒤 멈추고, 입력이 가능해지면 한 번만 보낸다. 멈춤 키(esc·ctrl+c)를 terminal_input 으로 따로 넣지 않는다. 결과가 changed·not_running 이면 roster 로 지금 실행을 다시 본다.",
+    z.strictObject({
+      member: memberRef,
+      expect_run_id: oneLine(100).optional().describe("roster 의 run.id. 지금 실행이 이것과 다르면 멈추지 않는다"),
+      then: z.string().trim().min(1).max(20000).optional().describe("멈춘 뒤 이어서 할 지시(끝났다고 볼 기준 포함)"),
+      user_quote: userQuote,
+      task_id: z.string().trim().min(1).max(64).optional().describe("then 이 특정 작업의 지시면 그 작업 id"),
+    }),
+    async (orch, member, a) => {
+      const target = requireOther(orch, member, a.member);
+      const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId: a.task_id }, member) : null;
+      const r = await orch.stopMember(target.id, { by: `agent-${member.id}`, expectRunId: a.expect_run_id ?? null });
+      return { text: `${target.name}: ${stopNote(r)}${queued ? ` · 이어서 할 지시: ${assignNote(queued)}` : ""}`, ...(r.outcome === "failed" ? { isError: true } : {}) };
+    },
+  ),
+
   team_compact: tool(
     "직원 세션을 압축한다. 보통은 서버가 자동으로 하니 화제가 크게 바뀔 때만. 일하는 중이면 끝난 뒤로 미룬다.",
     z.strictObject({ member: memberRef, focus: oneLineOpt(1000).optional().describe("요약에 남길 것(한 줄)") }),
@@ -562,7 +588,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   terminal_input: tool(
-    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 글은 넣는 즉시 제출(Enter)되어 그 직원에게 메시지로 간다. 일하는 중에는 글을 넣지 않고 키만(esc·ctrl+c 로 멈추기, 승인 창 고르기). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창·멈춤처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
+    "직원 터미널에 글이나 키를 넣는다(조작권·세션 세대·입력 순번을 서버가 확인). 글은 넣는 즉시 제출(Enter)되어 그 직원에게 메시지로 간다. 일하는 중에는 글을 넣지 않고 키만(승인 창 고르기). 턴을 멈추는 것은 team_stop 이다(여기서 esc·ctrl+c 를 넣으면 멈춤 기록이 남지 않는다). 보통 지시는 team_assign 을 쓰고, 이것은 승인 창·질문 창처럼 화면을 직접 다뤄야 할 때만. 결과가 unknown 이면 terminal_read 로 먼저 확인하고 같은 입력을 새로 반복하지 않는다.",
     z.strictObject({
       member: memberRef,
       text: z.string().min(1).max(4000).optional().describe("보낼 글. 바로 제출된다(입력칸에 넣어 두기만 하는 기능은 없다)"),

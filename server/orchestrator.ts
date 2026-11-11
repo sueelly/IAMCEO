@@ -50,6 +50,9 @@ import type {
   SendMessageReq,
   Settings,
   SettingsPatch,
+  StopReq,
+  StopResult,
+  MemberExecutionState,
   TidyResult,
   Task,
   Todo,
@@ -257,6 +260,11 @@ export function formatTidy(kind: MemberKind, manual: boolean): string {
   ].join("\n");
 }
 
+/** 실행 기록·활동에 남기는 멈춤 이유. by 는 "user" 또는 "agent-<직원 id>". */
+function stopReason(by: string | null): string {
+  return by === "user" ? "대표가 멈췄습니다" : by?.startsWith("agent-") ? "총괄이 멈췄습니다" : "멈춤 요청으로 턴이 끝났습니다";
+}
+
 function isTidy(d: Pick<Delivery, "kind" | "text">): boolean {
   return d.kind === "system" && d.text.startsWith(TIDY_HEAD);
 }
@@ -420,6 +428,8 @@ export interface RosterEntry {
   /** 서브에이전트에 쓰는 값. */
   subagentModel: string | null;
   subagentEffort: Effort | null;
+  /** 지금(또는 마지막) 실행. team_stop 의 expect_run_id 로 쓴다. 한 턴이 여러 작업을 받을 수 있다. */
+  run: { id: string; phase: MemberExecutionState["phase"]; taskIds: string[] } | null;
 }
 
 interface Turn {
@@ -468,6 +478,8 @@ interface Runtime {
   configGaveUp: string | null;
   /** 턴을 마치고 뒤 작업(워크플로 등)을 기다리는 중이면 그 작업. 그 팀은 일하는 중이고 세션은 글을 바로 받는다(herdr). */
   background: string | null;
+  /** 대표·총괄이 멈춘 실행. CLI 가 멈춤을 확인하면 confirmed. 그 턴이 끝날 때 실행 기록을 '중단'으로 남기고 보고 보완을 요청하지 않는다. */
+  stopRequest: { runId: string | null; by: string; at: string; confirmed: boolean } | null;
 }
 
 const HOLD_NOTES: Record<string, string> = {
@@ -599,6 +611,8 @@ export class Orchestrator implements OrchestratorApi {
   readonly devMemory: DevMemory | null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
+  /** 직원별로 도는 멈춤 요청. 겹쳐 누르면 같은 결과를 받는다. */
+  private stopping = new Map<string, Promise<StopResult>>();
   /** 동시 턴 상한에 걸려 기다리는 직원. 턴이 끝나면 차례로 다시 민다. */
   private waiting = new Set<string>();
   private askWaiters = new Map<string, Set<() => void>>();
@@ -1036,7 +1050,7 @@ export class Orchestrator implements OrchestratorApi {
     return false;
   }
 
-  private endExecution(member: Member, result: "success" | "error" | "interrupted", reason: string | null, exitCode: number | null = null, turn?: number | null): void {
+  private endExecution(member: Member, result: "success" | "error" | "interrupted", reason: string | null, exitCode: number | null = null, turn?: number | null, stoppedBy?: string | null): void {
     const at = new Date().toISOString();
     this.store.transaction(() => {
       for (const run of this.store.listPendingExecutions().filter(r => r.memberId === member.id && r.identity.sessionGeneration === this.store.memberRevisions(member.id).sessionGeneration)) {
@@ -1051,7 +1065,10 @@ export class Orchestrator implements OrchestratorApi {
         if (outcome === "interrupted") this.store.claimExecutionNotice(run.runId, "interruption", () => {
           this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} 중단 — ${reason ?? "종료 근거 없이 세션이 사라졌습니다"}`);
           const conductor = this.store.getConductor(member.projectId);
-          if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
+          // 대표가 멈춘 것은 대표가 이어서 지시한다. 총괄을 깨워 같은 일을 다시 시키게 하지 않는다. 총괄이 멈춘 것은 총괄이 이미 안다.
+          if (stoppedBy === "user") {
+            if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${member.name}의 실행 ${run.runId}을 직접 멈췄습니다. 전달 ${run.deliveryIds.join(", ")}. 이어서 할 지시는 대표가 직접 보냈거나 보냅니다. 같은 일을 다시 시키지 말고 판만 맞추세요.`), wake: false });
+          } else if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
         });
       }
     });
@@ -2205,15 +2222,70 @@ export class Orchestrator implements OrchestratorApi {
     return this.compactMember(memberId);
   }
 
+  /** 예전 화면·앱의 '중단'. 같은 멈춤 경로를 쓰고, 멈추지 못했으면 409 로 알린다. */
   async memberInterrupt(memberId: string): Promise<Member> {
+    const result = await this.stopMember(memberId, { by: "user" });
+    if (result.outcome === "failed") throw new ApiError(409, result.detail ?? "멈추지 못했습니다");
+    return result.member;
+  }
+
+  /**
+   * 직원의 지금 CLI 턴을 멈춘다. 대표 화면·총괄 도구가 같은 경로를 쓴다.
+   * - 한 직원의 턴 단위다. 그 턴이 받은 작업이 여럿이면 모두 함께 멈춘다(taskIds 로 보인다).
+   * - 화면에서 본 실행 id·세션 세대와 지금이 다르면 멈추지 않는다(다른 턴을 끊지 않는다).
+   * - 같은 직원에 대한 멈춤이 이미 도는 중이면 그 결과를 함께 받는다(두 번 눌러도 키는 한 번).
+   * - CLI 대화·바뀐 파일은 그대로다. 끊긴 턴은 다시 보내지 않고, 대기열의 지시는 입력이 가능해지면 차례로 나간다.
+   */
+  async stopMember(memberId: string, opts: { by: string } & StopReq): Promise<StopResult> {
+    const inflight = this.stopping.get(memberId);
+    if (inflight) return inflight;
+    const run = this.stopOnce(memberId, opts).finally(() => this.stopping.delete(memberId));
+    this.stopping.set(memberId, run);
+    return run;
+  }
+
+  private async stopOnce(memberId: string, opts: { by: string } & StopReq): Promise<StopResult> {
     const member = this.store.requireMember(memberId);
-    const rt = this.runtime(memberId);
     const project = this.store.requireProject(member.projectId);
     this.requireActive(project);
     const runner = this.runners.get(this.backendOf(member));
     if (member.origin === "manual" || !runner) throw new ApiError(400, "실행기가 관리하지 않는 세션입니다");
-    if (rt.turn) rt.turn.interrupted = true;
-    await runner.interrupt(this.runnerMember(member, project));
+    const generation = this.store.memberRevisions(memberId).sessionGeneration;
+    const rt = this.runtime(memberId);
+    const exec = member.executionState ?? null;
+    const live = exec && !["ended", "interrupted"].includes(exec.phase) ? exec : null;
+    const result = (outcome: StopResult["outcome"], detail: string | null = null, shown: MemberExecutionState | null = live ?? exec): StopResult => {
+      const now = this.store.requireMember(memberId);
+      return { outcome, memberId, memberName: now.name, runId: shown?.runId ?? null, sessionGeneration: generation, taskIds: shown?.taskIds ?? [], detail, member: now };
+    };
+    if (opts.expectGeneration !== undefined && opts.expectGeneration !== null && opts.expectGeneration !== generation) return result("changed", "세션이 바뀌어 멈추지 않았습니다");
+    if (opts.expectRunId && opts.expectRunId !== live?.runId) {
+      const seen = this.store.getExecutionJournal(opts.expectRunId);
+      if (seen && seen.memberId === memberId && ["ended", "interrupted"].includes(seen.phase)) {
+        const shown = { ...seen, sessionGeneration: seen.identity.sessionGeneration, taskIds: [] } as unknown as MemberExecutionState;
+        return result(seen.result === "interrupted" ? "stopped" : "not_running", seen.result === "interrupted" ? "이미 멈췄습니다" : "그 턴은 이미 끝났습니다", shown);
+      }
+      return result("changed", "화면에서 본 실행과 지금 실행이 달라 멈추지 않았습니다");
+    }
+    // core 압축은 턴(rt.turn) 없이 문맥 상태로만 돈다. 끝나지 않은 압축도 멈출 대상이다.
+    const compaction = runner.kind === "core" ? this.store.getContextState(memberId)?.compaction : null;
+    const compacting = !!compaction && !["succeeded", "failed"].includes(compaction.phase);
+    const working = member.status === "working" || member.status === "blocked" || rt.turn?.kind === "work" || rt.turn?.kind === "compact" || compacting;
+    if (!working) return result("not_running", "지금 하는 턴이 없습니다");
+    if (rt.stopRequest?.confirmed && rt.stopRequest.runId === (live?.runId ?? null)) return result("stopped", "이미 멈췄습니다");
+    const turn = rt.turn;
+    rt.stopRequest = { runId: live?.runId ?? null, by: opts.by, at: new Date().toISOString(), confirmed: false };
+    if (turn) turn.interrupted = true;
+    try {
+      await runner.interrupt(this.runnerMember(member, project));
+    } catch (error) {
+      if (turn && rt.turn === turn) turn.interrupted = false;
+      if (rt.stopRequest?.confirmed === false) rt.stopRequest = null;
+      const after = this.store.requireMember(memberId);
+      if (after.status !== "working" && after.status !== "blocked") return result("not_running", "멈추기 전에 턴이 끝났습니다");
+      return result("failed", `멈추지 못했습니다: ${(error as Error).message}`);
+    }
+    if (rt.stopRequest) rt.stopRequest.confirmed = true;
     if (runner.kind === "core") {
       this.interruptCoreCompaction(member);
       const state = this.store.getContextState(memberId);
@@ -2221,7 +2293,8 @@ export class Orchestrator implements OrchestratorApi {
       rt.compactRequest = null;
       if (rt.turn?.kind === "compact") this.endCompact(memberId, rt, "대표가 압축을 중단했습니다");
     }
-    return this.store.requireMember(memberId);
+    this.store.appendActivity(memberId, "system", `${stopReason(opts.by)}${live ? ` (실행 ${live.runId})` : ""}`);
+    return result("stopped");
   }
 
   /** 화면의 '명부에서 빼기'. 직접 띄운 세션만. 실행기 세션은 총괄이 team_close 로 닫는다. */
@@ -3159,6 +3232,7 @@ export class Orchestrator implements OrchestratorApi {
       updatedAt: m.updatedAt,
       ...memberConfig(m, ranks, codexRanks),
       ...staffSubagent(m.cli, ranks, codexRanks),
+      run: m.executionState ? { id: m.executionState.runId, phase: m.executionState.phase, taskIds: m.executionState.taskIds ?? [] } : null,
     }));
   }
 
@@ -4275,7 +4349,16 @@ export class Orchestrator implements OrchestratorApi {
           const due = new Date(Date.now() + this.timings.turnErrorRetryMs).toISOString();
           for (const run of pending) for (const id of run.deliveryIds) this.store.patchDeliveryRetry(id, { nextAttemptAt: due, retryScope: `member:${member.id}`, retryReason: reason });
         }
-        this.endExecution(member, e.isError ? "error" : "success", e.errorText ?? e.reason ?? null, e.exitCode ?? null, e.turn);
+        {
+          // 멈춤을 CLI 가 확인한 턴은 성공으로 치지 않는다(보고 보완을 요청하지 않고, 끊긴 일을 끝난 일로 남기지 않는다).
+          const rt = this.runtime(member.id);
+          // 멈춤 키를 보내는 사이에 턴이 끝나도 그 멈춤 때문에 끝난 것으로 본다.
+          const stop = rt.stopRequest;
+          const stopped = !!stop || !!rt.turn?.interrupted;
+          rt.stopRequest = null;
+          if (stopped) this.endExecution(member, "interrupted", stopReason(stop?.by ?? null), e.exitCode ?? null, e.turn, stop?.by ?? null);
+          else this.endExecution(member, e.isError ? "error" : "success", e.errorText ?? e.reason ?? null, e.exitCode ?? null, e.turn);
+        }
         if (e.isError && !pending.length && member.status === "error" && member.lastError === (e.errorText ?? "오류")) return;
         return this.onTurnEnd(member, e);
       case "activity":
@@ -4590,7 +4673,7 @@ export class Orchestrator implements OrchestratorApi {
   private runtime(memberId: string): Runtime {
     let rt = this.runtimes.get(memberId);
     if (!rt) {
-      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, background: null };
+      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, background: null, stopRequest: null };
       this.runtimes.set(memberId, rt);
     }
     return rt;

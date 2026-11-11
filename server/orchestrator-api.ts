@@ -21,6 +21,8 @@ import type {
   SendMessageReq,
   Settings,
   SettingsPatch,
+  StopReq,
+  StopResult,
   TidyResult,
   Todo,
   DeliveryRecoveryRequest,
@@ -122,6 +124,8 @@ export interface OrchestratorApi {
   memberResume(memberId: string): Promise<Member | void>;
   memberCompact(memberId: string): Promise<Member | void>;
   memberInterrupt(memberId: string): Promise<Member | void>;
+  /** 지금 CLI 턴을 멈춘다(대표 화면). 화면에서 본 실행 id·세대와 다르면 멈추지 않는다. */
+  stopMember?(memberId: string, opts: { by: string } & StopReq): Promise<StopResult>;
   /** 직접 띄운 세션을 명부에서 뺀다. */
   memberClose?(memberId: string): Promise<void>;
   /** 직접 띄운 CLI 의 도구 호출로 상태를 고친다. */

@@ -1,7 +1,7 @@
 // 모든 화면 아래 입력칸. Enter 전송 · Shift+Enter 줄바꿈(터치 기기는 소프트 키보드에 Shift 가 없어 Enter 가 줄바꿈, 보내기 버튼으로 전송) · 첨부(버튼·붙여넣기·드래그) · @직원 지정.
 // 글·대상·첨부는 프로젝트별로 틀 밖과 localStorage 에 둔다: 프로젝트를 오가거나 틀이 다시 그려져도, 새로고침·앱 재시작 뒤에도 쓰던 글이 남아야 한다.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
-import type { MemberStatus, Task } from "@shared/types";
+import type { Member, MemberStatus, StopReq, Task } from "@shared/types";
 import { GlassButton, Glass } from "../glass";
 import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
@@ -10,10 +10,12 @@ import type { Draft } from "../lib/submissions";
 import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
 import { taskTarget, visibleTasks } from "../lib/tasks";
+import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const NOTICE_MS = 4000;
+const STOP_NOTICE_MS = 15000;
 
 const patchDraft = (projectId: string, patch: (draft: Draft) => Draft) => submissions.patchDraft(projectId, patch);
 
@@ -133,6 +135,9 @@ export default function Composer() {
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 멈춤을 보내는 중인 직원. 결과가 올 때까지 멈춤 버튼은 눌리지 않는다(서버도 겹친 요청을 한 번으로 합친다). */
+  const [stopping, setStopping] = useState<string | null>(null);
+  const [stopResult, setStopResult] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
 
   // 게이트가 열리면 칸이 새로 그려진다. 값이 그대로여도 높이를 다시 잰다.
   useAutoGrow(inputRef, gate.ok ? draft.text : "");
@@ -144,9 +149,16 @@ export default function Composer() {
   }, [notice]);
 
   useEffect(() => {
+    if (!stopResult) return;
+    const t = setTimeout(() => setStopResult(null), STOP_NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [stopResult]);
+
+  useEffect(() => {
     setChipMenu(false);
     setNotice(null);
     setDismissedAt(null);
+    setStopResult(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -229,8 +241,25 @@ export default function Composer() {
   const ready = draft.uploads.flatMap((u) => (u.attachment ? [u.attachment] : []));
   const text = draft.text.trim();
   const canSend = !!project && !uploading && !failedUpload && (text.length > 0 || ready.length > 0);
+  // 지금 글이 갈 사람. 그 사람이 일하는 중이면 입력칸 위에 멈춤 줄을 보인다.
+  const recipient: Member | null = target ?? lead;
 
-  const send = async () => {
+  /** 멈춤 요청. 결과(멈춤 확인·멈출 턴 없음·실행이 바뀜·실패)를 그대로 보인다. 결과를 모르면 다시 보내지 않고 상태를 보라고 한다. */
+  const stopRun = async (m: Member, req: StopReq, followUp: boolean) => {
+    setStopping(m.id);
+    setStopResult(null);
+    try {
+      const r = await api.stop(m.id, req);
+      setStopResult({ text: stopNotice(r, allTasks, followUp), tone: r.outcome === "stopped" || r.outcome === "not_running" ? "ok" : "warn" });
+    } catch (e) {
+      setStopResult({ text: `${m.name}: 멈춤 결과를 확인하지 못했습니다(${errorText(e)}). 다시 누르기 전에 팀 화면에서 상태를 보세요.${followUp ? " 보낸 글은 대기열에 있습니다." : ""}`, tone: "warn" });
+    } finally {
+      setStopping(null);
+    }
+  };
+
+  /** stop: '멈추고 이 글로 이어가기'. 글을 먼저 대기열에 고정(받는 사람·작업·원문)하고, 서버가 받은 뒤에만 멈춘다. */
+  const send = async (opts: { stop?: boolean } = {}) => {
     if (uploading || failedUpload) {
       patchDraft(projectId, (d) => ({ ...d, error: uploading ? "첨부를 올리는 중입니다. 끝나면 보내 주세요" : "올리지 못한 첨부를 지운 뒤 보내 주세요" }));
       return;
@@ -241,6 +270,9 @@ export default function Composer() {
     const to = typed?.member ?? target;
     const body = typed?.rest ?? text;
     const session = getCredentialGeneration();
+    // 누른 순간에 본 실행. 글이 늦게 닿아 그 턴이 끝났으면 서버가 새 턴을 끊지 않는다.
+    const receiver = to ?? lead;
+    const stopWith = opts.stop && canStop(receiver) && !stopping ? { member: receiver, req: stopExpectation(receiver) } : null;
     const result = submissions.submit(
       projectId,
       draft,
@@ -254,7 +286,9 @@ export default function Composer() {
     setNotice(null);
     inputRef.current?.focus();
     const saved = await result;
-    if (saved && getCredentialGeneration() === session && getState().route.projectId === projectId) setNotice(`${to?.name ?? leadName}에게 보냈습니다`);
+    if (!saved || getCredentialGeneration() !== session || getState().route.projectId !== projectId) return;
+    if (stopWith) await stopRun(stopWith.member, stopWith.req, true);
+    else setNotice(`${to?.name ?? leadName}에게 보냈습니다${canStop(receiver) ? " · 지금 턴이 끝나면 전달됩니다" : ""}`);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -390,6 +424,31 @@ export default function Composer() {
             </span>
           ) : null}
         </div>
+        {canStop(recipient) || stopResult ? (
+          <div className="cmp-stop" role="group" aria-label="지금 실행 멈추기">
+            {canStop(recipient) ? (
+              <>
+                <span className="cmp-stop__what">
+                  <StatusDot status={recipient.status} /> {recipient.name} {recipient.status === "blocked" ? "승인 창 앞" : "일하는 중"} · {runLabel(recipient, allTasks)}
+                </span>
+                <span className="cmp-stop__actions">
+                  <GlassButton variant="ghost" size="s" disabled={stopping !== null} onClick={() => void stopRun(recipient, stopExpectation(recipient), false)}>
+                    {stopping === recipient.id ? "멈추는 중…" : "멈춤"}
+                  </GlassButton>
+                  <GlassButton variant="glass" size="s" disabled={stopping !== null || !canSend} title="글을 먼저 대기열에 넣고 지금 턴을 멈춥니다. 멈춘 뒤 한 번만 전달됩니다" onClick={() => void send({ stop: true })}>
+                    멈추고 이 글로 이어가기
+                  </GlassButton>
+                </span>
+                <span className="cmp-stop__hint">그냥 보내면 지금 턴이 끝난 뒤 전달됩니다. 멈춤은 이 직원의 지금 턴 전체를 멈춥니다.</span>
+              </>
+            ) : null}
+            {stopResult ? (
+              <p className="cmp-stop__result" role="status" data-tone={stopResult.tone}>
+                {stopResult.text}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {draft.error ? (
           <p className="cmp__error" role="alert">
             {draft.error}

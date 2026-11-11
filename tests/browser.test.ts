@@ -30,6 +30,7 @@ describe("화면 시험", () => {
   test("아티팩트 격리", () => runFile("artifact.browser.ts"), 180_000);
   test("웹 전달 알림과 다시 확인", () => runFile("delivery-notices.browser.ts"), 120_000);
   test("웹 작업별 대화(작업 고르기·고정·PC+폰)", () => runFile("task-threads.browser.ts"), 180_000);
+  test("웹 멈춤·멈추고 이어서 지시(PC+폰)", () => runFile("stop-follow-up.browser.ts"), 120_000);
   test("홈과 5칸 탭", () => runFile("home.browser.ts"), 180_000);
   test("자료 화면(종류별 보기·악성 아티팩트)", () => runFile("files.browser.ts"), 240_000);
 });

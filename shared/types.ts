@@ -94,6 +94,8 @@ export interface MemberExecutionState {
   /** 제한된 진단 code이며 원시 화면/프롬프트가 아니다. */
   reason: string | null;
   exitCode: number | null;
+  /** 이 실행으로 나간 전달의 작업 id(중복 없이). 작업 없는 전달은 넣지 않는다. 한 CLI 턴이 여러 작업을 함께 받을 수 있다. */
+  taskIds?: string[];
 }
 export interface MemberLifecycleState {
   operationId: string;
@@ -563,6 +565,22 @@ export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "res
 export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | null; effortOverride?: Effort | null }
 /** taskId: 보낸 순간 고른 작업. 없으면 전체 대화에 남고 어느 작업에도 붙지 않는다. */
 export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[]; taskId?: string | null }
+/** POST /api/members/:id/stop 의 조건('멈추고 이어서'는 글을 먼저 대기열에 고정한 뒤 이것을 부른다). 화면에서 본 실행 id·세션 세대와 지금이 다르면 멈추지 않는다(다른 턴을 끊지 않는다). */
+export interface StopReq { expectRunId?: string | null; expectGeneration?: number | null }
+/**
+ * 멈춤 결과. 직원 한 명의 지금 CLI 턴 단위다(작업 하나만 따로 멈추지 않는다).
+ * stopped: CLI 가 멈춤을 확인 · not_running: 멈출 턴이 없다(이미 끝남) · changed: 본 실행·세대와 달라 멈추지 않음 · failed: 멈추지 못함(턴은 계속)
+ */
+export interface StopResult {
+  outcome: "stopped" | "not_running" | "changed" | "failed";
+  memberId: string;
+  memberName: string;
+  runId: string | null;
+  sessionGeneration: number;
+  taskIds: string[];
+  detail: string | null;
+  member: Member;
+}
 export interface AnswerReq { expectedVersion?: string; choice?: string | null; note?: string | null; batch?: boolean }
 export interface AdoptReq { paneId: string; name: string; role: string; handle?: string; kind?: "conductor" | "worker" }
 /** conductor 다른 지휘자의 흔적 · folder 프로젝트 밖 폴더 · input 입력칸에 쓰던 글(넘겨받을 때 지운다). 편입을 막지는 않는다. */
@@ -629,6 +647,6 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
 export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close"] as const;
-export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board"] as const;
+export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;
 export const MANUAL_TOOLS = ["wait"] as const;

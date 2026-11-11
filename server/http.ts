@@ -234,6 +234,7 @@ const AnswerSchema = z.object({
 });
 const TodoDoneSchema = z.object({ done: z.boolean() });
 const SleepSchema = z.object({ force: z.boolean().optional() });
+const StopSchema = z.strictObject({ expectRunId: z.string().trim().min(1).max(100).nullable().optional(), expectGeneration: z.number().int().min(0).nullable().optional() });
 const AdoptSchema = z.object({
   paneId: nonEmpty,
   name: nonEmpty,
@@ -900,6 +901,12 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("POST", "/api/members/:id/resume", memberAction((id) => orch.memberResume(id))),
     route("POST", "/api/members/:id/compact", memberAction((id) => orch.memberCompact(id))),
     route("POST", "/api/members/:id/interrupt", memberAction((id) => orch.memberInterrupt(id))),
+    route("POST", "/api/members/:id/stop", async (req, _url, [id]) => {
+      store.requireMember(id!);
+      if (!orch.stopMember) throw new ApiError(501, "멈춤을 지원하지 않습니다");
+      const body = (await req.clone().text()).trim() ? await parseBody(req, StopSchema) : {};
+      return Response.json(await orch.stopMember(id!, { by: "user", expectRunId: body.expectRunId ?? null, expectGeneration: body.expectGeneration ?? null }));
+    }),
     route("POST", "/api/members/:id/close", memberAction(async (id) => {
       if (!orch.memberClose) throw new ApiError(501, "지원하지 않습니다");
       await orch.memberClose(id);

@@ -286,7 +286,8 @@ const MEMBER_SELECT = `SELECT m.*, (SELECT COUNT(*) FROM deliveries d WHERE d.me
   e.run_id AS execution_run_id, e.turn AS execution_turn, e.delivery_ids_json AS execution_delivery_ids_json,
   e.phase AS execution_phase, e.input_received_at AS execution_input_received_at, e.started_at AS execution_started_at,
   e.last_progress_at AS execution_last_progress_at, e.ended_at AS execution_ended_at,
-  e.result AS execution_result, e.reason AS execution_reason, e.exit_code AS execution_exit_code
+  e.result AS execution_result, e.reason AS execution_reason, e.exit_code AS execution_exit_code,
+  (SELECT json_group_array(t.task_id) FROM (SELECT DISTINCT d.task_id FROM json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id = j.value WHERE d.task_id IS NOT NULL) t) AS execution_task_ids_json
   FROM members m
   LEFT JOIN lifecycle_journal l ON l.rowid = (
     SELECT j.rowid FROM lifecycle_journal j
@@ -405,6 +406,7 @@ function toMember(r: Row): Member {
       result: r.execution_result,
       reason: r.execution_reason,
       exitCode: r.execution_exit_code,
+      taskIds: r.execution_task_ids_json ? json<string[]>(r.execution_task_ids_json) : [],
     },
     ...(r.context_member_id ? { contextState: { measurement: r.measurement_json === null ? null : json<CoreContextState["measurement"]>(r.measurement_json), compaction: r.compaction_json === null ? null : json<CoreContextState["compaction"]>(r.compaction_json) } } : {}),
   };

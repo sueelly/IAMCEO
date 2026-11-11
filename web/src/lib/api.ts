@@ -24,6 +24,8 @@ import type {
   TidyResult,
   Todo,
   SyncSnapshot,
+  StopReq,
+  StopResult,
 } from "@shared/types";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
@@ -222,6 +224,8 @@ export const api = {
   resume: (memberId: string) => slowPost<Member>(`/api/members/${seg(memberId)}/resume`),
   compact: (memberId: string) => post<Member>(`/api/members/${seg(memberId)}/compact`),
   interrupt: (memberId: string) => post<Member>(`/api/members/${seg(memberId)}/interrupt`),
+  /** 지금 CLI 턴을 멈춘다. 화면에서 본 실행 id·세대를 함께 보내 다른 턴을 끊지 않는다. 멈춤 키는 서버가 한 번만 보낸다. */
+  stop: (memberId: string, req: StopReq) => slowPost<StopResult>(`/api/members/${seg(memberId)}/stop`, req),
   closeMember: (memberId: string) => post<{ ok: boolean }>(`/api/members/${seg(memberId)}/close`),
   /** herdr 칸에 뜬 권한 승인 창. 승인 창 앞이 아니거나 승인 창으로 알아보지 못하면 null(터미널에서 푼다). */
   approval: (memberId: string) => get<{ approval: ApprovalPrompt | null }>(`/api/members/${seg(memberId)}/approval`),

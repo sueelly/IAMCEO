@@ -13,6 +13,7 @@ import { applyLocal, findMember, getState, loadActivity, navigate, newId, refres
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
 import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
+import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/team.css";
 
 const SCREEN_POLL_MS = 2000;
@@ -697,6 +698,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
   // 대기열·열린 결재로 거부되면 대표만 무릅쓸 수 있다.
   const [sleepRefused, setSleepRefused] = useState<string | null>(null);
   const manual = m.origin === "manual";
+  const tasks = useProject()?.tasks ?? [];
   const asleep = m.status === "asleep" || m.status === "offline";
   const legacy = !!m.backend && m.backend !== "core";
 
@@ -756,8 +758,21 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
             )
           ) : (
             <>
-              {m.status === "working" || m.status === "blocked" ? (
-                <GlassButton variant="glass" size="m" disabled={busy !== null || legacy} onClick={() => memberAct("interrupt", api.interrupt, "멈추라고 보냈습니다. 지금 턴이 끊기면 쉼으로 바뀝니다.")}>
+              {canStop(m) ? (
+                <GlassButton
+                  variant="glass"
+                  size="m"
+                  disabled={busy !== null || legacy}
+                  title={`멈출 것: ${runLabel(m, tasks)}`}
+                  onClick={() =>
+                    run("interrupt", async () => {
+                      setNotice(null);
+                      const r = await api.stop(m.id, stopExpectation(m));
+                      applyLocal({ type: "member", member: r.member });
+                      setNotice(stopNotice(r, tasks, false));
+                    })
+                  }
+                >
                   {busy === "interrupt" ? "멈추는 중" : "중단"}
                 </GlassButton>
               ) : null}
