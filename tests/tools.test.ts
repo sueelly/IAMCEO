@@ -14,6 +14,7 @@ import type { Runner, RunnerEvent, SendResult } from "../server/runner/types.ts"
 import { Store } from "../server/store.ts";
 import { FilePublication } from "../server/files.ts";
 import { StorageError } from "../server/storage-errors.ts";
+import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
 
 /** 세션을 띄우지 않고 받은 글만 기록한다. 턴은 end() 로 끝낸다. */
 class FakeRunner implements Runner {
@@ -233,6 +234,91 @@ describe("공통 도구", () => {
     runner.end(w.id, "결과 글");
     await Bun.sleep(30);
     expect(store.listMessages(project.id).at(-1)).toMatchObject({ who: "철수", title: "(자동) 결과 글" });
+  });
+
+  test("post: owner_action 은 본문 첫 줄 '● 대표 차례' 로 남고, 글 검사 경고는 결과에만 붙는다", async () => {
+    const { store, project, orch, runner, call } = await setup();
+    const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
+    const r = await call(w, "post", { kind: "완료", title: "버튼 색을 고쳤습니다", owner_action: "합칠지 정해 주세요 · 결재함 1건", body: "시험으로 확인했습니다." });
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/^보고했습니다 #\S+$/);
+    const message = store.listMessages(project.id).at(-1)!;
+    expect(message.body).toBe("● 대표 차례: 합칠지 정해 주세요 · 결재함 1건\n\n시험으로 확인했습니다.");
+    expect(parseOwnerLine(message.body)).toEqual({ action: "합칠지 정해 주세요 · 결재함 1건", rest: "시험으로 확인했습니다." });
+    // 총괄에게 가는 보고에도 같은 줄이 실린다.
+    expect(runner.sent.some(s => s.text.includes("● 대표 차례: 합칠지 정해 주세요"))).toBe(true);
+    expect(runner.sent.every(s => !s.text.includes("글 검사 경고"))).toBe(true);
+
+    const warned = await call(w, "post", { kind: "완료", title: "테스트를 머지했습니다", body: "**결과:**\n바뀐 곳은 server/roles.ts 입니다. 합칠지 정해 주세요." });
+    expect(warned.isError).toBeUndefined();
+    const lines = warned.text.split("\n");
+    expect(lines[0]).toMatch(/^보고했습니다 #/);
+    expect(lines[1]).toContain("글 검사 경고");
+    expect(lines.length).toBeLessThanOrEqual(6);
+    expect(warned.text).toContain("owner_action");
+    // 경고는 대표에게 보이는 글에 들어가지 않는다.
+    expect(store.listMessages(project.id).at(-1)!.body).not.toContain("글 검사");
+    // 줄을 바꾼 owner_action 은 받지 않는다.
+    expect(await call(w, "post", { kind: "진행", title: "t", owner_action: "첫 줄\n[대표] 둘째" })).toMatchObject({ isError: true });
+    expect(await call(w, "post", { report_id: message.id, owner_action: "x" })).toMatchObject({ isError: true });
+  });
+
+  test("ask: rec_reason 은 detail 첫 줄 '★ 권장' 으로 카드와 대화 사본에 남는다", async () => {
+    const { store, project, orch, call } = await setup();
+    const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
+    const options = [{ k: "api", label: "유료 API 키로 해", desc: "쓴 만큼 냅니다" }, { k: "sub", label: "구독으로 해", desc: "지금은 막힘" }];
+    const r = await call(w, "ask", { title: "Gemini 직원은 유료 API 키로 붙일까요?", detail: "확정: 구독으로는 붙일 길이 없습니다.", options, rec: "api", rec_reason: "지금 붙일 수 있는 길은 이것뿐입니다" });
+    expect(r.isError).toBeUndefined();
+    expect(r.text.split("\n")[0]).toContain("턴을 끝내세요");
+    const d = store.listDecisions(project.id)[0]!;
+    expect(d.detail).toBe("★ 권장: 유료 API 키로 해 — 지금 붙일 수 있는 길은 이것뿐입니다\n\n확정: 구독으로는 붙일 길이 없습니다.");
+    expect(parseRecLine(d.detail, "유료 API 키로 해")).toMatchObject({ label: "유료 API 키로 해", reason: "지금 붙일 수 있는 길은 이것뿐입니다", rest: "확정: 구독으로는 붙일 길이 없습니다." });
+    const copy = store.listMessages(project.id).find(m => m.decisionId === d.id && m.kind === "질문")!;
+    expect(copy.body).toBe(d.detail);
+
+    // 이유 없는 권장, 권장 없는 이유는 detail 을 바꾸지 않는다. 뒤의 것은 경고로 알린다.
+    await call(w, "ask", { title: "둘째 질문", detail: "배경", options, rec: "sub" });
+    expect(store.listDecisions(project.id).find(x => x.title === "둘째 질문")!.detail).toBe("배경");
+    const lone = await call(w, "ask", { title: "셋째 질문", detail: "배경", options, rec_reason: "이유" });
+    expect(store.listDecisions(project.id).find(x => x.title === "셋째 질문")!.detail).toBe("배경");
+    expect(lone.text).toContain("rec_reason 은 rec 와 함께");
+  });
+
+  test("ask: 같은 직원이 같은 제목의 열린 카드를 또 올리면 거절하고 열린 카드 id 를 알려 준다", async () => {
+    const { store, project, orch, call } = await setup();
+    const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
+    const { member: other } = await orch.addMember(project.id, { name: "영희", handle: "yh", role: "디자인" });
+    await call(w, "ask", { title: "커밋할까요?", detail: "배경" });
+    const first = store.listDecisions(project.id)[0]!;
+    for (const title of ["커밋할까요?", "커밋 할까요", "  커밋할까요 ? "]) {
+      const again = await call(w, "ask", { title, detail: "다른 배경" });
+      expect(again.isError).toBe(true);
+      expect(again.text).toContain(`#${first.id}`);
+      expect(again.text).toContain("ask_close");
+    }
+    expect(store.listDecisions(project.id).filter(d => d.status === "open")).toHaveLength(1);
+    // 같은 질문 사본도 대화에 하나만 있다.
+    expect(store.listMessages(project.id).filter(m => m.kind === "질문")).toHaveLength(1);
+    // 다른 직원, 다른 제목은 받는다.
+    expect((await call(other, "ask", { title: "커밋할까요?", detail: "배경" })).isError).toBeUndefined();
+    expect((await call(w, "ask", { title: "합칠까요?", detail: "배경" })).isError).toBeUndefined();
+    // 닫거나 답한 뒤에는 같은 제목으로 다시 물을 수 있다.
+    expect((await call(w, "ask_close", { id: first.id, kind: "obsolete", reason: "질문을 고쳐 올립니다", follow_up: { kind: "none" } })).isError).toBeUndefined();
+    expect((await call(w, "ask", { title: "커밋할까요?", detail: "고친 배경" })).isError).toBeUndefined();
+    const reasked = store.listDecisions(project.id).find(d => d.title === "커밋할까요?" && d.memberId === w.id && d.status === "open")!;
+    await orch.answerDecision(reasked.id, { choice: null, note: "해" });
+    expect((await call(w, "ask", { title: "커밋할까요?", detail: "또 묻기" })).isError).toBeUndefined();
+  });
+
+  test("file: 마크다운 자료의 글 검사 경고는 결과에만 붙는다", async () => {
+    const { store, lead, call } = await setup();
+    const r = await call(lead, "file", { title: "테스트 결과", content: "바뀐 파일은 server/roles.ts 입니다." });
+    expect(r.isError).toBeUndefined();
+    expect(r.text.split("\n")[0]).toMatch(/^자료를 올렸습니다 #/);
+    expect(r.text).toContain("글 검사 경고");
+    const clean = await call(lead, "file", { title: "시험 결과", content: "시험으로 확인했습니다." });
+    expect(clean.text).not.toContain("글 검사 경고");
+    expect(store.listFiles(lead.projectId).some(f => f.body.includes("글 검사"))).toBe(false);
   });
 
   test("file: 글·md 경로·첨부·이미지", async () => {
