@@ -57,7 +57,7 @@ describe("Member journal 상태 투영", () => {
     const f = fixture();
     const run = f.execution({ phase, turn: 0, deliveryIds: ["d1", "d2"], inputReceivedAt: at, startedAt: at, lastProgressAt: at, endedAt: phase === "ended" || phase === "interrupted" ? at : null, result: phase === "ended" ? "error" : phase === "interrupted" ? "interrupted" : null, reason: "exit_before_resume", exitCode: 0 });
     f.store.saveExecutionJournal(run);
-    expect(f.store.requireMember(f.member.id).executionState).toEqual({ runId: run.runId, sessionGeneration: 0, turn: 0, deliveryIds: ["d1", "d2"], phase, inputReceivedAt: at, startedAt: at, lastProgressAt: at, endedAt: run.endedAt, result: run.result, reason: "exit_before_resume", exitCode: 0 });
+    expect(f.store.requireMember(f.member.id).executionState).toEqual({ runId: run.runId, sessionGeneration: 0, turn: 0, deliveryIds: ["d1", "d2"], phase, inputReceivedAt: at, startedAt: at, lastProgressAt: at, endedAt: run.endedAt, result: run.result, reason: "exit_before_resume", exitCode: 0, taskIds: [] });
   });
 
   test("수신 ACK와 결과 불명은 실행 시작이나 성공으로 승격하지 않는다", () => {
