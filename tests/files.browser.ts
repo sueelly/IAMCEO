@@ -575,7 +575,7 @@ describe("종류별 보기", () => {
 describe("아티팩트", () => {
   const inner = (page: Page) => page.frameLocator("iframe.afr-frame");
 
-  test("실행을 누르기 전에는 칸을 만들지 않고 원본도 받지 않는다", async () => {
+  test("스크립트가 있으면 실행을 누르기 전에는 칸을 만들지 않는다", async () => {
     const f = await upload({ title: "루프 있는 글", html: `<h1>글</h1><script>setTimeout(function(){while(1){}},300)</script>` });
     const page = await open(desk, fileHash(f.id));
     await page.getByRole("button", { name: "실행", exact: true }).waitFor();
@@ -698,20 +698,29 @@ describe("아티팩트", () => {
     await page.close();
   });
 
-  test("자기 높이를 따라 자라는 CSS 에 끌려가지 않는다", async () => {
-    const f = await upload({ title: "자라는 글", html: `<style>html,body{height:auto}body{min-height:100vh;box-sizing:content-box;padding:40px}</style><p>글</p>` });
-    const page = await openRun(desk, fileHash(f.id));
+  test("자기 높이를 따라 자라는 CSS 에 끌려가지 않는다(스크립트 칸·스크립트 없는 칸)", async () => {
+    const grow = `<style>html,body{height:auto}body{min-height:100vh;box-sizing:content-box;padding:40px}</style><p>글</p>`;
+    const s = await upload({ title: "자라는 글 스크립트", html: `${grow}<script>1</script>` });
+    const scripted = await openRun(desk, fileHash(s.id));
+    await inner(scripted).locator("p").waitFor();
+    await scripted.waitForTimeout(2500);
+    expect((await scripted.locator("iframe.afr-frame").boundingBox())!.height).toBeLessThanOrEqual(900);
+    await scripted.close();
+    const f = await upload({ title: "자라는 글", html: grow });
+    const page = await open(desk, fileHash(f.id));
     await inner(page).locator("p").waitFor();
     await page.waitForTimeout(2500);
     const box = await page.locator("iframe.afr-frame").boundingBox();
     expect(box!.height).toBeLessThanOrEqual(900);
     await page.close();
-  });
+  }, 30_000);
 
-  test("칸 안 링크: 칸이 넘어가지 않고 대표가 열지 고른다", async () => {
-    const f = await upload({ title: "링크 있는 글", html: `<p id="p"><a id="out" href="https://example.com/a?b=1">바깥</a> <a id="here" href="#p">안</a> <a id="self" href="/api/bootstrap">서버</a></p>` });
-    const page = await openRun(desk, fileHash(f.id));
+  for (const [label, extra] of [["스크립트 없는 칸", ""], ["스크립트 칸", "<script>1</script>"]] as const)
+  test(`칸 안 링크: 칸이 넘어가지 않고 대표가 열지 고른다(${label})`, async () => {
+    const f = await upload({ title: `링크 있는 글 ${label}`, html: `<p id="p"><a id="out" href="https://example.com/a?b=1">바깥</a> <a id="here" href="#p">안</a> <a id="self" href="/api/bootstrap">서버</a> <a id="rel" href="other.html">옆</a></p>${extra}` });
+    const page = extra ? await openRun(desk, fileHash(f.id)) : await open(desk, fileHash(f.id));
     await inner(page).locator("#out").waitFor();
+    await inner(page).locator("#rel").click();
     await inner(page).locator("#here").click();
     await inner(page).locator("#self").click();
     await page.waitForTimeout(150);
@@ -722,8 +731,115 @@ describe("아티팩트", () => {
     const a = page.locator(".afr-link a");
     expect(await a.getAttribute("href")).toBe("https://example.com/a?b=1");
     expect(await a.getAttribute("rel")).toContain("noopener");
+    // 칸은 그 자리다(넘어갔으면 #out 이 사라진다)
+    expect(await inner(page).locator("#here").isVisible()).toBe(true);
     await page.close();
-  });
+  }, 30_000);
+
+  /** 키트 부품만 쓴 자료. 스크립트가 없어 '실행' 없이 그려진다. 이름 붙은 그림으로 document 속성을 가리려 해도 부모가 속지 않는다. */
+  const KIT_PAGE = `<main class="page"><h1>결론: 버튼이 첫 화면에 보입니다</h1>
+<p class="owner"><b>대표 차례</b><span>만들 범위를 골라 주세요 · 결재함 1건</span></p>
+<ol class="toc"><li><a id="to5" href="#s5">⑤ 세부</a></li><li><a id="to-top" href="#top">맨 위</a></li><li><a id="to-name" href="#by-name">이름</a></li></ol>
+<div class="hero"><b>0 → 3</b><span>첫 화면 버튼 수</span></div>
+<div class="has-limit" style="--max:70;--limit:60"><figure class="bars"><figcaption>길이</figcaption><div class="bar is-key" style="--v:39"><span>2판</span><b>39자</b></div></figure></div>
+<div class="rec"><p class="rec-head"><span class="tag pick">권장</span> B · 8일</p><p class="rec-cost"><b>감수할 것:</b> 하루 더</p></div>
+<ul class="status"><li><span class="tag warn">대표 차례</span><span>고르기</span></li></ul>
+<table><tr><th>항목</th><th>값</th></tr><tr><td>폭</td><td>칸을 채움</td></tr></table>
+<details id="more"><summary>펼치기</summary><div style="height:600px">긴 글</div></details>
+<div style="height:2400px"></div>
+<h2 id="s5"><span class="no">⑤</span> 세부</h2><p><a name="by-name">이름 대상</a></p><div style="height:900px"></div>
+<img name="addEventListener" alt=""><img name="body" alt=""><img name="getElementById" alt=""></main>`;
+
+  test("스크립트 없는 자료: 실행 없이 바로 그리고, 키트 부품·표·접기가 맞게 보인다", async () => {
+    const f = await upload({ title: "키트 부품 자료", html: KIT_PAGE });
+    for (const [ctx, name] of [[desk, "desk"], [phone, "phone"]] as const) {
+      const page = await open(ctx, fileHash(f.id));
+      const iframe = page.locator("iframe.afr-frame");
+      await inner(page).locator("h1").waitFor();
+      expect(await page.getByRole("button", { name: "실행", exact: true }).count()).toBe(0);
+      expect(await iframe.getAttribute("sandbox")).toBe("allow-same-origin");
+      expect(await iframe.getAttribute("src")).toBeNull();
+      // 키트가 깔렸다: 주황 띠·권장 보라·읽기 폭
+      expect(await inner(page).locator(".owner").evaluate((el) => getComputedStyle(el).borderTopColor)).toBe("rgba(255, 154, 77, 0.45)");
+      expect(await inner(page).locator(".rec").evaluate((el) => getComputedStyle(el).borderTopColor)).toBe("rgba(122, 91, 255, 0.5)");
+      expect(await inner(page).locator(".page").evaluate((el) => getComputedStyle(el).maxWidth)).toBe("760px");
+      // 표는 부모가 감싸 칸 폭을 채운다
+      expect(await inner(page).locator(".kit-table > table").count()).toBe(1);
+      const [tw, pw] = await inner(page).locator("table").evaluate((t) => [t.getBoundingClientRect().width, t.closest(".page")!.getBoundingClientRect().width]);
+      expect(tw).toBeGreaterThanOrEqual(pw! - 1);
+      // 칸이 글 높이에 맞고 가로로 넘치지 않는다
+      await page.waitForFunction(() => document.querySelector("iframe.afr-frame")!.getBoundingClientRect().height > 3000);
+      expect(await inner(page).locator("html").evaluate((d) => d.scrollWidth > window.innerWidth)).toBe(false);
+      const before = (await iframe.boundingBox())!.height;
+      await inner(page).locator("#more summary").click();
+      await page.waitForFunction((h) => document.querySelector("iframe.afr-frame")!.getBoundingClientRect().height > h + 500, before);
+      await audit(page, `${name} 스크립트 없는 자료`);
+      await shot(page, `${name}-artifact-static`);
+      await page.close();
+    }
+  }, 40_000);
+
+  test("예전 자료의 흔한 클래스(.col·.status·.bar·.page·.owner·.rec)는 키트 부품으로 바뀌지 않는다", async () => {
+    const LEGACY = `<style>.row{display:flex}.col{flex:1}</style><div class="page"><div class="row"><div class="col" id="c1"><p>왼쪽 글</p></div><div class="col"><p>오른쪽 글</p></div></div>
+<p>상태는 <span class="status" id="st">완료</span>입니다.</p><div class="bar" id="bar" style="height:8px;background:#ccc"></div>
+<p class="owner" id="ow">담당: 민수</p><div class="rec" id="rec">추천 글</div></div>`;
+    const f = await upload({ title: "예전 자료", html: LEGACY });
+    const page = await open(desk, fileHash(f.id));
+    await inner(page).locator("#c1").waitFor();
+    const got = await inner(page).locator("body").evaluate(() => {
+      const q = (s: string) => document.querySelector(s)!;
+      const after = (s: string) => getComputedStyle(q(s), "::after").content;
+      const before = (s: string) => getComputedStyle(q(s), "::before").content;
+      return {
+        col: [getComputedStyle(q("#c1")).display, getComputedStyle(q("#c1")).alignItems, after("#c1")],
+        status: [getComputedStyle(q("#st")).display, getComputedStyle(q("#st")).marginBottom],
+        bar: [after("#bar"), q("#bar").getBoundingClientRect().height],
+        page: getComputedStyle(q(".page")).maxWidth,
+        owner: [getComputedStyle(q("#ow")).display, before("#ow")],
+        rec: getComputedStyle(q("#rec")).borderTopStyle,
+      };
+    });
+    expect(got).toEqual({ col: ["block", "normal", "none"], status: ["inline", "0px"], bar: ["none", 8], page: "none", owner: ["block", "none"], rec: "none" });
+    await page.close();
+  }, 30_000);
+
+  /** # 대상이 화면 위쪽에 왔는지. 칸 위치 + 칸 안 위치가 창 안 위쪽이면 된다. 부드럽게 굴러가니 3초까지 기다린다. */
+  const nearTop = async (page: Page, selector: string, wait = 3000) => {
+    const view = page.viewportSize()!;
+    const end = Date.now() + wait;
+    for (;;) {
+      const box = await inner(page).locator(selector).boundingBox();
+      if (box !== null && box.y >= -2 && box.y < view.height * 0.4) return true;
+      if (Date.now() > end) return false;
+      await page.waitForTimeout(150);
+    }
+  };
+
+  for (const [label, extra] of [["스크립트 없는 칸", ""], ["스크립트 칸", "<script>document.title='돎'</script>"]] as const)
+  test(`맞춤 칸에서 # 링크를 누르면 그 장으로 간다(${label})`, async () => {
+    const f = await upload({ title: `목차 자료 ${label}`, html: KIT_PAGE + extra });
+    for (const ctx of [desk, phone]) {
+      const page = extra ? await openRun(ctx, fileHash(f.id)) : await open(ctx, fileHash(f.id));
+      await inner(page).locator("h1").waitFor();
+      await page.waitForFunction(() => document.querySelector("iframe.afr-frame")!.getBoundingClientRect().height > 3000);
+      expect(await nearTop(page, "#s5", 0)).toBe(false);
+      await inner(page).locator("#to5").click();
+      expect(await nearTop(page, "#s5")).toBe(true);
+      // 칸은 넘어가지 않았다
+      expect(await inner(page).locator("#to5").count()).toBe(1);
+      await inner(page).locator("#to-top").evaluate((a) => (a as HTMLElement).click());
+      expect(await nearTop(page, "h1")).toBe(true);
+      await inner(page).locator("#to-name").evaluate((a) => (a as HTMLElement).click());
+      expect(await nearTop(page, "a[name=by-name]")).toBe(true);
+      // 전체 화면에서는 칸 안에서 간다
+      await page.getByRole("button", { name: "전체 화면" }).click();
+      await inner(page).locator("#to5").click();
+      expect(await nearTop(page, "#s5")).toBe(true);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector<HTMLDialogElement>("dialog.afr")!.open);
+      await page.close();
+    }
+  }, 60_000);
 });
 
 // 악성 아티팩트: 진짜 화면에서 돌린다. 결과는 칸이 parent.postMessage 로 알리고, 바깥 서버는 받은 요청을 센다.

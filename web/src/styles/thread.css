@@ -66,3 +66,33 @@
 .th-down { position:fixed; z-index:1; top:calc(var(--app-h) - var(--bottom-h) - 50px);
   left:calc(var(--rail-space, 0px) + (100vw - var(--rail-space, 0px)) / 2); translate:-50% 0; }
 .th-retry:disabled { opacity:.5; cursor:not-allowed; }
+
+/* ── 대표 차례 띠: 말풍선 맨 위, 제목보다 먼저. 주황은 '대표가 할 일'에만 쓴다 ── */
+.th-card[data-owner] { overflow:hidden; }
+.th-owner { display:flex; flex-direction:column; gap:2px; margin:-13px -16px 2px; padding:10px 16px 11px;
+  background:linear-gradient(rgb(var(--warn-rgb) / .16), rgb(var(--warn-rgb) / .16)), #fff; box-shadow:inset 0 -1px 0 rgb(var(--warn-rgb) / .3); }
+.th-owner__head { display:flex; align-items:center; gap:8px; min-width:0; font-size:13px; font-weight:650; line-height:1.4; color:var(--warn); }
+.th-owner__label { display:inline-flex; align-items:center; gap:7px; }
+.th-owner__label::before { content:""; flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn-dot); }
+.th-owner__inbox { display:inline-flex; align-items:center; gap:4px; min-height:32px; margin:-6px -6px -6px auto; padding:0 6px; border-radius:8px; color:var(--warn); white-space:nowrap; }
+@media (hover:hover) { .th-owner__inbox:hover { background:rgb(var(--warn-rgb) / .14); } }
+.th-owner__text { font-size:14.5px; font-weight:600; line-height:1.5; color:var(--ink-1); overflow-wrap:anywhere; }
+
+/* ── 결재 카드 사본: 한 줄로 결재함 카드를 가리킨다. 시각은 글 끝에 이어 붙여 좁은 화면에서도 줄이 덜 늘게 한다 ── */
+.th-ask { display:flex; align-items:baseline; gap:8px; max-width:min(100%, 720px); min-height:44px; min-width:0; padding:11px 14px; border-radius:14px; font-size:14px; font-weight:600; line-height:1.45;
+  color:var(--ink-1); background:var(--btn-soft); box-shadow:var(--soft-ring); transition:background-color 120ms linear; }
+@media (hover:hover) { .th-ask:hover { background:var(--btn-soft-hover); } }
+/* 아직 답하지 않은 카드: 대표 차례라 주황 점 */
+.th-ask[data-open]::before { content:""; flex:none; width:8px; height:8px; border-radius:50%; background:var(--warn-dot); translate:0 -1px; }
+.th-ask__text { min-width:0; overflow-wrap:anywhere; }
+.th-ask__time { display:inline; margin-left:8px; font-size:12.5px; font-weight:400; color:var(--ink-2); white-space:nowrap; }
+
+/* ── 총괄 과정 글을 접은 줄 ── */
+.th-fold { display:inline-flex; align-items:center; gap:8px; min-height:44px; max-width:100%; padding:4px 10px; border-radius:10px; font-size:13px; line-height:1.4; color:var(--ink-2); }
+@media (hover:hover) { .th-fold:hover { background:var(--hover); color:var(--ink-1); } }
+/* 접은 줄의 시각·제목은 작은 글자라 ink-3 으로는 대비 4.5 에 못 미친다(4.41). ink-2 로 둔다. */
+.th-fold__time { font-size:12px; color:var(--ink-2); }
+.th-fold__label { flex:none; }
+.th-fold__preview { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2); }
+.th-fold svg { flex:none; transition:rotate 180ms var(--ease-out); }
+.th-fold[aria-expanded="true"] svg { rotate:180deg; }

@@ -528,7 +528,13 @@ struct InboxView: View {
             if expanded && hasMore {
                 // Web .ibx-done__bg: padding 12 14, radius 14, a faint ink wash; the detail at the card's 14.5 / 1.6.
                 VStack(alignment: .leading, spacing: 10) {
-                    if !decision.detail.isEmpty { MarkdownText(text: decision.detail, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink) }
+                    // B안 (web DoneBackground): the 권장 band, then the rest of the detail.
+                    let split = RecommendationLine.parse(decision.detail, recLabel: decision.options.first { $0.k == decision.rec }?.label)
+                    if let split { RecommendationBand(line: split) }
+                    let detail = split?.rest ?? decision.detail
+                    if !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        MarkdownText(text: detail, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink)
+                    }
                     if !decision.images.isEmpty { ImageStrip(images: decision.images) }
                     if let fileID = decision.fileId {
                         FileChip(title: store.files.first { $0.id == fileID }?.title) { router.openFile(fileID) }
@@ -887,6 +893,10 @@ private struct DecisionCard: View {
     private var showsConfirm: Bool {
         decision.status == "open" && !stale && (picked != nil || (memoOnly && typed))
     }
+    /// B안: the detail's first-line "★ 권장" (shared/owner-lines.ts), drawn as the band under the title.
+    private var recommendation: RecommendationLine? {
+        RecommendationLine.parse(decision.detail, recLabel: decision.options.first { $0.k == decision.rec }?.label)
+    }
 
     var body: some View {
         // Web .ibx-card: padding 16 18 (14 on iPhone), 12 between blocks.
@@ -904,8 +914,13 @@ private struct DecisionCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .accessibilityAddTraits(.isHeader)
-                    if !decision.detail.isEmpty {
-                        ClampedDetail(text: decision.detail, expanded: detailExpanded, onToggle: onToggleDetail)
+                    // B안 order (web DecisionCard): title → 권장 band → options → background (tables and the rest) → memo.
+                    let split = recommendation
+                    if let split { RecommendationBand(line: split) }
+                    if !free { options(disabled: locked || busy || stale) }
+                    let detail = split?.rest ?? decision.detail
+                    if !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ClampedDetail(text: detail, expanded: detailExpanded, onToggle: onToggleDetail)
                     }
                     if !decision.images.isEmpty { ImageStrip(images: decision.images) }
                     if let fileID = decision.fileId { FileChip(title: fileTitle) { onOpenFile(fileID) } }
@@ -993,7 +1008,6 @@ private struct DecisionCard: View {
     @ViewBuilder private var answerArea: some View {
         let typed = self.typed
         let picked = self.picked
-        if !free { options(disabled: locked || busy || stale) }
         // Web .ibx-memo: a 44pt .input (15px at 1.5, up to 160 tall) with a 44pt glass button beside it.
         HStack(alignment: .bottom, spacing: 8) {
             TextField((locked ? lockHint : nil) ?? (free ? "답을 적어 주세요" : "메모 (선택) — 다른 생각이나 조건"), text: $review.note, axis: .vertical)
@@ -1141,6 +1155,45 @@ struct OptionTile: View {
         if recommended { return somethingPicked ? (CE.focus.opacity(0.45), 1) : (CE.focus, 1.5) }
         return (CE.softRing, 1)
     }
+}
+
+/// B안 권장 band (web .ibx-rec): "★ 권장 {안} — {이유}" under the title, 14 at 1.5 on the soft violet in a violet .35
+/// ring. Violet marks the recommendation, never a state. A hand-written line that could not be split stays plain text.
+private struct RecommendationBand: View {
+    let line: RecommendationLine
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        Text(text)
+            .font(RecFont.body)
+            .foregroundStyle(CE.ink)
+            .lineSpacing(CELeading.spacing(14, 1.5))
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .padding(.horizontal, 13).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CE.soft, in: shape)
+            .overlay { shape.strokeBorder(CE.focus.opacity(0.35)) }
+            .accessibilityLabel("권장: \(line.label)\(line.reason.isEmpty ? "" : ". \(line.reason)")")
+    }
+
+    private var text: AttributedString {
+        var mark = AttributedString("★ 권장 ")
+        mark.swiftUI.foregroundColor = CE.accent
+        mark.swiftUI.font = RecFont.strong
+        var label = AttributedString(line.label)
+        if !line.plain { label.swiftUI.font = RecFont.strong }
+        return mark + label + AttributedString(line.reason.isEmpty ? "" : " — \(line.reason)")
+    }
+}
+
+private enum RecFont {
+    #if os(macOS)
+    static let body: Font = .system(size: 14)
+    static let strong: Font = .system(size: 14, weight: .semibold)
+    #else
+    static let body: Font = .subheadline
+    static let strong: Font = .subheadline.weight(.semibold)
+    #endif
 }
 
 /// Web accent badge (.badge[data-tone=accent]: 20 tall, 12 / 650): white text on the violet fill.

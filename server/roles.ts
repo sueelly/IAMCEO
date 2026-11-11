@@ -4,6 +4,7 @@ import type { MemberKind } from "../shared/types.ts";
 import conductor from "./roles/conductor.md" with { type: "text" };
 import root from "./roles/root.md" with { type: "text" };
 import worker from "./roles/worker.md" with { type: "text" };
+import writing from "./roles/writing.md" with { type: "text" };
 
 export interface RoleVars {
   PROJECT: string;
@@ -14,7 +15,15 @@ export interface RoleVars {
   SUBAGENT_EFFORT?: string;
 }
 
-const BUILT_IN: Record<MemberKind, string> = { conductor, root, worker };
+/** 대표에게 보이는 글 지침. 모든 직원 종류와 CLI(Claude·Codex·Antigravity)의 역할 글 끝에 한 번 붙는다. */
+export const WRITING_GUIDE: string = writing;
+
+/** 기본 역할 글 = 종류별 글 + 공통 글 지침. 세 CLI 모두 이 글을 시스템 프롬프트 파일로 받는다. */
+function withGuide(role: string): string {
+  return `${role.trimEnd()}\n\n${WRITING_GUIDE.trim()}\n`;
+}
+
+const BUILT_IN: Record<MemberKind, string> = { conductor: withGuide(conductor), root: withGuide(root), worker: withGuide(worker) };
 
 /** 이름 뒤 조사. 받침이 없으면 가·를·는, 있으면 이·을·은. 한글이 아닌 끝은 받침 없는 것으로 친다. */
 export function josa(name: string, withFinal: "이" | "을" | "은"): string {
@@ -35,7 +44,10 @@ export function exportRoles(rolesDir: string): string[] {
   });
 }
 
-/** `<rolesDir>/<kind>.md` 가 있으면 그것을 쓴다(spec §8). 값 안의 {{...}} 는 다시 치환하지 않는다. */
+/**
+ * `<rolesDir>/<kind>.md` 가 있으면 그것을 쓴다(spec §8). 값 안의 {{...}} 는 다시 치환하지 않는다.
+ * 고쳐 쓴 템플릿은 기본 규칙 전체를 대체하므로 글 지침도 붙이지 않는다. `iamceo roles export` 로 꺼낸 예시에는 지침이 들어 있다.
+ */
 export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string): string {
   const custom = rolesDir ? join(rolesDir, `${kind}.md`) : null;
   const useCustom = !!custom && existsSync(custom);

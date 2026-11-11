@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, webkit, type Browser, type BrowserType, type Page } from "playwright";
-import { ARTIFACT_FRAME_PATH, ARTIFACT_SANDBOX, buildArtifactSrcdoc } from "../shared/artifact-kit.ts";
+import { ARTIFACT_FRAME_PATH, ARTIFACT_SANDBOX, ARTIFACT_STATIC_SANDBOX, buildArtifactSrcdoc } from "../shared/artifact-kit.ts";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -191,6 +191,20 @@ for (const [label, type] of [["chromium", chromium], ["webkit", webkit]] as [str
       await page.close();
     }, 60_000);
 
+    test("# 링크: 대상의 칸 안 위치를 알리고, 이름 붙은 요소가 document 를 가려도 높이를 바로 잰다", async () => {
+      const page = await browser.newPage();
+      const html = `<img name="body" alt=""><img name="getElementById" alt=""><img name="querySelectorAll" alt=""><p><a id="go" href="#far">아래로</a> <a id="up" href="#top">위로</a> <a id="none" href="#없음">없음</a></p><div style="height:1200px"></div><h2 id="far">아래</h2><table><tr><td>표</td></tr></table>
+<script>addEventListener("load",function(){var D=Document.prototype;["none","go","up"].forEach(function(i){D.getElementById.call(document,i).click()});parent.postMessage({probe:{wrapped:!!D.querySelector.call(document,".kit-table>table")}},"*")})</script>`;
+      const run = await render(page, html);
+      const anchors = run.messages.flatMap((m) => (typeof m.iamceoAnchor === "number" ? [m.iamceoAnchor] : []));
+      expect(anchors.length).toBe(2);
+      expect(anchors[0]).toBeGreaterThan(1200);
+      expect(anchors[1]).toBe(0);
+      expect(report(run)).toEqual([{ wrapped: true }]);
+      expect(run.frameHeight).toBeGreaterThan(1200);
+      await page.close();
+    }, 30_000);
+
     test("빈 칸을 주소로 직접 열어도 서버 출처를 얻지 못한다", async () => {
       const page = await browser.newPage();
       const direct = await page.goto(`${base}${ARTIFACT_FRAME_PATH}`);
@@ -213,3 +227,76 @@ describe("키트", () => {
     await browser.close();
   }, 30_000);
 });
+
+// 스크립트 없는 칸(sandbox="allow-same-origin" + srcdoc). 화면(ArtifactFrame StaticStage)과 같은 값으로 진짜 화면 CSP 아래에서 그린다.
+// 지키는 것: 칸 안에서 어떤 스크립트도 돌지 않는다(검사를 속여 스크립트가 들어와도), 바깥·서버로 요청이 나가지 않는다, 부모의 blob 을 못 그린다.
+for (const [label, type] of [["chromium", chromium], ["webkit", webkit]] as [string, BrowserType][]) {
+  describe(`스크립트 없는 칸: ${label}`, () => {
+    let browser: Browser;
+    beforeAll(async () => {
+      browser = await type.launch();
+    });
+    afterAll(async () => {
+      await browser.close();
+    });
+
+    test("스크립트·이벤트 속성·javascript: 가 돌지 않고, 바깥 요청과 부모 blob 이 막힌다", async () => {
+      const hits: string[] = [];
+      const outside = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(req) { hits.push(new URL(req.url).pathname); return new Response("x"); } });
+      const out = `http://127.0.0.1:${outside.port}`;
+      try {
+        const page = await browser.newPage();
+        await page.goto(`${base}/api/health`);
+        const shell = await page.goto(`${base}/`);
+        expect(shell!.headers()["content-security-policy"]).toContain("script-src 'self'");
+        await page.evaluate(() => localStorage.setItem("iamceo.accessCode", "비밀접속코드"));
+        const blob = await page.evaluate(() => URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>'], { type: "image/svg+xml" })));
+        // 검사(isScriptlessArtifact)를 거치지 않고 일부러 움직이는 것을 다 넣는다. 경계는 sandbox 다.
+        const html = `<h1 id="t">글</h1><script>parent.__ran="script"</script><img src="x" onerror="parent.__ran='onerror'"><svg><script>parent.__ran="svg"</script></svg>
+<a id="js" href="javascript:parent.__ran='js'">js</a><img id="b" src="${blob}"><img src="${out}/img"><div style="background:url(${out}/bg);height:10px"></div>
+<style>@import url("${out}/import.css");@font-face{font-family:x;src:url(${out}/font)}h1{font-family:x}</style><link rel="preconnect" href="${out}"><link rel="stylesheet" href="${out}/style.css">
+<video poster="${out}/poster"></video><iframe src="${out}/frame"></iframe><object data="${out}/object"></object><embed src="${out}/embed">
+<form action="${out}/form"><button id="send">보내기</button></form><meta http-equiv="refresh" content="0;url=${out}/refresh">`;
+        const res = await page.evaluate(
+          async ({ sandbox, doc }) => {
+            const frame = document.createElement("iframe");
+            frame.setAttribute("sandbox", sandbox);
+            frame.style.width = "700px";
+            frame.srcdoc = doc;
+            const loaded = new Promise((r) => frame.addEventListener("load", r, { once: true }));
+            document.body.append(frame);
+            await loaded;
+            const d = frame.contentDocument!;
+            const w = frame.contentWindow as unknown as Record<string, unknown>;
+            (d.getElementById("js") as HTMLElement).click();
+            (d.getElementById("send") as HTMLElement).click();
+            await new Promise((r) => setTimeout(r, 1500));
+            const img = frame.contentDocument?.getElementById("b") as HTMLImageElement | null;
+            return {
+              ran: (window as unknown as { __ran?: string }).__ran ?? null,
+              frameRan: w.__ran ?? null,
+              url: frame.contentWindow!.location.href,
+              title: frame.contentDocument?.getElementById("t")?.textContent ?? null,
+              blobWidth: img?.naturalWidth ?? -1,
+              height: frame.contentDocument!.body.scrollHeight,
+            };
+          },
+          { sandbox: ARTIFACT_STATIC_SANDBOX, doc: buildArtifactSrcdoc(html, { title: "시험", scripts: false }) },
+        );
+        expect(res.ran).toBeNull();
+        expect(res.frameRan).toBeNull();
+        // 폼이 보내지지 않고 새로고침으로 넘어가지 않아 칸은 그대로다
+        expect(res.url).toBe("about:srcdoc");
+        expect(res.title).toBe("글");
+        expect(res.blobWidth).toBe(0);
+        expect(res.height).toBeGreaterThan(0);
+        await page.waitForTimeout(500);
+        expect(hits).toEqual([]);
+        expect(await page.evaluate(() => document.title)).not.toBe("");
+        await page.close();
+      } finally {
+        outside.stop(true);
+      }
+    }, 30_000);
+  });
+}

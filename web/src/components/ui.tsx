@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 import type { MemberStatus } from "@shared/types";
 import { cx, glassClass } from "../glass/Glass";
 import { formatFull, formatRelative, formatTime } from "../lib/time";
+import type { BadgeTone } from "../lib/tone";
 
 // ---- 반응형 ----
 
@@ -42,7 +43,7 @@ export function StatusDot({ status, label = false, className }: { status: Member
   );
 }
 
-export type BadgeTone = "neutral" | "accent" | "ok" | "warn" | "danger";
+export type { BadgeTone };
 
 export function Badge({ tone = "neutral", className, children }: { tone?: BadgeTone; className?: string; children: ReactNode }) {
   return (

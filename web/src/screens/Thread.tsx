@@ -1,19 +1,19 @@
 // 대화: 보고와 내 말을 시간순으로. 본문 스크롤은 Shell 의 data-scroll-root 가 맡는다.
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Decision, FileDoc, Message, MessageKind } from "@shared/types";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Decision, FileDoc, Member, Message } from "@shared/types";
 import { GlassButton } from "../glass";
 import { errorText } from "../lib/api";
 import { getState, loadOlderMessages, routeHash, sendMessage, useProject, useStore } from "../lib/store";
 import { Attachments } from "../components/Attachments";
-import { Badge, Empty, Markdown, Time, type BadgeTone } from "../components/ui";
+import { Badge, Empty, Markdown, Time } from "../components/ui";
+import { kindTone } from "../lib/tone";
+import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
 import { useGate } from "../components/ConnectGate";
 import { HqLeadStrip } from "./Inbox";
 import "../styles/thread.css";
 
 const PIN_DISTANCE = 80;
 const LOAD_OLDER_DISTANCE = 480;
-
-const KIND_TONE: Partial<Record<MessageKind, BadgeTone>> = { 완료: "ok", 질문: "accent", 막힘: "danger" };
 
 const distanceFromBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight;
 
@@ -120,22 +120,57 @@ function SystemRow({ m }: { m: Message }) {
   );
 }
 
+/** 대표 차례 띠: 말풍선 맨 위. 글 끝의 '결재함 N건'은 오른쪽 링크가 된다. */
+function OwnerBand({ m, action }: { m: Message; action: string }) {
+  const { text, inbox } = splitOwnerAction(action);
+  return (
+    <div className="th-owner">
+      <p className="th-owner__head">
+        <span className="th-owner__label">대표 차례</span>
+        {inbox ? (
+          <a className="th-owner__inbox" href={routeHash({ projectId: m.projectId, tab: "inbox", sub: m.decisionId ?? null })}>
+            {inbox}
+            <Chevron />
+          </a>
+        ) : null}
+      </p>
+      <p className="th-owner__text">{text}</p>
+    </div>
+  );
+}
+
 function ReportRow({ m, decision, file }: { m: Message; decision?: Decision; file?: FileDoc }) {
+  const { action: ownerAction, rest: body } = splitOwnerLine(m.body);
   // 한 줄짜리 자동 보고는 제목이 곧 본문이다.
-  const repeated = m.title.replace(/^\(자동\) /, "") === m.body.trim();
+  const repeated = m.title.replace(/^\(자동\) /, "") === body.trim();
   return (
     <article className="th-row">
-      <div className="th-card">
+      <div className="th-card" data-owner={ownerAction === null ? undefined : ""}>
+        {ownerAction === null ? null : <OwnerBand m={m} action={ownerAction} />}
         <header className="th-card__head">
-          <Badge tone={KIND_TONE[m.kind] ?? "neutral"}>{m.kind}</Badge>
+          <Badge tone={kindTone(m.kind)}>{m.kind}</Badge>
           <span className="th-card__who">{m.who}</span>
           <Time iso={m.at} className="th-card__time" />
         </header>
         {m.title ? <h3 className="th-card__title">{m.title}</h3> : null}
-        {m.body && !repeated ? <Markdown text={m.body} className="th-md" /> : null}
+        {body.trim() && !repeated ? <Markdown text={body} className="th-md" /> : null}
         <Attachments items={m.attachments} />
         <Jumps m={m} decision={decision} file={file} />
       </div>
+    </article>
+  );
+}
+
+/** 결재 카드 사본: 한 줄로 결재함 카드를 가리킨다. 전체 글은 카드에 있다. */
+function CardCopyRow({ m, decision }: { m: Message; decision?: Decision }) {
+  return (
+    <article className="th-row th-row--ask">
+      <a className="th-ask" data-open={decision?.status === "open" ? "" : undefined} href={routeHash({ projectId: m.projectId, tab: "inbox", sub: m.decisionId })}>
+        <span className="th-ask__text">
+          {cardCopyText(m, decision)}
+          <Time iso={m.at} className="th-ask__time" />
+        </span>
+      </a>
     </article>
   );
 }
@@ -144,8 +179,37 @@ function ReportRow({ m, decision, file }: { m: Message; decision?: Decision; fil
 const Row = memo(function Row({ m, decision, file }: { m: Message; decision?: Decision; file?: FileDoc }) {
   if (m.mine) return <MineRow m={m} />;
   if (m.kind === "시스템") return <SystemRow m={m} />;
+  if (isCardCopy(m)) return <CardCopyRow m={m} decision={decision} />;
   return <ReportRow m={m} decision={decision} file={file} />;
 });
+
+/** 총괄의 과정 글(맡김, 다시 알림)을 접은 한 줄. 누르면 펼친다. */
+function FoldRow({ item, open, onToggle }: { item: Extract<ThreadItem, { type: "fold" }>; open: boolean; onToggle: () => void }) {
+  const last = item.messages[item.messages.length - 1];
+  return (
+    <div className="th-row th-row--fold">
+      <button type="button" className="th-fold" aria-expanded={open} onClick={onToggle}>
+        <span className="th-fold__label">
+          {foldLabel(item)} ({open ? "펼침" : "접힘"})
+        </span>
+        {foldPreview(item) ? <span className="th-fold__preview">{foldPreview(item)}</span> : null}
+        <Time iso={last?.at} className="th-fold__time" />
+        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+          <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+/** 명부의 직원 종류. 상태가 바뀔 때마다 접기를 다시 셈하지 않게 id·종류가 같으면 같은 함수를 쓴다. */
+function useKindOf(members: readonly Member[] | undefined): KindOf {
+  const key = (members ?? []).map((m) => `${m.id}:${m.kind}`).join("|");
+  return useMemo(() => {
+    const kinds = new Map(key ? key.split("|").map((pair) => pair.split(":") as [string, Member["kind"]]) : []);
+    return (id: string | null) => (id ? kinds.get(id) : undefined);
+  }, [key]);
+}
 
 export default function Thread() {
   const project = useProject();
@@ -153,6 +217,16 @@ export default function Thread() {
   const messages = project?.messages ?? [];
   const decisions = useMemo(() => new Map(project?.decisions.map((d) => [d.id, d])), [project?.decisions]);
   const files = useMemo(() => new Map(project?.files.map((f) => [f.id, f])), [project?.files]);
+  const kindOf = useKindOf(project?.members);
+  const items = useMemo(() => foldThread(messages, kindOf), [messages, kindOf]);
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleFold = (id: string) =>
+    setUnfolded((s) => {
+      const next = new Set(s);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const row = (m: Message) => <Row key={m.id} m={m} decision={m.decisionId ? decisions.get(m.decisionId) : undefined} file={m.fileId ? files.get(m.fileId) : undefined} />;
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLElement | null>(null);
@@ -276,9 +350,16 @@ export default function Thread() {
             </div>
           ) : null}
           <div className="th-list" role="log" aria-label="대화">
-            {messages.map((m) => (
-              <Row key={m.id} m={m} decision={m.decisionId ? decisions.get(m.decisionId) : undefined} file={m.fileId ? files.get(m.fileId) : undefined} />
-            ))}
+            {items.map((item) =>
+              item.type === "message" ? (
+                row(item.message)
+              ) : (
+                <Fragment key={item.id}>
+                  <FoldRow item={item} open={unfolded.has(item.id)} onToggle={() => toggleFold(item.id)} />
+                  {unfolded.has(item.id) ? item.messages.map(row) : null}
+                </Fragment>
+              ),
+            )}
           </div>
         </>
       )}
