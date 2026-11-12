@@ -92,7 +92,7 @@ function emptyTaskText(task: Task, members: readonly Member[]): string {
   const to = worker?.name ?? members.find((m) => m.kind === "root" || m.kind === "conductor")?.name ?? "총괄";
   const send = `아래 입력칸에 적으면 이 작업으로 ${to}에게 갑니다.`;
   if (!workIdOf(task)) return `${send} 전체 대화는 입력칸 위 ‘전체’에서 봅니다.`;
-  return `진행판 일 항목으로 생긴 작업입니다. 이 작업으로 보낸 글·지시·보고만 여기에 모입니다. 전체에서 보낸 글은 ‘전체’에 남습니다. ${send}`;
+  return `팀 화면 일 목록에서 생긴 작업입니다. 이 작업으로 보낸 글·지시·보고만 여기에 모입니다. 전체에서 보낸 글은 ‘전체’에 남습니다. ${send}`;
 }
 
 function decisionLinkText(d: Decision | undefined): string {
