@@ -153,6 +153,27 @@ export class AgentAClient {
     return this.config.baseUrl;
   }
 
+  /** 열쇠 방식이면 원래 화면 요청에 서버가 열쇠를 붙일 수 있다(브라우저에는 주지 않는다). */
+  get hasAppToken(): boolean {
+    return this.config.appToken !== null;
+  }
+
+  /**
+   * 원래 화면(격리 칸)의 요청 하나를 그대로 넘긴다. 받는 쪽 주소는 늘 이 설정의 Agent-A 다.
+   * 출처 머리는 Agent-A 자신의 주소로 둔다(Agent-A 는 다른 출처의 저장 요청을 막는다). 열쇠 방식이면 열쇠를 붙인다.
+   */
+  async forward(pathAndQuery: string, init: { method: string; headers: Record<string, string>; body?: ArrayBuffer }): Promise<Response> {
+    if (!pathAndQuery.startsWith("/") || pathAndQuery.startsWith("//")) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
+    const headers: Record<string, string> = { ...init.headers };
+    if (!["GET", "HEAD"].includes(init.method)) headers.origin = this.config.baseUrl;
+    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
+    try {
+      return await this.transport(`${this.config.baseUrl}${pathAndQuery}`, { method: init.method, headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(60_000) });
+    } catch {
+      return new Response("Agent-A 서버에 닿지 않습니다", { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
+  }
+
   private async call<T>(method: string, path: string, body?: unknown, as: "user" | "agent" = "user", extra: Record<string, string> = {}): Promise<T> {
     const token = as === "agent" ? this.config.agentToken : this.config.appToken;
     if (as === "agent" && !token) throw new AgentAError("auth", 0, "no_agent_token", "결과 제출 열쇠가 설정되지 않았습니다");
@@ -374,7 +395,7 @@ export class AgentAService {
   private watching = false;
   private reach: { at: number; ok: boolean; error: string | null; authRequired: boolean } = { at: 0, ok: false, error: null, authRequired: false };
   /** 문서마다 원래 화면 댓글을 읽는 검토 세션과 마지막 판·목록 표시. */
-  private readonly watchers = new Map<string, { revKey: string; sessionId: string; since: number | null }>();
+  private readonly watchers = new Map<string, { revKey: string; sessionId: string; since: number | null; last: AComments | null }>();
 
   constructor(
     private readonly store: Store,
@@ -431,12 +452,18 @@ export class AgentAService {
     let w = this.watchers.get(fileId);
     if (!w || w.revKey !== revKey) {
       // 판이 바뀌면 원래 화면도 새 세션으로 연다. 그 세션 기준으로 다시 읽는다.
-      w = { revKey, sessionId: (await this.client.reviewSession(artifactId)).id, since: null };
+      w = { revKey, sessionId: (await this.client.reviewSession(artifactId)).id, since: null, last: null };
       this.watchers.set(fileId, w);
     }
-    const list = await this.client.comments(artifactId, w.sessionId, w.since);
+    // 바뀐 것이 없으면(304) 앞서 읽은 목록을 다시 본다: 다 쓴 답이 그대로라는 뜻이라 이때 알린다.
+    // (304 에서 그냥 멈추면, 답을 다 쓴 뒤 다른 댓글이 생기기 전까지 알림이 나가지 않는다.)
+    const fresh = await this.client.comments(artifactId, w.sessionId, w.since);
+    if (fresh) {
+      w.since = fresh.version;
+      w.last = fresh;
+    }
+    const list = fresh ?? w.last;
     if (!list) return;
-    w.since = list.version;
     const baseline = (this.db.query("SELECT COUNT(*) AS n FROM agent_a_comment_replies WHERE file_id = ?").get(fileId) as { n: number }).n === 0 && !this.baselined.has(fileId);
     this.baselined.add(fileId);
     const byId = new Map(list.annotations.map((a) => [a.id, a]));
@@ -559,9 +586,10 @@ export class AgentAService {
       .listMembers(projectId)
       .filter((m) => m.kind === "worker")
       .map((m) => ({ id: m.id, name: m.name }));
-    const uiUrl = this.reach.ok && !this.reach.authRequired ? this.client.baseUrl : null;
-    const uiBlocked = !this.reach.ok ? this.reach.error : this.reach.authRequired ? "Agent-A 가 열쇠를 요구하는 방식이라 원래 화면을 자료 칸에 붙이지 않습니다(열쇠를 브라우저에 넘기지 않습니다)" : null;
-    return { enabled: true, reachable: this.reach.ok, error: this.reach.error, uiUrl, uiBlocked, docs, staff };
+    // 원래 화면은 IAMCEO 주소 아래로 이어 준다. 열쇠 방식이면 이 서버가 열쇠를 붙이므로 열쇠가 설정돼 있어야 한다.
+    const ui = this.reach.ok && (!this.reach.authRequired || this.client.hasAppToken);
+    const uiBlocked = !this.reach.ok ? this.reach.error : ui ? null : "Agent-A 가 열쇠를 요구하는데 IAMCEO 서버에 Agent-A 사용자 열쇠가 설정되지 않았습니다";
+    return { enabled: true, reachable: this.reach.ok, error: this.reach.error, ui, uiBlocked, docs, staff };
   }
 
   async view(fileId: string): Promise<AgentADocView> {

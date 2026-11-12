@@ -138,8 +138,8 @@ export interface AgentAProjectInfo {
   /** Agent-A 서버에 닿는가. 닿지 않으면 까닭. */
   reachable: boolean;
   error: string | null;
-  /** Agent-A 원래 화면 주소(열쇠 없이 이 기기에서만 열리는 기본 방식일 때만). 열쇠를 요구하면 null 과 까닭. */
-  uiUrl: string | null;
+  /** Agent-A 원래 화면을 자료 칸에서 쓸 수 있는가. 화면 주소는 따로 받는 입장권 경로(IAMCEO 주소 아래)이고 Agent-A 주소·열쇠는 싣지 않는다. */
+  ui: boolean;
   uiBlocked: string | null;
   docs: AgentADocSummary[];
   staff: { id: string; name: string }[];
