@@ -8,6 +8,7 @@ import { useGate } from "../components/ConnectGate";
 import { Badge, CONFIRM_MIN_MS, Empty, Markdown, Modal, StatusDot, Time } from "../components/ui";
 import { Glass, GlassButton, glassClass } from "../glass";
 import { ApiError, api, errorText, fileUrl, saveAttachment } from "../lib/api";
+import { splitDetail, type RecBandText } from "../lib/decision-view";
 import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute } from "../lib/store";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, sameDecisionReview, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
@@ -139,11 +140,23 @@ function CardTop({ decision, children }: { decision: Decision; children?: ReactN
   );
 }
 
-/** 결재의 배경: 글·그림·자료 링크. 결재 카드와 펼친 결재된 항목이 함께 쓴다. */
-function Background({ decision, fileTitle, onZoom }: { decision: Decision; fileTitle: string | null; onZoom: (a: Attachment) => void }) {
+/** 권장 띠: '★ 권장 안 — 이유'. 글 첫 줄에서 읽는다. 상태 색이 아니라 옅은 보라 테두리다. */
+function RecBand({ rec }: { rec: RecBandText }) {
+  return (
+    <p className="ibx-rec">
+      <span className="ibx-rec__mark">★ 권장</span>{" "}
+      {/* 직원이 손으로 쓴 줄은 안 이름과 이유가 갈리지 않는다. 그때는 줄 전체를 보통 글자로 둔다. */}
+      {rec.plain ? <span>{rec.label}</span> : <strong className="ibx-rec__label">{rec.label}</strong>}
+      {rec.reason ? <span> — {rec.reason}</span> : null}
+    </p>
+  );
+}
+
+/** 결재의 배경: 글·그림·자료 링크. 결재 카드와 펼친 결재된 항목이 함께 쓴다. detail 은 권장 줄을 뺀 글이다. */
+function Background({ decision, detail, fileTitle, onZoom }: { decision: Decision; detail: string; fileTitle: string | null; onZoom: (a: Attachment) => void }) {
   return (
     <>
-      {decision.detail ? <Markdown text={decision.detail} className="ibx-detail" /> : null}
+      {detail.trim() ? <Markdown text={detail} className="ibx-detail" /> : null}
       {decision.images.length > 0 ? (
         <div className="ibx-images">
           {decision.images.map((a) => (
@@ -202,6 +215,8 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
   };
   const quoted = option ? option.label : free ? note.trim() : undefined;
   const lastPick = decision.options.find((o) => o.k === decision.lastChoice)?.label ?? decision.lastChoice;
+  // 차례: 제목 → 권장 띠 → 선택지 → 나머지 글(표·배경). 휴대폰 첫 화면에 버튼까지 오게 한다.
+  const { rec, rest } = splitDetail(decision);
   return (
     <Glass as="article" level="regular" tint className="ibx-card" data-decision={decision.id}>
       <CardTop decision={decision} />
@@ -212,7 +227,7 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
         </p>
       ) : null}
       <h3 className="ibx-title">{decision.title}</h3>
-      <Background decision={decision} fileTitle={fileTitle} onZoom={onZoom} />
+      {rec ? <RecBand rec={rec} /> : null}
       {free ? null : (
         <div className="ibx-opts" data-few={decision.options.length <= 3 ? "" : undefined}>
           {decision.options.map((o) => (
@@ -239,6 +254,7 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
           ))}
         </div>
       )}
+      <Background decision={decision} detail={rest} fileTitle={fileTitle} onZoom={onZoom} />
       <div className="ibx-memo">
         <textarea
           ref={memoRef}
@@ -374,6 +390,16 @@ function AnsweredCard({ decision }: { decision: Decision }) {
   );
 }
 
+function DoneBackground({ decision, fileTitle, onZoom }: { decision: Decision; fileTitle: string | null; onZoom: (a: Attachment) => void }) {
+  const { rec, rest } = splitDetail(decision);
+  return (
+    <div className="ibx-done__bg">
+      {rec ? <RecBand rec={rec} /> : null}
+      <Background decision={decision} detail={rest} fileTitle={fileTitle} onZoom={onZoom} />
+    </div>
+  );
+}
+
 /** 결재된 항목 한 줄. 누르면 펼쳐 배경을 본다. */
 function DoneRow({ decision, fileTitle, expanded, onToggle, onZoom }: { decision: Decision; fileTitle: string | null; expanded: boolean; onToggle: () => void; onZoom: (a: Attachment) => void }) {
   const hasMore = !!decision.detail || decision.images.length > 0 || !!decision.fileId;
@@ -389,11 +415,7 @@ function DoneRow({ decision, fileTitle, expanded, onToggle, onZoom }: { decision
           </svg>
         </button>
       ) : null}
-      {expanded && hasMore ? (
-        <div className="ibx-done__bg">
-          <Background decision={decision} fileTitle={fileTitle} onZoom={onZoom} />
-        </div>
-      ) : null}
+      {expanded && hasMore ? <DoneBackground decision={decision} fileTitle={fileTitle} onZoom={onZoom} /> : null}
     </li>
   );
 }

@@ -437,8 +437,13 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(Color(red: 12 / 255, green: 9 / 255, blue: 28 / 255).opacity(0.5), in: shape)
-        .overlay { shape.strokeBorder(CE.line) }
+        // Web .hm-clear on light: --card-bg white .86, ink .06 ring, soft violet card shadow.
+        .background {
+            shape.fill(Color.white.opacity(0.86))
+                .shadow(color: CE.shadowNear.opacity(0.05), radius: 1, y: 1)
+                .shadow(color: CE.shadowFar.opacity(0.16), radius: 12, y: 8)
+        }
+        .overlay { shape.strokeBorder(CE.wash(0.06)) }
     }
 
     private var clearText: Text {
@@ -766,7 +771,7 @@ struct HomeView: View {
         }
     }
 
-    /// Web .hm-chips: "● 일하는 중 2" capsules (28pt, white .07), wrapping on narrow widths.
+    /// Web .hm-chips: "● 일하는 중 2" capsules (28pt, violet soft fill + soft ring), wrapping on narrow widths.
     private func teamSummaryLine(_ parts: [(status: String, label: String, count: Int)]) -> some View {
         HomeFlow(spacing: 6, lineSpacing: 6) {
             ForEach(parts, id: \.status) { part in
@@ -780,7 +785,8 @@ struct HomeView: View {
                 .lineLimit(1)
                 .padding(.leading, 9).padding(.trailing, 10)
                 .frame(minHeight: 28)
-                .background(Color.white.opacity(0.07), in: Capsule())
+                .background(CE.soft, in: Capsule())
+                .overlay { Capsule().strokeBorder(CE.softRing) }
                 .fixedSize()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(part.label) \(part.count)명")
@@ -896,18 +902,18 @@ struct HomeView: View {
 
     private static func workColor(_ section: WorkSection) -> Color {
         switch section {
-        case .done: CE.success
-        case .doing: CE.live
-        case .next: Color.white.opacity(0.22)
-        case .hold: CE.warn.opacity(0.7)
+        case .done: CE.successDot
+        case .doing: CE.liveDot
+        case .next: CE.wash(0.14)
+        case .hold: CE.warnDot.opacity(0.8)
         }
     }
 
-    /// Legend and row dot colour: the bar colour at full strength, with 예정 a touch brighter so a 6pt dot still reads.
+    /// Legend and row dot colour: the bar colour at full strength, with 예정 a touch darker so a 6pt dot still reads.
     private static func legendColor(_ section: WorkSection) -> Color {
         switch section {
-        case .next: Color.white.opacity(0.38)
-        case .hold: CE.warn
+        case .next: CE.wash(0.3)
+        case .hold: CE.warnDot
         default: workColor(section)
         }
     }
@@ -1227,10 +1233,11 @@ private struct HomeCard<Accessory: View, Content: View>: View {
                 .accessibilityAddTraits(.isHeader)
             if let count, count > 0 {
                 Text("\(count)")
-                    .font(CEFont.caption.weight(.semibold)).monospacedDigit().foregroundStyle(CE.ink)
+                    .font(CEFont.caption.weight(.semibold)).monospacedDigit().foregroundStyle(CE.accent)
                     .padding(.horizontal, 6)
                     .frame(minWidth: 20, minHeight: 20)
-                    .background(Color.white.opacity(0.12), in: Capsule())
+                    .background(CE.soft, in: Capsule())
+                    .overlay { Capsule().strokeBorder(CE.softRing) }
                     .fixedSize()
                     .accessibilityLabel("\(count)건")
             }
@@ -1342,7 +1349,7 @@ private struct HomeIconButton: View {
     }
 
     private var ink: Color { isEnabled ? (hovering ? CE.ink : CE.ink2) : CE.ink3.opacity(0.75) }
-    private var fill: Color { Color.white.opacity(isEnabled ? (hovering ? 0.12 : 0.07) : 0.035) }
+    private var fill: Color { CE.wash(isEnabled ? (hovering ? 0.08 : 0.05) : 0.025) }
 }
 
 /// iPhone/iPad row action that has no room for words (다시 보내기): a 34pt quiet glass circle — the same look as the
@@ -1367,7 +1374,7 @@ private struct HomeCircleButton: View {
             }
             .foregroundStyle(isEnabled ? CE.ink : CE.ink3)
             .frame(width: size, height: size)
-            .background(Color.white.opacity(isEnabled ? 0.07 : 0), in: Circle())
+            .background(Color.white.opacity(isEnabled ? 0.55 : 0), in: Circle())
             .background(.ultraThinMaterial.opacity(isEnabled ? 1 : 0.5), in: Circle())
             .overlay { if isEnabled { GlassRim(shape: Circle()) } else { Circle().strokeBorder(CE.line) } }
             .frame(width: hit, height: hit)
@@ -1466,7 +1473,7 @@ private struct HomeQuietLink: View {
     }
 }
 
-/// Web .hm-check: a 22pt rounded box; checked fills with the ok colour and a dark tick. The box dips while pressed
+/// Web .hm-check: a 22pt rounded box; checked fills with the ok colour and a white tick. The box dips while pressed
 /// and the tick springs in, so a tick feels like it landed.
 private struct HomeTodoCheck: View {
     let checked: Bool
@@ -1485,7 +1492,7 @@ private struct HomeTodoCheck: View {
                     shape.fill(CE.success)
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .heavy))
-                        .foregroundStyle(Color(hex: 0x0B1A14))
+                        .foregroundStyle(.white)
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.4).combined(with: .opacity))
                 } else {
                     // Read-only (sample, offline): a quieter box, never hidden.

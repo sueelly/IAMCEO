@@ -210,7 +210,7 @@ struct AppShell: View {
             destinationView(router.destination)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // One look under the toolbar on every tab. macOS shows the window's aurora under the toolbar only
-                // where a scroll view reaches it (홈, 결재함, 팀); over a fixed layout (대화, 자료) it paints a dark band,
+                // where a scroll view reaches it (홈, 결재함, 팀); over a fixed layout (대화, 자료) it paints a solid band,
                 // which in full screen runs across the whole top of the screen.
                 .modifier(ScrollPocketUnderToolbar(enabled: router.destination == .chat || router.destination == .files))
                 .ceStatusStrips()
@@ -256,7 +256,7 @@ struct AppShell: View {
                         .foregroundStyle(CE.accent)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(CE.violet.opacity(0.14), in: shape)
-                        .overlay { shape.strokeBorder(CE.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                        .overlay { shape.strokeBorder(CE.focus, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
                         .padding(8)
                         .allowsHitTesting(false)
                     }
@@ -316,12 +316,12 @@ struct AppShell: View {
             .padding(.leading, leading)
             .background {
                 // Violet light behind the glass (web .shell__bottom::after): an ellipse min(760, 110%) wide from the
-                // bar's top to 30pt below the window, violet .3 → .12 at 55% → 0, brightest behind the panel's middle.
+                // bar's top to 30pt below the window, violet .16 → .06 at 55% → 0, brightest behind the panel's middle.
                 GeometryReader { geo in
                     let width = geo.size.width - leading
                     EllipticalGradient(stops: [
-                        .init(color: CE.violet.opacity(0.3), location: 0),
-                        .init(color: CE.violet.opacity(0.12), location: 0.55),
+                        .init(color: CE.violet.opacity(0.16), location: 0),
+                        .init(color: CE.violet.opacity(0.06), location: 0.55),
                         .init(color: CE.violet.opacity(0), location: 1),
                     ])
                     .frame(width: min(760, width * 1.1), height: geo.size.height + 30)
@@ -330,8 +330,8 @@ struct AppShell: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
-            // Under the light (web ::before under ::after): a dark fade before macOS 26, where there is no
-            // scroll-edge effect under the bar.
+            // Under the light (web ::before under ::after): a fade to the light background before macOS 26, where
+            // there is no scroll-edge effect under the bar.
             .background(alignment: .bottom) {
                 if #available(macOS 26.0, *) {} else {
                     LinearGradient(colors: [CE.bg.opacity(0), CE.bg.opacity(0.85)], startPoint: .top, endPoint: .bottom)
@@ -614,7 +614,7 @@ struct ProjectSidebar: View {
         } label: {
             HStack(spacing: 7) {
                 Circle().fill(state.color).frame(width: 7, height: 7)
-                    .shadow(color: state.glow ? state.color.opacity(0.7) : .clear, radius: 4)
+                    .shadow(color: state.glow ? state.color.opacity(0.6) : .clear, radius: 4)
                 Text(state.text).font(.system(size: 12.5)).foregroundStyle(state.danger ? CE.danger : CE.ink2).lineLimit(1)
                 Spacer(minLength: 4)
                 if store.isLoading { ProgressView().controlSize(.mini) }
@@ -630,12 +630,13 @@ struct ProjectSidebar: View {
         .accessibilityHint(store.isDemo ? "" : store.connectionStatus == .connected ? "지금 동기화" : "다시 연결")
     }
 
+    /// `color` is the dot (dot strength); the text is ink-2, or `CE.danger` when `danger`.
     private var connectionState: (text: String, color: Color, glow: Bool, danger: Bool) {
-        if store.isDemo { return ("샘플 데이터 · 읽기 전용", CE.accent, true, false) }
+        if store.isDemo { return ("샘플 데이터 · 읽기 전용", CE.focus, true, false) }
         switch store.connectionStatus {
-        case .connected: return (store.localizedSyncDescription, store.realtimeStatus == .fallback ? CE.attention : CE.success, store.realtimeStatus == .live, false)
-        case .connecting: return ("서버 연결 중", CE.warn, false, false)
-        default: return ("서버 끊김", CE.danger, false, true)
+        case .connected: return (store.localizedSyncDescription, store.realtimeStatus == .fallback ? CE.attentionDot : CE.successDot, store.realtimeStatus == .live, false)
+        case .connecting: return ("서버 연결 중", CE.warnDot, false, false)
+        default: return ("서버 끊김", CE.error, false, true)
         }
     }
 
@@ -646,7 +647,7 @@ struct ProjectSidebar: View {
     }
 }
 
-/// Web rail badge: violet with white digits, or danger digits on a dark base when someone is at an approval prompt.
+/// Web rail badge: violet with white digits, or danger digits on a light red tint when someone is at an approval prompt.
 private struct RailBadge: View {
     let count: Int
     let danger: Bool
@@ -657,7 +658,7 @@ private struct RailBadge: View {
                 .padding(.horizontal, 7).frame(minWidth: 20, minHeight: 20)
                 .background {
                     if danger {
-                        Capsule().fill(CE.bg.opacity(0.72)).overlay { Capsule().fill(CE.danger.opacity(0.16)) }
+                        Capsule().fill(Color.white.opacity(0.8)).overlay { Capsule().fill(CE.error.opacity(0.12)) }
                     } else {
                         Capsule().fill(CE.accentFill)
                     }
@@ -688,20 +689,14 @@ private struct RailRowStyle: ButtonStyle {
                 .contentShape(shape)
                 .background {
                     if selected {
-                        // web [aria-current]: violet .32 → .2, a 1px white .05 ring and a half-point white .45 line
-                        // along the top edge only (inset 0 1px .5px −.5px), not a bright ring down the sides.
-                        shape.fill(LinearGradient(colors: [CE.violet.opacity(0.32), CE.violet.opacity(0.2)], startPoint: .top, endPoint: .bottom))
-                            .overlay { shape.strokeBorder(Color.white.opacity(0.05)) }
-                            .overlay {
-                                shape.strokeBorder(Color.white.opacity(0.45), lineWidth: 0.5)
-                                    .mask(alignment: .top) {
-                                        LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 10)
-                                    }
-                            }
+                        // mockup .pj.on (--sel-bg / --sel-ring): violet .16 → .10 inside a 1px violet .3 ring.
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.strokeBorder(CE.selectedRing) }
                     } else if configuration.isPressed {
-                        shape.fill(Color.white.opacity(0.09))
+                        shape.fill(CE.wash(0.08))
                     } else if hovering && isEnabled {
-                        shape.fill(Color.white.opacity(0.06))
+                        // web --hover: ink .05
+                        shape.fill(CE.wash(0.05))
                     }
                 }
                 .animation(.linear(duration: 0.12), value: lit)
@@ -711,8 +706,8 @@ private struct RailRowStyle: ButtonStyle {
     }
 }
 
-/// Web GlassTabs: one dark glass capsule with count bubbles (홈 = open todos, 결재함 = open decisions + blocked
-/// members); the selected tab is a violet glowing drop that slides. Card surface, not Liquid Glass (see `cardPill`).
+/// Web GlassTabs: one white glass capsule with count bubbles (홈 = open todos, 결재함 = open decisions + blocked
+/// members); the selected tab is a white drop with a violet glow that slides. Card surface, not Liquid Glass (see `cardPill`).
 struct DestinationSwitcher: View {
     @Environment(AppStore.self) private var store
     @Environment(Router.self) private var router
@@ -735,10 +730,10 @@ struct DestinationSwitcher: View {
 
     var body: some View {
         segments
-            // The selected tab's glowing violet drop, behind the labels; it slides from tab to tab.
+            // The selected tab's white drop with its violet glow, behind the labels; it slides from tab to tab.
             .background(alignment: .leading) { drop }
             .padding(4)
-            // A little darker than a card: content scrolls under the toolbar.
+            // The card's white glass (mockup .tabs.g; the light glass ignores the tint value).
             .cardPill(tint: 0.62)
             // web .gtabs-glow: a violet light behind the pill that follows the selected tab.
             .background(alignment: .leading) { glow }
@@ -761,13 +756,13 @@ struct DestinationSwitcher: View {
         let count = store.navBadge(for: tab)
         let detail = store.navBadgeHelp(for: tab)
         // web .gtabs__link: 14.5/600 on every tab (selection changes only the colour, so labels never shift);
-        // ink-2, ink-1 on hover.
+        // ink-2, ink-1 on hover; the selected label is the accent on its white drop.
         return Button { router.go(tab) } label: {
             HStack(spacing: 6) {
                 Text(tab.title).font(.system(size: 14.5, weight: .semibold)).tracking(-0.15)
                 CountBadge(count: count, tone: .accent)
             }
-            .foregroundStyle(selected ? Color.white : hovered == tab ? CE.ink : CE.ink2)
+            .foregroundStyle(selected ? CE.accent : hovered == tab ? CE.ink : CE.ink2)
             .animation(.linear(duration: 0.2), value: hovered)
             .frame(width: tabWidth, height: Self.tabHeight)
             .contentShape(Capsule())
@@ -805,14 +800,14 @@ struct DestinationSwitcher: View {
             .offset(x: CGFloat(index) * tabWidth)
     }
 
-    /// web: radial violet .56 → .22 at 48% → 0, 2/n of the pill + 90 wide, 3.1 tab heights tall, centred on the tab.
+    /// web: radial violet .2 → .08 at 48% → 0, 2/n of the pill + 90 wide, 3.1 tab heights tall, centred on the tab.
     /// The toolbar may cut it at its edge; it is faint there.
     private var glow: some View {
         let pill = CGFloat(tabs.count) * tabWidth + 8
         let width = 2 * pill / CGFloat(tabs.count) + 90
         return EllipticalGradient(stops: [
-            .init(color: CE.violet.opacity(0.56), location: 0),
-            .init(color: CE.violet.opacity(0.22), location: 0.48),
+            .init(color: CE.violet.opacity(0.2), location: 0),
+            .init(color: CE.violet.opacity(0.08), location: 0.48),
             .init(color: CE.violet.opacity(0), location: 1),
         ])
         .frame(width: width, height: Self.tabHeight * 3.1)
@@ -825,7 +820,7 @@ struct DestinationSwitcher: View {
 // MARK: - Mac member drawer
 
 /// Member detail on Mac: a drawer floating at the trailing edge of the content column, inset like the rail and in the
-/// rail's dark violet, over a light scrim. Driven by `router.memberID` (home rows, office desks, chat, files, inbox,
+/// rail's light glass colour, over a light scrim. Driven by `router.memberID` (home rows, office desks, chat, files, inbox,
 /// `--open`). The scrim, Esc, the close button and switching screens all clear it.
 private struct MemberDrawerHost: View {
     @Environment(Router.self) private var router
@@ -839,7 +834,7 @@ private struct MemberDrawerHost: View {
         ZStack(alignment: .trailing) {
             if open {
                 // Stops at the toolbar: the tabs stay live (switching screens closes the drawer), so they stay undimmed.
-                Color.black.opacity(0.14)
+                CE.inkBase.opacity(0.15)
                     .contentShape(Rectangle())
                     .onTapGesture { close() }
                     .transition(.opacity)
@@ -886,21 +881,20 @@ private struct MemberDrawer: View {
     }
 }
 
-/// The drawer's surface: the rail's dark violet, a quiet white rim and a soft, wide shadow, so it reads as the rail's
-/// sibling in the same window. It is a reading panel, so it is opaque on every path: nothing behind it (office cards,
-/// the work list, the content column's edge) ever shows through its text. On macOS 26 a lightly tinted clear glass
-/// sits on the opaque backing only for the glass edge light the rail has; it shades the colour, never reveals.
+/// The drawer's surface: the rail's light glass colour, the light glass rim and a soft, wide violet-ink shadow, so it
+/// reads as the rail's sibling in the same window. It is a reading panel, so it is opaque on every path: nothing behind
+/// it (office cards, the work list, the content column's edge) ever shows through its text. On macOS 26 a white-tinted
+/// clear glass sits on the opaque backing only for the glass edge light the rail has; it shades the colour, never reveals.
 private struct DrawerSurface<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let shape: S
 
-    /// What the empty drawer shows: the rail's dark violet (on screen both sample ≈ rgb 30 29 45; plates one step up).
-    /// Used as is when there is no glass (before macOS 26, Reduce Transparency).
-    static var surface: Color { Color(hex: 0x201F34) }
-    /// macOS 26 backing under the glass. The tinted clear glass darkens and greys what it sits on (measured on screen:
-    /// ≈ 17 + 0.42 × backing per channel), so the backing is a little bluer than `surface` and lands on the same colour.
-    /// `.regular` glass is not used: it lifts every backing by ≈ +35 into a neutral grey, lighter than the rail.
-    static var glassBacking: Color { Color(hex: 0x21203C) }
+    /// What the empty drawer shows: near-white with a breath of violet (the aurora's top, #FBFAFF), close to the rail's
+    /// white glass over the light background. Used as is when there is no glass (before macOS 26, Reduce Transparency).
+    static var surface: Color { Color(hex: 0xFBFAFF) }
+    /// macOS 26 backing under the glass: a step darker (the background #F7F5FD), since the white-tinted clear glass
+    /// lifts what it sits on a little. `.regular` glass is not used: it greys the backing.
+    static var glassBacking: Color { CE.bg }
 
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *), !reduceTransparency {
@@ -918,11 +912,13 @@ private struct DrawerSurface<S: InsettableShape>: ViewModifier {
     /// The shadow belongs to the panel outline only: on the whole drawer every line of text and every button would
     /// cast its own smudge onto the surface.
     private func backing(_ color: Color) -> some View {
-        shape.fill(color).shadow(color: Color.black.opacity(0.35), radius: 30, y: 12)
+        shape.fill(color)
+            .shadow(color: CE.shadowNear.opacity(0.06), radius: 1, y: 1)
+            .shadow(color: CE.shadowFar.opacity(0.24), radius: 30, y: 12)
     }
 
     private var rim: some View {
-        shape.strokeBorder(Color.white.opacity(0.08)).allowsHitTesting(false)
+        CardRim(shape: shape)
     }
 }
 
@@ -942,10 +938,12 @@ private struct DeskTitle: ViewModifier {
 }
 
 /// Web shell stage lights (LocalLight): violet at (60%, 0) min(980, 80%) wide, aspect .42, strength .34; orchid at
-/// (66%, 100%) min(860, 70%) wide, aspect .38, strength .28; each a, a × .42 at 45%, 0. Laid out in window
-/// coordinates like the web stage, which spans under the rail.
+/// (66%, 100%) min(860, 70%) wide, aspect .38, strength .28; each a, a × .42 at 45%, 0. On the light background every
+/// strength is scaled by .55 (web --light-k). Laid out in window coordinates like the web stage, which spans under the rail.
 private struct StageLights: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    /// web --light-k: local lights at 55% on the light background.
+    private static let lightK = 0.55
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width, h = geo.size.height
@@ -963,8 +961,9 @@ private struct StageLights: View {
         .accessibilityHidden(true)
     }
 
-    private func light(_ color: Color, strength a: Double, width: CGFloat, aspect: CGFloat) -> some View {
-        EllipticalGradient(stops: [
+    private func light(_ color: Color, strength: Double, width: CGFloat, aspect: CGFloat) -> some View {
+        let a = strength * Self.lightK
+        return EllipticalGradient(stops: [
             .init(color: color.opacity(a), location: 0),
             .init(color: color.opacity(a * 0.42), location: 0.45),
             .init(color: color.opacity(0), location: 1),
@@ -1086,14 +1085,17 @@ struct StatusStrips: View {
         }
     }
 
-    /// web .offline-band: an opaque dark plate (not glass), readable over any light. The connection strips use the
-    /// web's warm plate; the others the app's dark plate tinted by their tone.
+    /// web .offline-band: an opaque white plate (white .92, not glass) tinted by its tone (dot strength .12–.14), readable
+    /// over anything passing under it. The connection strips use the web's warm plate (web --warn = CE.attention text
+    /// #A8530A on attention-dot .14, an attention-dot .4 ring); the others ink text on their tone's tint.
     private struct Palette {
         let warm: Bool
         let tone: Tone
-        var text: Color { warm ? Color(hex: 0xFFE3BC) : CE.ink }
-        var action: Color { warm ? Color(hex: 0xFFF3E2) : CE.ink }
-        var ring: Color { warm ? CE.warn.opacity(0.34) : tone.color.opacity(0.34) }
+        var text: Color { warm ? CE.attention : CE.ink }
+        var action: Color { warm ? CE.attention : CE.ink }
+        var tint: Color { tone.dot.opacity(warm ? 0.14 : 0.12) }
+        var ring: Color { tone.dot.opacity(warm ? 0.4 : 0.34) }
+        var actionRing: Color { warm ? tone.dot.opacity(0.45) : CE.wash(0.12) }
     }
 
     private func strip(_ item: Strip) -> some View {
@@ -1112,7 +1114,7 @@ struct StatusStrips: View {
             Spacer(minLength: 6)
             if let title = item.actionTitle, let action = item.action {
                 Button(title, action: action)
-                    .buttonStyle(StripActionStyle(color: palette.action))
+                    .buttonStyle(StripActionStyle(color: palette.action, ring: palette.actionRing))
                     .fixedSize()
             }
         }
@@ -1121,15 +1123,11 @@ struct StatusStrips: View {
         .padding(.vertical, hasAction && !isMac ? 2 : 8)
         .background {
             ZStack {
-                if palette.warm {
-                    shape.fill(Color(red: 58 / 255, green: 28 / 255, blue: 16 / 255).opacity(0.94))
-                } else {
-                    shape.fill(CE.bg.opacity(0.9))
-                    shape.fill(item.tone.color.opacity(0.13))
-                }
+                shape.fill(Color.white.opacity(0.92))
+                shape.fill(palette.tint)
             }
-            // web 0 8px 24px −12px rgb(4 2 14 / .8): lifts the plate off the content passing under it.
-            .shadow(color: Color(red: 4 / 255, green: 2 / 255, blue: 14 / 255).opacity(0.55), radius: 10, y: 8)
+            // web 0 8px 24px −14px rgb(70 46 180 / .25): lifts the plate off the content passing under it.
+            .shadow(color: CE.shadowFar.opacity(0.18), radius: 10, y: 8)
         }
         .overlay { shape.strokeBorder(palette.ring) }
         .help(full)
@@ -1137,13 +1135,16 @@ struct StatusStrips: View {
     }
 }
 
-/// web .offline-band__retry: 32pt capsule, 13/600, white .10 → .17 on hover.
+/// web .offline-band__retry: 32pt capsule, 13/600, white with a thin ring and a small lift; its colour at .06 over the
+/// white on hover.
 private struct StripActionStyle: ButtonStyle {
     let color: Color
-    func makeBody(configuration: Configuration) -> some View { StripActionBody(configuration: configuration, color: color) }
+    let ring: Color
+    func makeBody(configuration: Configuration) -> some View { StripActionBody(configuration: configuration, color: color, ring: ring) }
     private struct StripActionBody: View {
         let configuration: ButtonStyleConfiguration
         let color: Color
+        let ring: Color
         @State private var hovering = false
         var body: some View {
             configuration.label
@@ -1151,7 +1152,13 @@ private struct StripActionStyle: ButtonStyle {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .padding(.horizontal, 12).frame(height: 32)
-                .background(Color.white.opacity(configuration.isPressed ? 0.22 : hovering ? 0.17 : 0.1), in: Capsule())
+                .background {
+                    Capsule().fill(Color.white)
+                        .overlay { Capsule().fill(color.opacity(configuration.isPressed ? 0.1 : hovering ? 0.06 : 0)) }
+                        // web --lift: 0 6px 14px −8px rgb(40 24 110 / .3)
+                        .shadow(color: CE.shadowNear.opacity(0.14), radius: 4, y: 3)
+                }
+                .overlay { Capsule().strokeBorder(ring) }
                 .animation(.linear(duration: 0.12), value: hovering)
                 .frame(minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
@@ -1199,8 +1206,9 @@ private struct PhoneDockedComposer: View {
     }
 }
 
-/// The dark floor under the phone composer: content fades out above the panel and the floor runs on under the tab bar
-/// to the bottom edge, so the composer and the tab bar sit on one surface (no band that stops at the panel's edge).
+/// The light floor under the phone composer (web --band, the background at .9): content fades out above the panel
+/// and the floor runs on under the tab bar to the bottom edge, so the composer and the tab bar sit on one surface
+/// (no band that stops at the panel's edge).
 struct ComposerFloor: View {
     var body: some View {
         LinearGradient(stops: [
@@ -1265,7 +1273,7 @@ extension AppStore {
 }
 
 /// Puts a fixed layout (대화, 자료) inside a scroll view that exactly fits, so the toolbar treats it like a scrolled
-/// page (홈): no dark toolbar band. Nothing scrolls; the panes keep their own scroll views.
+/// page (홈): no solid toolbar band. Nothing scrolls; the panes keep their own scroll views.
 private struct ScrollPocketUnderToolbar: ViewModifier {
     let enabled: Bool
     func body(content: Content) -> some View {

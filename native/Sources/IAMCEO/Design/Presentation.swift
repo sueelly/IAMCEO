@@ -331,12 +331,13 @@ func closeKindName(_ kind: String?) -> String? {
     }
 }
 
+/// '읽는 힘 줄이기' B안 status colours (web lib/tone.ts): only three — green 완료, red 막힘, orange 질문 (the owner's turn).
+/// Every other kind (진행·알림…) is neutral and drawn as plain grey text (`MessageKindLabel`). Violet is kept for 권장.
 func messageKindTone(_ kind: String) -> Tone {
     switch kind {
     case "완료": .success
     case "질문": .attention
     case "막힘": .danger
-    case "진행": .live
     default: .neutral
     }
 }

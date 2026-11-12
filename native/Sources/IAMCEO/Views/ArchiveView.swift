@@ -81,8 +81,8 @@ struct ArchiveLibraryView: View {
             .accessibilityLabel("\(project.name) 관리")
         }
         .padding(.leading, 4).padding(.trailing, 8).padding(.vertical, 4)
-        .background(Color.white.opacity(0.04), in: shape)
-        .overlay { shape.strokeBorder(Color.white.opacity(0.09)) }
+        .background(Color.white.opacity(0.6), in: shape)
+        .overlay { shape.strokeBorder(CE.line) }
     }
 }
 
@@ -135,7 +135,7 @@ struct EmptyTile<Actions: View>: View {
         }
         .padding(.horizontal, 24).padding(.vertical, isMac ? 40 : 32)
         .frame(maxWidth: .infinity)
-        .background(tile ? Color.white.opacity(0.03) : .clear, in: shape)
+        .background(tile ? Color.white.opacity(0.4) : .clear, in: shape)
         .overlay { if tile { shape.strokeBorder(CE.line, style: StrokeStyle(lineWidth: 1, dash: [4, 4])) } }
         .accessibilityElement(children: .contain)
     }

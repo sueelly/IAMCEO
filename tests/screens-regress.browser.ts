@@ -332,7 +332,8 @@ describe("결재함 오조작", () => {
     await api("POST", `/api/decisions/${ids[0]}/answer`, { choice: "a" });
     await tool(w.token, "wait", { timeout_sec: 1 }); // 받아서 처리됨으로
     const page = await open(desktop, `#/p/${p.id}/thread`);
-    const last = page.locator(".th-card", { hasText: "결재 12번" }).getByRole("link", { name: /결재함에서 답하기/ });
+    // 결재 카드 사본은 대화에 한 줄로 온다: '결재 1건: 제목 · 권장 안 → 결재함'.
+    const last = page.locator(".th-ask", { hasText: "결재 1건: 결재 12번" });
     await last.click();
     await page.waitForURL(/inbox/);
     await until("카드가 화면에", async () =>
@@ -342,7 +343,7 @@ describe("결재함 오조작", () => {
       }, ids[11]!),
     );
     await page.goto(`${base}/#/p/${p.id}/thread`);
-    const done = page.locator(".th-card", { hasText: "결재 1번" }).getByRole("link", { name: /답함/ });
+    const done = page.locator(".th-ask", { hasText: /결재 1건: 결재 1번 · 답함/ });
     await done.scrollIntoViewIfNeeded();
     await done.click();
     await until("결재된 항목 카드", async () => (await page.locator(`.ibx-done [data-decision="${ids[0]}"]`).count()) > 0);

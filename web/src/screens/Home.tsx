@@ -3,12 +3,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Decision, FileDoc, Member, MemberStatus, Message, MessageKind, Project, ProjectState, Todo, WorkItem } from "@shared/types";
 import ConnectGate, { useGate } from "../components/ConnectGate";
-import { Badge, MQ_DESKTOP, Markdown, StatusDot, Time, type BadgeTone, useMediaQuery } from "../components/ui";
+import { Badge, MQ_DESKTOP, Markdown, StatusDot, Time, useMediaQuery } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
 import { ApiError, errorText, api } from "../lib/api";
 import { applyLocal, getState, refresh, routeHash, useProject } from "../lib/store";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, rollbackTodo } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
+import { kindTone } from "../lib/tone";
 import "../styles/home.css";
 
 const TOP_DECISIONS = 3;
@@ -24,7 +25,6 @@ const AFTER_SHIFT_MS = 400;
 const REPORT_KINDS: ReadonlySet<MessageKind> = new Set<MessageKind>(["완료", "진행", "질문", "막힘", "알림", "답변"]);
 /** 답에 따라붙는 글. 답 하나마다 생겨 실제 보고를 밀어내므로 남는 칸에만 넣는다. */
 const ECHO_KINDS: ReadonlySet<MessageKind> = new Set<MessageKind>(["알림", "답변"]);
-const KIND_TONE: Partial<Record<MessageKind, BadgeTone>> = { 완료: "ok", 질문: "accent", 막힘: "danger" };
 
 const CHIPS: readonly { status: MemberStatus; label: string }[] = [
   { status: "working", label: "일함" },
@@ -398,7 +398,7 @@ function ReportsCard({ projectId, messages }: { projectId: string; messages: Mes
               <span className="hm-row__main hm-row__main--stack">
                 <span className="hm-row__title">{m.title || plainLine(m.body)}</span>
                 <span className="hm-row__sub hm-row__sub--meta">
-                  <Badge tone={KIND_TONE[m.kind] ?? "neutral"}>{m.kind}</Badge>
+                  <Badge tone={kindTone(m.kind)}>{m.kind}</Badge>
                   <span className="hm-row__who">{m.who}</span>
                   <Time iso={m.at} relative />
                 </span>

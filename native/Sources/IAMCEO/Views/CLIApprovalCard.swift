@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The CLI approval window as the web's ApprovalPanel draws it (approval.css): a "승인 창" kicker with 다시 읽기, the
-/// window's title, its text in a deep monospaced well, the question, numbered options tagged 승인 / 거절 (and
+/// window's title, its text in a white monospaced well, the question, numbered options tagged 승인 / 거절 (and
 /// "이후에도 적용" for choices that change the session's permissions), then the inbox confirm bar. Backed by the CLI
 /// approval API; the screen text is shown as read, never translated.
 struct CLIApprovalCard: View {
@@ -89,7 +89,7 @@ struct CLIApprovalCard: View {
             .accessibilityLabel(reading ? "승인 창 읽는 중" : "승인 창 다시 읽기")
     }
 
-    /// Title 15.5 / 650 at 1.4, the window text in a deep monospaced well (12.5 at 1.5, up to 280 tall, scrolling),
+    /// Title 15.5 / 650 at 1.4, the window text in a white monospaced well (12.5 at 1.5, up to 280 tall, scrolling),
     /// and the question 14.5 / 600 at 1.45.
     @ViewBuilder private func window(_ prompt: CLIApprovalPrompt) -> some View {
         if !prompt.title.isEmpty {
@@ -117,7 +117,7 @@ struct CLIApprovalCard: View {
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(max(bodyHeight, 20), 280))
             .background(CE.bgDeep.opacity(0.72), in: shape)
-            .overlay { shape.strokeBorder(CE.line) }
+            .overlay { shape.strokeBorder(CE.wash(0.12)) }
         }
         if !prompt.question.isEmpty {
             Text(prompt.question)
@@ -203,8 +203,9 @@ private extension CLIApprovalOption {
     }
 }
 
-/// Web .apv-opt: the option number in a mono gutter, the label 14.5 / 600 at 1.45, tags under it. Picked is the violet
-/// drop with a focus ring; a picked rejection is red (danger .2 with a 2pt danger ring).
+/// Web .apv-opt: the option number in a mono gutter, the label 14.5 / 600 at 1.45, tags under it. Unpicked is the soft
+/// violet tile (mockup .opt); picked is the selected violet fill with a 2pt focus ring and a violet check; a picked
+/// rejection is red (error .12 with a 2pt danger ring and a red check).
 private struct CLIOptionTile: View {
     let option: CLIApprovalOption
     let picked: Bool
@@ -236,7 +237,7 @@ private struct CLIOptionTile: View {
                 }
                 Spacer(minLength: 0)
                 if picked {
-                    Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                    Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(option.reject ? CE.danger : CE.accent)
                         .accessibilityHidden(true)
                 }
             }
@@ -261,13 +262,17 @@ private struct CLIOptionTile: View {
         return parts.joined(separator: ", ")
     }
 
-    private var fill: Color {
-        if picked { return option.reject ? CE.danger.opacity(0.2) : CE.violet.opacity(0.5) }
-        return Color.white.opacity(hovering && isEnabled ? 0.11 : 0.06)
+    private var fill: AnyShapeStyle {
+        if picked {
+            if option.reject { return AnyShapeStyle(CE.error.opacity(0.12)) }
+            // mockup --sel-bg: violet .16 → .10 top to bottom
+            return AnyShapeStyle(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+        }
+        return AnyShapeStyle(hovering && isEnabled ? CE.violet.opacity(0.11) : CE.soft)
     }
 
     private var stroke: (color: Color, width: CGFloat) {
-        if picked { return (option.reject ? CE.danger : CE.accent, 2) }
-        return (Color.white.opacity(0.14), 1)
+        if picked { return (option.reject ? CE.danger : CE.focus, 2) }
+        return (CE.softRing, 1)
     }
 }

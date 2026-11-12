@@ -554,7 +554,7 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
       await page.locator(".th-card", { hasText: "민수 보고를 확인했습니다" }).waitFor();
     }
     // 내 말은 받음, 결재 질문은 답한 내용으로 잇는다.
-    await desk.locator(".th-link", { hasText: "답함: 보라 유지" }).waitFor();
+    await desk.locator(".th-ask", { hasText: "답함 보라 유지" }).waitFor();
     await shotBoth("14-thread-report");
   }, STEP_MS);
 

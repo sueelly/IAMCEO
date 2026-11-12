@@ -65,6 +65,7 @@ import type { Config } from "./config.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderRole } from "./roles.ts";
+import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
@@ -395,6 +396,8 @@ export interface PostInput {
   correctsMessageId?: string | null;
   /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
   taskId?: string | null;
+  /** 대표가 할 일 한 줄. 서버가 본문 첫 줄에 '● 대표 차례: …'로 쓴다(shared/owner-lines.ts). */
+  ownerAction?: string | null;
 }
 
 export interface AskInput {
@@ -406,6 +409,20 @@ export interface AskInput {
   fileId?: string | null;
   images?: Attachment[];
   taskId?: string | null;
+  /** 권장 이유 한 줄. rec 가 있으면 서버가 detail 첫 줄에 '★ 권장: <label> — <이유>'로 쓴다(shared/owner-lines.ts). */
+  recReason?: string | null;
+}
+
+/** 같은 안건인지 볼 때 제목에서 빈칸·문장부호·대소문자 차이를 지운다. */
+export function askTitleKey(title: string): string {
+  const plain = title.normalize("NFKC").toLowerCase();
+  return plain.replace(/[\s\p{P}\p{S}]+/gu, "") || plain.trim();
+}
+
+/** 같은 안건인지 볼 때 제목 말고도 묶음·자료·그림이 같아야 한다. 같은 제목으로 시안 여러 장을 묻는 일은 다른 안건이다. */
+export function askSameItem(d: Pick<Decision, "title" | "group" | "fileId" | "images">, input: AskInput): boolean {
+  const imgs = (list: readonly Attachment[] | undefined) => (list ?? []).map((a) => `${a.name}:${a.size}`).sort().join("|");
+  return askTitleKey(d.title) === askTitleKey(input.title) && (d.group ?? null) === (input.group ?? null) && (d.fileId ?? null) === (input.fileId ?? null) && imgs(d.images) === imgs(input.images);
 }
 
 export interface RosterEntry {
@@ -3316,7 +3333,7 @@ export class Orchestrator implements OrchestratorApi {
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
-      body: [input.body ?? "", extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
+      body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
     }), message => {
       this.store.noteDelegationPost(member.id);
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
@@ -3350,13 +3367,22 @@ export class Orchestrator implements OrchestratorApi {
     // 보관한 프로젝트의 카드는 화면에 없고 답도 409 다. 올리면 세션이 답 없는 대기에 묶인다.
     if (this.store.requireProject(member.projectId).archived || this.archiving.has(member.projectId)) throw new ApiError(409, "프로젝트가 보관되어 대표가 답할 수 없습니다. 묻지 말고 턴을 끝내세요");
     const taskId = this.memberTask(member, input.taskId, [input.fileId ? this.store.getFile(input.fileId)?.taskId : null]);
+    // 같은 안건으로 결재 카드가 두 장 오르면 대표가 같은 질문에 두 번 답한다. 열린 카드가 있으면 새 카드를 받지 않는다.
+    // 제목·묶음·자료·그림이 모두 같아야 같은 안건으로 본다.
+    const same = this.store.listOpenDecisionsByMember(member.id).find((d) => d.projectId === member.projectId && askSameItem(d, input));
+    if (same) {
+      const wait = member.origin === "manual" ? " 같은 질문이면 답은 wait 로 받습니다." : " 같은 질문이면 턴을 끝내고 답을 기다리세요.";
+      throw new ApiError(409, `다른 안건이면 제목을 구체적으로 바꿔 다시 올리세요. 같은 제목의 결재 카드가 이미 열려 있어 새 카드를 올리지 않았습니다 #${same.id}.${wait} 같은 질문의 내용만 바꿀 때만 ask_close(obsolete)로 그 카드를 닫고 다시 올립니다`);
+    }
+    const recLabel = input.rec ? input.options?.find((o) => o.k === input.rec)?.label : undefined;
+    const detail = withRecLine(input.detail, recLabel, input.recReason);
     const { value: decision, deliveries } = this.store.withDeliveryIntents(() => {
       const decision = this.store.createDecision({
         projectId: member.projectId,
         memberId: member.id,
         who: member.name,
         title: input.title,
-        detail: input.detail,
+        detail,
         options: input.options,
         rec: input.rec,
         group: input.group,
@@ -3370,7 +3396,7 @@ export class Orchestrator implements OrchestratorApi {
         who: member.name,
         kind: "질문",
         title: input.title,
-        body: input.detail ?? "",
+        body: detail,
         decisionId: decision.id,
         fileId: input.fileId ?? null,
         attachments: input.images,

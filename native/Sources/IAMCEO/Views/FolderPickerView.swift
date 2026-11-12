@@ -76,7 +76,7 @@ struct FolderPickerView: View {
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(5)
                     }
-                    .background(Color.white.opacity(0.025), in: shape)
+                    .background(Color.white.opacity(0.6), in: shape)
                     .overlay { shape.strokeBorder(CE.line) }
                 }
                 if let error {
@@ -133,8 +133,8 @@ struct FolderPickerView: View {
         // As tall as the 새 폴더 button beside it.
         .padding(.horizontal, 12)
         .frame(minHeight: 32)
-        .background(CE.bgDeep.opacity(0.45), in: Capsule())
-        .overlay { Capsule().strokeBorder(Color.white.opacity(0.1)) }
+        .background(CE.bgDeep.opacity(0.7), in: Capsule())
+        .overlay { Capsule().strokeBorder(CE.wash(0.12)) }
         .accessibilityLabel("현재 폴더: " + listing.path)
     }
 
@@ -239,7 +239,7 @@ private struct CrumbStyle: ButtonStyle {
     }
 }
 
-/// The round quiet × of an inline form (the sheet's close button look: 26pt white-tint circle), without its Esc key.
+/// The round quiet × of an inline form (the sheet's close button look: 26pt ink-wash circle), without its Esc key.
 private struct RoundQuietStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { RoundBody(configuration: configuration) }
     private struct RoundBody: View {
@@ -250,8 +250,8 @@ private struct RoundQuietStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(!isEnabled ? CE.ink3 : hovering ? CE.ink : CE.ink2)
                 .frame(width: 26, height: 26)
-                .background(Color.white.opacity(configuration.isPressed ? 0.14 : hovering && isEnabled ? 0.1 : 0.06), in: Circle())
-                .overlay { Circle().strokeBorder(Color.white.opacity(0.07)) }
+                .background(CE.wash(configuration.isPressed ? 0.12 : hovering && isEnabled ? 0.08 : 0.05), in: Circle())
+                .overlay { Circle().strokeBorder(CE.line) }
                 .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }

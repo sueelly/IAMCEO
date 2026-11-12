@@ -85,7 +85,7 @@ struct LocalFileView: View {
             if ["md", "markdown"].contains((preview.info.name as NSString).pathExtension.lowercased()) {
                 MarkdownText(text: text)
             } else {
-                // Web .vw-code: mono 12.5 / 1.6 in a deep well.
+                // Web .vw-code: mono 12.5 / 1.6 in a light code well (--pre-bg ink .04 over white).
                 ScrollView(.horizontal) {
                     Text(text)
                         .font(CEFont.mono).foregroundStyle(CE.ink)
@@ -96,6 +96,7 @@ struct LocalFileView: View {
                 }
                 .scrollIndicators(.automatic)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(CE.wash(0.04), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
                 .background(CE.bgDeep.opacity(0.5), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
                 .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.line) }
             }

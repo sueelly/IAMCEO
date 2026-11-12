@@ -135,6 +135,8 @@
 .badge { display:inline-flex; align-items:center; justify-content:center; flex:none; min-width:20px; height:20px; padding:0 7px; border-radius:999px; font-size:12px; font-weight:650; line-height:1; white-space:nowrap;
   background:var(--soft); color:var(--ink-1); }
 .badge[data-tone="neutral"] { box-shadow:var(--soft-ring); }
+/* 색 없는 종류(진행·알림 등): 바닥 없이 회색 글자만. 색은 완료·막힘·대표 차례에만 쓴다(web/src/lib/tone.ts) */
+.badge[data-tone="plain"] { min-width:0; padding:0; background:none; color:var(--ink-2); font-weight:600; }
 .badge[data-tone="accent"] { background:var(--accent-fill); color:#fff; }
 /* 색 배지는 옅은 색 바닥 + 진한 글자. 고른 줄의 보라 위에서도 대비가 떨어지지 않게 흰 받침을 깐다 */
 .badge[data-tone="ok"] { background:linear-gradient(rgb(var(--ok-rgb) / .13), rgb(var(--ok-rgb) / .13)), rgb(255 255 255 / .9); color:var(--ok); }

@@ -303,6 +303,19 @@ describe("직접 띄운 CLI 의 ask", () => {
     expect(registered).toBe(1);
     expect(polls).toBe(2);
   }, 15_000);
+
+  test("ask(manual): 서버가 준 글 검사 경고는 대표의 답 뒤에 붙는다", async () => {
+    const fake = runtime.serve(async req => {
+      const path = new URL(req.url).pathname;
+      if (path === "/agent/tool") return Response.json({ text: "질문 등록\n글 검사 경고 1건", wait: { decisionId: "d_note", note: "글 검사 경고 1건(대표에게는 보이지 않습니다):\n- 굵은 글씨 3개" } });
+      if (path === "/agent/ask/wait") return Response.json({ done: true, text: "대표 답: 해", decision: {} });
+      return new Response("missing", { status: 404 });
+    });
+    const r = await callText(await connect("tk_fixture", { url: fake.url }), "ask", { title: "경고 질문", detail: "배경" });
+    expect(r.isError).toBe(false);
+    expect(r.text.startsWith("대표 답: 해\n\n글 검사 경고 1건")).toBe(true);
+    expect(r.text).toContain("굵은 글씨 3개");
+  }, 15_000);
 });
 
 describe("operation ID 계약", () => {

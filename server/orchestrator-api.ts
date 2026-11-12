@@ -61,8 +61,9 @@ export interface AgentToolDef {
 export interface AgentToolResult {
   text: string;
   isError?: boolean;
-  /** 있으면 브리지가 `/agent/ask/wait` 로 답을 기다린 뒤 그 글을 결과로 돌려준다(origin=manual 의 ask). */
-  wait?: { decisionId: string };
+  /** 있으면 브리지가 `/agent/ask/wait` 로 답을 기다린 뒤 그 글을 결과로 돌려준다(origin=manual 의 ask).
+   *  note 는 답 뒤에 붙일 글이다(글 검사 경고). text 는 답으로 바뀌므로 경고는 여기 따로 싣는다. */
+  wait?: { decisionId: string; note?: string };
 }
 
 /** `POST /agent/ask/wait` 응답. done=false 면 브리지가 다시 부른다. */

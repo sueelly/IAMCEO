@@ -77,9 +77,165 @@ struct ChatMessageRow: View {
             ChatMineRow(message: message, isLatestProblem: isLatestProblem, showsTarget: showsTarget)
         } else if message.kind == "시스템" {
             ChatSystemRow(message: message)
+        } else if message.kind == "질문", let id = message.decisionId {
+            // B안: the card itself is answered in the inbox; its copy in the thread is one line (web isCardCopy).
+            ChatDecisionCopyRow(message: message, decisionID: id)
         } else {
             ChatReportRow(message: message)
         }
+    }
+}
+
+/// B안 kind mark (web lib/tone.ts): 완료 green, 막힘 red and 질문 orange (the owner answers) as small pills; every other
+/// kind (진행·알림…) as plain grey text without a pill.
+struct MessageKindLabel: View {
+    let kind: String
+    var body: some View {
+        let tone = messageKindTone(kind)
+        if tone == .neutral {
+            Text(kind).lineLimit(1)
+                #if os(macOS)
+                .font(.system(size: 12, weight: .semibold))
+                #else
+                .font(CEFont.caption.weight(.semibold))
+                #endif
+                .foregroundStyle(CE.ink2)
+                .fixedSize()
+        } else {
+            Tag(kind, tone: tone)
+        }
+    }
+}
+
+/// B안 owner band (web .th-owner): the report's "● 대표 차례" line, first in its card in the waiting (orange) family.
+/// "● 대표 차례" with the trailing "결재함 N건" as a link on the right, then the task (14.5 / 600).
+struct OwnerTurnBand: View {
+    let turn: OwnerTurn
+    var openInbox: (() -> Void)?
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                HStack(spacing: 7) {
+                    Circle().fill(CE.attentionDot).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text("대표 차례")
+                }
+                .font(OwnerTurnFont.head).foregroundStyle(CE.attention)
+                Spacer(minLength: 6)
+                if let inbox = turn.inbox, let openInbox {
+                    Button(action: openInbox) {
+                        HStack(spacing: 4) {
+                            Text(inbox).lineLimit(1)
+                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                        }
+                        .font(OwnerTurnFont.head).foregroundStyle(CE.attention)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: isMac ? 28 : 44)
+                        .background(CE.attentionDot.opacity(hovering ? 0.14 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .padding(.vertical, isMac ? -6 : -12).padding(.trailing, -6)
+                    .accessibilityLabel("\(inbox), 결재함 열기")
+                }
+            }
+            Text(turn.text)
+                .font(OwnerTurnFont.text).foregroundStyle(CE.ink)
+                .ceLineHeight(14.5, 1.5)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CE.attentionDot.opacity(0.16))
+        .overlay(alignment: .bottom) { Rectangle().fill(CE.attentionDot.opacity(0.3)).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("대표 차례: \(turn.text)")
+    }
+}
+
+private enum OwnerTurnFont {
+    #if os(macOS)
+    static let head: Font = .system(size: 13, weight: .semibold)
+    static let text: Font = .system(size: 14.5, weight: .semibold)
+    #else
+    static let head: Font = .footnote.weight(.semibold)
+    static let text: Font = .subheadline.weight(.semibold)
+    #endif
+}
+
+/// B안 (web .th-ask): a 질문 card copied into the thread is one line, "결재 1건: 제목 · 권장 안 → 결재함" with the time after
+/// it; an orange dot while it still waits for the owner. The card itself is answered in the inbox.
+struct ChatDecisionCopyRow: View {
+    @Environment(AppStore.self) private var store
+    @Environment(Router.self) private var router
+    let message: Message
+    let decisionID: String
+
+    var body: some View {
+        let decision = store.decisions.first { $0.id == decisionID }
+        let open = decision?.status == "open"
+        HStack(spacing: 0) {
+            Button { router.openDecision(decisionID) } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if open {
+                        Circle().fill(CE.attentionDot).frame(width: 8, height: 8).offset(y: -1).accessibilityHidden(true)
+                    }
+                    (Text(decisionCopyText(message, decision))
+                        + Text("  " + clockTime(message.at)).font(CEFont.meta.weight(.regular)).foregroundColor(CE.ink2))
+                        .ceLineHeight(14, 1.45)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(ChatFont.copyLine)
+                .foregroundStyle(CE.ink)
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .frame(minHeight: 44)
+            }
+            .buttonStyle(ChatJumpStyle())
+            .help(parseISODate(message.at).map(koDateTime) ?? "")
+            .chatMessageMenu(message)
+            .frame(maxWidth: 720, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// B안 (web .th-fold): the lead's folded process posts, "총괄 · 맡김 1건, 다시 알림 2건 (접힘)", the first post's title
+/// (one line, cut short) and the last one's time. A tap opens them as ordinary rows below.
+struct ChatFoldRow: View {
+    let label: String
+    var preview = ""
+    let lastAt: String
+    let open: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                Text("\(label) (\(open ? "펼침" : "접힘"))").lineLimit(1).fixedSize()
+                if !preview.isEmpty {
+                    Text(preview).lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                }
+                Text(clockTime(lastAt)).font(CEFont.caption.monospacedDigit()).foregroundStyle(CE.ink3).fixedSize()
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(open ? 180 : 0))
+            }
+            .font(CEFont.secondary)
+            .foregroundStyle(hovering ? CE.ink : CE.ink2)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .frame(minHeight: 44)
+            .background(CE.wash(hovering ? 0.05 : 0), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(parseISODate(lastAt).map(koDateTime) ?? "")
+        .accessibilityLabel(preview.isEmpty ? "\(label), \(open ? "펼침" : "접힘")" : "\(label), \(preview), \(open ? "펼침" : "접힘")")
+        .accessibilityHint(open ? "접기" : "펼쳐서 보기")
     }
 }
 
@@ -140,7 +296,8 @@ struct ChatMineRow: View {
         }
     }
 
-    /// Web .th-mine: gap 8, padding 10 15 11.
+    /// Web .th-mine: gap 8, padding 10 15 11; violet #7A5BFF → #6D4DF2 in white, a lit top edge and a soft violet
+    /// shadow below (0 8px 18px -10px rgb(109 77 242 / .6)).
     private var bubble: some View {
         let shape = ChatBubbleShape.shape
         return VStack(alignment: .leading, spacing: 8) {
@@ -157,7 +314,10 @@ struct ChatMineRow: View {
         .foregroundStyle(Color.white)
         .tint(ChatPalette.bubbleLink)
         .padding(.horizontal, 15).padding(.top, 10).padding(.bottom, 11)
-        .background(ChatPalette.bubble, in: shape)
+        .background {
+            shape.fill(ChatPalette.bubble)
+                .shadow(color: CE.accentFill.opacity(0.35), radius: 9, y: 8)
+        }
         .overlay { shape.strokeBorder(ChatPalette.bubbleRim, lineWidth: 1) }
         .chatMessageMenu(message)
     }
@@ -275,21 +435,46 @@ struct ChatReportRow: View {
     @Environment(Router.self) private var router
     let message: Message
 
+    /// B안: the body's "● 대표 차례" line, drawn as the band on top instead of in the text.
+    private var turn: OwnerTurn? { OwnerTurn.parse(message.body) }
+    private var text: String { turn?.rest ?? message.body }
+
     /// One-line automatic reports repeat the title as the body; draw it once.
     private var showsBody: Bool {
         func strip(_ value: String) -> String {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return (trimmed.hasPrefix("(자동) ") ? String(trimmed.dropFirst(5)) : trimmed).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let body = strip(message.body)
+        let body = strip(text)
         return !body.isEmpty && body != strip(message.title)
+    }
+
+    /// The band's "결재함 N건" opens the decision this report links, else the inbox (web: the inbox route with the decision).
+    private var openInbox: (() -> Void)? {
+        if store.isArchive { return nil }
+        if let id = message.decisionId { return { router.openDecision(id) } }
+        return { router.go(.inbox) }
     }
 
     var body: some View {
         HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                if let turn { OwnerTurnBand(turn: turn, openInbox: openInbox) }
+                card
+            }
+            .environment(\.ceInsideGlass, true)
+            .clipShape(RoundedRectangle(cornerRadius: CERadius.card, style: .continuous))
+            .modifier(ChatCardSurface())
+            .chatMessageMenu(message)
+            .frame(maxWidth: 720, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var card: some View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    if !message.kind.isEmpty { Tag(message.kind, tone: messageKindTone(message.kind)) }
+                    if !message.kind.isEmpty { MessageKindLabel(kind: message.kind) }
                     Text(message.who).font(ChatFont.who).foregroundStyle(CE.ink).lineLimit(1)
                     Spacer(minLength: 6)
                     Text(clockTime(message.at)).font(CEFont.meta).foregroundStyle(CE.ink2).monospacedDigit()
@@ -305,7 +490,7 @@ struct ChatReportRow: View {
                         .textSelection(.enabled)
                 }
                 if showsBody {
-                    MarkdownText(text: message.body).foregroundStyle(CE.ink)
+                    MarkdownText(text: text).foregroundStyle(CE.ink)
                 }
                 if !message.attachments.isEmpty {
                     ChatAttachments(items: message.attachments)
@@ -314,12 +499,6 @@ struct ChatReportRow: View {
             }
             .padding(.top, 13).padding(.horizontal, 16).padding(.bottom, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .environment(\.ceInsideGlass, true)
-            .modifier(ChatCardSurface())
-            .chatMessageMenu(message)
-            .frame(maxWidth: 720, alignment: .leading)
-            Spacer(minLength: 0)
-        }
     }
 
     /// Web .th-jumps: chips wrap onto new lines with an 8pt gap, directly in the card's 8pt rhythm.
@@ -406,6 +585,8 @@ private struct ChatConversation: View {
     @State private var lastLoad: ChatHistoryLoad = .initial
     @State private var followID: String?
     @State private var positionError = false
+    /// B안: the fold rows the person opened (by fold row id).
+    @State private var unfolded: Set<String> = []
     private static let bottomID = "chat-thread-bottom"
 
     init(scopeID: String, targetMemberID: String?, projectID: String?, namespace: String) {
@@ -452,9 +633,18 @@ private struct ChatConversation: View {
                         ChatEmpty(title: "아직 대화가 없습니다", detail: emptyDetail)
                             .padding(.top, 10)
                     }
-                    ForEach(chatThreadRows(displayed)) { row in
+                    ForEach(chatThreadRows(displayed, members: store.members, unfolded: unfolded, keepOpen: router.chatMessageID)) { row in
                         switch row {
                         case .day(_, let label, let gap): ChatDaySeparator(label: label).padding(.top, gap)
+                        case .fold(let id, let label, let preview, let lastAt, let open, let gap):
+                            ChatFoldRow(label: label, preview: preview, lastAt: lastAt, open: open) {
+                                // Opening adds rows under the line just tapped; stop following the bottom so it stays put.
+                                if unfolded.insert(id).inserted { pinned = false } else { unfolded.remove(id) }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .chatScrollRow(id: row.id, coordinateSpace: scopeID)
+                            .id(row.id)
+                            .padding(.top, gap)
                         case .message(let message, let gap):
                             ChatMessageRow(message: message, isLatestProblem: scope.unresolvedIDs.contains(message.id), showsTarget: scope.isProjectThread)
                                 .chatScrollRow(id: row.id, coordinateSpace: scopeID)
@@ -779,10 +969,13 @@ private struct ChatEmpty: View {
 private enum ChatThreadRow: Identifiable {
     case day(id: String, label: String, gap: CGFloat)
     case message(Message, gap: CGFloat)
+    /// B안: the lead's process posts folded into one line (`id` is "fold:" + the first post's row id).
+    case fold(id: String, label: String, preview: String, lastAt: String, open: Bool, gap: CGFloat)
     var id: String {
         switch self {
         case .day(let id, _, _): id
         case .message(let message, _): chatMessageRowID(message.id)
+        case .fold(let id, _, _, _, _, _): id
         }
     }
 }
@@ -808,7 +1001,10 @@ private func chatMessageRowID(_ id: String) -> String { "m:" + Data(id.utf8).bas
 /// Chronological rows with a day separator whenever the calendar day changes (rows only show a clock time).
 /// Spacing reads in turns: 10 between rows (web .th-list), 16 where the side changes (mine ↔ report ↔ system),
 /// 6 between two of my bubbles sent less than two minutes apart; 20 above a day separator (10 for the first).
-@MainActor private func chatThreadRows(_ messages: [Message]) -> [ChatThreadRow] {
+/// B안: runs of the lead's process posts (web foldThread) become one fold row; an open fold (or one holding `keepOpen`,
+/// the message a notification points at) is followed by its posts as ordinary rows.
+@MainActor private func chatThreadRows(_ messages: [Message], members: [Member] = [], unfolded: Set<String> = [],
+                                       keepOpen: String? = nil) -> [ChatThreadRow] {
     var rows: [ChatThreadRow] = []
     rows.reserveCapacity(messages.count + 4)
     var lastDay: String?
@@ -816,7 +1012,51 @@ private func chatMessageRowID(_ id: String) -> String { "m:" + Data(id.utf8).bas
     var previous: (side: ChatSide, date: Date?)?
     var afterDay = false
     let calendar = Calendar.current
-    for message in messages {
+    let kinds = Dictionary(members.map { ($0.id, $0.kind) }, uniquingKeysWith: { first, _ in first })
+    let kindOf: (String?) -> String? = { id in id.flatMap { kinds[$0] } }
+    let folded = messages.indices.map { ThreadFolding.kind(messages, $0, kindOf: kindOf, date: ChatDates.parse) }
+    var index = 0
+    while index < messages.count {
+        let message = messages[index]
+        if let kind = folded[index] {
+            // A run of folded posts.
+            var end = index
+            var assign = 0, renotify = 0
+            while end < messages.count, let k = folded[end] {
+                if k == .assign { assign += 1 } else { renotify += 1 }
+                end += 1
+            }
+            _ = kind
+            let group = Array(messages[index..<end])
+            let id = "fold:" + chatMessageRowID(message.id)
+            let open = unfolded.contains(id) || group.contains { $0.id == keepOpen }
+            if let date = ChatDates.parse(message.at) {
+                let parts = calendar.dateComponents([.year, .month, .day], from: date)
+                let day = "day:\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+                if day != lastDay {
+                    let dayID = used.contains(day) ? "\(day)#\(rows.count)" : day
+                    used.insert(day)
+                    rows.append(.day(id: dayID, label: ChatDates.dayLabel(date), gap: rows.isEmpty ? 10 : 20))
+                    lastDay = day
+                    afterDay = true
+                }
+            }
+            let gap: CGFloat = afterDay || previous == nil ? 10 : previous?.side != .system ? 16 : 10
+            rows.append(.fold(id: id, label: ThreadFolding.label(assign: assign, renotify: renotify), preview: ThreadFolding.preview(group),
+                              lastAt: group.last?.at ?? message.at,
+                              open: open, gap: gap))
+            previous = (.system, ChatDates.parse(group.last?.at ?? ""))
+            afterDay = false
+            if open {
+                for item in group {
+                    rows.append(.message(item, gap: 10))
+                    previous = (.report, ChatDates.parse(item.at))
+                }
+            }
+            index = end
+            continue
+        }
+        index += 1
         let date = ChatDates.parse(message.at)
         if let date {
             let parts = calendar.dateComponents([.year, .month, .day], from: date)
@@ -1280,8 +1520,8 @@ private struct ChatNoteCapsule: View {
         .font(CEFont.meta)
         .padding(.horizontal, 10)
         .frame(height: 26)
-        .background(note.tone.color.opacity(0.1), in: Capsule())
-        .overlay { Capsule().strokeBorder(note.tone.color.opacity(0.22)) }
+        .background(note.tone.dot.opacity(0.12), in: Capsule())
+        .overlay { Capsule().strokeBorder(note.tone.dot.opacity(0.28)) }
         .help(note.text)
     }
 }
@@ -1311,13 +1551,13 @@ private struct ChatNoteStrip: View {
         .font(CEFont.meta)
         .padding(.horizontal, 12).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(note.tone.color.opacity(0.1), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(note.tone.color.opacity(0.22)) }
+        .background(note.tone.dot.opacity(0.12), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(note.tone.dot.opacity(0.28)) }
     }
 }
 
-/// Web .th-link: rounded chip with a chevron (13.5 / 600 at 1.35, padding 6 12 6 14, radius 12); the open-decision
-/// chip is the violet one. 36 tall on Mac (the web chip step), 44 on iPhone.
+/// Web .th-link / mockup .th-jump: rounded soft-violet chip with a chevron in the link violet (13.5 / 600 at 1.35,
+/// padding 6 12 6 14, radius 12); the open-decision chip is the selected-violet one. 36 tall on Mac (the web chip step), 44 on iPhone.
 private struct ChatJumpChip: View {
     let title: String
     var prominent = false
@@ -1326,7 +1566,7 @@ private struct ChatJumpChip: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Text(title).lineLimit(2).ceLineHeight(13.5, 1.35)
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.ink2)
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(CE.accent)
             }
             .font(ChatFont.chip)
             .foregroundStyle(CE.ink)
@@ -1349,14 +1589,25 @@ private struct ChatJumpBody<Label: View>: View {
     let pressed: Bool
     let prominent: Bool
     @State private var hovering = false
-    /// Web: white .07 → .13 on hover; the open one violet .34 → .48. 120ms linear.
+    /// Mockup .th-jump: soft violet (--soft) in its ring (--soft-ring); the open one the selected violet (--sel-bg) in a
+    /// focus-violet ring. Hover/press add a faint violet wash. 120ms linear.
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        let fill = prominent ? (pressed ? 0.54 : hovering ? 0.48 : 0.34) : (pressed ? 0.17 : hovering ? 0.13 : 0.07)
+        let wash = pressed ? 0.08 : hovering ? 0.04 : 0
+        let ring = prominent ? CE.focus.opacity(0.8) : CE.softRing
         label
             .contentShape(shape)
-            .background(prominent ? CE.violet.opacity(fill) : Color.white.opacity(fill), in: shape)
-            .overlay { shape.strokeBorder(prominent ? CE.violet.opacity(0.8) : Color.white.opacity(0.1)) }
+            .background {
+                ZStack {
+                    if prominent {
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        shape.fill(CE.soft)
+                    }
+                    shape.fill(CE.violet.opacity(wash))
+                }
+            }
+            .overlay { shape.strokeBorder(ring) }
             .animation(.linear(duration: 0.12), value: hovering)
             .onHover { hovering = $0 }
     }
@@ -1380,7 +1631,7 @@ private struct ChatFooterLink: View {
     }
 }
 
-/// Web `.pj[aria-current]`: violet gradient (.32 → .2) with a bright top edge; otherwise a plain white fill.
+/// Mockup selected row (--sel-bg / --sel-ring): violet .16 → .10 in a violet .3 ring; otherwise a faint ink wash.
 private struct ChatSelectionFill<S: InsettableShape>: View {
     let shape: S
     let selected: Bool
@@ -1388,10 +1639,10 @@ private struct ChatSelectionFill<S: InsettableShape>: View {
     var body: some View {
         if selected {
             shape
-                .fill(LinearGradient(colors: [CE.violet.opacity(0.34), CE.violet.opacity(0.2)], startPoint: .top, endPoint: .bottom))
-                .overlay { shape.strokeBorder(ChatPalette.selectionRim, lineWidth: 1) }
+                .fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                .overlay { shape.strokeBorder(CE.selectedRing, lineWidth: 1) }
         } else if rest > 0 {
-            shape.fill(Color.white.opacity(rest))
+            shape.fill(CE.wash(rest * 0.8))
         } else {
             Color.clear
         }
@@ -1468,13 +1719,16 @@ private struct ChatBodyText: View {
         }
         return false
     }
-    /// Inline markdown on the violet bubble: `code` sits on a dark chip (web .th-mine .md code rgb(9 7 19 / .35)),
-    /// since the shared faint white chip disappears on violet.
+    /// Inline markdown on the violet bubble: `code` sits on a deep violet chip in white (like MarkdownText on accent),
+    /// since the shared faint violet chip disappears on violet; links are lilac and underlined.
     static func inline(_ value: String) -> AttributedString {
         var result = markdownInline(value)
         for run in result.runs where run.inlinePresentationIntent?.contains(.code) == true {
             result[run.range].backgroundColor = ChatPalette.bubbleCode
             if run.link == nil { result[run.range].foregroundColor = Color.white }
+        }
+        for run in result.runs where run.link != nil {
+            result[run.range].underlineStyle = Text.LineStyle.single
         }
         return result
     }
@@ -1482,27 +1736,23 @@ private struct ChatBodyText: View {
 
 /// Web thread colours that are not foundation tokens.
 private enum ChatPalette {
-    /// .th-mine background rgb(72 50 176 / .9).
-    static let bubble = Color(red: 72 / 255, green: 50 / 255, blue: 176 / 255).opacity(0.9)
-    static let bubbleTo = Color(hex: 0xDAD2FF)
-    static let bubbleLink = Color(hex: 0xE6DFFF)
-    /// .th-mine .md code background rgb(9 7 19 / .35).
-    static let bubbleCode = Color(red: 9 / 255, green: 7 / 255, blue: 19 / 255).opacity(0.35)
-    /// .th-card background rgb(15 11 32 / .72): a dark plate, not glass (hundreds of rows scroll).
-    static let cardFill = Color(red: 15 / 255, green: 11 / 255, blue: 32 / 255).opacity(0.72)
-    /// Bright top edge + faint ring (inset 0 1px .5px -.5px white .4, inset 0 0 0 1px white .07).
+    /// Mockup .th-mine (--mine): linear-gradient(180deg, #7A5BFF, #6D4DF2) under white text.
+    static let bubble = LinearGradient(colors: [CE.violet, CE.accentFill], startPoint: .top, endPoint: .bottom)
+    /// "{name}에게" subline and links on the bubble (--mine-to #E6DFFF).
+    static let bubbleTo = CE.onAccentSub
+    static let bubbleLink = CE.onAccentSub
+    /// `code` on the bubble: a deep violet chip rgb(28 12 96 / .35), as MarkdownText draws it on accent.
+    static let bubbleCode = Color(red: 28 / 255, green: 12 / 255, blue: 96 / 255).opacity(0.35)
+    /// Mockup .th-card (--card-bg): white .86, a plate rather than glass (hundreds of rows scroll).
+    static let cardFill = Color.white.opacity(0.86)
+    /// Lit top edge + faint ring on the bubble (inset 0 1px .5px white .4, inset 0 0 0 1px white .07).
     static let bubbleRim = LinearGradient(stops: [
         .init(color: .white.opacity(0.4), location: 0),
         .init(color: .white.opacity(0.08), location: 0.22),
         .init(color: .white.opacity(0.07), location: 1),
     ], startPoint: .top, endPoint: .bottom)
-    static let selectionRim = LinearGradient(stops: [
-        .init(color: .white.opacity(0.42), location: 0),
-        .init(color: .white.opacity(0.06), location: 0.3),
-        .init(color: .white.opacity(0.05), location: 1),
-    ], startPoint: .top, endPoint: .bottom)
-    /// .th-system background rgb(15 11 32 / .66).
-    static let systemFill = Color(red: 15 / 255, green: 11 / 255, blue: 32 / 255).opacity(0.66)
+    /// Mockup .th-sys background (--soft): violet .07.
+    static let systemFill = CE.soft
 }
 
 private enum ChatBubbleShape {
@@ -1522,6 +1772,8 @@ private enum ChatFont {
     static let footerAction: Font = .system(size: 13, weight: .semibold)
     /// .atv-file 13.5, name 550.
     static let fileName: Font = .system(size: 13.5, weight: .medium)
+    /// B안 one-line decision copy (web .th-ask: 14 / 600).
+    static let copyLine: Font = .system(size: 14, weight: .semibold)
     #else
     static let cardTitle: Font = .callout.weight(.semibold)
     static let who: Font = .footnote.weight(.semibold)
@@ -1531,11 +1783,13 @@ private enum ChatFont {
     static let emptyBody: Font = .subheadline
     static let footerAction: Font = .footnote.weight(.semibold)
     static let fileName: Font = .footnote.weight(.medium)
+    static let copyLine: Font = .subheadline.weight(.semibold)
     #endif
 }
 
-/// Web .th-card: radius 18, a dark plate rgb(15 11 32 / .72) with a 1pt white .08 ring and a half-point white .42
-/// highlight along the top edge. No glass, rim gradient or blurred shadow: hundreds of these scroll.
+/// Mockup .th-card: radius 18, white .86 with a 1pt ink .06 ring (--card-ring) and a white highlight along the top
+/// edge, over a soft violet-ink shadow (--card-shadow: 0 1px 2px .05, 0 10px 28px -18px .25). No glass or rim
+/// gradient: hundreds of these scroll, so the shadow sits on the plain fill shape only.
 /// Reduce Transparency: the solid plate.
 private struct ChatCardSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -1545,11 +1799,15 @@ private struct ChatCardSurface: ViewModifier {
             content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
         } else {
             content
-                .background(ChatPalette.cardFill, in: shape)
+                .background {
+                    shape.fill(ChatPalette.cardFill)
+                        .shadow(color: CE.shadowNear.opacity(0.05), radius: 1, y: 1)
+                        .shadow(color: CE.shadowFar.opacity(0.16), radius: 12, y: 8)
+                }
                 .overlay {
                     ZStack {
-                        shape.strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-                        shape.strokeBorder(Color.white.opacity(0.42), lineWidth: 0.5)
+                        shape.strokeBorder(CE.wash(0.06), lineWidth: 1)
+                        shape.strokeBorder(Color.white, lineWidth: 0.5)
                             .mask(alignment: .top) {
                                 LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 8)
                             }
@@ -1625,6 +1883,11 @@ private struct ChatAttachmentItem: View {
     private var displayName: String { attachment.name.isEmpty ? "이름 없는 첨부" : attachment.name }
     private var isTextual: Bool { attachment.mime.hasPrefix("text/") || attachment.mime.contains("json") }
     private var sizeText: String { chatFileSize(attachment.size) }
+    /// A white ring on my violet bubble; an ink ring on the light cards.
+    private var thumbRing: Color { onBubble ? Color.white.opacity(hovering ? 0.28 : 0.1) : CE.wash(hovering ? 0.2 : 0.08) }
+    /// File chip: white .07 → .13 on my violet bubble; the soft violet (--soft) → violet .11 on the light cards.
+    private var chipFill: Color { onBubble ? Color.white.opacity(hovering ? 0.13 : 0.07) : CE.violet.opacity(hovering ? 0.11 : 0.07) }
+    private var chipRing: Color { onBubble ? Color.white.opacity(0.1) : CE.softRing }
 
     var body: some View {
         Group {
@@ -1642,7 +1905,8 @@ private struct ChatAttachmentItem: View {
             if let fileURL { quickLook = fileURL } else { Task { await load() } }
         } label: {
             ZStack {
-                CE.bgDeep.opacity(0.5)
+                // The well under a loading image: soft violet on the cards, light lilac on my bubble (ink stays legible).
+                onBubble ? Color.white.opacity(0.85) : CE.soft
                 if let image {
                     image.resizable().scaledToFill()
                         .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
@@ -1670,7 +1934,7 @@ private struct ChatAttachmentItem: View {
             }
             .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
             .clipShape(shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(hovering ? 0.28 : 0.1), lineWidth: 1) }
+            .overlay { shape.strokeBorder(thumbRing, lineWidth: 1) }
             .contentShape(shape)
             .animation(.linear(duration: 0.12), value: hovering)
         }
@@ -1689,7 +1953,8 @@ private struct ChatAttachmentItem: View {
 
     // MARK: Other files (web .atv-file)
 
-    /// 13.5 at 1.35, padding 6 14, radius 12, white .07 (hover .13) with a white .1 ring; name 550, size 12.5 ink-2.
+    /// 13.5 at 1.35, padding 6 14, radius 12; soft violet in its ring on the cards (white .07 / .1 ring on my bubble);
+    /// name 550, size 12.5 ink-2.
     private var fileChip: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         return VStack(alignment: .leading, spacing: 6) {
@@ -1710,8 +1975,8 @@ private struct ChatAttachmentItem: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 6)
                 .frame(minHeight: isMac ? 36 : 44)
-                .background(Color.white.opacity(hovering ? 0.13 : 0.07), in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.1), lineWidth: 1) }
+                .background(chipFill, in: shape)
+                .overlay { shape.strokeBorder(chipRing, lineWidth: 1) }
                 .contentShape(shape)
                 .animation(.linear(duration: 0.12), value: hovering)
             }
@@ -1738,7 +2003,7 @@ private struct ChatAttachmentItem: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(onBubble ? ChatPalette.bubbleCode : CE.bgDeep.opacity(0.5),
+                    .background(onBubble ? ChatPalette.bubbleCode : CE.violet.opacity(0.05),
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             if let error {

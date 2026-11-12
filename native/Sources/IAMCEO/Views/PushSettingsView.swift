@@ -324,7 +324,7 @@ struct PushSettingsView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+        .background(CE.wash(0.03), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.line) }
     }
 
@@ -596,7 +596,7 @@ private struct PushDeviceRow: View {
                 .accessibilityHidden(true)
             HStack(spacing: 18) { preferenceToggles }
                 .toggleStyle(.checkbox)
-                .tint(CE.violet)
+                .tint(CE.accentFill)
                 .font(CEFont.secondary)
                 .foregroundStyle(CE.ink2)
         }

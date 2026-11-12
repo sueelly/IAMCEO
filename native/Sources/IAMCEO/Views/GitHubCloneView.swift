@@ -99,7 +99,7 @@ struct GitHubCloneView: View {
                         }.padding(5)
                     }
                     .frame(height: isMac ? 300 : 280)
-                    .background(Color.white.opacity(0.025), in: shape)
+                    .background(Color.white.opacity(0.6), in: shape)
                     .overlay { shape.strokeBorder(CE.line) }
                 }
             } else {
@@ -151,14 +151,14 @@ struct GitHubCloneView: View {
                     .disabled(cloning || loading)
             }
             .padding(.leading, 12).padding(.trailing, 10).padding(.vertical, 10)
-            .background(Color.white.opacity(0.04), in: shape)
-            .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+            .background(Color.white.opacity(0.6), in: shape)
+            .overlay { shape.strokeBorder(CE.line) }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(preview.isEmpty ? "받을 위치: \(parent)" : "최종 폴더: " + preview)
         }
     }
 
-    /// The picked repository looks like a picked choice (web .choice[data-on]: violet .24, 1.5pt violet ring).
+    /// The picked repository looks like a picked choice (mockup --sel-bg: violet .16 → .10, 1.5pt #7A5BFF ring).
     private func repoRow(_ repository: GitHubRepository) -> some View {
         let selected = selectedRepo == repository.nameWithOwner && address.isEmpty
         return Button { selectedRepo = repository.nameWithOwner; address = "" } label: {
@@ -233,8 +233,8 @@ struct GitHubCloneView: View {
     }
 }
 
-/// A repository in the list: a plain row (white .06 on hover); the picked one is drawn as a picked choice
-/// (web .choice[data-on]: violet .24 with a 1.5pt violet .9 ring).
+/// A repository in the list: a plain row (a faint violet wash on hover); the picked one is drawn as a picked choice
+/// (mockup --sel-bg: violet .16 → .10 with a 1.5pt #7A5BFF ring).
 private struct RepoRowStyle: ButtonStyle {
     var selected = false
     func makeBody(configuration: Configuration) -> some View { RowBody(configuration: configuration, selected: selected) }
@@ -248,10 +248,11 @@ private struct RepoRowStyle: ButtonStyle {
                 .contentShape(shape)
                 .background {
                     if selected {
-                        shape.fill(CE.violet.opacity(configuration.isPressed ? 0.3 : 0.24))
-                            .overlay { shape.strokeBorder(CE.violet.opacity(0.9), lineWidth: 1.5) }
+                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                            .overlay { shape.fill(CE.violet.opacity(configuration.isPressed ? 0.06 : 0)) }
+                            .overlay { shape.strokeBorder(CE.focus, lineWidth: 1.5) }
                     } else {
-                        shape.fill(Color.white.opacity(configuration.isPressed ? 0.09 : hovering ? 0.06 : 0))
+                        shape.fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0))
                     }
                 }
                 .onHover { hovering = $0 }
