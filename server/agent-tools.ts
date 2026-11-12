@@ -11,7 +11,7 @@ import type { AgentToolDef, AgentToolResult, OrchestratorApi } from "./orchestra
 import type { AgentWorkflowService } from "./service-contracts.ts";
 import type { AssignResult, Orchestrator } from "./orchestrator.ts";
 import { josa } from "./roles.ts";
-import { ApiError } from "./store.ts";
+import { ApiError, Store } from "./store.ts";
 import { MemoryError, stableEventId, clip, findSensitive, memoryKindLabel } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
 import { formatLintWarnings, lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
@@ -541,7 +541,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
-      task_id: z.string().trim().min(1).max(64).optional().describe("대표가 특정 작업에서 보낸 글을 잇는 지시면 그 작업 id(받은 글의 '작업 #' 줄). 생략하면 작업 없는 지시"),
+      task_id: z.string().trim().min(1).max(64).optional().describe("대표가 특정 작업에서 보낸 글을 잇는 지시면 그 작업 id(받은 글의 '작업 #' 줄). 진행판 일 항목의 일을 맡길 때는 그 항목의 대화 작업 id(tk_<일 항목 id>, work_set 결과에 나온다). 생략하면 작업 없는 지시"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
@@ -685,9 +685,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   work_set: tool(
-    "일 항목을 만들거나(id 없음) 고친다(id 있음). sec: doing 진행 중 · next 예정 · hold 보류 · done 완료.",
+    "일 항목을 만들거나(id 없음) 고친다(id 있음). sec: doing 진행 중 · next 예정 · hold 보류 · done 완료. 완료가 아닌 항목은 대표 대화 화면에 작업 칩으로 바로 생기고, 제목·담당을 고치면 따라 바뀌며, 완료하거나 지우면 칩이 사라진다.",
     z.strictObject({ id: z.string().optional(), sec: z.enum(["doing", "next", "hold", "done"]), title: text, detail: z.string().optional(), who: z.string().optional() }),
-    (orch, member, a) => reply(`일 항목 #${orch.setWork(member.projectId, a).id}`),
+    (orch, member, a) => {
+      const item = orch.setWork(member.projectId, a);
+      const task = orch.store.getTask(Store.workTaskId(item.id));
+      return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩. 이 일로 맡기는 team_assign 에 task_id 로 넣으면 보고가 이 칩에 모인다)` : ""}`);
+    },
   ),
 
   project_create: tool(
