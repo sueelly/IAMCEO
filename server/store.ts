@@ -714,6 +714,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       },
     });
     this.ensureHq();
+    this.backfillWorkTasks();
   }
 
   /** 동기 SQL 전용. await/외부 I/O는 이 경계 밖에서 한다. 중첩 실패는 해당 savepoint의 알림도 버린다. */
@@ -1640,8 +1641,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           at,
           input.id,
         );
+        const item = this.getWork(input.id)!;
+        this.syncWorkTask(item);
         this.emitWork(input.projectId);
-        return this.getWork(input.id)!;
+        return item;
       }
       const id = newId("w_");
       const order = this.row("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM work WHERE project_id = ?", input.projectId)!.n as number;
@@ -1658,8 +1661,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         at,
       );
+      const item = this.getWork(id)!;
+      this.syncWorkTask(item);
       this.emitWork(input.projectId);
-      return this.getWork(id)!;
+      return item;
     });
   }
 
@@ -1673,6 +1678,40 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 작업 ----
+  /**
+   * 진행판 일 항목의 대화 작업. 총괄이 일 항목을 만들면 대화의 작업 칩이 바로 생기고, 제목·담당을 고치면 따라 바뀐다.
+   * id 는 일 항목에서 정해진다(tk_<일 항목 id>). 등록한 직원은 없다(member_id NULL): 대표가 이 칩에서 보낸 글은 총괄에게 가고,
+   * 직원이 task 도구로 등록한 작업처럼 그 직원에게 task_id 를 강제하지 않는다. 완료·삭제된 항목의 칩은 화면이 숨긴다(글은 남는다).
+   */
+  static workTaskId(workId: string): string {
+    return `tk_${workId}`;
+  }
+
+  private syncWorkTask(item: WorkItem): void {
+    const id = Store.workTaskId(item.id);
+    const existing = this.getTask(id);
+    const title = item.title.trim();
+    if (!title) return;
+    if (!existing) {
+      if (item.sec === "done") return;
+      const at = nowIso();
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, ?)",
+        id, item.projectId, item.who, title, at, at);
+      this.emit({ type: "task", task: this.requireTask(id) });
+      return;
+    }
+    if (existing.title === title && existing.who === item.who) return;
+    this.run("UPDATE tasks SET title = ?, who = ?, updated_at = ? WHERE id = ?", title, item.who, nowIso(), id);
+    this.emit({ type: "task", task: this.requireTask(id) });
+  }
+
+  /** 이 기능 전에 만든 진행 중·예정·보류 일 항목에도 작업 칩을 만든다(완료 항목은 만들지 않는다). 시작할 때 한 번. */
+  private backfillWorkTasks(): void {
+    const rows = this.rows("SELECT * FROM work WHERE sec != 'done' AND id NOT IN (SELECT substr(id, 4) FROM tasks WHERE id LIKE 'tk_w_%')");
+    if (!rows.length) return;
+    this.transaction(() => { for (const r of rows) this.syncWorkTask(toWork(r)); });
+  }
+
   getTask(id: string): Task | null {
     const r = this.row("SELECT * FROM tasks WHERE id = ?", id);
     return r ? toTask(r) : null;

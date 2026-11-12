@@ -9,7 +9,7 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
-import { taskTarget, visibleTasks } from "../lib/tasks";
+import { liveTasks, taskTarget, visibleTasks } from "../lib/tasks";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
@@ -178,7 +178,7 @@ export default function Composer() {
   const allTasks = project?.tasks ?? [];
   const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
   // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원의 작업만.
-  const shownTasks = visibleTasks(allTasks, task ? null : target?.id ?? null);
+  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), task ? null : target?.id ?? null);
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
     { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
@@ -370,7 +370,7 @@ export default function Composer() {
               <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          {allTasks.length > 0 ? (
+          {shownTasks.length > 0 || task ? (
             <div className="cmp-tasks" role="group" aria-label="작업 고르기">
               <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
                 전체
