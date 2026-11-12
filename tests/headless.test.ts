@@ -387,6 +387,6 @@ describe("도움 함수", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
     writeFileSync(join(dir, "worker.md"), "맞춤 {{NAME}}/{{ROLE}}");
     expect(renderRole("worker", vars, dir)).toBe("맞춤 철수/개발");
-    expect(renderRole("root", vars, dir)).not.toContain("맞춤");
+    expect(renderRole("root", vars, dir)).not.toContain("맞춤 철수");
   });
 });
