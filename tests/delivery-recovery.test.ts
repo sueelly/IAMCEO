@@ -77,6 +77,113 @@ async function errorStatus(work: Promise<unknown>, status: number) {
   catch (error) { expect(error).toBeInstanceOf(ApiError); expect((error as ApiError).status).toBe(status); }
 }
 
+// Model accumulated, settled history without sending input or repeatedly running admission.
+function settledHistory(f: ReturnType<typeof setup>, count: number) {
+  const seed = f.envelope([f.enqueue()]);
+  f.store.updateDispatch(seed.dispatchId, "unknown", "accepted");
+  f.store.markDelivered(seed.items[0].deliveryId);
+  f.store.updateDeliveryRecovery(seed.items[0].deliveryId, f.r(seed.items[0].deliveryId).version, { phase: "resolved" });
+  for (let i = 1; i < count; i++) {
+    const d = f.enqueue();
+    f.store.saveDispatch({ ...seed, dispatchId: `history-${i}`, bundleMarker: `bundle-${i}`, transportState: "accepted",
+      items: [{ deliveryId: d.id, ordinal: 0, sourceRevision: null }], markers: [{ deliveryId: d.id, marker: `marker-${i}` }] });
+    f.store.markDelivered(d.id);
+    f.store.updateDeliveryRecovery(d.id, f.r(d.id).version, { phase: "resolved" });
+  }
+}
+
+describe("완료 기록이 쌓여도 서버 요청을 막지 않는다", () => {
+  test("알림 집계는 완료된 전달의 재시도 정보를 반복해서 읽지 않는다", () => {
+    const f = setup();
+    settledHistory(f, 80);
+    f.enqueue();
+    let reads = 0;
+    const read = f.store.getDeliveryRetry.bind(f.store);
+    f.store.getDeliveryRetry = id => { reads++; return read(id); };
+    expect(f.service.notices(f.project.id).members[0].undeliveredCount).toBe(1);
+    expect(reads).toBeLessThanOrEqual(1);
+  });
+
+  test("입력 허가는 완료 전달을 모두 다시 읽지 않고 논리·물리 차단을 보존한다", () => {
+    const f = setup();
+    settledHistory(f, 80);
+    let reads = 0;
+    const get = f.store.getDelivery.bind(f.store);
+    f.store.getDelivery = id => { reads++; return get(id); };
+    expect(f.service.fenced(f.member.id)).toBe(false);
+    expect(reads).toBeLessThan(2);
+    const d = f.store.listDeliveries()[0];
+    f.store.updateDeliveryRecovery(d.id, f.r(d.id).version, { phase: "checking" });
+    expect(f.service.fenced(f.member.id)).toBe(true);
+    f.store.updateDeliveryRecovery(d.id, f.r(d.id).version, { phase: "stopped" });
+    expect(f.service.fenced(f.member.id)).toBe(false);
+    const dispatch = f.store.listDispatches(f.member.id)[0];
+    f.store.updateDispatch(dispatch.dispatchId, "accepted", "unknown");
+    expect(f.service.fenced(f.member.id)).toBe(true);
+  });
+
+  test("복구 검사는 완료 봉투를 반복해서 읽지 않고 HTTP 타이머에 실행 기회를 준다", async () => {
+    const f = setup();
+    settledHistory(f, 80);
+    let reads = 0;
+    const get = f.store.getDispatch.bind(f.store);
+    f.store.getDispatch = id => { reads++; return get(id); };
+    let timerRan = false;
+    const timer = setTimeout(() => { timerRan = true; }, 0);
+    try {
+      await f.service.tick();
+      expect(timerRan).toBe(true);
+      expect(reads).toBeLessThanOrEqual(80);
+      expect(f.calls).toHaveLength(0);
+      expect(f.writes).toHaveLength(0);
+      expect(f.store.listDeliveries().every(d => d.status === "delivered")).toBe(true);
+    } finally { clearTimeout(timer); }
+  });
+
+  test("입력 fence는 미확정 physical/logical 봉투만 읽고 과거 세대의 미확정 입력도 보존한다", () => {
+    const f = setup();
+    settledHistory(f, 40);
+    const dispatches = f.store.listDispatches(f.member.id);
+    const physical = dispatches[0], logical = dispatches[1];
+    f.store.updateDispatch(physical.dispatchId, "accepted", "unknown");
+    f.store.updateDeliveryRecovery(physical.items[0].deliveryId, f.r(physical.items[0].deliveryId).version, { phase: "stopped" });
+    f.store.updateDeliveryRecovery(logical.items[0].deliveryId, f.r(logical.items[0].deliveryId).version, { phase: "checking" });
+    f.db.query("UPDATE members SET session_generation = session_generation + 1 WHERE id = ?").run(f.member.id);
+    let reads = 0;
+    const get = f.store.getDispatch.bind(f.store);
+    f.store.getDispatch = id => { reads++; return get(id); };
+    expect(f.store.inputState(f.member.id).unresolvedDispatches.map(d => d.dispatchId)).toEqual([physical.dispatchId, logical.dispatchId]);
+    expect(reads).toBeLessThanOrEqual(2);
+  });
+
+  test("검사 도중 취소된 지시를 다시 읽거나 전달하지 않는다", async () => {
+    const f = setup();
+    settledHistory(f, 60);
+    const m = f.store.createMessage({ projectId: f.project.id, mine: true, kind: "나", body: "취소할 지시" });
+    const d = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "user_message", text: m.body, refType: "message", refId: m.id });
+    const timer = setTimeout(() => { f.store.cancelPendingFor("message", m.id); }, 0);
+    try {
+      await f.service.tick();
+      expect(f.store.getDelivery(d.id)).toBeNull();
+      expect(f.calls).toHaveLength(0);
+      expect(f.writes).toHaveLength(0);
+    } finally { clearTimeout(timer); }
+  });
+
+  test("이미 고른 복구 대상도 검사 도중 직원이 삭제되면 건너뛴다", async () => {
+    const f = setup();
+    f.store.setDeliveryStatus(f.enqueue().id, "failed");
+    settledHistory(f, 60);
+    const timer = setTimeout(() => { f.store.removeMember(f.member.id); }, 0);
+    try {
+      await f.service.tick();
+      expect(f.store.getMember(f.member.id)).toBeNull();
+      expect(f.calls).toHaveLength(0);
+      expect(f.writes).toHaveLength(0);
+    } finally { clearTimeout(timer); }
+  });
+});
+
 describe("영속 확인과 안전 fence", () => {
   test("주 세션 수신은 실패 표시와 메시지만 원자 정정하고 활동은 한 번이다", async () => {
     const f = setup();

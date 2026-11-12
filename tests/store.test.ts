@@ -7,6 +7,20 @@ import type { WsEvent } from "../shared/types.ts";
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.db.close(); });
 
+test("project sync lists public file fields without loading artifact HTML", () => {
+  const { store, project } = fixture();
+  const html = "<article>large artifact</article>";
+  const file = store.createFile({ projectId: project.id, title: "artifact", body: "문서 본문", html });
+  store.db.exec("ALTER TABLE files RENAME TO files_data");
+  // SQLite evaluates this deliberately unreadable source only when HTML is selected.
+  const columns = store.db.query<{ name: string }, []>("PRAGMA table_info(files_data)").all().map(c => c.name === "html" ? "json_extract(html, '$') AS html" : c.name);
+  store.db.exec(`CREATE VIEW files AS SELECT rowid, ${columns.join(", ")} FROM files_data`);
+  expect(() => store.listFiles(project.id)).not.toThrow();
+  expect(store.listFiles(project.id)).toEqual([file]);
+  store.db.exec("DROP VIEW files; ALTER TABLE files_data RENAME TO files");
+  expect(store.getFileHtml(file.id)).toBe(html);
+});
+
 function fixture() {
   const bus = new Bus();
   const store = new Store(openDb(":memory:"), bus);
