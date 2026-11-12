@@ -1,6 +1,7 @@
 // http.ts 가 부르는 Orchestrator 의 겉면. 비즈니스 흐름은 구현체(orchestrator.ts)가 맡는다.
 // 처리할 수 없는 요청은 ApiError(status, 한국어 메시지)를 던지면 그대로 응답이 된다.
 import type {
+  AnswerNativePromptReq, NativeAnswerReceipt, NativePromptState,
   AdoptPreview,
   AdoptReq,
   ReleaseResult,
@@ -137,6 +138,10 @@ export interface OrchestratorApi {
   memberApproval?(memberId: string): Promise<ApprovalPrompt | null>;
   /** 대표가 승인 창의 선택지를 고른다. 창이 바뀌었거나 닫혔으면 409. AI 도구에는 없다. */
   answerApproval?(memberId: string, req: AnswerApprovalReq): Promise<void>;
+  /** 대화의 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 귀속. */
+  memberNativePrompt?(memberId: string): Promise<NativePromptState>;
+  /** 대표가 그 창에 직접 답한다(대표 화면 전용). 같은 operationId 는 처음 결과. */
+  answerNativePrompt?(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt>;
   herdrInfo(): Promise<HerdrInfo>;
   herdrAgents(): Promise<LiveAgent[]>;
   adopt(projectId: string, req: AdoptReq): Promise<Member>;

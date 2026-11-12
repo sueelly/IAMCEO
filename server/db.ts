@@ -666,6 +666,46 @@ export const MIGRATIONS: string[] = [
      updated_at TEXT NOT NULL
    );
    CREATE INDEX memory_outbox_due ON memory_outbox(status, next_at);`,
+  // 기억 운영 기본값. memory_mode: 'on'·'off' 는 프로젝트가 정한 값, NULL 은 이전 프로젝트(서버 환경 목록을 따른다).
+  // memory_captures: 총괄이 대화에서 고른 대표 결정·제약·수정·피드백. 원문은 messages 에 있고 여기에는 고른 글 id·범위·해석만 둔다.
+  // memory_searches: 일을 넣기 전에 서버가 한 기억 검색(결과 없음·실패를 구분해 남긴다). memory_search_deliveries 는 같은 전달을 두 번 찾지 않게 한다.
+  `ALTER TABLE projects ADD COLUMN memory_mode TEXT;
+   ALTER TABLE projects ADD COLUMN memory_enabled_at TEXT;
+   ALTER TABLE memory_outbox ADD COLUMN supersedes_event_id TEXT;
+   CREATE TABLE memory_captures (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     event_id TEXT NOT NULL UNIQUE,
+     type TEXT NOT NULL,
+     scope TEXT NOT NULL,
+     standing INTEGER NOT NULL DEFAULT 0,
+     message_ids TEXT NOT NULL,
+     task_id TEXT,
+     interpretation TEXT NOT NULL,
+     file_refs TEXT NOT NULL DEFAULT '[]',
+     supersedes_id TEXT,
+     captured_by TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX memory_captures_project ON memory_captures(project_id, created_at);
+   CREATE TABLE memory_searches (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     member_id TEXT NOT NULL,
+     task_id TEXT,
+     trigger TEXT NOT NULL,
+     query_hash TEXT NOT NULL,
+     status TEXT NOT NULL,
+     result_ids TEXT NOT NULL DEFAULT '[]',
+     block TEXT,
+     detail TEXT,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX memory_searches_member ON memory_searches(project_id, member_id, created_at);
+   CREATE TABLE memory_search_deliveries (
+     delivery_id TEXT PRIMARY KEY,
+     search_id TEXT NOT NULL
+   );`,
 ];
 
 export function openDb(path: string): Database {

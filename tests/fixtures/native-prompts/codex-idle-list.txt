@@ -1,0 +1,7 @@
+  1. 첫째 할 일
+  2. 둘째 할 일
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol xhigh · /tmp/proj
+  ← for agents · ? for shortcuts

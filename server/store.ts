@@ -67,6 +67,8 @@ export interface MemoryUpload {
   nextAt: string;
   lastError: string | null;
   remoteId: string | null;
+  /** 이 기록이 대체하는 앞 기록의 event_id. 앞 기록이 게이트웨이에 들어가 id 를 받은 뒤에만 보낸다. */
+  supersedesEventId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,7 +77,56 @@ function toMemoryUpload(r: Row): MemoryUpload {
   return {
     eventId: r.event_id as string, projectId: r.project_id as string, refType: r.ref_type as string, refId: r.ref_id as string, body: r.body as string,
     status: r.status as MemoryUpload["status"], attempts: r.attempts as number, nextAt: r.next_at as string, lastError: (r.last_error as string | null) ?? null,
-    remoteId: (r.remote_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+    remoteId: (r.remote_id as string | null) ?? null, supersedesEventId: (r.supersedes_event_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+  };
+}
+
+/** 총괄이 대화에서 고른 대표의 결정·제약·수정·피드백 한 건. 원문은 messages 의 대표 글이다. */
+export interface MemoryCapture {
+  id: string;
+  projectId: string;
+  eventId: string;
+  type: "decision" | "constraint" | "correction" | "feedback";
+  scope: "task" | "project" | "artifact";
+  standing: boolean;
+  messageIds: string[];
+  taskId: string | null;
+  interpretation: string;
+  fileRefs: { fileId: string; title: string; version: string }[];
+  supersedesId: string | null;
+  capturedBy: string;
+  createdAt: string;
+}
+
+function toMemoryCapture(r: Row): MemoryCapture {
+  return {
+    id: r.id as string, projectId: r.project_id as string, eventId: r.event_id as string, type: r.type as MemoryCapture["type"], scope: r.scope as MemoryCapture["scope"],
+    standing: !!r.standing, messageIds: JSON.parse(r.message_ids as string) as string[], taskId: (r.task_id as string | null) ?? null, interpretation: r.interpretation as string,
+    fileRefs: JSON.parse((r.file_refs as string) || "[]") as MemoryCapture["fileRefs"], supersedesId: (r.supersedes_id as string | null) ?? null, capturedBy: r.captured_by as string, createdAt: r.created_at as string,
+  };
+}
+
+/** 서버가 일을 넣기 전에(또는 직원이 도구로) 한 기억 검색 한 번. ok·empty·error 를 나눠 남긴다. */
+export interface MemorySearch {
+  id: string;
+  projectId: string;
+  memberId: string;
+  taskId: string | null;
+  trigger: "delivery" | "tool";
+  queryHash: string;
+  status: "ok" | "empty" | "error";
+  resultIds: string[];
+  /** 직원에게 넣은 글(같은 검색을 다시 쓸 때 그대로 쓴다). */
+  block: string | null;
+  detail: string | null;
+  createdAt: string;
+}
+
+function toMemorySearch(r: Row): MemorySearch {
+  return {
+    id: r.id as string, projectId: r.project_id as string, memberId: r.member_id as string, taskId: (r.task_id as string | null) ?? null, trigger: r.trigger as MemorySearch["trigger"],
+    queryHash: r.query_hash as string, status: r.status as MemorySearch["status"], resultIds: JSON.parse((r.result_ids as string) || "[]") as string[], block: (r.block as string | null) ?? null,
+    detail: (r.detail as string | null) ?? null, createdAt: r.created_at as string,
   };
 }
 
@@ -97,6 +148,8 @@ export interface NewProject {
   name: string;
   cwd: string;
   chiefCli?: CliProvider;
+  /** 개발 기억 운영. 생략하면 켠다(본사는 끈다). */
+  memory?: boolean;
   runnerEnabled?: boolean;
   now?: string;
   creationGoal?: string | null;
@@ -140,6 +193,8 @@ export interface AppliedConfig {
   effort: Effort | null;
   staffModel: string | null;
   staffEffort: Effort | null;
+  /** 세션을 띄울 때 서버가 준 도구 목록(이름·입력 형식)의 지문. 다르면 쉴 때 같은 대화를 이어 다시 연다. 옛 세션은 없다. */
+  toolsSig?: string | null;
 }
 
 export interface NewDecision {
@@ -313,7 +368,14 @@ export function attachmentUrl(id: string, name: string): string {
   return `/files/${id}/${encodeURIComponent(name)}`;
 }
 
-function toProject(r: Row, connection: ProjectConnection): Project {
+/** 새 프로젝트의 기억 운영 값. 대표가 따로 정하지 않으면 켠다. 본사는 직원이 없어 NULL(서버 목록을 따름)로 둔다. */
+function memoryMode(id: string, memory: boolean | undefined): "on" | "off" | null {
+  if (memory !== undefined) return memory ? "on" : "off";
+  return id === "hq" ? null : "on";
+}
+
+function toProject(r: Row, connection: ProjectConnection, legacyMemory: ReadonlySet<string>): Project {
+  const mode = r.memory_mode === "on" || r.memory_mode === "off" ? r.memory_mode as "on" | "off" : null;
   return {
     id: r.id,
     name: r.name,
@@ -330,6 +392,7 @@ function toProject(r: Row, connection: ProjectConnection): Project {
     updatedAt: r.updated_at,
     connection,
     tidiedAt: r.board_tidied_at ?? null,
+    memory: { mode: mode ?? "legacy", on: mode === "on" || (mode === null && legacyMemory.has(r.id)), enabledAt: r.memory_enabled_at ?? null },
   };
 }
 
@@ -693,6 +756,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private lastMessageMs = 0;
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
+  /** 이전 프로젝트(memory_mode NULL) 가운데 서버 환경 목록(IAMCEO_MEMORY_PROJECTS)으로 켠 것. */
+  private legacyMemory: ReadonlySet<string> = new Set();
 
   constructor(
     db: Database,
@@ -714,6 +779,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       },
     });
     this.ensureHq();
+    this.backfillWorkTasks();
   }
 
   /** 동기 SQL 전용. await/외부 I/O는 이 경계 밖에서 한다. 중첩 실패는 해당 savepoint의 알림도 버린다. */
@@ -870,7 +936,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   private projectFrom(r: Row): Project {
-    return toProject(r, this.connectionOf(r.id, !!r.runner_enabled, !!r.archived));
+    return toProject(r, this.connectionOf(r.id, !!r.runner_enabled, !!r.archived), this.legacyMemory);
   }
 
   /**
@@ -965,8 +1031,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = input.id ?? newId("p_");
       const now = input.now ?? "";
       this.run(
-        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli, memory_mode, memory_enabled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.name,
         id === "hq" ? 1 : 0,
@@ -978,6 +1044,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         input.creationGoal ?? null,
         input.chiefCli ?? "codex",
+        // 새 프로젝트는 기억 운영을 켠 채로 만든다(본사는 직원이 없어 따로 켤 때만). 서버에 연결 설정이 없으면 '미연결'로 보인다.
+        memoryMode(id, input.memory),
+        memoryMode(id, input.memory) === "on" ? at : null,
       );
       const project = this.requireProject(id);
       this.emit({ type: "project", project });
@@ -1640,8 +1709,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           at,
           input.id,
         );
+        const item = this.getWork(input.id)!;
+        this.syncWorkTask(item);
         this.emitWork(input.projectId);
-        return this.getWork(input.id)!;
+        return item;
       }
       const id = newId("w_");
       const order = this.row("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM work WHERE project_id = ?", input.projectId)!.n as number;
@@ -1658,8 +1729,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         at,
       );
+      const item = this.getWork(id)!;
+      this.syncWorkTask(item);
       this.emitWork(input.projectId);
-      return this.getWork(id)!;
+      return item;
     });
   }
 
@@ -1673,6 +1746,40 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 작업 ----
+  /**
+   * 진행판 일 항목의 대화 작업. 총괄이 일 항목을 만들면 대화의 작업 칩이 바로 생기고, 제목·담당을 고치면 따라 바뀐다.
+   * id 는 일 항목에서 정해진다(tk_<일 항목 id>). 등록한 직원은 없다(member_id NULL): 대표가 이 칩에서 보낸 글은 총괄에게 가고,
+   * 직원이 task 도구로 등록한 작업처럼 그 직원에게 task_id 를 강제하지 않는다. 완료·삭제된 항목의 칩은 화면이 숨긴다(글은 남는다).
+   */
+  static workTaskId(workId: string): string {
+    return `tk_${workId}`;
+  }
+
+  private syncWorkTask(item: WorkItem): void {
+    const id = Store.workTaskId(item.id);
+    const existing = this.getTask(id);
+    const title = item.title.trim();
+    if (!title) return;
+    if (!existing) {
+      if (item.sec === "done") return;
+      const at = nowIso();
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, ?)",
+        id, item.projectId, item.who, title, at, at);
+      this.emit({ type: "task", task: this.requireTask(id) });
+      return;
+    }
+    if (existing.title === title && existing.who === item.who) return;
+    this.run("UPDATE tasks SET title = ?, who = ?, updated_at = ? WHERE id = ?", title, item.who, nowIso(), id);
+    this.emit({ type: "task", task: this.requireTask(id) });
+  }
+
+  /** 이 기능 전에 만든 진행 중·예정·보류 일 항목에도 작업 칩을 만든다(완료 항목은 만들지 않는다). 시작할 때 한 번. */
+  private backfillWorkTasks(): void {
+    const rows = this.rows("SELECT * FROM work WHERE sec != 'done' AND id NOT IN (SELECT substr(id, 4) FROM tasks WHERE id LIKE 'tk_w_%')");
+    if (!rows.length) return;
+    this.transaction(() => { for (const r of rows) this.syncWorkTask(toWork(r)); });
+  }
+
   getTask(id: string): Task | null {
     const r = this.row("SELECT * FROM tasks WHERE id = ?", id);
     return r ? toTask(r) : null;
@@ -1690,13 +1797,113 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */
-  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string }): boolean {
+  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string; supersedesEventId?: string | null }): boolean {
     const at = new Date().toISOString();
     const before = this.row("SELECT 1 AS hit FROM memory_outbox WHERE event_id = ?", input.eventId);
     if (before) return false;
-    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)",
-      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at);
+    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at, supersedes_event_id) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)",
+      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at, input.supersedesEventId ?? null);
     return true;
+  }
+
+  getMemoryUpload(eventId: string): MemoryUpload | null {
+    const r = this.row("SELECT * FROM memory_outbox WHERE event_id = ?", eventId);
+    return r ? toMemoryUpload(r) : null;
+  }
+
+  // ---- 기억 운영: 프로젝트 기본값 ----
+  /** 서버 환경 목록으로 켠 이전 프로젝트. 프로젝트가 따로 정한 값(on·off)이 있으면 그쪽이 앞선다. */
+  setLegacyMemoryProjects(ids: readonly string[]): void {
+    this.legacyMemory = new Set(ids);
+  }
+
+  /** 대표가 프로젝트의 기억 운영을 켜거나 끈다. 끈 값은 다른 기본값이 덮지 않는다. 켤 때만 켠 시각을 새로 적는다. */
+  setProjectMemory(id: string, on: boolean): Project {
+    return this.transaction(() => {
+      const before = this.requireProject(id);
+      if (before.memory?.mode === (on ? "on" : "off")) return before;
+      const at = nowIso();
+      this.run("UPDATE projects SET memory_mode = ?, memory_enabled_at = CASE WHEN ? THEN COALESCE(CASE WHEN memory_mode = 'on' THEN memory_enabled_at END, ?) ELSE memory_enabled_at END, updated_at = ? WHERE id = ?",
+        on ? "on" : "off", on ? 1 : 0, at, at, id);
+      const project = this.requireProject(id);
+      this.emit({ type: "project", project });
+      this.emitProjects();
+      return project;
+    });
+  }
+
+  /**
+   * 결재 답 가운데 기억 대기열에 없는 것. 원본 저장과 대기열 넣기 사이에 서버가 멈추면 생기는 빈틈을 메운다.
+   * 프로젝트가 기억을 켠 뒤(켠 시각, 이전 프로젝트는 첫 업로드 시각) 답한 것만 본다. 그 전의 지난 결재는 모아 올리지 않는다.
+   */
+  answeredDecisionsMissingMemory(projectId: string): Decision[] {
+    const project = this.requireProject(projectId);
+    const since = project.memory?.enabledAt ?? (this.row("SELECT MIN(created_at) AS at FROM memory_outbox WHERE project_id = ?", projectId)?.at as string | null) ?? null;
+    if (!since) return [];
+    return this.rows(
+      `SELECT * FROM decisions d WHERE d.project_id = ? AND d.status IN ('answered','delivered') AND d.answered_at >= ?
+         AND NOT EXISTS (SELECT 1 FROM memory_outbox o WHERE o.ref_type = 'decision' AND o.ref_id = d.id) ORDER BY d.answered_at`,
+      projectId, since,
+    ).map(toDecision);
+  }
+
+  // ---- 기억 운영: 총괄의 선별 기록 ----
+  /** 선별 기록과 그 업로드를 한 트랜잭션에 남긴다(기록만 있고 대기열이 빠지는 일이 없다). 같은 사건이면 처음 것을 돌려준다. */
+  saveMemoryCapture(input: Omit<MemoryCapture, "id" | "createdAt">, upload: { body: string; supersedesEventId: string | null }): { capture: MemoryCapture; created: boolean } {
+    return this.transaction(() => {
+      const before = this.row("SELECT * FROM memory_captures WHERE event_id = ?", input.eventId);
+      if (before) return { capture: toMemoryCapture(before), created: false };
+      const id = newId("mc_");
+      const at = nowIso();
+      this.run(
+        `INSERT INTO memory_captures (id, project_id, event_id, type, scope, standing, message_ids, task_id, interpretation, file_refs, supersedes_id, captured_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, input.projectId, input.eventId, input.type, input.scope, input.standing ? 1 : 0, JSON.stringify(input.messageIds), input.taskId, input.interpretation,
+        JSON.stringify(input.fileRefs), input.supersedesId, input.capturedBy, at,
+      );
+      this.enqueueMemoryUpload({ eventId: input.eventId, projectId: input.projectId, refType: "owner_note", refId: id, body: upload.body, supersedesEventId: upload.supersedesEventId });
+      return { capture: toMemoryCapture(this.row("SELECT * FROM memory_captures WHERE id = ?", id)!), created: true };
+    });
+  }
+
+  getMemoryCapture(id: string): MemoryCapture | null {
+    const r = this.row("SELECT * FROM memory_captures WHERE id = ?", id);
+    return r ? toMemoryCapture(r) : null;
+  }
+
+  listMemoryCaptures(projectId: string): MemoryCapture[] {
+    return this.rows("SELECT * FROM memory_captures WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemoryCapture);
+  }
+
+  // ---- 기억 운영: 일 시작 전 검색 ----
+  /** 이미 기억을 찾아 붙인 전달인가(재전송·재시작 뒤에도 같은 전달은 다시 찾지 않는다). */
+  memorySearchedDelivery(deliveryId: string): boolean {
+    return !!this.row("SELECT 1 AS hit FROM memory_search_deliveries WHERE delivery_id = ?", deliveryId);
+  }
+
+  /** 같은 직원이 최근에 같은 검색어로 찾은 결과(같은 검토의 후속이면 다시 쓴다). 실패한 검색은 다시 쓰지 않는다. */
+  recentMemorySearch(projectId: string, memberId: string, queryHash: string, since: string): MemorySearch | null {
+    const r = this.row("SELECT * FROM memory_searches WHERE project_id = ? AND member_id = ? AND query_hash = ? AND status != 'error' AND created_at >= ? ORDER BY created_at DESC LIMIT 1", projectId, memberId, queryHash, since);
+    return r ? toMemorySearch(r) : null;
+  }
+
+  /** 검색 기록과(전달로 넣을 때는) 직원에게 넣을 글을 한 트랜잭션에 남긴다. */
+  recordMemorySearch(input: Omit<MemorySearch, "id" | "createdAt">, link?: { deliveryIds: string[]; notice: NewDelivery | null }): MemorySearch {
+    return this.transaction(() => {
+      const id = newId("ms_");
+      const at = nowIso();
+      this.run(
+        "INSERT INTO memory_searches (id, project_id, member_id, task_id, trigger, query_hash, status, result_ids, block, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, input.projectId, input.memberId, input.taskId, input.trigger, input.queryHash, input.status, JSON.stringify(input.resultIds), input.block, input.detail, at,
+      );
+      for (const deliveryId of link?.deliveryIds ?? []) this.run("INSERT OR IGNORE INTO memory_search_deliveries (delivery_id, search_id) VALUES (?, ?)", deliveryId, id);
+      if (link?.notice) this.enqueue(link.notice);
+      return toMemorySearch(this.row("SELECT * FROM memory_searches WHERE id = ?", id)!);
+    });
+  }
+
+  listMemorySearches(projectId: string): MemorySearch[] {
+    return this.rows("SELECT * FROM memory_searches WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemorySearch);
   }
 
   dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {
@@ -1973,7 +2180,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   listFiles(projectId: string): FileDoc[] {
-    return this.rows("SELECT * FROM files WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC", projectId).map(toFile);
+    // Artifact HTML is loaded separately by getFileHtml, never by a sync/list projection.
+    return this.rows(`SELECT id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, task_id
+      FROM files WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC`, projectId).map(toFile);
   }
 
   createFile(input: NewFile): FileDoc {
@@ -2463,7 +2672,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   inputState(memberId: string): RunnerRecoveryState {
     const generation = this.memberRevisions(memberId).sessionGeneration;
     const r = this.row("SELECT * FROM terminal_leases WHERE member_id = ? AND generation = ? AND expires_at > ?", memberId, generation, Date.now());
-    return { lease: r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null, unresolvedDispatches: this.listDispatches(memberId).filter((d) => ["prepared", "write_started", "unknown"].includes(d.transportState) || d.items.some((item) => { const phase = this.getDeliveryRecovery(item.deliveryId)?.phase; return phase !== undefined && !["none", "resolved", "stopped"].includes(phase); })) };
+    // Select before hydrating large wire texts. Old generations can still hold a physical fence.
+    const unresolvedDispatches = this.rows(`SELECT d.id FROM delivery_dispatches d WHERE d.member_id = ? AND (
+      d.transport_state IN ('prepared', 'write_started', 'unknown') OR EXISTS (
+        SELECT 1 FROM delivery_dispatch_items i JOIN delivery_recovery r ON r.delivery_id = i.delivery_id
+        WHERE i.dispatch_id = d.id AND r.phase NOT IN ('none', 'resolved', 'stopped')
+      )) ORDER BY d.created_at, d.rowid`, memberId).map(d => this.getDispatch(d.id)!);
+    return { lease: r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null, unresolvedDispatches };
   }
 
   // ---- 전달 복구 CAS / 봉투 ----
@@ -2519,6 +2734,22 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT id FROM delivery_dispatches WHERE member_id = ? ORDER BY created_at, rowid", memberId).map((r) => this.getDispatch(r.id)!);
   }
 
+  listDeliveryDispatches(deliveryId: string): DeliveryDispatch[] {
+    return this.rows(`SELECT d.id FROM delivery_dispatches d JOIN delivery_dispatch_items i ON i.dispatch_id = d.id
+      WHERE i.delivery_id = ? ORDER BY d.created_at, d.rowid`, deliveryId).map(r => this.getDispatch(r.id)!);
+  }
+
+  physicalDeliveryIds(): string[] {
+    return this.rows(`SELECT DISTINCT i.delivery_id FROM delivery_dispatches d JOIN delivery_dispatch_items i ON i.dispatch_id = d.id
+      WHERE d.transport_state IN ('prepared', 'write_started', 'unknown')`).map(r => r.delivery_id);
+  }
+
+  hasLogicalDeliveryFence(memberId: string): boolean {
+    return this.row(`SELECT 1 FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id WHERE d.member_id = ? AND
+      (r.delivery_id IS NULL OR r.phase NOT IN ('none', 'resolved', 'stopped') OR
+        (r.phase = 'none' AND (d.status = 'delivering' OR (d.status = 'held' AND d.hold_reason = 'delivery_unknown')))) LIMIT 1`, memberId) !== null;
+  }
+
   updateDispatch(id: string, expected: DeliveryDispatch["transportState"], state: DeliveryDispatch["transportState"], submit = false): DeliveryDispatch {
     return this.transaction(() => {
       const result = this.db.query("UPDATE delivery_dispatches SET transport_state = ?, submit_attempts = submit_attempts + ?, updated_at = ? WHERE id = ? AND transport_state = ? AND submit_attempts + ? <= 1").run(state, submit ? 1 : 0, nowIso(), id, expected, submit ? 1 : 0);
@@ -2546,6 +2777,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.requireDelivery(id);
     const r = this.row("SELECT * FROM deliveries WHERE id = ?", id)!;
     return { nextAttemptAt: r.next_attempt_at, sourceRevision: r.source_revision, retryScope: r.retry_scope, retryReason: r.retry_reason, correctionRevision: r.correction_revision };
+  }
+
+  deliveryRetryDue(memberId: string, backend: Backend): number {
+    const retries = this.rows(`SELECT next_attempt_at FROM deliveries WHERE next_attempt_at IS NOT NULL AND
+      ((member_id = ? AND status IN ('queued', 'held')) OR retry_scope IN (?, ?))`, memberId, `member:${memberId}`, `backend:${backend}`);
+    return retries.reduce((due, r) => r.next_attempt_at ? Math.max(due, Date.parse(r.next_attempt_at)) : due, 0);
   }
 
   patchDeliveryRetry(id: string, patch: Partial<DeliveryRetryState>): void {

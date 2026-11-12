@@ -515,20 +515,28 @@ export async function waitForReadiness(config: Config, options: {
 async function serviceRun(): Promise<void> {
   const { BoundedLogWriter } = await import("../server/log-writer.ts");
   const { acquireHomeOwner } = await import("../server/home-owner.ts");
+  const { watchDaemonHealth } = await import("../server/service-health.ts");
   const logs = join(homeDir(), "logs");
   using logsOwner = acquireHomeOwner(logs);
   const stdout = new BoundedLogWriter(join(logs, "server.log"));
   let stderr: InstanceType<typeof BoundedLogWriter> | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let hardStop: ReturnType<typeof setTimeout> | undefined;
+  let stopHealth = () => {};
   const signalChild = (signal: "SIGTERM" | "SIGINT" | "SIGHUP") => () => {
+    stopHealth();
     child?.kill(signal);
     hardStop ??= setTimeout(() => child?.kill("SIGKILL"), 15_000);
   };
   const term = signalChild("SIGTERM"), interrupt = signalChild("SIGINT"), hup = signalChild("SIGHUP");
   try {
     stderr = new BoundedLogWriter(join(logs, "server.err.log"));
+    const config = loadConfig();
     child = Bun.spawn(selfCommand("serve"), { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, IAMCEO_LOG_WRITER: "0" } });
+    if (config.port > 0) stopHealth = watchDaemonHealth({ url: `${localUrl(config)}/api/health`, onUnhealthy: () => {
+      console.error("IAMCEO: HTTP 상태 확인 연속 실패. 웹 데몬을 재시작합니다.");
+      term();
+    } });
     process.on("SIGTERM", term); process.on("SIGINT", interrupt); process.on("SIGHUP", hup);
     const pump = async (stream: ReadableStream<Uint8Array>, writer: InstanceType<typeof BoundedLogWriter>) => {
       const reader = stream.getReader();
@@ -541,6 +549,7 @@ async function serviceRun(): Promise<void> {
     process.exitCode = await child.exited;
     if (stdout.failed || stderr.failed) process.exitCode = 1;
   } finally {
+    stopHealth();
     clearTimeout(hardStop);
     process.off("SIGTERM", term); process.off("SIGINT", interrupt); process.off("SIGHUP", hup);
     if (child && child.exitCode === null) { child.kill("SIGTERM"); await child.exited; }

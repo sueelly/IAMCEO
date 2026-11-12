@@ -87,6 +87,26 @@ test("core reserves two slots synchronously before awaited sends and returns one
   expect(f.store.listPendingExecutions()).toHaveLength(2);
 });
 
+test("retry admission reads only scheduled delays while preserving completed delivery backend scope", async () => {
+  const f = fixture(); const target = f.member(), other = f.member();
+  for (let i = 0; i < 80; i++) {
+    const d = f.store.enqueue({ projectId: f.project.id, memberId: other.id, kind: "instruction", text: "settled history" });
+    f.store.markDelivered(d.id);
+  }
+  const delayed = f.store.listDeliveries().at(-1)!;
+  f.store.patchDeliveryRetry(delayed.id, { retryScope: "backend:core", nextAttemptAt: new Date(Date.now() + 120_000).toISOString() });
+  f.store.enqueue({ projectId: f.project.id, memberId: target.id, kind: "instruction", text: "waiting work" });
+  let reads = 0;
+  const read = f.store.getDeliveryRetry.bind(f.store);
+  f.store.getDeliveryRetry = id => { reads++; return read(id); };
+  await f.orch.pump(target.id);
+  expect(f.runner.sent).toHaveLength(0);
+  expect(reads).toBeLessThan(10);
+  f.store.patchDeliveryRetry(delayed.id, { nextAttemptAt: null });
+  await f.orch.pump(target.id);
+  expect(f.runner.sent.map(s => s.memberId)).toEqual([target.id]);
+});
+
 test("a definite pre-write failure releases admission while an ambiguous write retains its persistent slot", async () => {
   const f = fixture(1); const first = f.member(); const second = f.member(); const third = f.member();
   f.runner.sendResult = async m => m.id === first.id ? { ok: false, reason: "down", retryable: true, deliveryEffect: "not_written" } : m.id === second.id ? { ok: false, reason: "error", retryable: true, deliveryEffect: "unknown" } : { ok: true };

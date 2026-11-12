@@ -160,6 +160,40 @@ function memberHref(m: Member) {
   return routeHash({ projectId: m.projectId, tab: "team", sub: m.id });
 }
 
+/** 개발 기억: 이 프로젝트가 쓰는지와 서버 연결 상태를 따로 보인다. 켜고 끄는 것은 세션을 끊지 않는다(쉬는 틈에 같은 대화로 이어 열 때 들어간다). */
+function MemoryRow({ project }: { project: Project }) {
+  const service = useBootstrap()?.runtime?.memory ?? null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const memory = project.memory;
+  if (!memory || project.isHq) return null;
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      applyLocal({ type: "project", project: await api.patchProject(project.id, { memory: !memory.on }) });
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const link = !service || service.state === "not_configured" ? "서버 연결 설정 없음"
+    : service.state === "ok" ? "연결됨"
+    : service.state === "unknown" ? "연결 확인 전"
+    : service.state === "key_unreadable" ? "연결 키를 못 읽음"
+    : "서버가 응답하지 않음";
+  return (
+    <Row label="개발 기억">
+      <span data-memory={memory.on ? "on" : "off"}>{memory.on ? `켜짐 · ${link}` : "꺼짐"}</span>{" "}
+      <GlassButton variant="ghost" size="s" onClick={() => void toggle()} disabled={busy}>
+        {busy ? "바꾸는 중" : memory.on ? "끄기" : "켜기"}
+      </GlassButton>
+      {error ? <span className="form__error" role="alert"> {error}</span> : null}
+    </Row>
+  );
+}
+
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
@@ -980,11 +1014,14 @@ export default function Team() {
           compactAt={compactAt}
           openAsks={openAsks(lead.id)}
           extra={
-            <Row label="직원">
-              <span className="t-tabular">
-                {[`${workers.length}명`, working ? `일하는 중 ${working}` : "", waiting ? `내 답 기다림 ${waiting}` : "", `잠듦 ${asleep.length}`].filter(Boolean).join(" · ")}
-              </span>
-            </Row>
+            <>
+              <Row label="직원">
+                <span className="t-tabular">
+                  {[`${workers.length}명`, working ? `일하는 중 ${working}` : "", waiting ? `내 답 기다림 ${waiting}` : "", `잠듦 ${asleep.length}`].filter(Boolean).join(" · ")}
+                </span>
+              </Row>
+              <MemoryRow project={project} />
+            </>
           }
         />
       ) : null}

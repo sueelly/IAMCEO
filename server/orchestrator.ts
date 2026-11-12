@@ -20,6 +20,7 @@ import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, statSync, wri
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
+  AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
   AdoptPreview,
   AdoptReq,
   AnswerApprovalReq,
@@ -36,9 +37,11 @@ import type {
   DecisionCloseKind,
   DecisionOption,
   Delivery,
+  DeliveryKind,
   Effort,
   HerdrInfo,
   LiveAgent,
+  MemoryServiceInfo,
   Member,
   MemberKind,
   Message,
@@ -82,9 +85,9 @@ import { detectHerdr, HerdrRunner, inspectPane, listAgents, type PaneInspection 
 import { approvalSummary } from "./runner/approval.ts";
 import { exactSource, measureContext, validWindow } from "./runner/context.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, RunnerStartResult, RunnerTerminalIdentity, DeliveryRepair } from "./runner/types.ts";
-import { ApiError, TASK_SOURCE_KINDS, type AppliedConfig, type ExecutionJournal, type NewDelivery, type Store } from "./store.ts";
+import { ApiError, TASK_SOURCE_KINDS, type AppliedConfig, type ExecutionJournal, type MemoryCapture, type NewDelivery, type Store } from "./store.ts";
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
-import { clip, DevMemory, devMemoryConfigFromEnv, memoryTaskId, MemoryError, stableEventId, type ExperienceInput } from "./integrations/dev-memory.ts";
+import { clip, DevMemory, devMemoryConfigFromEnv, findSensitive, memoryKindLabel, memoryTaskId, MemoryError, redactSensitive, stableEventId, type Experience, type ExperienceInput } from "./integrations/dev-memory.ts";
 import { conductorHandle, conductorName } from "./text.ts";
 
 // ---- 전달 글(§4). 서버만 만든다 ----
@@ -494,6 +497,8 @@ interface Runtime {
   /** 새 설정으로 다시 열기를 실패한 횟수와, 포기한 설정. 설정이 또 바뀌면 다시 시도한다. */
   configFails: number;
   configGaveUp: string | null;
+  /** 도구 목록이 바뀌어 같은 대화를 이어 다시 열려다 실패한 지문. 같은 지문으로는 다시 시도하지 않고 옛 세션으로 일을 잇는다. */
+  toolsGaveUp: string | null;
   /** 턴을 마치고 뒤 작업(워크플로 등)을 기다리는 중이면 그 작업. 그 팀은 일하는 중이고 세션은 글을 바로 받는다(herdr). */
   background: string | null;
   /** 대표·총괄이 멈춘 실행. CLI 가 멈춤을 확인하면 confirmed. 그 턴이 끝날 때 실행 기록을 '중단'으로 남기고 보고 보완을 요청하지 않는다. */
@@ -627,6 +632,7 @@ export class Orchestrator implements OrchestratorApi {
   private readonly herdr: HerdrQueries | null;
   private agentTools: AgentToolsImpl | null;
   readonly devMemory: DevMemory | null;
+  private memoryReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
   /** 직원별로 도는 멈춤 요청. 겹쳐 누르면 같은 결과를 받는다. */
@@ -675,7 +681,17 @@ export class Orchestrator implements OrchestratorApi {
     this.herdr = deps.herdr ?? null;
     this.agentTools = deps.agentTools ?? null;
     this.devMemory = deps.devMemory ?? null;
+    // 어느 프로젝트가 기억을 쓰는지는 프로젝트 설정이 정한다. 환경 목록은 값이 없는 이전 프로젝트에만 쓴다.
+    this.store.setLegacyMemoryProjects(this.devMemory?.config.projects ?? []);
+    this.devMemory?.setProjectGate((projectId) => this.store.getProject(projectId)?.memory?.on ?? false);
     this.devMemory?.start(this.store);
+    if (this.devMemory) {
+      queueMicrotask(() => { if (!this.closed) this.reconcileDecisionMemory(); });
+      this.memoryReconcileTimer = setInterval(() => this.reconcileDecisionMemory(), 10 * 60_000);
+      (this.memoryReconcileTimer as { unref?: () => void }).unref?.();
+    }
+    // 도구 지문은 세션을 띄울 때 같이 적는다. 도구 모듈을 미리 읽어 두면 첫 세션부터 지문이 남는다.
+    void this.tools().catch(() => {});
     this.notifier = deps.notifier ?? null;
     this.serverUrl = deps.serverUrl ?? `http://127.0.0.1:${deps.config.port}`;
     const core = this.runners.get("core");
@@ -864,7 +880,12 @@ export class Orchestrator implements OrchestratorApi {
     return { backend: "core", core: { installed, available: available.ok, version, detail: available.ok ? null : available.detail ?? null }, providers: {
       claude: { installed: !!Bun.which(configured.claudeBin ?? "claude") }, codex: { installed: !!Bun.which(configured.codexBin ?? "codex") },
       antigravity: { installed: !!Bun.which(configured.antigravityBin ?? "agy") },
-    } };
+    }, memory: this.memoryServiceInfo() };
+  }
+
+  /** 서버의 개발 기억 연결 상태. 설정이 없으면 '미연결'을 사실대로 돌려준다. */
+  memoryServiceInfo(): MemoryServiceInfo {
+    return this.devMemory?.status() ?? { state: "not_configured", detail: "서버에 개발 기억 연결 설정(IAMCEO_MEMORY_URL·IAMCEO_MEMORY_KEY_FILE)이 없습니다", checkedAt: null };
   }
 
   /** 접속 코드·토큰이 있는 폴더. file 도구가 읽지 못하게 막는다. */
@@ -1555,6 +1576,7 @@ export class Orchestrator implements OrchestratorApi {
   async shutdown(): Promise<void> {
     this.closed = true;
     this.devMemory?.stop();
+    if (this.memoryReconcileTimer) clearInterval(this.memoryReconcileTimer);
     await Promise.all([...this.terminalStreamClosers].map(close => close()));
     await this.coreSupervisor?.shutdown();
     await Promise.all([...this.eventQueues.values()]);
@@ -1574,7 +1596,7 @@ export class Orchestrator implements OrchestratorApi {
   // ---- REST 겉면 ----
   async createProject(req: CreateProjectReq): Promise<Project> {
     const goal = req.goal?.trim();
-    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null, chiefCli: req.chiefCli });
+    const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null, chiefCli: req.chiefCli, ...(req.memory !== undefined ? { memory: req.memory } : {}) });
     if (req.startConductor) {
       const conductor = await this.ensureConductor(project.id);
       if (goal) await this.deliver({ projectId: project.id, memberId: conductor.id, kind: "system", text: formatSystem(`프로젝트 목표: ${guardLines(goal)}`) });
@@ -1582,7 +1604,13 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.requireProject(project.id);
   }
 
-  async patchProject(projectId: string, patch: PatchProjectReq): Promise<Project> {
+  async patchProject(projectId: string, input: PatchProjectReq): Promise<Project> {
+    const { memory, ...patch } = input;
+    if (memory !== undefined) {
+      // 기억 운영 켜기·끄기는 세션을 건드리지 않는다. 바뀐 도구·규칙은 각 세션이 쉬는 틈에 같은 대화로 이어 열 때 들어간다.
+      this.store.setProjectMemory(projectId, memory);
+      if (Object.values(patch).every((value) => value === undefined)) return this.store.requireProject(projectId);
+    }
     if (this.projectPatches.has(projectId) || this.archiving.has(projectId)) throw new ApiError(409, "프로젝트 변경을 처리하는 중입니다. 잠시 뒤 다시 하세요");
     this.projectPatches.add(projectId);
     const awake = new Set(this.store.listMembers(projectId).filter(m => m.status !== "asleep").map(m => m.id));
@@ -2371,6 +2399,87 @@ export class Orchestrator implements OrchestratorApi {
     if (r.chosen.reject && note) await this.sendUserMessage(member.projectId, { text: note, targetMemberId: member.id });
   }
 
+  /**
+   * 대화의 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 그 귀속(프로젝트·직원·세대·실행·작업·창 차례).
+   * 읽기만 한다. 실행기가 창을 읽지 못하면 prompt 는 limited(원문만)다.
+   */
+  async memberNativePrompt(memberId: string): Promise<NativePromptState> {
+    const member = this.store.requireMember(memberId);
+    if (this.runtime(memberId).closing || member.status !== "blocked") return { prompt: null, context: null };
+    const runner = this.runners.get(this.backendOf(member));
+    if (!runner?.nativePrompt) return { prompt: null, context: null };
+    const read = await runner.nativePrompt(this.runnerMember(member, this.store.requireProject(member.projectId)));
+    if (!read) return { prompt: null, context: null };
+    return { prompt: read.prompt, context: this.nativeContext(member, read.promptKey) };
+  }
+
+  private nativeContext(member: Member, promptId: string): NativePromptContext {
+    const exec = member.executionState && !["ended", "interrupted"].includes(member.executionState.phase) ? member.executionState : null;
+    const taskIds = exec?.taskIds ?? [];
+    return { projectId: member.projectId, memberId: member.id, generation: this.store.memberRevisions(member.id).sessionGeneration, executionId: exec?.runId ?? null, taskId: taskIds.length === 1 ? taskIds[0]! : null, promptId };
+  }
+
+  private static cut(text: string, max: number): string { const t = text.replace(/\s+/g, " ").trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; }
+
+  private nativeReceipts = new Map<string, NativeAnswerReceipt>();
+  private nativeInflight = new Map<string, { memberId: string; promptId: string; run: Promise<NativeAnswerReceipt> }>();
+
+  /**
+   * 대표가 대화에서 직원 CLI 의 창에 답한다(대표 화면 HTTP 전용, AI 도구에는 없다). 업무 대기열을 거치지 않고 지금 창에 바로 넣는다.
+   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청). 세대·실행·창 차례가 카드와 다르면 넣지 않는다.
+   */
+  async answerNativePrompt(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
+    const prior = this.nativeReceipts.get(req.operationId) ?? this.nativeInflight.get(req.operationId);
+    if (prior) {
+      if (prior.memberId !== memberId || prior.promptId !== req.promptId) throw new ApiError(409, "다른 요청에 쓴 operationId 입니다", "OPERATION_CONFLICT");
+      return "run" in prior ? prior.run : prior;
+    }
+    const run = this.answerNativeOnce(memberId, req);
+    this.nativeInflight.set(req.operationId, { memberId, promptId: req.promptId, run });
+    try {
+      const receipt = await run;
+      this.nativeReceipts.set(req.operationId, receipt);
+      if (this.nativeReceipts.size > 500) this.nativeReceipts.delete(this.nativeReceipts.keys().next().value!);
+      return receipt;
+    } finally {
+      this.nativeInflight.delete(req.operationId);
+    }
+  }
+
+  private async answerNativeOnce(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
+    const member = this.store.requireMember(memberId);
+    const project = this.store.requireProject(member.projectId);
+    this.requireActive(project);
+    const receipt = (status: NativeAnswerReceipt["status"], note: string, label: string | null = null): NativeAnswerReceipt =>
+      ({ operationId: req.operationId, status, note, memberId, promptId: req.promptId, option: status === "answered" ? req.option : null, label, at: new Date().toISOString() });
+    const runner = this.runners.get(this.backendOf(member));
+    if (!runner?.answerNativePrompt) return receipt("unsupported", "이 실행 방식은 대화에서 답할 수 없습니다. 터미널에서 답하세요");
+    const context = this.nativeContext(member, req.promptId);
+    if (context.generation !== req.generation) return receipt("stale", "세션이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    if (context.executionId !== req.executionId) return receipt("stale", "다른 실행으로 넘어가 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    const r = await runner.answerNativePrompt(this.runnerMember(member, project), req.promptId, req.option, req.text);
+    if (!r.ok) {
+      const map: Record<typeof r.reason, [NativeAnswerReceipt["status"], string]> = {
+        already: ["already_answered", "이 창에는 이미 답했습니다"],
+        not_blocked: ["already_answered", "창이 이미 닫혔습니다. 다른 곳에서 답했을 수 있습니다"],
+        changed: ["changed", "창이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요"],
+        unrecognized: ["unsupported", "창을 확실히 읽지 못해 넣지 않았습니다. 화면 원문을 보고 터미널에서 답하세요"],
+        no_option: ["changed", "그 선택지가 지금 창에 없어 넣지 않았습니다"],
+        needs_text: ["changed", "직접 입력하는 줄에는 보낼 글이 필요합니다"],
+        gone: ["gone", "칸을 찾지 못했습니다(세션이 끝났을 수 있습니다)"],
+        input_busy: ["busy", "다른 입력이 진행 중이라 넣지 않았습니다. 잠시 뒤 다시 보세요"],
+        leased: ["busy", "다른 사람이 터미널을 조작 중이라 넣지 않았습니다"],
+      };
+      const [status, note] = map[r.reason];
+      return receipt(status, note);
+    }
+    const what = r.chosen.freeText ? `직접 입력으로 답했습니다: ${Orchestrator.cut(cleanText(req.text ?? ""), 120)}` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}' 을 골랐습니다`;
+    this.store.appendActivity(member.id, "system", `대표가 대화에서 ${what} · ${Orchestrator.cut([r.prompt.title, r.prompt.question].filter(Boolean).join(" — "), 160)}`);
+    // 대화에도 한 줄 남긴다: 다른 탭·기기에서도 이미 답한 것을 보고, 업무 지시와 섞이지 않게 시스템 글로 둔다.
+    this.systemMessage(member.projectId, `${member.name}의 ${r.prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 대화에서 답함 — ${r.chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}'`}`);
+    return receipt("answered", r.chosen.freeText ? "보냈습니다" : `'${Orchestrator.cut(r.chosen.label, 60)}' 을 골랐습니다`, r.chosen.label);
+  }
+
   async herdrInfo(): Promise<HerdrInfo> {
     const fallback: HerdrInfo = { installed: false, running: false, version: null, protocol: null, compatible: false, warning: null };
     if (!this.herdr) return fallback;
@@ -2543,12 +2652,185 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
+   * 일 시작 전 기억 검색. 대표 글·총괄의 위임처럼 새 일을 여는 전달에만 한 번 찾는다(결재 답·할 일 알림·보고·시스템 글은 같은 일의 후속이라 찾지 않는다).
+   * 같은 직원이 10분 안에 같은 검색어로 찾았으면 그 결과를 다시 쓴다. 검색은 한 번, 6초까지만 기다리고 다시 시도하지 않는다.
+   * 결과 없음과 실패를 다른 글로 넣는다. 실패를 '검색 완료'로 적지 않는다.
+   */
+  private async attachMemoryContext(member: Member, pending: Delivery[]): Promise<void> {
+    const memory = this.devMemory;
+    if (!memory || !this.memoryEnabledFor(member)) return;
+    try {
+      const triggers = pending.filter((d) => d.wake && d.attempts === 0 && MEMORY_SEARCH_KINDS.has(d.kind) && !this.store.memorySearchedDelivery(d.id));
+      if (!triggers.length) return;
+      const query = memoryQuery(triggers.map((d) => this.memoryQueryText(d)));
+      if (query.length < MEMORY_QUERY_MIN) return; // "응", "진행해" 같은 짧은 답은 앞서 찾은 기억을 그대로 쓴다.
+      const taskIds = [...new Set(triggers.map((d) => this.store.deliveryTaskId(d.id)))];
+      const taskId = taskIds.length === 1 ? taskIds[0]! : null;
+      const queryHash = createHash("sha256").update(query).digest("hex").slice(0, 32);
+      const deliveryIds = triggers.map((d) => d.id);
+      const notice = (block: string): NewDelivery => ({ projectId: member.projectId, memberId: member.id, kind: "system", text: formatSystem(block), wake: false, ...(taskId ? { taskId } : {}) });
+      const reused = this.store.recentMemorySearch(member.projectId, member.id, queryHash, new Date(Date.now() - MEMORY_REUSE_MS).toISOString());
+      if (reused?.block) {
+        const block = `${reused.block}\n(10분 안에 같은 검색어로 찾은 결과를 다시 씀 · 검색 #${reused.id})`;
+        this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status: reused.status, resultIds: reused.resultIds, block, detail: `reused:${reused.id}` }, { deliveryIds, notice: notice(block) });
+        return;
+      }
+      let status: "ok" | "empty" | "error";
+      let resultIds: string[] = [];
+      let block: string;
+      let detail: string | null = null;
+      try {
+        const scope = this.memoryScope(member, taskId);
+        const result = await memory.context(member.projectId, scope, query, MEMORY_AUTO_LIMIT, MEMORY_SEARCH_TIMEOUT_MS);
+        const found = result.experiences.slice(0, MEMORY_AUTO_LIMIT);
+        resultIds = found.map((e) => e.id);
+        status = found.length ? "ok" : "empty";
+        block = formatMemoryContext(found, result.semantic_index ?? null);
+        detail = result.semantic_index ? `semantic_index=${result.semantic_index}` : null;
+      } catch (e) {
+        status = "error";
+        detail = (e as Error).message.slice(0, 300);
+        block = formatMemoryFailure(detail);
+      }
+      if (!this.store.getMember(member.id)) return;
+      this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status, resultIds, block, detail }, { deliveryIds, notice: notice(block) });
+    } catch (e) {
+      // 기억 붙이기가 일을 막지는 않는다.
+      console.warn("일 시작 전 기억 검색을 붙이지 못했습니다:", (e as Error).message);
+    }
+  }
+
+  /** 검색어로 쓸 글. 대표 글은 원문, 위임은 총괄이 쓴 할 일과 실린 대표 원문이다. 서버 표지·작업 줄은 뺀다. */
+  private memoryQueryText(d: Delivery): string {
+    if (d.kind === "user_message" && d.refType === "message" && d.refId) {
+      const message = this.store.getMessage(d.refId);
+      if (message) return message.body;
+    }
+    return d.text.split("\n")
+      .filter((line) => !/^#\S+$/.test(line.trim()) && !/^작업[: #]/.test(line) && !/^\[총괄\] /.test(line) && !/^첨부:/.test(line))
+      .map((line) => line.replace(/^(할 일|사용자 요청\([^)]*\)|총괄 인용\([^)]*\)|대표 글 전문 #\S+): ?/, "").replace(/^> ?/, ""))
+      .join("\n");
+  }
+
+  /** 직원이 memory_search 도구로 찾은 것도 남긴다(일 시작 전 검색과 같은 기준으로 결과 없음·실패를 나눈다). */
+  noteToolMemorySearch(member: Member, taskId: string | null, query: string, outcome: { ids: string[]; error?: string }): void {
+    try {
+      this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "tool", queryHash: createHash("sha256").update(memoryQuery([query])).digest("hex").slice(0, 32),
+        status: outcome.error ? "error" : outcome.ids.length ? "ok" : "empty", resultIds: outcome.ids, block: null, detail: outcome.error?.slice(0, 300) ?? null });
+    } catch (e) { console.warn("기억 검색 기록 실패:", (e as Error).message); }
+  }
+
+  /** 기억에 올릴 글에 그대로 들어 있으면 안 되는 이 서버의 비밀(접속 코드·서비스 키). 밖으로 내지 않는다. */
+  memorySecrets(): string[] {
+    return [(this.config as Partial<Config>).accessCode ?? "", ...(this.devMemory?.secrets() ?? [])].filter((v) => v.length >= 8);
+  }
+
+  /** 결재 답 저장과 기억 대기열 넣기 사이에 서버가 멈춰 빠진 것을 같은 사건 id 로 다시 넣는다(이미 있으면 그대로). */
+  reconcileDecisionMemory(): number {
+    if (!this.devMemory) return 0;
+    let queued = 0;
+    for (const project of this.store.listProjects()) {
+      if (!this.devMemory.enabledFor(project.id)) continue;
+      for (const decision of this.store.answeredDecisionsMissingMemory(project.id)) if (this.queueDecisionMemory(decision, true)) queued++;
+    }
+    return queued;
+  }
+
+  /**
+   * 총괄이 대화에서 고른 대표의 결정·제약·수정 이유·피드백을 기억에 남긴다.
+   * 원문·말한 사람·시각·작업은 서버가 그 대표 글에서 고정한다. 총괄의 해석은 따로 적는다. 결재 답·직원 글·인용·추론은 받지 않는다.
+   * 앞 기록을 바꾸는 것은 supersedes 로 밝힐 때만이다. 한 글에 결정이 둘일 수 있어 서버가 짐작해 대체하지 않는다.
+   * 같은 글을 쓴 앞 기록이 있으면 related 로 알려 총괄이 대체 여부를 정하게 한다. 같은 내용이면 처음 기록을 돌려준다.
+   */
+  captureOwnerMemory(member: Member, input: OwnerMemoryInput): { capture: MemoryCapture; created: boolean; supersedes: MemoryCapture | null; related: MemoryCapture[] } {
+    if (member.kind !== "conductor") throw new ApiError(403, "대화 속 대표 결정은 총괄만 고릅니다");
+    const memory = this.requireMemory(member);
+    const project = this.store.requireProject(member.projectId);
+    const ids = [...new Set(input.messageIds.map((id) => id.replace(/^#/, "").trim()))].sort();
+    const messages = ids.map((id) => {
+      const message = this.store.getMessage(id);
+      if (!message || message.projectId !== project.id) throw new ApiError(404, `이 프로젝트의 글이 아닙니다: ${id}`);
+      if (!message.mine) throw new ApiError(400, `대표가 쓴 글이 아닙니다(${message.who}). 직원 보고·총괄 글·인용은 대표 결정으로 올리지 않습니다: ${id}`);
+      if (message.decisionId) throw new ApiError(400, `결재 카드 답은 서버가 이미 기억에 올립니다. 따로 남기지 않습니다: ${id}`);
+      return message;
+    }).sort((a, b) => a.at.localeCompare(b.at));
+    const own = messages.map((m) => ({ m, text: ownText(m.body) }));
+    for (const { m, text } of own) if (!text) throw new ApiError(400, `이 글은 인용(> 줄)뿐이라 대표의 말이 없습니다: ${m.id}`);
+    const tasks = [...new Set(messages.map((m) => m.taskId ?? null))];
+    if (tasks.length > 1) throw new ApiError(400, "작업이 다른 글은 한 기록으로 묶지 않습니다. 작업마다 따로 남기세요");
+    const taskId = tasks[0] ?? null;
+    if (input.standing) {
+      const quote = normalizeSpace(input.standingQuote ?? "");
+      if (!quote || !own.some(({ text }) => normalizeSpace(text).includes(quote))) throw new ApiError(400, "공통 기준(standing)은 대표가 '앞으로·언제나'처럼 직접 말한 문장(standing_quote)이 그 글에 그대로 있어야 합니다. 없으면 이번 일에 한한 기록으로 남기세요");
+    }
+    const reasonQuote = input.reasonQuote ? normalizeSpace(input.reasonQuote) : null;
+    if (reasonQuote && !own.some(({ text }) => normalizeSpace(text).includes(reasonQuote))) throw new ApiError(400, "reason_quote 는 대표 글에 그대로 있는 문장이어야 합니다. 이유를 짐작했으면 interpretation 에 적으세요");
+    const fileRefs = (input.fileIds ?? []).map((id) => {
+      const file = this.store.getFile(id);
+      if (!file || file.projectId !== project.id) throw new ApiError(404, `이 프로젝트의 자료가 아닙니다: ${id}`);
+      return { fileId: file.id, title: file.title, version: fileVersion(file) };
+    });
+    const sensitive = findSensitive([...own.map(({ text }) => text), input.interpretation].join("\n"), this.memorySecrets());
+    if (sensitive) throw new ApiError(400, `민감 정보(${sensitive})로 보이는 글이라 기억에 올리지 않았습니다. 그 부분을 빼고 해석만 남기거나 대표에게 확인하세요`);
+    const captures = this.store.listMemoryCaptures(project.id);
+    const replaced = new Map(captures.filter((c) => c.supersedesId).map((c) => [c.supersedesId!, c.id]));
+    const previousId = input.supersedes?.replace(/^#/, "").trim() || null;
+    const previous = previousId ? captures.find((c) => c.id === previousId) ?? null : null;
+    if (previousId && !previous) throw new ApiError(404, `대체할 기록이 이 프로젝트에 없습니다: ${previousId}`);
+    if (previous && replaced.has(previous.id)) throw new ApiError(409, `#${previous.id} 는 이미 #${replaced.get(previous.id)} 로 대체되었습니다. 최신 기록을 supersedes 에 넣으세요`);
+    const task = taskId ? this.store.getTask(taskId) : null;
+    const scopeLabel = input.scope === "task" ? (task ? `이 작업(${task.title}, #${task.id})에서만` : "이 일에서만(작업 없음)") : input.scope === "artifact" ? `이 자료${fileRefs.length ? `(${fileRefs.map((f) => `${f.title} ${f.version}`).join(", ")})` : ""}에만` : "이 프로젝트에서";
+    const typeLabel = { decision: "대표 결정", constraint: "대표가 정한 제약", correction: "대표의 수정(이유 포함)", feedback: "대표 피드백" }[input.type];
+    const lines = [
+      `분류: ${typeLabel} — 대표가 IAMCEO 대화에 직접 쓴 글을 총괄이 골랐다. 대표 원문은 아래 '대표 원문'뿐이고, '총괄 해석'은 대표의 말이 아니다.`,
+      `IAMCEO 프로젝트: ${project.name} (${project.id})`,
+      `작업: ${task ? `${task.title} (#${task.id}${task.branch ? ` · ${task.branch}` : ""})` : "전체(작업 없음)"}`,
+      `적용 범위: ${scopeLabel}. ${input.standing ? "대표가 공통 기준으로 말했다." : "이번 일의 선택이며 공통 성향으로 넓히지 않는다."} 지금 대표 지시·승인이 이 기록보다 앞선다.`,
+      ...(fileRefs.length ? [`관련 자료(그때 판): ${fileRefs.map((f) => `${f.title} #${f.fileId} ${f.version}`).join(" · ")}`] : []),
+      "",
+      "대표 원문:",
+      ...own.map(({ m, text }) => `- ${m.at} 대표(#${m.id}): "${text}"`),
+      ...(input.standing ? ["", `공통 기준으로 말한 문장(대표 원문): "${normalizeSpace(input.standingQuote!)}"`] : []),
+      ...(reasonQuote ? ["", `대표가 말한 이유(원문): "${reasonQuote}"`] : []),
+      "",
+      `총괄 해석(${member.name}, 대표 원문 아님):`,
+      input.interpretation.trim(),
+      ...(previous ? ["", `대체: 앞 기록 #${previous.id}(${previous.createdAt})을 이 기록으로 바꾼다.`] : []),
+    ];
+    const { content, capture } = clip(lines.join("\n"));
+    const eventId = stableEventId("iamceo-owner", project.id, ids.join(","), input.type, input.scope, input.standing ? "standing" : "", input.interpretation.trim(), reasonQuote ?? "", fileRefs.map((f) => `${f.fileId}@${f.version}`).join(","));
+    const summaryText = normalizeSpace(own.map(({ text }) => text).join(" / "));
+    const experience: ExperienceInput = {
+      event_id: eventId,
+      kind: input.type === "correction" || input.type === "feedback" ? "lesson" : "decision",
+      summary: `${typeLabel}: ${summaryText}`.slice(0, 300),
+      content,
+      capture,
+      source: { task_id: memoryTaskId(taskId, member.id), item_id: ids[0]!, service: "iamceo" },
+      evidence: [
+        { kind: "classification", text: "explicit_user_statement" },
+        { kind: "owner_type", text: input.type },
+        { kind: "iamceo_ref", text: `project_id=${project.id}; message_ids=${ids.join(",")}; task_id=${taskId ?? "none"}; spoken_at=${messages.map((m) => m.at).join(",")}; scope=${input.scope}; standing=${input.standing ? "yes" : "no"}; captured_by=${member.id}` },
+        ...fileRefs.map((f) => ({ kind: "iamceo_file", text: `${f.fileId}@${f.version}` })),
+      ],
+    };
+    const saved = this.store.saveMemoryCapture(
+      { projectId: project.id, eventId, type: input.type, scope: input.scope, standing: !!input.standing, messageIds: ids, taskId, interpretation: input.interpretation.trim(), fileRefs, supersedesId: previous && previous.eventId !== eventId ? previous.id : null, capturedBy: member.id },
+      { body: JSON.stringify(experience), supersedesEventId: previous && previous.eventId !== eventId ? previous.eventId : null },
+    );
+    if (saved.created) void memory.flush(this.store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message));
+    const related = previous ? [] : captures.filter((c) => c.id !== saved.capture.id && !replaced.has(c.id) && c.messageIds.some((id) => ids.includes(id)));
+    return { ...saved, supersedes: saved.capture.supersedesId ? this.store.getMemoryCapture(saved.capture.supersedesId) : null, related };
+  }
+
+  /**
    * 대표가 결재 카드에 답하면 그 결정을 개발 기억에 올린다. 직원이 쓴 배경은 대표 결정과 구분해 적는다.
    * 같은 카드의 같은 답은 한 번만 올라간다(event_id 고정). 다시 열린 뒤 다른 답이면 새 사건이다.
+   * reconcile: 이미 전달된(delivered) 답도 받는다(빠진 것 메우기). 새로 넣었으면 true.
    */
-  private queueDecisionMemory(decision: Decision): void {
+  private queueDecisionMemory(decision: Decision, reconcile = false): boolean {
     const memory = this.devMemory;
-    if (!memory?.enabledFor(decision.projectId) || decision.status !== "answered") return;
+    if (!memory?.enabledFor(decision.projectId) || !(decision.status === "answered" || (reconcile && decision.status === "delivered"))) return false;
     try {
       const project = this.store.requireProject(decision.projectId);
       const task = decision.taskId ? this.store.getTask(decision.taskId) : null;
@@ -2571,7 +2853,8 @@ export class Orchestrator implements OrchestratorApi {
         "배경(직원이 쓴 설명이며 대표 결정이 아니다):",
         decision.detail,
       ];
-      const { content, capture } = clip(lines.join("\n"));
+      // 직원이 쓴 배경·대표 메모에 키 모양이 섞여 있으면 그 부분만 가린다(서버가 스스로 올리는 글이라 되물을 사람이 없다).
+      const { content, capture } = clip(redactSensitive(lines.join("\n"), this.memorySecrets()));
       const eventId = stableEventId("iamceo-decision", decision.id, decision.choice ?? "", decision.note ?? "", decision.answeredAt ?? "");
       const experience: ExperienceInput = {
         event_id: eventId,
@@ -2585,9 +2868,12 @@ export class Orchestrator implements OrchestratorApi {
           { kind: "iamceo_ref", text: `project_id=${project.id}; decision_id=${decision.id}; task_id=${decision.taskId ?? "none"}; answered_at=${decision.answeredAt ?? ""}` },
         ],
       };
-      if (this.store.enqueueMemoryUpload({ eventId, projectId: decision.projectId, refType: "decision", refId: decision.id, body: JSON.stringify(experience) })) void memory.flush(this.store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message));
+      const queued = this.store.enqueueMemoryUpload({ eventId, projectId: decision.projectId, refType: "decision", refId: decision.id, body: JSON.stringify(experience) });
+      if (queued) void memory.flush(this.store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message));
+      return queued;
     } catch (e) {
       console.warn("개발 기억 업로드를 준비하지 못했습니다:", e instanceof MemoryError ? e.message : (e as Error).message);
+      return false;
     }
   }
 
@@ -3750,6 +4036,28 @@ export class Orchestrator implements OrchestratorApi {
       member = this.store.requireMember(memberId);
     }
 
+    // 띄울 때와 도구 목록이 다르면(기억 연결 등) 일을 넣기 전, 쉬는 지금 같은 대화로 이어 다시 연다. 일하는 세션은 위에서 이미 돌아갔다.
+    const toolsWant = pending.some((d) => d.wake) ? this.toolsPending(member) : null;
+    if (toolsWant) {
+      rt.pumpStage = "refresh_tools";
+      const refreshed = await this.refreshSession(member, toolsWant);
+      if (refreshed === null) {
+        for (const d of this.store.listPending(memberId)) this.hold(d, "backend_down");
+        return;
+      }
+      if (refreshed !== "kept") {
+        member = refreshed;
+        runner = this.runnerOf(member);
+      }
+    }
+
+    // 새 일(대표 글·총괄의 위임)을 넣기 전에 관련 기억을 찾아 같은 묶음에 넣는다. 실패·없음도 사실대로 적는다.
+    // 기억을 쓰지 않는 프로젝트는 기다림 없이 그대로 넘긴다(await 하나도 전달 순서·시각을 바꾼다).
+    if (this.devMemory && this.memoryEnabledFor(member) && pending.some((d) => d.wake)) {
+      rt.pumpStage = "memory_search";
+      await this.attachMemoryContext(member, pending);
+    }
+
     const hasWake = pending.some((d) => d.wake);
     if (!hasWake && rt.compactRequest === null) {
       for (const d of pending) if (d.status === "held") this.requeue(d);
@@ -3863,7 +4171,55 @@ export class Orchestrator implements OrchestratorApi {
     const { ranks, codexRanks } = this.store.getSettings();
     const { model, effort } = memberConfig(member, ranks, codexRanks);
     const staff = staffSubagent(member.cli, ranks, codexRanks);
-    return { model, effort, staffModel: staff.subagentModel, staffEffort: staff.subagentEffort };
+    return { model, effort, staffModel: staff.subagentModel, staffEffort: staff.subagentEffort, toolsSig: this.toolSignature(member) };
+  }
+
+  /**
+   * 이 직원에게 지금 보일 도구(이름·설명·입력 형식)의 지문. CLI 는 도구 목록을 세션을 열 때 한 번 받으므로,
+   * 기억 연결처럼 도구가 늘거나 형식이 바뀌면 옛 세션은 그대로다. 도구 모듈을 아직 읽지 않았으면 null.
+   */
+  private toolSignature(member: Member): string | null {
+    if (!this.agentTools) return null;
+    const tools = this.agentTools.listAgentTools(member, { memory: this.memoryEnabledFor(member) });
+    return createHash("sha256").update(JSON.stringify(tools)).digest("hex").slice(0, 16);
+  }
+
+  /**
+   * 쉬는 세션이 띄울 때와 다른 도구 목록을 갖고 있는가. 서버가 띄운 core 세션만 본다(넘겨받은·직접 띄운 칸은 대표의 것).
+   * 지문이 없는 옛 세션은 기억 도구가 새로 붙는 프로젝트에서만 다시 연다. 같은 대화를 이어 열 수 있어야(세션 id) 한다.
+   */
+  private toolsPending(member: Member): string | null {
+    if (member.origin !== "runner" || member.backend !== "core" || !member.sessionId || member.status === "asleep" || member.status === "offline") return null;
+    const want = this.toolSignature(member);
+    if (!want || this.runtime(member.id).toolsGaveUp === want) return null;
+    const have = this.store.getAppliedConfig(member.id)?.toolsSig ?? null;
+    if (have === want) return null;
+    if (have === null && !this.memoryEnabledFor(member)) return null;
+    return want;
+  }
+
+  /**
+   * 쉬는 세션을 끝내고 같은 대화(--resume·codex resume)로 다시 연다. 새 도구 목록과 지금 규칙을 받는다. 일하는 중에는 부르지 않는다.
+   * 끝내기에 실패하면 옛 세션 그대로 일을 잇고 같은 지문으로는 다시 시도하지 않는다. 이어 열기가 실패하면 다음 전달 때 다시 연다.
+   */
+  private async refreshSession(member: Member, want: string): Promise<Member | null | "kept"> {
+    const rt = this.runtime(member.id);
+    if (rt.closing || rt.starting || rt.reopening) return "kept";
+    rt.closing = true;
+    try {
+      await this.stopManaged(member, "sleep", false);
+      this.store.transaction(() => {
+        this.store.patchMember(member.id, { status: "asleep", subagents: 0, paneId: null });
+        this.confirmStop(member.id);
+      });
+    } catch (e) {
+      rt.toolsGaveUp = want;
+      this.store.appendActivity(member.id, "error", `도구 목록을 새로 받으려고 세션을 다시 열지 못해 지금 세션으로 잇습니다: ${(e as Error).message.slice(0, 300)}`);
+      return "kept";
+    } finally { rt.closing = false; }
+    const reopened = await this.reopen(this.store.requireMember(member.id));
+    if (reopened) this.store.appendActivity(member.id, "system", "도구 목록·규칙이 바뀌어 쉬는 틈에 같은 대화로 이어 다시 열었습니다");
+    return reopened;
   }
 
   /** 서버가 띄운 세션이 지금 설정과 다른가. 넘겨받은 세션은 대표가 쓰던 칸이라 스스로 닫지 않는다(깨울 때 맞춰진다). 잠든 세션은 깨울 때 맞춰진다. */
@@ -4135,12 +4491,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   private retryDue(member: Member): number {
-    let due = 0;
-    for (const delivery of this.store.listDeliveries()) {
-      const retry = this.store.getDeliveryRetry(delivery.id);
-      if (retry.nextAttemptAt && (delivery.memberId === member.id && ["queued", "held"].includes(delivery.status) || retry.retryScope === `member:${member.id}` || retry.retryScope === `backend:${this.backendOf(member)}`)) due = Math.max(due, Date.parse(retry.nextAttemptAt));
-    }
-    return due;
+    return this.store.deliveryRetryDue(member.id, this.backendOf(member));
   }
 
   private scheduleRetry(memberId: string, rt: Runtime, due: number): void {
@@ -4700,7 +5051,7 @@ export class Orchestrator implements OrchestratorApi {
   private runtime(memberId: string): Runtime {
     let rt = this.runtimes.get(memberId);
     if (!rt) {
-      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, background: null, stopRequest: null };
+      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, toolsGaveUp: null, background: null, stopRequest: null };
       this.runtimes.set(memberId, rt);
     }
     return rt;
@@ -4765,7 +5116,7 @@ export class Orchestrator implements OrchestratorApi {
   private rulesFor(member: Member, project: Project): string {
     const conductor = this.store.getConductor(project.id);
     const staffEffort = member.cli === "codex" || member.cli === "antigravity" ? null : this.store.getSettings().ranks.staff.effort;
-    return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "" }, this.config.rolesDir);
+    return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "", MEMORY: this.memoryEnabledFor(member) ? memoryGuide(member.kind) : "" }, this.config.rolesDir);
   }
 
   /** 시스템 프롬프트·MCP 설정 파일을 쓴다. MCP 설정에 멤버 토큰이 들어가 본인만 읽게 한다. */
@@ -4808,6 +5159,87 @@ function includesWhole(text: string, quote: string): boolean {
 }
 
 /** 깨움 없는 것을 앞에 묶는다(§6). */
+// ---- 기억 운영 ----
+/** 새 일을 여는 전달. 결재 답·할 일 알림·보고·시스템 글·압축은 같은 일의 후속이라 기억을 다시 찾지 않는다. */
+const MEMORY_SEARCH_KINDS: ReadonlySet<DeliveryKind> = new Set(["user_message", "instruction"]);
+/** 이보다 짧은 글("응", "진행해")은 앞서 찾은 기억을 그대로 쓴다. */
+const MEMORY_QUERY_MIN = 12;
+const MEMORY_REUSE_MS = 10 * 60_000;
+const MEMORY_AUTO_LIMIT = 3;
+const MEMORY_SEARCH_TIMEOUT_MS = 6_000;
+const MEMORY_EXCERPT = 360;
+
+export interface OwnerMemoryInput {
+  messageIds: string[];
+  type: MemoryCapture["type"];
+  scope: MemoryCapture["scope"];
+  interpretation: string;
+  standing?: boolean;
+  standingQuote?: string | null;
+  reasonQuote?: string | null;
+  fileIds?: string[];
+  supersedes?: string | null;
+}
+
+/** 여러 글을 검색어 하나로 묶는다. 서버 표지·빈 줄은 빼고 2,000자 안으로 자른다. */
+export function memoryQuery(texts: string[]): string {
+  return normalizeSpace(texts.map((t) => t.replace(/#iamceo_[A-Za-z0-9_-]+/g, "")).join("\n")).slice(0, 2000).trim();
+}
+
+/** 대표 글에서 인용(> 줄)을 뺀 대표 자신의 말. */
+export function ownText(body: string): string {
+  return body.split("\n").filter((line) => !/^\s*>/.test(line)).join("\n").trim();
+}
+
+/** 자료의 그때 판: 자료 id 는 판마다 새로 생기고, 같은 id 안에서는 본문 지문으로 가린다. */
+function fileVersion(file: { createdAt: string; body: string }): string {
+  return `${file.createdAt}·${createHash("sha256").update(file.body ?? "").digest("hex").slice(0, 8)}`;
+}
+
+
+/** 일 시작 전 검색 결과 글. 과거 기록일 뿐이고 지금 원문·승인이 앞선다는 것과 전문 확인 방법을 함께 적는다. */
+export function formatMemoryContext(found: Experience[], semanticIndex: string | null): string {
+  if (!found.length) return "관련 기억 없음(일 시작 전에 서버가 이 프로젝트 기억을 찾았고 맞는 것이 없었다). 지금 근거로 진행한다. 새 조건이 나오면 memory_search 로 다시 찾는다.";
+  const lines = [
+    `관련 기억 ${found.length}건(일 시작 전에 서버가 이 프로젝트 기억에서 찾음${semanticIndex && semanticIndex !== "available" ? ` · 의미 색인 ${semanticIndex}, 키워드 검색 결과` : ""}).`,
+    "과거 기록이다. 지금 대표 원문·승인·정본이 앞선다. 중요한 판단에 쓸 후보만 memory_get 으로 전문·근거를 확인하고, 적용·기각 이유를 보고에 적는다. 같은 일의 후속 대화에서는 이 결과를 다시 쓴다.",
+  ];
+  found.forEach((e, i) => {
+    const when = e.created_at ? new Date(e.created_at * 1000).toISOString().slice(0, 10) : "";
+    const body = normalizeSpace(e.content).slice(0, MEMORY_EXCERPT);
+    lines.push(`${i + 1}. ${e.id} [${memoryKindLabel(e)}${when ? ` · ${when}` : ""}${e.excerpted || e.content.length > MEMORY_EXCERPT ? " · 발췌" : ""}] ${normalizeSpace(e.summary)}`);
+    lines.push(quoteBlock(body));
+  });
+  return lines.join("\n");
+}
+
+/** 검색 실패 글. '검색 완료'가 아니라는 것과 다음 행동을 적는다. 다시 시도는 직원이 한 번만 한다. */
+export function formatMemoryFailure(detail: string): string {
+  return `기억 검색 실패(${detail}). 기억을 찾지 못한 것이지 '관련 기억 없음'이 아니다. 지금 근거로 진행하고, 이전 결정 해석이 꼭 필요한 부분만 memory_search 를 한 번 다시 부른다. 그래도 안 되면 보고에 '기억 검색 실패'라고 적는다.`;
+}
+
+/** 역할 글의 기억 운영 단락. 기억이 켜진 프로젝트에만 붙는다. */
+export function memoryGuide(kind: MemberKind): string {
+  const common = [
+    "## 개발 기억",
+    "이 프로젝트는 개발 기억(과거 결정·실수·교훈·결과)을 쓴다. 새 일(대표 글·총괄의 위임)이 들어올 때 서버가 먼저 찾아 `[시스템] 관련 기억` 글로 함께 넣는다.",
+    "- 그 기억은 과거 기록이다. 지금 대표 원문·승인·정본이 앞선다. 중요한 판단에 쓸 후보만 `memory_get`으로 전문·근거를 확인한다. '대표 결재 답'·'대표 원문' 기록이 아닌 것(직원·AI 보고 등)을 대표 결정으로 읽지 않는다.",
+    "- 같은 일의 후속 대화에서는 받은 기억을 다시 쓴다. 새 조건·정정·반례가 나오면 `memory_search`로 다시 찾는다. 상태 안내·기존 결과 재보고에는 찾지 않는다.",
+    "- '기억 검색 실패'는 '관련 기억 없음'이 아니다. 지금 근거로 진행하고, 이전 결정 해석이 꼭 필요할 때만 한 번 다시 찾는다.",
+  ];
+  if (kind === "conductor") return [...common,
+    "- 대표가 대화에서 결정·제약을 밝히거나 수정 이유·피드백을 주면 `memory_capture`로 남긴다. 그 대표 글 끝의 `#id`를 `message_ids`에 넣는다. 원문·시각·작업은 서버가 고정하고, 네 해석은 `interpretation`에 따로 쓴다.",
+    "  - 남기지 않는다: 결재 카드 답(서버가 올린다), 직원 보고·인용·AI 추론, 아직 논의 중인 안, 인사·확인·진행 글.",
+    "  - 이번 한 번의 선택은 `scope`를 그 작업(`task`)·자료(`artifact`)로 좁힌다. 대표가 “앞으로·언제나”처럼 공통으로 정한 것만 `standing`과 그 대표 문장(`standing_quote`)을 넣는다.",
+    "  - 같은 수정 라운드의 글은 끝난 뒤 한 번에 묶어 남긴다. 앞 기록을 고치거나 라운드가 이어져 다시 남길 때는 `supersedes`에 앞 기록 id 를 넣는다(넣지 않으면 따로 남는다).",
+    "  - `memory_feedback`은 남은 기억이 일에 도움이 됐는지에 대한 투표다. 대표 피드백 기록과 다르다.",
+    "- 직원에게 맡길 때 적용할 기억이 있으면 그 id와 적용 이유를 지시에 적는다.",
+  ].join("\n") + "\n";
+  return [...common,
+    "- 대표 결정은 총괄이 남긴다. 직원은 `memory_record`로 대표 결정을 기록하지 않는다. 확인한 결과·교훈만 `memory_record`(`basis: verified`, 근거는 `evidence`)로 남긴다.",
+  ].join("\n") + "\n";
+}
+
 function orderForBundle(pending: Delivery[]): Delivery[] {
   return [...pending.filter((d) => !d.wake), ...pending.filter((d) => d.wake)];
 }

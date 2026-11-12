@@ -1,10 +1,14 @@
-import type { ActivityKind, ApprovalOption, ApprovalPrompt, Backend, BlockedReason, CliProvider, DeliveryEvidence, DeliveryFinding, Effort, MemberKind, MemberOrigin, PermissionMode, StatusObservation, SubagentState } from "../../shared/types.ts";
+import type { ActivityKind, ApprovalOption, ApprovalPrompt, Backend, NativePrompt, NativePromptOption, BlockedReason, CliProvider, DeliveryEvidence, DeliveryFinding, Effort, MemberKind, MemberOrigin, PermissionMode, StatusObservation, SubagentState } from "../../shared/types.ts";
 import type { ContextReading } from "./context.ts";
 
 /**
  * not_blocked: 승인 창 앞이 아니다. unrecognized: 창은 있으나 승인 창으로 못 읽었다. changed: 보여 준 창과 지금 창이 다르다(current 에 새 창).
  * no_option: 그런 번호가 없다. no_effect: 눌렀는데 창이 그대로다. gone: 칸이 없다.
  */
+/** 질문·선택 창 답하기 결과. leased: 다른 사람이 터미널을 조작 중. already: 이 창에는 이미 답했다. needs_text: 자유 응답 줄인데 글이 없다. */
+export type NativePromptAnswer =
+  | { ok: true; prompt: NativePrompt; chosen: NativePromptOption }
+  | { ok: false; reason: "not_blocked" | "unrecognized" | "changed" | "no_option" | "needs_text" | "gone" | "input_busy" | "leased" | "already"; current?: NativePrompt | null };
 export type ApprovalAnswer =
   | { ok: true; prompt: ApprovalPrompt; chosen: ApprovalOption }
   | { ok: false; reason: "not_blocked" | "unrecognized" | "changed" | "no_option" | "no_effect" | "gone" | "input_busy"; current?: ApprovalPrompt | null };
@@ -218,6 +222,10 @@ export interface Runner {
   approval?(m: RunnerMember): Promise<ApprovalPrompt | null>;
   /** 화면을 다시 읽어 fingerprint 가 같을 때만 고른 선택지에 맞는 키를 한 번 보내고 상태를 다시 관측한다. */
   answerApproval?(m: RunnerMember, fingerprint: string, option: number): Promise<ApprovalAnswer>;
+  /** 막힌 칸의 질문·선택·승인 창과 그 창의 키(세대·턴·차례·지문). 막힘이 아니면 null. */
+  nativePrompt?(m: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string } | null>;
+  /** promptKey 가 지금 창과 같을 때만 한 번 넣는다(대표 화면 전용). */
+  answerNativePrompt?(m: RunnerMember, promptKey: string, option: number, text?: string): Promise<NativePromptAnswer>;
   on(cb: (e: RunnerEvent) => void): void;
   shutdown(): Promise<void>;
   /**

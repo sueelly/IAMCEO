@@ -47,7 +47,18 @@ export interface Project {
   connection: ProjectConnection;
   /** 마지막으로 총괄에게 판 정리를 맡긴(또는 그 턴이 끝난) 시각. 한 번도 안 했으면 null. */
   tidiedAt: string | null;
+  /** 개발 기억 운영. 옛 서버는 이 필드를 보내지 않는다. */
+  memory?: ProjectMemory;
 }
+
+/**
+ * 프로젝트의 개발 기억 운영 값. mode: 대표가 정한 값(on·off) 또는 이전 프로젝트(legacy: 서버 환경 목록을 따름).
+ * on 은 이 프로젝트가 기억을 쓰기로 한 것이다. 실제로 닿는지는 RuntimeInfo.memory(서버 연결 상태)로 따로 본다.
+ */
+export interface ProjectMemory { mode: "on" | "off" | "legacy"; on: boolean; enabledAt: string | null }
+
+/** 서버의 개발 기억 연결 상태. not_configured: 연결 설정 없음 · key_unreadable: 키 파일을 못 읽음 · unreachable: 서버가 응답 안 함 · ok: 마지막 확인에서 닿음 · unknown: 아직 확인 전 */
+export interface MemoryServiceInfo { state: "not_configured" | "key_unreadable" | "unreachable" | "ok" | "unknown"; detail: string | null; checkedAt: string | null }
 
 export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "cwd" | "now" | "runnerEnabled" | "connection"> {
   decisionCount: number; // 열린 결재
@@ -448,6 +459,56 @@ export interface ApprovalPrompt {
   options: ApprovalOption[];
   fingerprint: string;
 }
+/** 직원 CLI 가 띄운 질문·선택·승인 창의 선택지. detail 은 선택지 설명, freeText 는 고르면 글을 직접 쳐서 내는 줄. */
+export interface NativePromptOption extends ApprovalOption { detail?: string; freeText?: boolean }
+/**
+ * 직원 CLI 가 화면에 띄운 질문·선택·승인 창. limited 면 선택지를 확실히 읽지 못한 것이라 버튼 없이 raw(화면 원문)만 보인다.
+ * selected 는 지금 커서가 있는 선택지 자리(0부터). 서버는 이 자리에서 화살표로 옮겨 Enter 한 번으로 고른다.
+ */
+export interface NativePrompt extends ApprovalPrompt {
+  kind: "permission" | "question" | "menu" | "setup" | "unknown";
+  provider: CliProvider;
+  options: NativePromptOption[];
+  selected: number;
+  limited: boolean;
+  limitedReason?: string;
+  raw: string;
+}
+/** 대화의 '답을 기다림' 카드가 고정하는 귀속. 누를 때 서버가 지금 것과 같은지 다시 본다. */
+export interface NativePromptContext {
+  projectId: string;
+  memberId: string;
+  /** 세션 세대(새 세션·다시 열기마다 바뀐다) */
+  generation: number;
+  /** 지금 실행(턴)을 가르는 id. 실행 기록이 없으면 null */
+  executionId: string | null;
+  /** 그 실행이 받은 글의 작업(없으면 전체) */
+  taskId: string | null;
+  /** 창이 뜬 차례(같은 창이 다시 떠도 다르게 센다)와 창 지문 */
+  promptId: string;
+}
+export interface NativePromptState { prompt: NativePrompt | null; context: NativePromptContext | null }
+export interface AnswerNativePromptReq {
+  operationId: string;
+  promptId: string;
+  generation: number;
+  executionId: string | null;
+  /** 고른 선택지 번호. text 와 함께면 그 줄이 자유 응답 줄이어야 한다 */
+  option: number;
+  text?: string;
+}
+export type NativeAnswerStatus = "answered" | "already_answered" | "changed" | "gone" | "busy" | "stale" | "unsupported";
+export interface NativeAnswerReceipt {
+  operationId: string;
+  status: NativeAnswerStatus;
+  /** 사람에게 보일 한 줄 */
+  note: string;
+  memberId: string;
+  promptId: string;
+  option: number | null;
+  label: string | null;
+  at: string;
+}
 export interface AnswerApprovalReq { fingerprint: string; option: number; /** 거절할 때 직원에게 전할 말 */ note?: string }
 
 /** 전체 설정 하나가 전부다. 프로젝트마다 따로 두지 않는다. */
@@ -475,7 +536,7 @@ export interface Settings {
   boardTidyHours: number;
 }
 
-export interface RuntimeInfo { backend: "core"; core: { installed: boolean; available: boolean; version: string | null; detail: string | null }; providers: Record<CliProvider, { installed: boolean }> }
+export interface RuntimeInfo { backend: "core"; core: { installed: boolean; available: boolean; version: string | null; detail: string | null }; providers: Record<CliProvider, { installed: boolean }>; memory?: MemoryServiceInfo }
 
 export interface HerdrInfo { installed: boolean; running: boolean; version: string | null; protocol: number | null; compatible: boolean; warning: string | null }
 export interface LiveAgent { paneId: string; name: string | null; agent: string | null; status: string; cwd: string | null; sessionId: string | null; workspaceId: string | null; tabId: string | null; adopted: boolean }
@@ -553,9 +614,9 @@ export type RealtimeEvent =
   | (WsChangeEvent & SyncCursor);
 
 // ---- REST 요청 ----
-export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider }
+export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider; /** 개발 기억 운영. 생략하면 켠다. */ memory?: boolean }
 export interface CreateMemberReq { name: string; role?: string; cli?: CliProvider; modelOverride?: string | null }
-export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean }
+export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
 /** PUT /api/settings. ranks·codexRanks 는 고친 칸만 보내도 된다(나머지 유지). */
 export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "resetEfforts">> & {
   ranks?: Partial<Record<Rank, Partial<RankConfig>>>;
