@@ -17,16 +17,35 @@ export function liveTasks(tasks: readonly Task[], work: readonly Pick<WorkItem, 
 }
 
 /**
- * 대상 칩 옆의 작업 목록. 대상으로 직원을 골랐으면 그 직원의 작업만 보인다.
- * 작업을 고르면 받는 사람은 그 작업을 등록한 직원이 되고, 다른 직원을 고르면 작업 선택이 풀린다(→ taskTarget, Composer 의 keepTask).
+ * 이 작업을 맡은 직원 id. 직원이 task 도구로 등록한 작업은 그 직원, 진행판 일 항목의 작업은 담당(who: "엘리트사원 클로드·총괄")에
+ * 이름이 적힌 직원들이다. 총괄은 직원이 아니라 빠진다.
  */
-export function visibleTasks(tasks: readonly Task[], targetId: string | null): Task[] {
-  const list = targetId ? tasks.filter((t) => t.memberId === targetId) : [...tasks];
+export function taskWorkers(task: Pick<Task, "memberId" | "who">, workers: readonly Pick<Member, "id" | "name">[]): string[] {
+  if (task.memberId) return workers.some((w) => w.id === task.memberId) ? [task.memberId] : [];
+  const names = new Set(task.who.split(/[·,、/]/).map((x) => x.trim()).filter(Boolean));
+  return workers.filter((w) => names.has(w.name)).map((w) => w.id);
+}
+
+/**
+ * 대상 칩 옆의 작업 목록. 대상으로 직원을 골랐으면 그 직원이 맡은 작업만 보인다(직접 등록한 작업 + 진행판에서 담당으로 적힌 작업).
+ * 작업을 고르면 받는 사람이 정해지고, 그 작업을 맡지 않은 직원을 고르면 작업 선택이 풀린다(→ taskTarget, keepsTask).
+ */
+export function visibleTasks(tasks: readonly Task[], targetId: string | null, workers: readonly Pick<Member, "id" | "name">[] = []): Task[] {
+  const list = targetId ? tasks.filter((t) => t.memberId === targetId || taskWorkers(t, workers).includes(targetId)) : [...tasks];
   return list.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 }
 
-/** 작업을 고르면 보낼 대상: 등록한 직원이 지금 있는 직원이면 그 직원, 아니면(총괄이 등록했거나 직원이 닫힘) 기본 대상. */
-export function taskTarget(task: Task, workers: readonly Pick<Member, "id">[]): string | null {
-  return task.memberId && workers.some((w) => w.id === task.memberId) ? task.memberId : null;
+/**
+ * 작업을 고르면 보낼 대상. 등록한 직원이 지금 있으면 그 직원.
+ * 진행판 일 항목의 작업은 기본이 총괄이지만, 지금 고른 직원이 그 작업의 담당이면 그 직원에게 그대로 보낸다.
+ */
+export function taskTarget(task: Task, workers: readonly Pick<Member, "id" | "name">[], current: string | null = null): string | null {
+  if (task.memberId) return workers.some((w) => w.id === task.memberId) ? task.memberId : null;
+  return current && taskWorkers(task, workers).includes(current) ? current : null;
 }
 
+/** 대상을 바꿔도 고른 작업을 그대로 둘지: 그 작업의 받는 사람이거나 담당 직원이거나, 진행판 작업을 총괄에게 보낼 때. */
+export function keepsTask(task: Task, workers: readonly Pick<Member, "id" | "name">[], targetId: string | null): boolean {
+  if (task.memberId) return taskTarget(task, workers) === targetId;
+  return targetId === null || taskWorkers(task, workers).includes(targetId);
+}

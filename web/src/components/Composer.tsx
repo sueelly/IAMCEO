@@ -9,7 +9,7 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
-import { liveTasks, taskTarget, visibleTasks } from "../lib/tasks";
+import { keepsTask, liveTasks, taskWorkers, visibleTasks } from "../lib/tasks";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
@@ -177,8 +177,14 @@ export default function Composer() {
   const target = workers.find((m) => m.id === draft.targetId) ?? null;
   const allTasks = project?.tasks ?? [];
   const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
-  // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원의 작업만.
-  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), task ? null : target?.id ?? null);
+  // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원이 맡은 작업만.
+  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), task ? null : target?.id ?? null, workers);
+  // 칩에 맡은 사람을 붙인다. 직원을 골라 그 직원의 작업만 보일 때는 다 같은 사람이라 붙이지 않는다.
+  const chipWho = (t: Task): string | null => {
+    if (target && !task) return null;
+    const names = taskWorkers(t, workers).map((id) => workers.find((w) => w.id === id)!.name);
+    return names.length ? names.join("·") : t.who.trim() || null;
+  };
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
     { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
@@ -195,7 +201,7 @@ export default function Composer() {
 
   // 고른 작업의 직원이 아닌 사람을 대상으로 고르면 작업 선택을 푼다(그 사람에게 보내는 글은 이 작업의 글이 아니다).
   const keepTask = (d: { taskId?: string | null }, targetId: string | null) =>
-    d.taskId && task && taskTarget(task, workers) === targetId ? { taskId: d.taskId } : { taskId: null };
+    d.taskId && task && keepsTask(task, workers, targetId) ? { taskId: d.taskId } : { taskId: null };
   const pick = (entry: MenuEntry) => {
     setChipMenu(false);
     setActive(0);
@@ -396,7 +402,8 @@ export default function Composer() {
                   title={[t.title, t.who, t.branch, t.worktree].filter(Boolean).join(" · ")}
                   onClick={() => pickTask(task?.id === t.id ? null : t)}
                 >
-                  {t.title}
+                  {chipWho(t) ? <span className="cmp-task__who">{chipWho(t)}</span> : null}
+                  <span className="cmp-task__title">{t.title}</span>
                 </button>
               ))}
             </div>
