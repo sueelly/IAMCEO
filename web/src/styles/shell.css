@@ -50,6 +50,14 @@
 .rail__scroll { flex:1; min-height:0; overflow-y:auto; padding:2px; }
 .rail__foot { display:flex; flex-direction:column; gap:2px; padding:6px 2px 4px; border-top:1px solid var(--line); margin-top:4px; }
 .rail__foot .conn { padding:6px 12px 8px; }
+/* 접는 단추는 이름 줄 오른쪽 끝. 접으면 본문·위아래 줄이 왼쪽 끝까지 쓰고, 위 줄 제목 앞에 '프로젝트' 단추가 생긴다. */
+.rail[hidden] { display:none; }
+.shell--desk[data-rail="closed"] { --rail-space:0px; }
+.rail__fold { margin-left:auto; display:inline-flex; align-items:center; gap:5px; min-height:32px; padding:0 10px; border-radius:10px; font-size:12.5px; font-weight:600; letter-spacing:0; color:var(--ink-2); background:none; }
+@media (hover:hover) { .rail__fold:hover { background:var(--row-hover); color:var(--ink-1); } }
+.shell__lead { min-width:0; max-width:100%; justify-self:start; display:flex; align-items:center; gap:12px; }
+.rail-open { flex:none; display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:0 12px; border-radius:12px; font-size:13.5px; font-weight:600; color:var(--ink-1); background:var(--btn-soft); box-shadow:var(--soft-ring); }
+@media (hover:hover) { .rail-open:hover { background:var(--btn-soft-hover); } }
 
 .pj-nav { display:flex; flex-direction:column; gap:2px; }
 .pj-list { display:flex; flex-direction:column; gap:2px; }

@@ -1003,3 +1003,113 @@ document.getElementById("go").addEventListener("click",function(){
     }, 30_000);
   });
 }
+
+describe("앱 틀: 자료 화면의 프로젝트 패널", () => {
+  const railShown = (page: Page) =>
+    page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>(".rail");
+      return !!rail && !rail.hidden && rail.getBoundingClientRect().width > 0;
+    });
+  const tab = (page: Page, name: string) => page.locator(".shell-tabs .gtabs__link", { hasText: name });
+
+  test("데스크톱: 자료에 들어오면 먼저 접히고, 다시 연 것은 덮어쓰지 않으며, 다른 화면은 고른 대로 둔다", async () => {
+    const page = await open(desk, `#/p/${project.id}/thread`);
+    await page.locator(".shell__title").waitFor();
+    expect(await railShown(page)).toBe(true);
+    await tab(page, "자료").click();
+    await page.locator(".fl-doc").first().waitFor();
+    expect(await railShown(page)).toBe(false);
+    await audit(page, "패널 접힌 자료");
+    await shot(page, "rail-closed-files");
+    await page.getByRole("button", { name: "프로젝트", exact: true }).click();
+    expect(await railShown(page)).toBe(true);
+    // 다른 자료를 골라도, 시간이 지나도 연 채로 둔다
+    await page.locator(".fl-row", { hasText: "회의록" }).click();
+    await page.waitForFunction((fid) => location.hash.endsWith(fid), id("회의록"));
+    await page.waitForTimeout(400);
+    expect(await railShown(page)).toBe(true);
+    await shot(page, "rail-open-files");
+    // 다른 화면에서는 대표가 고른 대로 둔다(처음엔 펼침)
+    await tab(page, "대화").click();
+    expect(await railShown(page)).toBe(true);
+    // 자료에 다시 들어오면 또 먼저 접힌다. 고른 프로젝트는 그대로다
+    await tab(page, "자료").click();
+    await page.locator(".fl-doc").first().waitFor();
+    expect(await railShown(page)).toBe(false);
+    expect(await page.locator(".shell__title").innerText()).toBe("자료 시험");
+    // 새로고침해도 자료 화면은 접힌 채로 열고, 보던 자료는 그대로다
+    await page.locator(".fl-row", { hasText: "회의록" }).click();
+    const hash = await page.evaluate(() => location.hash);
+    await page.reload();
+    await page.locator(".fl-doc").first().waitFor();
+    expect(await railShown(page)).toBe(false);
+    expect(await page.evaluate(() => location.hash)).toBe(hash);
+    // 다른 화면에서 접으면 새로고침 뒤에도 접힌 채다(이 기기에만 기억). 다시 펴서 다음 시험에 남기지 않는다
+    await tab(page, "대화").click();
+    await page.getByRole("button", { name: "접기", exact: true }).click();
+    expect(await railShown(page)).toBe(false);
+    await page.reload();
+    await page.locator(".shell__title").waitFor();
+    expect(await railShown(page)).toBe(false);
+    await page.getByRole("button", { name: "프로젝트", exact: true }).click();
+    expect(await railShown(page)).toBe(true);
+    await page.close();
+  });
+
+  test("Agent-A 자료: 실행 없이 Agent-A 칸으로 열고, 목록은 '자료 목록'으로 펴며 다른 자료를 고르면 다시 접는다", async () => {
+    const a = await upload({ title: "Agent-A 연결 가", html: "<h1>가</h1><script>document.body.dataset.ran='1'</script>" });
+    const b = await upload({ title: "Agent-A 연결 나", html: "<h1>나</h1><script>document.body.dataset.ran='1'</script>" });
+    const plain = await upload({ title: "연결 안 된 아티팩트", html: "<h1>일반</h1><script>document.body.dataset.ran='1'</script>" });
+    const info = {
+      enabled: true, reachable: true, error: null, ui: false, uiBlocked: "시험: Agent-A 화면 자리",
+      docs: [a, b].map((f) => ({ fileId: f.id, artifactId: `art-${f.id}`, pending: 0, unseen: 0, latestUnseen: null })), staff: [],
+    };
+    const page = await desk.newPage();
+    await page.addInitScript((code) => {
+      localStorage.setItem("iamceo.accessCode", code);
+      // '실행' 단추가 한 번이라도 그려졌는지 적는다(연결 정보를 받기 전에 일반 보기로 잠깐 그리는지)
+      new MutationObserver(() => {
+        if ([...document.querySelectorAll("button")].some((el) => el.textContent?.trim() === "실행")) (window as unknown as { __run?: string }).__run = location.hash;
+      }).observe(document, { subtree: true, childList: true });
+    }, CODE);
+    let calls = 0;
+    await page.route(/\/api\/projects\/[^/]+\/agent-a$/, async (route) => {
+      calls++;
+      await Bun.sleep(calls === 1 ? 900 : 0);
+      await route.fulfill({ json: info });
+    });
+    await page.route(/\/api\/agent-a\/docs\/[^/]+\/read$/, (route) => route.fulfill({ json: { ok: true } }));
+    await page.goto(`${base}/${fileHash(a.id)}`);
+    await page.locator(".fl-wait").waitFor();
+    await page.locator(".aa-warn", { hasText: "시험: Agent-A 화면 자리" }).waitFor();
+    expect(await page.evaluate(() => (window as unknown as { __run?: string }).__run ?? null)).toBeNull();
+    expect(await page.locator("iframe.afr-frame").count()).toBe(0);
+    // 본문 중심: 목록은 접혀 있고 '자료 목록'으로 편다
+    expect(await page.locator(".fl--desk[data-focus]").count()).toBe(1);
+    expect(await page.locator(".fl-panel--list").isVisible()).toBe(false);
+    await shot(page, "agent-a-focus");
+    await page.getByRole("button", { name: "자료 목록", exact: true }).click();
+    await page.locator(".fl-panel--list").waitFor({ state: "visible" });
+    await audit(page, "Agent-A 목록 편 화면");
+    await shot(page, "agent-a-list-open");
+    // 목록에서 다른 자료를 고르면 그 자료를 열고 목록은 다시 접힌다
+    await page.locator(".fl-row", { hasText: "Agent-A 연결 나" }).click();
+    await page.waitForFunction((fid) => location.hash.endsWith(fid), b.id);
+    await page.locator(".fl--desk[data-focus]").waitFor();
+    expect(await page.locator(".fl-panel--list").isVisible()).toBe(false);
+    expect(await page.locator(".fl-doc__title").innerText()).toBe("Agent-A 연결 나");
+    // 다른 화면을 다녀와도 기다리지 않고 바로 연다(앞서 받은 연결 정보)
+    await page.locator(".shell-tabs .gtabs__link", { hasText: "대화" }).click();
+    await page.locator(".fl").waitFor({ state: "detached" });
+    await page.evaluate((h) => { location.hash = h; }, fileHash(b.id));
+    await page.locator(".aa-warn").waitFor();
+    expect(await page.locator(".fl-wait").count()).toBe(0);
+    // 목록 → 연결 안 된 아티팩트: 일반 자료의 '실행'은 그대로 남는다
+    await page.getByRole("button", { name: "자료 목록", exact: true }).click();
+    await page.locator(".fl-row", { hasText: "연결 안 된 아티팩트" }).click();
+    await page.getByRole("button", { name: "실행", exact: true }).waitFor();
+    expect(await page.evaluate(() => location.hash)).toContain(plain.id);
+    expect(await page.locator(".fl--desk[data-focus]").count()).toBe(0);
+    await page.close();
+  });
+});
