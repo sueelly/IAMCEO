@@ -7,7 +7,7 @@ import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
 import { getState, newId, refresh, routeHash, useProject, useRoute } from "../lib/store";
 import type { Draft } from "../lib/submissions";
-import { submissions, useSubmissionDraft } from "../lib/submission-client";
+import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
 import { liveTasks, taskTarget, visibleTasks } from "../lib/tasks";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
@@ -211,11 +211,23 @@ export default function Composer() {
     inputRef.current?.focus();
   };
 
-  const pickTask = (next: Task | null) => {
-    // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다. 작업 없이 직원만 골라 둔 상태면 그대로 둔다.
-    if (!next) patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d));
-    else patchDraft(projectId, (d) => ({ ...d, taskId: next.id, targetId: taskTarget(next, workers) }));
-  };
+  // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다(대화 글의 작업 표지와 같은 규칙).
+  const pickTask = (next: Task | null) => chooseTask(projectId, next, workers);
+  // 작업이 바뀌면(대화 글의 작업 표지로 골랐을 때도) 고른 칩이 가로 목록 밖에 숨지 않게 그 칩까지 민다. '전체'면 처음으로 돌린다.
+  const tasksRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const strip = tasksRef.current;
+    if (!strip) return;
+    const on = task ? strip.querySelector<HTMLElement>('.cmp-task[aria-pressed="true"]') : null;
+    if (!on) {
+      strip.scrollLeft = 0;
+      return;
+    }
+    const box = strip.getBoundingClientRect();
+    const chip = on.getBoundingClientRect();
+    if (chip.left < box.left) strip.scrollLeft -= box.left - chip.left + 8;
+    else if (chip.right > box.right) strip.scrollLeft += chip.right - box.right + 8;
+  }, [task?.id]);
 
   /** 메뉴가 받아 간 키면 true. 초점이 입력칸에 있든 대상 칩에 있든 같은 키로 움직인다. */
   const menuKey = (e: KeyboardEvent): boolean => {
@@ -371,7 +383,7 @@ export default function Composer() {
             </svg>
           </button>
           {shownTasks.length > 0 || task ? (
-            <div className="cmp-tasks" role="group" aria-label="작업 고르기">
+            <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="작업 고르기">
               <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
                 전체
               </button>

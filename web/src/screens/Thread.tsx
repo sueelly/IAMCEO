@@ -6,7 +6,7 @@ import type { Decision, FileDoc, Member, Message, Task } from "@shared/types";
 import { GlassButton } from "../glass";
 import { api, errorText } from "../lib/api";
 import { mergeHistoryMessages } from "../lib/history";
-import { useSubmissionDraft } from "../lib/submission-client";
+import { chooseTask, useSubmissionDraft } from "../lib/submission-client";
 import { getState, loadOlderMessages, routeHash, sendMessage, useProject, useStore } from "../lib/store";
 import { Attachments } from "../components/Attachments";
 import { Badge, Empty, Markdown, Time } from "../components/ui";
@@ -141,13 +141,26 @@ function RetryButton({ m }: { m: Message }) {
   );
 }
 
-function MineRow({ m, taskTitle }: { m: Message; taskTitle?: string }) {
+/** 전체에서 글이 속한 작업. 누르면 그 작업의 글만 본다(입력칸의 작업도 같이 바뀐다). */
+type OnTask = (taskId: string, messageId: string) => void;
+
+function MineRow({ m, taskTitle, onTask }: { m: Message; taskTitle?: string; onTask?: OnTask }) {
   const delivery = deliveryLabel(m);
-  const to = [m.targetName ? `${m.targetName}에게` : null, taskTitle ? `작업 ${taskTitle}` : null].filter(Boolean).join(" · ");
+  const taskId = taskTitle ? m.taskId : null;
   return (
-    <article className="th-row th-row--mine">
+    <article className="th-row th-row--mine" data-mid={m.id}>
       <div className="th-mine">
-        {to ? <p className="th-mine__to">{to}</p> : null}
+        {m.targetName || taskId ? (
+          <p className="th-mine__to">
+            {m.targetName ? `${m.targetName}에게` : null}
+            {m.targetName && taskId ? " · " : null}
+            {taskId ? (
+              <button type="button" className="th-mine__task" title={`작업 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(taskId, m.id)}>
+                작업 {taskTitle}
+              </button>
+            ) : null}
+          </p>
+        ) : null}
         {m.body ? <Markdown text={m.body} className="th-md" /> : null}
         <Attachments items={m.attachments} />
       </div>
@@ -168,7 +181,7 @@ function MineRow({ m, taskTitle }: { m: Message; taskTitle?: string }) {
 
 function SystemRow({ m }: { m: Message }) {
   return (
-    <article className="th-row th-row--system">
+    <article className="th-row th-row--system" data-mid={m.id}>
       <p className="th-system">
         {[m.title, m.body].filter(Boolean).join(" · ")} <Time iso={m.at} className="th-system__time" />
       </p>
@@ -195,18 +208,22 @@ function OwnerBand({ m, action }: { m: Message; action: string }) {
   );
 }
 
-function ReportRow({ m, decision, file, taskTitle }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string }) {
+function ReportRow({ m, decision, file, taskTitle, onTask }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string; onTask?: OnTask }) {
   const { action: ownerAction, rest: body } = splitOwnerLine(m.body);
   // 한 줄짜리 자동 보고는 제목이 곧 본문이다.
   const repeated = m.title.replace(/^\(자동\) /, "") === body.trim();
   return (
-    <article className="th-row">
+    <article className="th-row" data-mid={m.id}>
       <div className="th-card" data-owner={ownerAction === null ? undefined : ""}>
         {ownerAction === null ? null : <OwnerBand m={m} action={ownerAction} />}
         <header className="th-card__head">
           <Badge tone={kindTone(m.kind)}>{m.kind}</Badge>
           <span className="th-card__who">{m.who}</span>
-          {taskTitle ? <span className="th-card__task" title={`작업 ${taskTitle}`}>{taskTitle}</span> : null}
+          {taskTitle && m.taskId ? (
+            <button type="button" className="th-card__task" title={`작업 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(m.taskId!, m.id)}>
+              <span className="th-card__task-text">{taskTitle}</span>
+            </button>
+          ) : null}
           <Time iso={m.at} className="th-card__time" />
         </header>
         {m.title ? <h3 className="th-card__title">{m.title}</h3> : null}
@@ -221,7 +238,7 @@ function ReportRow({ m, decision, file, taskTitle }: { m: Message; decision?: De
 /** 결재 카드 사본: 한 줄로 결재함 카드를 가리킨다. 전체 글은 카드에 있다. */
 function CardCopyRow({ m, decision }: { m: Message; decision?: Decision }) {
   return (
-    <article className="th-row th-row--ask">
+    <article className="th-row th-row--ask" data-mid={m.id}>
       <a className="th-ask" data-open={decision?.status === "open" ? "" : undefined} href={routeHash({ projectId: m.projectId, tab: "inbox", sub: m.decisionId })}>
         <span className="th-ask__text">
           {cardCopyText(m, decision)}
@@ -234,11 +251,12 @@ function CardCopyRow({ m, decision }: { m: Message; decision?: Decision }) {
 
 // 글 하나가 바뀌어도 나머지 마크다운을 다시 그리지 않는다(store 는 안 바뀐 글의 객체를 그대로 둔다)
 // taskTitle 은 '전체'에서만 준다. 작업을 골라 보는 중에는 모든 글이 그 작업이라 표시하지 않는다.
-const Row = memo(function Row({ m, decision, file, taskTitle }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string }) {
-  if (m.mine) return <MineRow m={m} taskTitle={taskTitle} />;
+// 작업 목록에 없는 task_id(지운 작업 등)는 이름을 모르므로 표지를 달지 않는다. 작업이 없는 옛 글(task_id 없음)도 추측해 달지 않는다.
+const Row = memo(function Row({ m, decision, file, taskTitle, onTask }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string; onTask?: OnTask }) {
+  if (m.mine) return <MineRow m={m} taskTitle={taskTitle} onTask={onTask} />;
   if (m.kind === "시스템") return <SystemRow m={m} />;
   if (isCardCopy(m)) return <CardCopyRow m={m} decision={decision} />;
-  return <ReportRow m={m} decision={decision} file={file} taskTitle={taskTitle} />;
+  return <ReportRow m={m} decision={decision} file={file} taskTitle={taskTitle} onTask={onTask} />;
 });
 
 /** 총괄의 과정 글(맡김, 다시 알림)을 접은 한 줄. 누르면 펼친다. */
@@ -300,9 +318,19 @@ export default function Thread() {
       if (!next.delete(id)) next.add(id);
       return next;
     });
+  // 작업 표지를 누르면 입력칸의 작업 칩과 같은 길로 고른다. 누른 글은 작업 화면에서도 보이게 그 자리로 옮긴다.
+  const focus = useRef<{ taskId: string; messageId: string } | null>(null);
+  const pickRef = useRef<OnTask>(() => {});
+  pickRef.current = (taskId, messageId) => {
+    const next = tasks.find((t) => t.id === taskId);
+    if (!next) return;
+    focus.current = { taskId, messageId };
+    chooseTask(projectId, next, (project?.members ?? []).filter((m) => m.kind === "worker"));
+  };
+  const onTask = useCallback<OnTask>((taskId, messageId) => pickRef.current(taskId, messageId), []);
   const row = (m: Message) => (
     <Row key={m.id} m={m} decision={m.decisionId ? decisions.get(m.decisionId) : undefined} file={m.fileId ? files.get(m.fileId) : undefined}
-      taskTitle={!task && m.taskId ? taskTitles.get(m.taskId) : undefined} />
+      taskTitle={!task && m.taskId ? taskTitles.get(m.taskId) : undefined} onTask={onTask} />
   );
 
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -385,6 +413,36 @@ export default function Thread() {
     const seenAt = messages.findIndex((x) => x.id === prevLast);
     setUnread((n) => n + (seenAt < 0 ? 1 : messages.length - 1 - seenAt));
   }, [messages]);
+
+  // 작업 표지로 옮겨 왔으면 맨 아래 대신 누른 글을 보인다. 작업의 이전 글이 위에 붙는 동안(불러오는 중)에도 그 글을 지킨다.
+  useLayoutEffect(() => {
+    const target = focus.current;
+    const root = rootRef.current;
+    if (!target || !root) return;
+    if (task?.id !== target.taskId) {
+      if (draft.taskId !== target.taskId) focus.current = null;
+      return;
+    }
+    const fold = items.find((it): it is Extract<ThreadItem, { type: "fold" }> => it.type === "fold" && it.messages.some((x) => x.id === target.messageId));
+    if (fold && !unfolded.has(fold.id)) {
+      setUnfolded((s) => new Set(s).add(fold.id));
+      return;
+    }
+    const el = anchorRef.current?.querySelector<HTMLElement>(`[data-mid="${CSS.escape(target.messageId)}"]`);
+    if (el) {
+      root.scrollTop = Math.max(0, el.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - root.clientHeight / 4);
+      lastTop.current = root.scrollTop;
+      pinned.current = distanceFromBottom(root) < PIN_DISTANCE;
+      setAtBottom(pinned.current);
+      if (!el.hasAttribute("data-flash")) {
+        el.setAttribute("data-flash", "");
+        el.tabIndex = -1;
+        el.focus({ preventScroll: true });
+        window.setTimeout(() => el.removeAttribute("data-flash"), 1600);
+      }
+    }
+    if (!history.busy) focus.current = null;
+  }, [messages, items, unfolded, task?.id, draft.taskId, history.busy]);
 
   useEffect(() => {
     const root = rootRef.current;

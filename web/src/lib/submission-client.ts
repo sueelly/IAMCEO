@@ -1,8 +1,9 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { Member } from "@shared/types";
+import type { Member, Task } from "@shared/types";
 import { api, getCredentialGeneration } from "./api";
 import { applyLocal, getState, newId, onLogout, onSessionInvalidated, sendMessage, useProject, useStore } from "./store";
 import { SubmissionManager } from "./submissions";
+import { taskTarget } from "./tasks";
 
 // Reading window.localStorage itself can throw under browser privacy settings.
 const storage: Storage = {
@@ -52,6 +53,16 @@ export function memberSubmissions(member: Pick<Member, "id" | "projectId" | "kin
 onSessionInvalidated(() => { for (const manager of managers) manager.invalidate(); });
 onLogout(() => { for (const manager of managers) manager.clear(); });
 window.addEventListener("storage", () => { for (const manager of managers) manager.refreshStoredAttempts(); });
+
+/**
+ * 대화의 작업 고르기. 입력칸 위 작업 칩과 대화 글의 작업 표지가 같이 쓴다(보는 글과 보낼 작업이 늘 같다).
+ * 작업을 고르면 받는 사람은 그 작업을 등록한 직원, '전체'로 돌아오면 기본(총괄)이다. 작업 없이 직원만 골라 둔 상태에서 '전체'면 그대로 둔다.
+ * 이미 보낸 시도는 보낸 순간의 작업을 따로 들고 있어 여기서 바뀌지 않는다.
+ */
+export function chooseTask(projectId: string, next: Task | null, workers: readonly Pick<Member, "id">[], manager = submissions): void {
+  if (!next) manager.patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d));
+  else manager.patchDraft(projectId, (d) => ({ ...d, taskId: next.id, targetId: taskTarget(next, workers) }));
+}
 
 /** Shared by the bottom composer and member-detail direct input. Reopening either
  * checks stored IDs; it never automatically replays the captured POST request. */
