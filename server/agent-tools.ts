@@ -21,7 +21,9 @@ import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SE
 export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
 /** 대화 속 대표 결정을 고르는 일은 총괄만 한다. */
 export const MEMORY_CONDUCTOR_TOOLS = ["memory_capture"] as const;
-type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS | typeof MEMORY_CONDUCTOR_TOOLS)[number];
+/** Agent-A 문서 요청에 답하는 도구. Agent-A 연결이 설정된 서버의 직원에게만 보인다. */
+export const AGENT_A_TOOLS = ["agent_a_submit"] as const;
+type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS | typeof MEMORY_CONDUCTOR_TOOLS | typeof AGENT_A_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
 
 const WAIT_DEFAULT_SEC = 50;
@@ -219,6 +221,24 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       const memory = orch.requireMemory(member);
       const out = await memoryCall(() => memory.mcp(member.projectId, orch.memoryScope(member, a.task_id), "get_experience", { id: a.id }, a.id));
       return reply(typeof out === "string" ? out : JSON.stringify(out));
+    },
+  ),
+
+  agent_a_submit: tool(
+    "Agent-A 문서 요청(#aar_...)에 답을 낸다. 서버가 보낸 '[시스템] Agent-A 문서 요청' 글의 request_id 와 담당 차례(assignment)를 그대로 넣는다. 문서를 고쳐야 하면 edit.body 에 고친 블록 본문 전체를, edit.reason 에 고친 까닭을 넣는다. 정본 반영은 대표가 고르며 직원은 반영할 수 없다. 담당이 바뀐 뒤 낸 결과는 보관만 된다.",
+    z.strictObject({
+      request_id: oneLine(80).describe("요청 id(aar_...)"),
+      assignment: z.number().int().min(1).describe("전달 글의 '담당 차례' 숫자"),
+      answer: z.string().trim().min(1).max(20000).describe("대표에게 보일 답(마크다운)"),
+      edit: z.strictObject({
+        body: z.string().min(1).max(200000).describe("고친 블록 본문 전체(머리말 제외)"),
+        reason: z.string().trim().min(1).max(2000).describe("고친 까닭 한두 줄"),
+      }).optional().describe("문서를 고칠 때만"),
+    }),
+    async (orch, member, a) => {
+      const agentA = orch.agentA;
+      if (!agentA) throw new ApiError(400, "이 서버에는 Agent-A 연결이 없습니다");
+      return reply(await agentA.submitFromStaff(member, { requestId: a.request_id, assignment: a.assignment, answer: a.answer, edit: a.edit ?? null }));
     },
   ),
 
@@ -748,9 +768,10 @@ async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
+function namesFor(member: Member, opts: { memory?: boolean; agentA?: boolean } = {}): readonly ToolName[] {
   return [
     ...WORKER_TOOLS,
+    ...(opts.agentA && member.kind === "worker" ? AGENT_A_TOOLS : []),
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
     ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
     ...(opts.memory && member.kind === "conductor" && member.origin !== "manual" ? MEMORY_CONDUCTOR_TOOLS : []),
@@ -759,7 +780,7 @@ function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly Too
   ];
 }
 
-export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
+export function listAgentTools(member: Member, opts: { memory?: boolean; agentA?: boolean } = {}): AgentToolDef[] {
   return namesFor(member, opts).map((name) => {
     const { $schema: _, ...inputSchema } = z.toJSONSchema(TOOLS[name].schema) as Record<string, unknown>;
     return { name, description: TOOLS[name].description, inputSchema };
@@ -767,7 +788,7 @@ export function listAgentTools(member: Member, opts: { memory?: boolean } = {}):
 }
 
 export async function handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
-  if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
+  if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false, agentA: Boolean(orch.agentA) }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {

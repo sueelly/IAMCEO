@@ -30,6 +30,7 @@ import type {
   StopReq,
   StopResult,
 } from "@shared/types";
+import type { AgentACreateRequestReq, AgentADocView, AgentAExecutor, AgentAOpResult, AgentAProjectInfo, AgentARequest } from "@shared/agent-a";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
 
@@ -246,6 +247,19 @@ export const api = {
 
   /** 아티팩트 원본. 격리 칸(ArtifactFrame)에만 넣는다. */
   artifact: (fileId: string) => get<{ html: string }>(`/api/files/${seg(fileId)}/artifact`),
+
+  // ---- Agent-A 연결(체험판). 같은 opId 는 서버가 한 번만 처리한다(중복 클릭·응답 유실). ----
+  agentAInfo: (projectId: string, signal?: AbortSignal) => get<AgentAProjectInfo>(`/api/projects/${seg(projectId)}/agent-a`, signal),
+  agentACreateDoc: (projectId: string, req: { title: string; markdown: string; taskId?: string | null }) => slowPost<AgentADocView>(`/api/projects/${seg(projectId)}/agent-a/docs`, req),
+  agentADoc: (fileId: string, signal?: AbortSignal) => get<AgentADocView>(`/api/agent-a/docs/${seg(fileId)}`, signal),
+  agentASetExecutor: (fileId: string, executor: AgentAExecutor, assigneeId: string | null) => request<AgentADocView>("PATCH", `/api/agent-a/docs/${seg(fileId)}`, { executor, assigneeId }),
+  agentARequest: (fileId: string, req: AgentACreateRequestReq) => slowPost<AgentARequest>(`/api/agent-a/docs/${seg(fileId)}/requests`, req),
+  agentAReply: (requestId: string, opId: string, text: string) => slowPost<AgentARequest>(`/api/agent-a/requests/${seg(requestId)}/replies`, { opId, text }),
+  agentASeen: (requestId: string) => post<{ ok: true }>(`/api/agent-a/requests/${seg(requestId)}/seen`),
+  agentAStop: (requestId: string) => slowPost<AgentARequest>(`/api/agent-a/requests/${seg(requestId)}/stop`),
+  agentAAssign: (requestId: string, memberId: string) => slowPost<AgentARequest>(`/api/agent-a/requests/${seg(requestId)}/assign`, { memberId }),
+  agentAApply: (fileId: string, proposalId: string, opId: string) => slowPost<AgentAOpResult>(`/api/agent-a/docs/${seg(fileId)}/proposals/${seg(proposalId)}/apply`, { opId }),
+  agentAReject: (fileId: string, proposalId: string, opId: string, reason: string) => slowPost<AgentAOpResult>(`/api/agent-a/docs/${seg(fileId)}/proposals/${seg(proposalId)}/reject`, { opId, reason }),
 
   patchMember: (memberId: string, patch: PatchMemberReq) => request<Member>("PATCH", `/api/members/${seg(memberId)}`, patch, SLOW_TIMEOUT_MS),
   putSettings: (patch: SettingsPatch) => request<Settings>("PUT", "/api/settings", patch),

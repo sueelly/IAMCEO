@@ -1,9 +1,11 @@
 // 자료: 데스크톱은 목록+읽기 두 칸, 그보다 좁으면 목록→상세. 고른 자료는 주소(#/p/<id>/files/<fileId>)가 정한다.
 // 종류별 보기는 components/viewers, 아티팩트는 components/ArtifactFrame.
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FileDoc, FileKind } from "@shared/types";
+import type { AgentADocSummary, AgentAProjectInfo } from "@shared/agent-a";
 import { Glass } from "../glass";
-import { fileUrl } from "../lib/api";
+import { api, fileUrl } from "../lib/api";
+import { AgentADoc } from "../components/AgentADoc";
 import { routeHash, useProject, useRoute } from "../lib/store";
 import { Empty, MQ_DESKTOP, Time, copyText, useMediaQuery } from "../components/ui";
 import { FileViewer, KIND_LABEL, KIND_ORDER } from "../components/viewers";
@@ -28,9 +30,71 @@ function PathLine({ path }: { path: string }) {
   );
 }
 
-function Reader({ file }: { file: FileDoc }) {
+/** Agent-A 연결 정보. 답을 기다리는 문서가 있으면 자주, 없으면 드물게 다시 읽는다. 탭을 숨기면 쉰다. */
+function useAgentA(projectId: string): AgentAProjectInfo | null {
+  const [info, setInfo] = useState<AgentAProjectInfo | null>(null);
+  const pending = info?.docs.some((d) => d.pending > 0) ?? false;
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const run = async () => {
+      if (document.visibilityState !== "hidden") {
+        try {
+          const next = await api.agentAInfo(projectId);
+          if (!stopped) setInfo(next);
+        } catch {
+          // 연결이 꺼진 서버·오류는 자료 화면을 막지 않는다
+        }
+      }
+      if (!stopped) timer = setTimeout(run, pending ? 4_000 : 30_000);
+    };
+    void run();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        if (timer) clearTimeout(timer);
+        void run();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [projectId, pending]);
+  return info?.enabled ? info : null;
+}
+
+/** 다른 자료를 보는 동안 앞 자료에 답이 오면 한 줄로 알린다. 누르면 원래 댓글로 간다. */
+function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProjectInfo; files: FileDoc[]; projectId: string; selectedId: string | null }) {
+  const seen = useRef<Map<string, number> | null>(null);
+  const [notice, setNotice] = useState<{ doc: AgentADocSummary; title: string } | null>(null);
+  useEffect(() => {
+    const prev = seen.current;
+    const next = new Map(info.docs.map((d) => [d.fileId, d.unseen]));
+    seen.current = next;
+    if (!prev) return;
+    const grown = info.docs.find((d) => d.unseen > (prev.get(d.fileId) ?? 0) && d.fileId !== selectedId);
+    if (grown) setNotice({ doc: grown, title: files.find((f) => f.id === grown.fileId)?.title ?? "자료" });
+  }, [info, files, selectedId]);
+  if (!notice) return null;
   return (
-    <article className="fl-doc" data-kind={file.kind}>
+    <div className="aa-notice" role="status">
+      <span>'{notice.title}' 댓글에 답이 왔습니다</span>
+      <a className="aa-btn" href={routeHash({ projectId, tab: "files", sub: notice.doc.fileId, focus: notice.doc.latestUnseen })} onClick={() => setNotice(null)}>
+        원래 댓글 열기
+      </a>
+      <button type="button" className="aa-link" onClick={() => setNotice(null)}>
+        닫기
+      </button>
+    </div>
+  );
+}
+
+function Reader({ file, agentA, focus }: { file: FileDoc; agentA?: AgentAProjectInfo | null; focus?: string | null }) {
+  const linked = agentA?.docs.some((d) => d.fileId === file.id) ?? false;
+  return (
+    <article className="fl-doc" data-kind={file.kind} data-agent-a={linked ? "" : undefined}>
       <p className="fl-doc__meta">
         <span className="fl-kind" data-kind={file.kind}>
           {KIND_LABEL[file.kind]}
@@ -42,12 +106,12 @@ function Reader({ file }: { file: FileDoc }) {
       {file.summary ? <p className="fl-doc__summary">{file.summary}</p> : null}
       {/* 아티팩트는 그림이 주인공이다. 원본 경로는 다른 종류에서만 보여 준다. */}
       {file.path && file.kind !== "artifact" ? <PathLine path={file.path} /> : null}
-      <FileViewer file={file} />
+      {linked && agentA ? <AgentADoc fileId={file.id} projectId={file.projectId} focus={focus ?? null} staff={agentA.staff} /> : <FileViewer file={file} />}
     </article>
   );
 }
 
-function FileRow({ file, projectId, current }: { file: FileDoc; projectId: string; current: boolean }) {
+function FileRow({ file, projectId, current, agentA }: { file: FileDoc; projectId: string; current: boolean; agentA?: AgentADocSummary }) {
   const thumb = file.attachments.find((a) => a.isImage);
   return (
     <li>
@@ -59,6 +123,9 @@ function FileRow({ file, projectId, current }: { file: FileDoc; projectId: strin
             <span className="fl-kind" data-kind={file.kind}>
               {KIND_LABEL[file.kind]}
             </span>
+            {agentA ? <span className="aa-tag">Agent-A</span> : null}
+            {agentA?.pending ? <span className="aa-chip" data-state="running">답 기다림 {agentA.pending}</span> : null}
+            {agentA?.unseen ? <span className="aa-chip" data-state="answered">새 답 {agentA.unseen}</span> : null}
             <span>
               {file.who ? `${file.who} · ` : ""}
               <Time iso={file.createdAt} />
@@ -104,6 +171,7 @@ export default function Files() {
   const [kind, setKind] = useState<FileKind | null>(null);
   const projectId = route.projectId;
   const sub = route.sub;
+  const agentA = useAgentA(projectId);
 
   // 새 자료는 이벤트로 목록 끝에 붙으므로 서버와 같은 순서(최신 먼저)로 다시 맞춘다
   const files = useMemo(() => [...(project?.files ?? [])].sort((a, b) => b.order - a.order), [project?.files]);
@@ -139,7 +207,7 @@ export default function Files() {
         <KindChips files={files} kind={activeKind} onPick={setKind} />
         <ul className="fl-list" aria-label="자료 목록">
           {shown.map((f) => (
-            <FileRow key={f.id} file={f} projectId={projectId} current={f.id === selected?.id} />
+            <FileRow key={f.id} file={f} projectId={projectId} current={f.id === selected?.id} agentA={agentA?.docs.find((d) => d.fileId === f.id)} />
           ))}
         </ul>
       </div>
@@ -152,9 +220,10 @@ export default function Files() {
         {list}
         <Glass level="regular" tint className="fl-panel fl-panel--reader">
           <div ref={readerRef} className="fl-reader">
-            {selected ? <Reader key={selected.id} file={selected} /> : <Missing />}
+            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} focus={route.focus} /> : <Missing />}
           </div>
         </Glass>
+        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
       </div>
     );
   }
@@ -163,6 +232,7 @@ export default function Files() {
     return (
       <div ref={rootRef} className="fl">
         {list}
+        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={null} /> : null}
       </div>
     );
   }
@@ -176,8 +246,9 @@ export default function Files() {
         자료
       </a>
       <Glass level="regular" tint className="fl-panel fl-panel--phone">
-        {selected ? <Reader key={selected.id} file={selected} /> : <Missing />}
+        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} focus={route.focus} /> : <Missing />}
       </Glass>
+      {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
     </div>
   );
 }

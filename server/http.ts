@@ -25,6 +25,7 @@ import { Folders } from "./folders.ts";
 import { checkLocalImportPath, readLocalFile } from "./local-files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { GitHub } from "./github.ts";
+import type { AgentAService } from "./integrations/agent-a.ts";
 
 export interface ServerContext {
   config: Config;
@@ -41,6 +42,8 @@ export interface ServerContext {
   /** Isolated fake-clone tests need not depend on host disk availability. */
   githubFreeBytes?: (path: string) => Promise<number>;
   daemon?: () => { ready: boolean; buildId: string; version: string };
+  /** Agent-A 연결(체험판). 설정이 없으면 없다. */
+  agentA?: AgentAService | null;
 }
 
 export interface HostBinding {
@@ -521,6 +524,10 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(store.getMember(id!) ?? { ok: true });
     };
   };
+  const requireAgentA = (): AgentAService => {
+    if (!ctx.agentA) throw new ApiError(404, "Agent-A 연결이 켜져 있지 않습니다", "AGENT_A_DISABLED");
+    return ctx.agentA;
+  };
   const activeProject = (id: string): void => {
     if (store.requireProject(id).archived) throw new ApiError(404, "프로젝트를 찾을 수 없습니다");
   };
@@ -582,6 +589,50 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
           throw error;
         }
       }));
+    }),
+    // ---- Agent-A 연결(체험판). 열쇠·주소는 서버에만 있고 응답에 싣지 않는다. ----
+    route("GET", "/api/projects/:id/agent-a", async (_req, _url, [id]) => {
+      activeProject(id!);
+      if (!ctx.agentA) return Response.json({ enabled: false, reachable: false, error: null, docs: [], staff: [] });
+      return Response.json(await ctx.agentA.projectInfo(id!));
+    }),
+    route("POST", "/api/projects/:id/agent-a/docs", async (req, _url, [id]) => {
+      activeProject(id!);
+      const agentA = requireAgentA();
+      const body = await parseBody(req, z.strictObject({ title: z.string(), markdown: z.string(), taskId: z.string().nullable().optional(), executor: z.enum(["agent_a", "staff"]).optional(), assigneeId: z.string().nullable().optional() }));
+      return Response.json(await agentA.createDoc(id!, body));
+    }),
+    route("GET", "/api/agent-a/docs/:id", async (_req, _url, [id]) => Response.json(await requireAgentA().view(id!))),
+    route("PATCH", "/api/agent-a/docs/:id", async (req, _url, [id]) => {
+      const agentA = requireAgentA();
+      const body = await parseBody(req, z.strictObject({ executor: z.enum(["agent_a", "staff"]), assigneeId: z.string().nullable().optional() }));
+      agentA.setExecutor(id!, body.executor, body.assigneeId ?? null);
+      return Response.json(await agentA.view(id!));
+    }),
+    route("POST", "/api/agent-a/docs/:id/requests", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string(), blockId: z.string(), blockRevision: z.number().int(), quote: z.string().nullable().optional(), text: z.string(), supersedesId: z.string().nullable().optional() }));
+      return Response.json(await requireAgentA().createRequest(id!, body));
+    }),
+    route("POST", "/api/agent-a/requests/:id/replies", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string(), text: z.string() }));
+      return Response.json(await requireAgentA().reply(id!, body.opId, body.text));
+    }),
+    route("POST", "/api/agent-a/requests/:id/seen", (_req, _url, [id]) => {
+      requireAgentA().markSeen(id!);
+      return Response.json({ ok: true });
+    }),
+    route("POST", "/api/agent-a/requests/:id/stop", async (_req, _url, [id]) => Response.json(await requireAgentA().stopRequest(id!))),
+    route("POST", "/api/agent-a/requests/:id/assign", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ memberId: z.string() }));
+      return Response.json(await requireAgentA().reassign(id!, body.memberId));
+    }),
+    route("POST", "/api/agent-a/docs/:id/proposals/:pid/apply", async (req, _url, [id, pid]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string() }));
+      return Response.json(await requireAgentA().decide(id!, pid!, "apply", body.opId));
+    }),
+    route("POST", "/api/agent-a/docs/:id/proposals/:pid/reject", async (req, _url, [id, pid]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string(), reason: z.string().optional() }));
+      return Response.json(await requireAgentA().decide(id!, pid!, "reject", body.opId, body.reason ?? ""));
     }),
     route("GET", "/api/folders", async (_req, url) => Response.json(await folders.list(url.searchParams.get("path") ?? undefined))),
     route("POST", "/api/folders", async req => {

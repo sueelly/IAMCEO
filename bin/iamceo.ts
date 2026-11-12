@@ -145,6 +145,7 @@ export async function startOpsRuntime(config: Config, options: OpsRuntimeOptions
   const stop = (): Promise<void> => stopped ??= (async () => {
     ready = false;
     clearInterval(sweepTimer);
+    orch?.agentA?.stop();
     unsubscribe?.();
     // Stop ingress and all producers/consumers together, within one outer deadline.
     const results = await Promise.allSettled([
@@ -181,7 +182,12 @@ export async function startOpsRuntime(config: Config, options: OpsRuntimeOptions
     orch = (options.createOrchestrator ?? orchestration.createOrchestrator)(config, store);
     const runtimeInfo = orch.runtimeInfo.bind(orch);
     orch.runtimeInfo = async () => ({ ...await runtimeInfo(), daemon: { ready, buildId: identity, version: VERSION } });
-    const context = { config, store, bus, orch, delivery: orch.deliveryRecovery,
+    // Agent-A 연결(체험판): IAMCEO_AGENT_A_URL 이 있을 때만 켠다. 열쇠는 파일에서 읽어 이 프로세스에만 둔다.
+    const agentAModule = await import("../server/integrations/agent-a.ts");
+    const agentAConfig = agentAModule.agentAConfigFromEnv();
+    const agentA = agentAConfig ? new agentAModule.AgentAService(store, new agentAModule.AgentAClient(agentAConfig), { wake: (memberId) => void orch!.pump(memberId).catch(() => {}) }) : null;
+    orch.agentA = agentA;
+    const context = { config, store, bus, orch, delivery: orch.deliveryRecovery, agentA,
       daemon: () => ({ ready, buildId: identity, version: VERSION }),
       push: { store: push, providers: () => client!.status(), wake: () => worker?.wake() } };
     server = await (options.startServer ?? http.startServer)(context);
@@ -189,6 +195,7 @@ export async function startOpsRuntime(config: Config, options: OpsRuntimeOptions
     await orch.initializeRuntime();
     // CoreRunner restores persisted identity-bound leases as it reattaches; only recover may resume the queue.
     await orch.recover();
+    agentA?.start();
     worker = new PushWorker(push, client, { onError: () => console.error("푸시 저장 오류") });
     unsubscribe = bus.subscribe(() => { void worker!.wake().catch(() => console.error("푸시 저장 오류")); });
     worker.start();

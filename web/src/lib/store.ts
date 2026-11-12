@@ -42,6 +42,8 @@ export interface Route {
   tab: Tab;
   sub: string | null;
   settings: boolean;
+  /** 자료 안의 한 곳(Agent-A 댓글 요청 id). 자료 탭에서만 쓴다. */
+  focus?: string | null;
 }
 
 export type Auth = "checking" | "need_code" | "ok";
@@ -88,13 +90,16 @@ export function parseHash(hash: string): Route {
   const wanted = parts[2] as Tab | undefined;
   const tab = wanted && routable(projectId, wanted, parts[3]) ? wanted : "home";
   const sub = tab === wanted && parts[3] ? safeDecode(parts[3]) : null;
-  return { projectId, tab, sub, settings: false };
+  const focus = tab === "files" && sub && parts[4] ? safeDecode(parts[4]) : null;
+  return focus ? { projectId, tab, sub, settings: false, focus } : { projectId, tab, sub, settings: false };
 }
 
-export function routeHash(r: Pick<Route, "projectId" | "tab"> & { sub?: string | null; settings?: boolean }): string {
+export function routeHash(r: Pick<Route, "projectId" | "tab"> & { sub?: string | null; settings?: boolean; focus?: string | null }): string {
   if (r.settings) return "#/settings";
   const base = `#/p/${encodeURIComponent(r.projectId)}/${r.tab}`;
-  return r.sub ? `${base}/${encodeURIComponent(r.sub)}` : base;
+  if (!r.sub) return base;
+  const withSub = `${base}/${encodeURIComponent(r.sub)}`;
+  return r.focus && r.tab === "files" ? `${withSub}/${encodeURIComponent(r.focus)}` : withSub;
 }
 
 function safeDecode(s: string): string {
