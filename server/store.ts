@@ -1973,7 +1973,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   listFiles(projectId: string): FileDoc[] {
-    return this.rows("SELECT * FROM files WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC", projectId).map(toFile);
+    // Artifact HTML is loaded separately by getFileHtml, never by a sync/list projection.
+    return this.rows(`SELECT id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, task_id
+      FROM files WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC`, projectId).map(toFile);
   }
 
   createFile(input: NewFile): FileDoc {
@@ -2463,7 +2465,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   inputState(memberId: string): RunnerRecoveryState {
     const generation = this.memberRevisions(memberId).sessionGeneration;
     const r = this.row("SELECT * FROM terminal_leases WHERE member_id = ? AND generation = ? AND expires_at > ?", memberId, generation, Date.now());
-    return { lease: r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null, unresolvedDispatches: this.listDispatches(memberId).filter((d) => ["prepared", "write_started", "unknown"].includes(d.transportState) || d.items.some((item) => { const phase = this.getDeliveryRecovery(item.deliveryId)?.phase; return phase !== undefined && !["none", "resolved", "stopped"].includes(phase); })) };
+    // Select before hydrating large wire texts. Old generations can still hold a physical fence.
+    const unresolvedDispatches = this.rows(`SELECT d.id FROM delivery_dispatches d WHERE d.member_id = ? AND (
+      d.transport_state IN ('prepared', 'write_started', 'unknown') OR EXISTS (
+        SELECT 1 FROM delivery_dispatch_items i JOIN delivery_recovery r ON r.delivery_id = i.delivery_id
+        WHERE i.dispatch_id = d.id AND r.phase NOT IN ('none', 'resolved', 'stopped')
+      )) ORDER BY d.created_at, d.rowid`, memberId).map(d => this.getDispatch(d.id)!);
+    return { lease: r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null, unresolvedDispatches };
   }
 
   // ---- 전달 복구 CAS / 봉투 ----
@@ -2519,6 +2527,22 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT id FROM delivery_dispatches WHERE member_id = ? ORDER BY created_at, rowid", memberId).map((r) => this.getDispatch(r.id)!);
   }
 
+  listDeliveryDispatches(deliveryId: string): DeliveryDispatch[] {
+    return this.rows(`SELECT d.id FROM delivery_dispatches d JOIN delivery_dispatch_items i ON i.dispatch_id = d.id
+      WHERE i.delivery_id = ? ORDER BY d.created_at, d.rowid`, deliveryId).map(r => this.getDispatch(r.id)!);
+  }
+
+  physicalDeliveryIds(): string[] {
+    return this.rows(`SELECT DISTINCT i.delivery_id FROM delivery_dispatches d JOIN delivery_dispatch_items i ON i.dispatch_id = d.id
+      WHERE d.transport_state IN ('prepared', 'write_started', 'unknown')`).map(r => r.delivery_id);
+  }
+
+  hasLogicalDeliveryFence(memberId: string): boolean {
+    return this.row(`SELECT 1 FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id WHERE d.member_id = ? AND
+      (r.delivery_id IS NULL OR r.phase NOT IN ('none', 'resolved', 'stopped') OR
+        (r.phase = 'none' AND (d.status = 'delivering' OR (d.status = 'held' AND d.hold_reason = 'delivery_unknown')))) LIMIT 1`, memberId) !== null;
+  }
+
   updateDispatch(id: string, expected: DeliveryDispatch["transportState"], state: DeliveryDispatch["transportState"], submit = false): DeliveryDispatch {
     return this.transaction(() => {
       const result = this.db.query("UPDATE delivery_dispatches SET transport_state = ?, submit_attempts = submit_attempts + ?, updated_at = ? WHERE id = ? AND transport_state = ? AND submit_attempts + ? <= 1").run(state, submit ? 1 : 0, nowIso(), id, expected, submit ? 1 : 0);
@@ -2546,6 +2570,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.requireDelivery(id);
     const r = this.row("SELECT * FROM deliveries WHERE id = ?", id)!;
     return { nextAttemptAt: r.next_attempt_at, sourceRevision: r.source_revision, retryScope: r.retry_scope, retryReason: r.retry_reason, correctionRevision: r.correction_revision };
+  }
+
+  deliveryRetryDue(memberId: string, backend: Backend): number {
+    const retries = this.rows(`SELECT next_attempt_at FROM deliveries WHERE next_attempt_at IS NOT NULL AND
+      ((member_id = ? AND status IN ('queued', 'held')) OR retry_scope IN (?, ?))`, memberId, `member:${memberId}`, `backend:${backend}`);
+    return retries.reduce((due, r) => r.next_attempt_at ? Math.max(due, Date.parse(r.next_attempt_at)) : due, 0);
   }
 
   patchDeliveryRetry(id: string, patch: Partial<DeliveryRetryState>): void {

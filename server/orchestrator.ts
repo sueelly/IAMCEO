@@ -4108,12 +4108,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   private retryDue(member: Member): number {
-    let due = 0;
-    for (const delivery of this.store.listDeliveries()) {
-      const retry = this.store.getDeliveryRetry(delivery.id);
-      if (retry.nextAttemptAt && (delivery.memberId === member.id && ["queued", "held"].includes(delivery.status) || retry.retryScope === `member:${member.id}` || retry.retryScope === `backend:${this.backendOf(member)}`)) due = Math.max(due, Date.parse(retry.nextAttemptAt));
-    }
-    return due;
+    return this.store.deliveryRetryDue(member.id, this.backendOf(member));
   }
 
   private scheduleRetry(memberId: string, rt: Runtime, due: number): void {

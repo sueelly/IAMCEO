@@ -9,7 +9,7 @@ import type { DeliveryBaseline, DeliveryInspection, DeliveryRepair, Runner, Runn
 export type DeliveryRecoveryStore = Pick<Store,
   "transaction" | "afterCommit" | "requireProject" | "listProjects" | "requireMember" | "getMember" | "listMembers" | "memberRevisions" | "getSettings" |
   "listDeliveries" | "requireDelivery" | "getDelivery" | "enqueue" | "getDeliveryRecovery" | "updateDeliveryRecovery" | "listDeliveryRecoveries" |
-  "getDeliveryRetry" | "patchDeliveryRetry" | "saveDispatch" | "getDispatch" | "listDispatches" | "updateDispatch" | "inputState" |
+  "getDeliveryRetry" | "patchDeliveryRetry" | "saveDispatch" | "getDispatch" | "listDispatches" | "listDeliveryDispatches" | "physicalDeliveryIds" | "hasLogicalDeliveryFence" | "updateDispatch" | "inputState" |
   "deliveryRecoveryOperation" | "markDelivered" | "markHeld" | "markFailed" | "setDeliveryStatus" | "setMessageDelivery" |
   "getMessage" | "requireMessage" | "listMessagePage" | "getDecision" | "setDecisionStatus" | "getTodo" | "todoRevision" | "appendActivity">;
 
@@ -86,7 +86,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     if (this.store.requireProject(id).archived) throw new ApiError(404, "프로젝트를 찾을 수 없습니다");
   }
   private latest(delivery: Delivery): DeliveryDispatch | null {
-    return this.store.listDispatches(delivery.memberId).filter(d => d.items.some(item => item.deliveryId === delivery.id)).at(-1) ?? null;
+    return this.store.listDeliveryDispatches(delivery.id).at(-1) ?? null;
   }
   private validDispatch(dispatch: DeliveryDispatch): boolean {
     // JSON columns are a persistence boundary, unlike ordinary typed arguments.
@@ -131,7 +131,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     this.settleProvenDispatches(memberId);
     const state = this.store.inputState(memberId);
     return !!state.lease || this.mutations.has(memberId) || state.unresolvedDispatches.some(d => ["prepared", "write_started", "unknown"].includes(d.transportState)) ||
-      this.store.listDeliveries(this.store.requireMember(memberId).projectId).some(d => d.memberId === memberId && this.logicalFence(d));
+      this.store.hasLogicalDeliveryFence(memberId);
   }
   private logicalFence(d: Delivery): boolean {
     const r = this.record(d.id);
@@ -180,7 +180,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
 
   private rejectedCount(d: Delivery): number {
     let count = 0;
-    for (const dispatch of this.store.listDispatches(d.memberId).filter(x => x.items.some(i => i.deliveryId === d.id)).reverse()) {
+    for (const dispatch of this.store.listDeliveryDispatches(d.id).reverse()) {
       if (dispatch.transportState !== "rejected") break;
       count++;
     }
@@ -193,10 +193,14 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
    * same delivery: same id, marker and text, through every normal admission gate. Ambiguous or received rows never qualify.
    */
   private ownerRetryable(d: Delivery, r = this.record(d.id)): boolean {
-    const latest = this.latest(d);
-    return r.phase === "resolved" && r.reason === "not_received" && ["queued", "held"].includes(d.status) && d.kind !== "compact" &&
-      this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" && latest?.transportState === "rejected" && this.rejectedCount(d) >= MAX_REJECTED &&
-      this.sourceValid(latest, d) && !this.store.listDispatches(d.memberId).some(x => x.items.some(i => i.deliveryId === d.id) && ["prepared", "write_started", "unknown"].includes(x.transportState));
+    if (r.phase !== "resolved" || r.reason !== "not_received" || !["queued", "held"].includes(d.status) || d.kind === "compact" ||
+      this.store.getDeliveryRetry(d.id).retryReason !== "rejected_limit") return false;
+    const history = this.store.listDeliveryDispatches(d.id);
+    const latest = history.at(-1);
+    let refused = 0;
+    for (let i = history.length - 1; i >= 0 && history[i].transportState === "rejected"; i--) refused++;
+    return latest?.transportState === "rejected" && refused >= MAX_REJECTED && this.sourceValid(latest, d) &&
+      !history.some(x => ["prepared", "write_started", "unknown"].includes(x.transportState));
   }
 
   /** A durable pre-write refusal needs no log, identity or quiescence evidence. */
@@ -348,10 +352,20 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
   }
   private async run(): Promise<void> {
     const members = new Map<string, Delivery[]>();
-    for (const d of this.store.listDeliveries()) {
+    let physicalIds = new Set(this.store.physicalDeliveryIds());
+    let scanned = 0;
+    for (const snapshot of this.store.listDeliveries()) {
+      if (++scanned % 50 === 0) {
+        // Yield to HTTP/WebSocket timers, then refresh physical fences after concurrent input.
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        physicalIds = new Set(this.store.physicalDeliveryIds());
+      }
+      if (this.closed) return;
+      const d = this.store.getDelivery(snapshot.id);
+      if (!d) continue; // A cancellation/member removal can commit while the scan yields.
       const r = this.record(d.id);
       if (!["none", "resolved", "stopped"].includes(r.phase) && this.requeueRejected(d.id)) continue;
-      const physical = this.store.listDispatches(d.memberId).some(item => item.items.some(item => item.deliveryId === d.id) && ["prepared", "write_started", "unknown"].includes(item.transportState));
+      const physical = physicalIds.has(d.id);
       if (!physical && (["resolved", "stopped"].includes(r.phase) || d.status === "delivered" && r.reason !== "duplicate_draft" || r.phase === "none" && !["failed", "delivering"].includes(d.status) && !(d.status === "held" && d.holdReason === "delivery_unknown"))) continue;
       if (this.store.requireProject(d.projectId).archived || this.store.requireMember(d.memberId).origin === "manual") continue;
       if (physical && ["resolved", "stopped"].includes(r.phase) && r.lastCheckedAt && Date.parse(r.lastCheckedAt) + 60_000 > this.now()) continue;
@@ -359,7 +373,12 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       members.set(d.memberId, [...(members.get(d.memberId) ?? []), d]);
     }
     // Members progress independently. Errors remain visible to the gate/host.
-    const results = await Promise.allSettled([...members.values()].map(ds => this.checkMember(ds)));
+    const results = await Promise.allSettled([...members.values()].map(async ds => {
+      const member = this.store.getMember(ds[0].memberId);
+      if (!member || member.origin === "manual" || this.store.requireProject(member.projectId).archived) return;
+      const current = ds.flatMap(d => { const live = this.store.getDelivery(d.id); return live ? [live] : []; });
+      if (current.length) await this.checkMember(current);
+    }));
     for (const result of results) if (result.status === "rejected") throw result.reason;
   }
   private async checkMember(deliveries: Delivery[]): Promise<void> {
@@ -367,7 +386,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     // An older unknown write is still a physical fence even if a later attempt succeeded.
     // Read it by its own identity/barrier; later success cannot settle that earlier RPC.
     const latest = new Set(deliveries.map(d => this.latest(d)?.dispatchId));
-    for (const dispatch of this.store.listDispatches(deliveries[0].memberId)) {
+    for (const dispatch of this.store.inputState(deliveries[0].memberId).unresolvedDispatches) {
       if (this.closed || this.store.inputState(dispatch.memberId).lease) return;
       if (latest.has(dispatch.dispatchId) || !["prepared", "write_started", "unknown"].includes(dispatch.transportState)) continue;
       const member = this.store.requireMember(dispatch.memberId);
@@ -426,7 +445,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
    * provider-log receipt settles it; anything less stays unresolved.
    */
   private settleProvenDispatches(memberId: string): void {
-    for (const dispatch of this.store.listDispatches(memberId)) {
+    for (const dispatch of this.store.inputState(memberId).unresolvedDispatches) {
       if (!["prepared", "write_started", "unknown"].includes(dispatch.transportState) || !dispatch.items.length) continue;
       const proven = dispatch.items.every(item => {
         const d = this.store.getDelivery(item.deliveryId), r = this.store.getDeliveryRecovery(item.deliveryId);
@@ -579,16 +598,24 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     if (r.phase === "resolved" && !(r.reason === "not_received" && ["queued", "held"].includes(d.status)) || r.phase === "stopped" || d.status === "delivered" && r.reason !== "duplicate_draft") return null;
     const m = d.refType === "message" && d.refId ? this.store.getMessage(d.refId) : null;
     const preview = m?.body ?? (d.refType === "decision" && d.refId ? this.store.getDecision(d.refId)?.title : d.refType === "todo" && d.refId ? this.store.getTodo(d.refId)?.title : null) ?? ({ user_message: "대표 메시지", answer: "결재 답변", todo_done: "업무 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" }[d.kind]);
+    const ownerRetryable = this.ownerRetryable(d, r);
     return { id: d.id, deliveryId: d.id, messageId: m?.id ?? null, memberId: d.memberId, projectId: d.projectId, kind: d.kind, status: d.status,
-      phase: this.ownerRetryable(d, r) ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: r.reason, note: this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" ? "입력 전에 5회 거절되어 자동 전달을 보류했습니다. 터미널의 입력칸과 승인 창을 확인한 뒤 '다시 확인'을 누르면 같은 지시를 한 번 더 보냅니다" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
+      phase: ownerRetryable ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: r.reason, note: this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" ? "입력 전에 5회 거절되어 자동 전달을 보류했습니다. 터미널의 입력칸과 승인 창을 확인한 뒤 '다시 확인'을 누르면 같은 지시를 한 번 더 보냅니다" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
       version: r.version, createdAt: d.createdAt, lastCheckedAt: r.lastCheckedAt, nextCheckAt: r.nextCheckAt, autoAttempts: r.autoAttempts, evidence: r.evidence,
-      recommendation: r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: this.ownerRetryable(d, r) ? ["recheck"] : this.actions(d, r),
+      recommendation: r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: ownerRetryable ? ["recheck"] : this.actions(d, r),
       ref: d.refType && d.refId ? { type: d.refType, id: d.refId } : null, preview: preview.length > 160 ? preview.slice(0, 157) + "..." : preview };
   }
   private items(projectId: string): DeliveryNoticeItem[] {
     const deliveries = this.store.listDeliveries(projectId);
     const last = new Map<string, string>();
-    const key = (d: Delivery) => { const revision = this.store.getDeliveryRetry(d.id).sourceRevision; return d.refType && d.refId && revision ? JSON.stringify([d.memberId, d.refType, d.refId, revision]) : null; };
+    const keys = new Map<string, string | null>();
+    const key = (d: Delivery) => {
+      if (keys.has(d.id)) return keys.get(d.id)!;
+      const revision = d.refType && d.refId ? this.store.getDeliveryRetry(d.id).sourceRevision : null;
+      const value = revision ? JSON.stringify([d.memberId, d.refType, d.refId, revision]) : null;
+      keys.set(d.id, value);
+      return value;
+    };
     for (const d of deliveries) { const k = key(d); if (k) last.set(k, d.id); }
     const items: DeliveryNoticeItem[] = [];
     for (const d of deliveries) {
