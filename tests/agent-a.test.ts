@@ -416,8 +416,7 @@ test("원래 화면 댓글의 답은 다 쓴 뒤 한 번만 알리고, 처음 �
   fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "전환율 5%")]);
   await svc.watchComments();
   expect(store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"))).toHaveLength(0);
-  await svc.watchComments(); // 바뀐 것 없음(304)
-  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "전환율 5%"), q("c2", "다시")]);
+  // 바뀐 것 없음(304): 다른 댓글이 새로 생기지 않아도 다 쓴 답이 그대로이므로 이때 알린다.
   await svc.watchComments();
   const notes = store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"));
   expect(notes).toHaveLength(1);
@@ -425,7 +424,9 @@ test("원래 화면 댓글의 답은 다 쓴 뒤 한 번만 알리고, 처음 �
   expect(notes[0]!.body).toContain(`/files/${a.fileId})`);
   let info = await svc.projectInfo(project.id);
   expect(info.docs[0]!).toMatchObject({ unseen: 1, pending: 0 });
-  // 같은 답을 다시 보아도 두 번 알리지 않는다.
+  // 같은 답을 다시 보아도(바뀐 것 없음·다른 댓글 추가) 두 번 알리지 않는다.
+  await svc.watchComments();
+  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "전환율 5%"), q("c2", "다시")]);
   await svc.watchComments();
   await svc.watchComments();
   expect(store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"))).toHaveLength(1);
@@ -436,8 +437,6 @@ test("원래 화면 댓글의 답은 다 쓴 뒤 한 번만 알리고, 처음 �
   const failed = r("comment-answer-3", "c3", "", { answerError: { message: "모델 연결 실패" } });
   fake.setComments(a.artifactId, [q("c3", "실패할 질문"), failed]);
   await svc.watchComments();
-  await svc.watchComments();
-  fake.setComments(a.artifactId, [q("c3", "실패할 질문"), failed, q("c4", "x")]);
   await svc.watchComments();
   expect(store.listMessages(project.id).filter((m) => m.title.includes("답을 받지 못했습니다"))).toHaveLength(1);
 });
@@ -455,19 +454,26 @@ test("정본 판이 바뀌면 원래 화면과 같이 새 검토 세션으로 �
   expect(fake.sessions).toHaveLength(2);
 });
 
-test("열쇠 없는 기본 방식이면 열쇠를 보내지 않고 원래 화면 주소를 준다. 열쇠를 요구하면 주소를 주지 않는다", async () => {
+test("원래 화면은 열쇠 없는 기본 방식이든 열쇠 방식이든 쓸 수 있고, Agent-A 주소는 화면 정보에 싣지 않는다. 열쇠를 요구하는데 열쇠가 없으면 막는다", async () => {
   const local = fakeAgentA();
   local.setLocalMode(true);
   const one = setup(local, undefined, null);
   const p1 = one.store.createProject({ name: "체험", cwd: tmpdir() });
   const info = await one.svc.projectInfo(p1.id);
-  expect(info).toMatchObject({ reachable: true, uiUrl: "http://127.0.0.1:1", uiBlocked: null });
+  expect(info).toMatchObject({ reachable: true, ui: true, uiBlocked: null });
+  expect(JSON.stringify(info)).not.toContain("127.0.0.1");
   expect(local.calls.every((c) => c.as === "none")).toBe(true);
   const keyed = setup();
   const p2 = keyed.store.createProject({ name: "체험", cwd: tmpdir() });
   const info2 = await keyed.svc.projectInfo(p2.id);
-  expect(info2.uiUrl).toBeNull();
-  expect(info2.uiBlocked).toContain("열쇠");
+  expect(info2).toMatchObject({ reachable: true, ui: true, uiBlocked: null });
+  expect(JSON.stringify(info2)).not.toContain(APP);
+  // 열쇠를 요구하는데 IAMCEO 에 열쇠가 없으면 닿지 않는 것으로 보고 화면을 열지 않는다
+  const bare = setup(fakeAgentA(), undefined, null);
+  const p3 = bare.store.createProject({ name: "체험", cwd: tmpdir() });
+  const info3 = await bare.svc.projectInfo(p3.id);
+  expect(info3.ui).toBe(false);
+  expect(info3.uiBlocked).toBeTruthy();
 });
 
 test("그림을 넣으면 Agent-A 에 등록한 뒤 이미지 블록으로 만든다", async () => {

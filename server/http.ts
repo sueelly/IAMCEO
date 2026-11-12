@@ -26,6 +26,7 @@ import { checkLocalImportPath, readLocalFile } from "./local-files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { GitHub } from "./github.ts";
 import type { AgentAService } from "./integrations/agent-a.ts";
+import { AGENT_A_UI_ROOT, AgentAUiTickets, proxyAgentAUi, splitAgentAUiPath } from "./integrations/agent-a-ui.ts";
 
 export interface ServerContext {
   config: Config;
@@ -593,7 +594,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     // ---- Agent-A 연결(체험판). 열쇠는 서버에만 있고 응답에 싣지 않는다. 원래 화면 주소는 열쇠 없는 기본 방식일 때만 준다. ----
     route("GET", "/api/projects/:id/agent-a", async (_req, _url, [id]) => {
       activeProject(id!);
-      if (!ctx.agentA) return Response.json({ enabled: false, reachable: false, error: null, uiUrl: null, uiBlocked: null, docs: [], staff: [] });
+      if (!ctx.agentA) return Response.json({ enabled: false, reachable: false, error: null, ui: false, uiBlocked: null, docs: [], staff: [] });
       return Response.json(await ctx.agentA.projectInfo(id!));
     }),
     route("POST", "/api/projects/:id/agent-a/docs", async (req, _url, [id]) => {
@@ -1207,7 +1208,7 @@ function artifactFrameResponse(): Response {
 }
 
 /** 직원 글에 뭐가 들어와도 외부로 요청이 나가거나 스크립트가 돌지 못하게 하는 마지막 줄. */
-function pageHeaders(host: string, frames: string[] = []): Record<string, string> {
+function pageHeaders(host: string): Record<string, string> {
   const csp = [
     "default-src 'self'",
     "script-src 'self'",
@@ -1215,8 +1216,7 @@ function pageHeaders(host: string, frames: string[] = []): Record<string, string
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     `connect-src 'self' ws://${host} wss://${host}`,
-    // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다). Agent-A 를 켰으면 그 원래 화면 주소만 더한다.
-    `frame-src 'self' blob:${frames.map((f) => ` ${f}`).join("")}`,
+    "frame-src 'self' blob:", // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다). Agent-A 원래 화면도 같은 주소 아래(/agent-a-ui/s/)다.
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -1226,12 +1226,12 @@ function pageHeaders(host: string, frames: string[] = []): Record<string, string
 }
 
 /** HTML 번들은 Bun 이 routes 에서만 내준다. 안쪽 주소에 띄워 두고, IP·Origin 검사를 지난 요청만 넘겨준다. */
-async function proxyWeb(origin: string, req: Request, url: URL, frames: string[] = []): Promise<Response> {
+async function proxyWeb(origin: string, req: Request, url: URL): Promise<Response> {
   if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "허용되지 않는 메서드입니다");
   const res = await fetch(`${origin}${url.pathname}${url.search}`, { method: req.method });
   const headers = new Headers(res.headers);
   for (const name of ["content-encoding", "content-length", "transfer-encoding"]) headers.delete(name);
-  for (const [k, v] of Object.entries(pageHeaders(req.headers.get("host") ?? url.host, frames))) headers.set(k, v);
+  for (const [k, v] of Object.entries(pageHeaders(req.headers.get("host") ?? url.host))) headers.set(k, v);
   return new Response(res.body, { status: res.status, headers });
 }
 
@@ -1255,6 +1255,8 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
   // and access-code rotation. Only Bearer-authenticated HTTP can mint a cookie.
   const realtimeSecret = randomBytes(32);
   const realtimeCredential = () => createHmac("sha256", realtimeSecret).update(config.accessCode).digest("hex");
+  // Agent-A 원래 화면 입장권. 접속 코드를 바꾸면 모두 버린다.
+  const agentATickets = new AgentAUiTickets();
   let boundPort = 0;
   const pairing = new Pairing();
   const terminalStreams = new TerminalStreams(config, store, ctx.orch);
@@ -1340,6 +1342,14 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (path === "/api/files-session" && req.method === "POST") {
         return new Response(null, { status: 204, headers: { "Set-Cookie": filesCookie(url, filesCookieValue(config.accessCode), FILES_COOKIE_MAX_AGE) } });
       }
+      // Agent-A 원래 화면 입장권: 접속 코드로 인증한 화면만 받는다. 경로(/agent-a-ui/s/<입장권>)만 주고 Agent-A 주소·열쇠는 주지 않는다.
+      if (path === "/api/agent-a/ui-session") {
+        strictQuery(url, []);
+        if (req.method !== "POST") return fail(405, "허용되지 않는 메서드입니다");
+        if (!ctx.agentA) return fail(404, "Agent-A 연결이 켜져 있지 않습니다", "AGENT_A_DISABLED");
+        const { base, expiresAt } = agentATickets.mint();
+        return Response.json({ base, expiresAt: new Date(expiresAt).toISOString() });
+      }
       return dispatch(routes, req, url);
     }
     if (path.startsWith("/files/")) {
@@ -1350,6 +1360,15 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (!byCookie && !hasAccessCode(req, url, false)) return fail(401, "인증이 필요합니다");
       return filesResponse(url, ctx);
     }
+    if (path.startsWith("/agent-a-ui/")) {
+      const parts = splitAgentAUiPath(path);
+      if (!ctx.agentA || !parts) return fail(404, "없는 경로입니다");
+      if (!agentATickets.valid(parts.ticket)) {
+        const h = new Headers({ "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" });
+        return new Response("Agent-A 화면 입장 시간이 지났습니다. 자료를 다시 열어 주세요.", { status: 401, headers: h });
+      }
+      return proxyAgentAUi(req, url, parts.prefix, parts.rest, ctx.agentA.client);
+    }
     if (path === "/artifact-frame") return artifactFrameResponse();
     if (path === "/agent/join") return handleJoin(req, ctx);
     if (path.startsWith("/agent/")) {
@@ -1358,7 +1377,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (!member) return fail(401, "인증이 필요합니다");
       return dispatch(agentRoutes(ctx, member), req, url);
     }
-    if (webOrigin) return proxyWeb(webOrigin, req, url, ctx.agentA ? [ctx.agentA.client.baseUrl] : []);
+    if (webOrigin) return proxyWeb(webOrigin, req, url);
     if (path === "/" && !webIndex) return fail(503, "화면이 아직 빌드되지 않았습니다");
     return fail(404, "없는 경로입니다");
   };
@@ -1395,6 +1414,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     // 저장부터 인증 교체·QR 폐기·구독 해제까지 await 없이 한 번에 적용한다.
     config.accessCode = accessCode;
     authGeneration++;
+    agentATickets.clear();
     pairing.invalidate();
     closedEpochSockets ||= sockets.size > 0;
     for (const ws of sockets) {
@@ -1428,7 +1448,9 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     };
     if (!isIpAllowed(server.requestIP(req)?.address, ipRule)) return noStore(fail(403, "허용되지 않은 주소입니다"));
     if (!isHostAllowed(req.headers.get("host"), config.hosts)) return noStore(fail(403, "허용되지 않은 주소입니다"));
-    if (!originMatchesHost(req)) return noStore(fail(403, "허용되지 않은 출처입니다"));
+    // Agent-A 원래 화면은 격리 칸(출처 'null')에서 돈다. 그 경로만 'null' 출처를 받는다(입장권으로 인증하고 CORS 로 답한다).
+    const sandboxedAgentA = url.pathname.startsWith(AGENT_A_UI_ROOT) && req.headers.get("origin") === "null";
+    if (!originMatchesHost(req) && !sandboxedAgentA) return noStore(fail(403, "허용되지 않은 출처입니다"));
     try {
       return noStore(await route(req, url, server));
     } catch (e) {
