@@ -20,6 +20,7 @@ import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, statSync, wri
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
+  AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
   AdoptPreview,
   AdoptReq,
   AnswerApprovalReq,
@@ -2368,6 +2369,87 @@ export class Orchestrator implements OrchestratorApi {
     this.store.appendActivity(member.id, "system", `대표가 승인 창에서 ${r.chosen.n}번 '${r.chosen.label}' 을 골랐습니다 · ${approvalSummary(r.prompt, 200)}`);
     const note = req.note?.trim();
     if (r.chosen.reject && note) await this.sendUserMessage(member.projectId, { text: note, targetMemberId: member.id });
+  }
+
+  /**
+   * 대화의 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 그 귀속(프로젝트·직원·세대·실행·작업·창 차례).
+   * 읽기만 한다. 실행기가 창을 읽지 못하면 prompt 는 limited(원문만)다.
+   */
+  async memberNativePrompt(memberId: string): Promise<NativePromptState> {
+    const member = this.store.requireMember(memberId);
+    if (this.runtime(memberId).closing || member.status !== "blocked") return { prompt: null, context: null };
+    const runner = this.runners.get(this.backendOf(member));
+    if (!runner?.nativePrompt) return { prompt: null, context: null };
+    const read = await runner.nativePrompt(this.runnerMember(member, this.store.requireProject(member.projectId)));
+    if (!read) return { prompt: null, context: null };
+    return { prompt: read.prompt, context: this.nativeContext(member, read.promptKey) };
+  }
+
+  private nativeContext(member: Member, promptId: string): NativePromptContext {
+    const exec = member.executionState && !["ended", "interrupted"].includes(member.executionState.phase) ? member.executionState : null;
+    const taskIds = exec?.taskIds ?? [];
+    return { projectId: member.projectId, memberId: member.id, generation: this.store.memberRevisions(member.id).sessionGeneration, executionId: exec?.runId ?? null, taskId: taskIds.length === 1 ? taskIds[0]! : null, promptId };
+  }
+
+  private static cut(text: string, max: number): string { const t = text.replace(/\s+/g, " ").trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; }
+
+  private nativeReceipts = new Map<string, NativeAnswerReceipt>();
+  private nativeInflight = new Map<string, { memberId: string; promptId: string; run: Promise<NativeAnswerReceipt> }>();
+
+  /**
+   * 대표가 대화에서 직원 CLI 의 창에 답한다(대표 화면 HTTP 전용, AI 도구에는 없다). 업무 대기열을 거치지 않고 지금 창에 바로 넣는다.
+   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청). 세대·실행·창 차례가 카드와 다르면 넣지 않는다.
+   */
+  async answerNativePrompt(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
+    const prior = this.nativeReceipts.get(req.operationId) ?? this.nativeInflight.get(req.operationId);
+    if (prior) {
+      if (prior.memberId !== memberId || prior.promptId !== req.promptId) throw new ApiError(409, "다른 요청에 쓴 operationId 입니다", "OPERATION_CONFLICT");
+      return "run" in prior ? prior.run : prior;
+    }
+    const run = this.answerNativeOnce(memberId, req);
+    this.nativeInflight.set(req.operationId, { memberId, promptId: req.promptId, run });
+    try {
+      const receipt = await run;
+      this.nativeReceipts.set(req.operationId, receipt);
+      if (this.nativeReceipts.size > 500) this.nativeReceipts.delete(this.nativeReceipts.keys().next().value!);
+      return receipt;
+    } finally {
+      this.nativeInflight.delete(req.operationId);
+    }
+  }
+
+  private async answerNativeOnce(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
+    const member = this.store.requireMember(memberId);
+    const project = this.store.requireProject(member.projectId);
+    this.requireActive(project);
+    const receipt = (status: NativeAnswerReceipt["status"], note: string, label: string | null = null): NativeAnswerReceipt =>
+      ({ operationId: req.operationId, status, note, memberId, promptId: req.promptId, option: status === "answered" ? req.option : null, label, at: new Date().toISOString() });
+    const runner = this.runners.get(this.backendOf(member));
+    if (!runner?.answerNativePrompt) return receipt("unsupported", "이 실행 방식은 대화에서 답할 수 없습니다. 터미널에서 답하세요");
+    const context = this.nativeContext(member, req.promptId);
+    if (context.generation !== req.generation) return receipt("stale", "세션이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    if (context.executionId !== req.executionId) return receipt("stale", "다른 실행으로 넘어가 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    const r = await runner.answerNativePrompt(this.runnerMember(member, project), req.promptId, req.option, req.text);
+    if (!r.ok) {
+      const map: Record<typeof r.reason, [NativeAnswerReceipt["status"], string]> = {
+        already: ["already_answered", "이 창에는 이미 답했습니다"],
+        not_blocked: ["already_answered", "창이 이미 닫혔습니다. 다른 곳에서 답했을 수 있습니다"],
+        changed: ["changed", "창이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요"],
+        unrecognized: ["unsupported", "창을 확실히 읽지 못해 넣지 않았습니다. 화면 원문을 보고 터미널에서 답하세요"],
+        no_option: ["changed", "그 선택지가 지금 창에 없어 넣지 않았습니다"],
+        needs_text: ["changed", "직접 입력하는 줄에는 보낼 글이 필요합니다"],
+        gone: ["gone", "칸을 찾지 못했습니다(세션이 끝났을 수 있습니다)"],
+        input_busy: ["busy", "다른 입력이 진행 중이라 넣지 않았습니다. 잠시 뒤 다시 보세요"],
+        leased: ["busy", "다른 사람이 터미널을 조작 중이라 넣지 않았습니다"],
+      };
+      const [status, note] = map[r.reason];
+      return receipt(status, note);
+    }
+    const what = r.chosen.freeText ? `직접 입력으로 답했습니다: ${Orchestrator.cut(cleanText(req.text ?? ""), 120)}` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}' 을 골랐습니다`;
+    this.store.appendActivity(member.id, "system", `대표가 대화에서 ${what} · ${Orchestrator.cut([r.prompt.title, r.prompt.question].filter(Boolean).join(" — "), 160)}`);
+    // 대화에도 한 줄 남긴다: 다른 탭·기기에서도 이미 답한 것을 보고, 업무 지시와 섞이지 않게 시스템 글로 둔다.
+    this.systemMessage(member.projectId, `${member.name}의 ${r.prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 대화에서 답함 — ${r.chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}'`}`);
+    return receipt("answered", r.chosen.freeText ? "보냈습니다" : `'${Orchestrator.cut(r.chosen.label, 60)}' 을 골랐습니다`, r.chosen.label);
   }
 
   async herdrInfo(): Promise<HerdrInfo> {

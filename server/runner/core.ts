@@ -4,10 +4,11 @@ import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ApprovalPrompt, Backend } from "../../shared/types.ts";
+import type { ApprovalPrompt, Backend, NativePrompt } from "../../shared/types.ts";
 import { claudeFolderTrust, codexFolderTrust } from "./core-approval.ts";
 import { antigravityDraft, antigravityExactComposer, antigravityFolderTrust, antigravityMemberHome, discoverAntigravityConversation, existingAntigravityTranscript, readAntigravityContext } from "./antigravity.ts";
 import { cleanText } from "../text.ts";
+import { limitedPrompt, parseNativePrompt } from "./prompt.ts";
 import { childEnv } from "./headless.ts";
 import { defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
 import { CoreError, coreRpc, coreSocketPath, type CoreHello, type CoreTerminal } from "./core-client.ts";
@@ -16,7 +17,7 @@ import { codexBindingMarker, discoverCodexSession, observeCompactBoundary, type 
 import { readDeliveryEvidence, readJsonlRange, parseCodexSessionMeta, providerLogPath, type DeliveryEvidenceCursor, type JsonlCursor } from "./delivery-evidence.ts";
 import type { DeliveryDispatch, RunnerRecoveryStore, TerminalLease } from "../service-contracts.ts";
 import { readTranscriptTail } from "./transcript.ts";
-import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, DeliveryProbe, DeliveryInspection, DeliveryRepair, RunnerTerminalIdentity, RunnerReattachResult, RunnerObservation } from "./types.ts";
+import type { NativePromptAnswer, Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, DeliveryProbe, DeliveryInspection, DeliveryRepair, RunnerTerminalIdentity, RunnerReattachResult, RunnerObservation } from "./types.ts";
 
 /** claudeHome: Claude session transcripts (default CLAUDE_CONFIG_DIR or ~/.claude), read for context usage only. */
 export interface CoreRunnerOptions extends ProviderBins { coreBin?: string; socketPath?: string; session?: string; stateDir?: string; configDir?: string; claudeHome?: string; codexHome?: string; contextHome?: string }
@@ -39,6 +40,10 @@ export interface CoreRunnerDeps {
 interface Track {
   statusKey: string | null;
   setupAttempted: string | null;
+  /** 질문·선택 창이 새로 뜬 차례. 막힘(blocked)으로 들어올 때마다 1 늘어 같은 내용의 창이 다시 떠도 다르게 센다. */
+  promptSeq: number;
+  /** 대표가 이미 답한 창(promptKey). 같은 창에 두 번 넣지 않는다. */
+  answeredPrompts: string[];
   setupError: { code: string; note: string } | null;
   member: RunnerMember; terminal: CoreTerminal; sessionId: string | null; pending: boolean; uncertain: boolean; status: string | null;
   epoch: number; endedTurn: number; completing: boolean; refresh: Promise<CoreTerminal> | null;
@@ -163,7 +168,7 @@ export class CoreRunner implements Runner {
     if (this.closed) throw new CoreError("closed", "CoreRunner shut down while starting; terminal remains owned by core");
     const launch = terminal.labels["iamceo.operation"] ? this.deps.recoveryStore?.getLifecycleJournal?.(terminal.labels["iamceo.operation"]) : null;
     const launchedAt = launch?.memberId === member.id && launch.intent === "start" ? launch.createdAt : null;
-    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, setupAttempted: null, setupError: null,
+    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, setupAttempted: null, setupError: null, promptSeq: 0, answeredPrompts: [],
       epoch: 0, endedTurn: terminal.turn ?? 0, completing: false, refresh: null, nonce: terminal.labels["iamceo.binding"] || null, bindingSince: terminal.labels["iamceo.startedAt"] || launchedAt || new Date().toISOString(), binding: null, compact: null,
       dispatches: [], evidence: new Map(), lastError: null, observedAt: new Date().toISOString(), failures: 0, failure: null };
     this.restore(track);
@@ -282,6 +287,7 @@ export class CoreRunner implements Runner {
     track.setupError = setup ? { code: "folder_trust", note: `폴더 신뢰 확인 창에서 멈췄습니다: ${track.member.cwd}` } : null;
     const blockedReason = setup ? "setup" : state === "blocked" ? (["permission", "selection", "setup"].includes(terminal.status?.kind || "") ? terminal.status!.kind as "permission" | "selection" | "setup" : "status_unknown") : status === "blocked" ? "status_unknown" : null;
     const statusKey = JSON.stringify([status, blockedReason, setup?.prompt.fingerprint ?? null]);
+    if (status === "blocked" && track.status !== "blocked") track.promptSeq++;
     if (statusKey !== track.statusKey || track.failure) {
       track.status = status;
       track.statusKey = statusKey;
@@ -819,6 +825,89 @@ export class CoreRunner implements Runner {
     await this.refresh(track);
     const setup = await this.readSetup(track);
     return setup && setup.prompt.fingerprint !== track.setupAttempted ? setup.prompt : null;
+  }
+  /** 막힌 칸의 질문·선택·승인 창. 막힘이 아니면 null. 읽지 못하면 limited(원문만). */
+  private async readPrompt(track: Track): Promise<{ prompt: NativePrompt; key: string } | null> {
+    if (track.terminal.state !== "live" || track.status !== "blocked") return null;
+    const provider = providerFor(track.member);
+    const epoch = track.epoch;
+    const setup = await this.readSetup(track);
+    let prompt: NativePrompt;
+    if (setup && setup.prompt.fingerprint !== track.setupAttempted) {
+      prompt = { ...setup.prompt, kind: "setup", provider, selected: setup.selected, limited: false, raw: "" };
+    } else {
+      const screen = await this.call<{ text: string }>("terminal.read", { terminal: track.terminal.address, lines: 0 });
+      this.validateTrack(track);
+      prompt = parseNativePrompt(screen.text, provider) ?? limitedPrompt(provider, screen.text, "창 모양을 읽지 못했습니다");
+    }
+    if (epoch !== track.epoch) return null;
+    return { prompt, key: `${track.member.sessionGeneration ?? 0}:${track.terminal.turn ?? 0}:${track.promptSeq}:${prompt.fingerprint}` };
+  }
+  async nativePrompt(member: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string } | null> {
+    const track = this.tracks.get(member.id);
+    if (!track) return null;
+    this.assertMember(track, member);
+    await this.refresh(track);
+    const read = await this.readPrompt(track);
+    if (!read || track.answeredPrompts.includes(read.key)) return null;
+    return { prompt: read.prompt, promptKey: read.key };
+  }
+  /**
+   * 대표가 고른 선택지(자유 응답이면 그 글)를 지금 창에 한 번 넣는다. 누르기 직전에 창을 다시 읽어 promptKey 가 같을 때만,
+   * 조작권·세대·입력 순번을 다시 확인하고 넣는다. 화살표로 그 줄로 옮긴 뒤 Enter 한 번(자유 응답은 글 붙여넣기+Enter 한 번).
+   */
+  async answerNativePrompt(member: RunnerMember, promptKey: string, option: number, text?: string): Promise<NativePromptAnswer> {
+    let release: () => void;
+    try { release = this.reserve(member.id); } catch { return { ok: false, reason: "input_busy" }; }
+    const track = this.tracks.get(member.id);
+    let attempted = false;
+    try {
+      if (!track) return { ok: false, reason: "gone" };
+      this.assertMember(track, member);
+      if (this.manualLease(member.id)) return { ok: false, reason: "leased" };
+      if (track.uncertain || track.compact && !["failed", "succeeded"].includes(track.compact.phase)) return { ok: false, reason: "input_busy" };
+      if (!this.methods.has("terminal.keys")) return { ok: false, reason: "unrecognized" };
+      if (track.answeredPrompts.includes(promptKey)) return { ok: false, reason: "already" };
+      const identity = this.identity(track);
+      await this.refresh(track);
+      if (track.terminal.state !== "live") return { ok: false, reason: "gone" };
+      const epoch = track.epoch;
+      const read = await this.readPrompt(track);
+      if (!read) return { ok: false, reason: "not_blocked" };
+      if (read.key !== promptKey) return { ok: false, reason: "changed", current: read.prompt };
+      if (read.prompt.limited) return { ok: false, reason: "unrecognized", current: read.prompt };
+      const index = read.prompt.options.findIndex((o) => o.n === option);
+      const chosen = read.prompt.options[index];
+      if (!chosen) return { ok: false, reason: "no_option", current: read.prompt };
+      if (text !== undefined && !chosen.freeText) return { ok: false, reason: "no_option", current: read.prompt };
+      if (chosen.freeText && text === undefined) return { ok: false, reason: "needs_text", current: read.prompt };
+      const clean = text === undefined ? undefined : cleanText(text).trim();
+      if (text !== undefined && !clean) return { ok: false, reason: "needs_text", current: read.prompt };
+      // 읽은 뒤 조작권·세대·관측이 바뀌었으면 넣지 않는다.
+      await this.refresh(track);
+      this.validateTrack(track);
+      if (this.manualLease(member.id)) return { ok: false, reason: "leased" };
+      if (track.epoch !== epoch || !this.sameIdentity(identity, this.identity(track))) return { ok: false, reason: "input_busy" };
+      const distance = index - read.prompt.selected;
+      const arrows: string[] = Array(Math.abs(distance)).fill(distance < 0 ? "up" : "down");
+      // 넣기 전에 울타리를 친다. 응답이 모호해도 같은 창에 다시 넣지 않는다.
+      track.answeredPrompts = [...track.answeredPrompts.slice(-19), promptKey];
+      if (read.prompt.kind === "setup") track.setupAttempted = read.prompt.fingerprint;
+      this.bump(track); attempted = true;
+      if (clean !== undefined) {
+        if (arrows.length) await this.call("terminal.keys", { terminal: track.terminal.address, keys: arrows }, this.sendTimeoutMs);
+        await this.call("terminal.send", { terminal: track.terminal.address, text: clean, force: true, wait: false }, this.sendTimeoutMs);
+      } else {
+        await this.call("terminal.keys", { terminal: track.terminal.address, keys: [...arrows, "enter"] }, this.sendTimeoutMs);
+      }
+      await this.refresh(track).catch(() => undefined);
+      return { ok: true, prompt: read.prompt, chosen };
+    } catch (error) {
+      if (track && attempted && (!(error instanceof CoreError) || error.uncertain)) track.uncertain = true;
+      if (!attempted && error instanceof CoreError && error.kind === "not_found") return { ok: false, reason: "gone" };
+      if (!attempted && error instanceof CoreError && error.kind === "conflict") return { ok: false, reason: "changed" };
+      throw error;
+    } finally { release(); }
   }
   async answerApproval(member: RunnerMember, fingerprint: string, option: number): Promise<import("./types.ts").ApprovalAnswer> {
     let release: () => void;

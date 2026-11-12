@@ -2,6 +2,9 @@
 import type {
   Activity,
   AnswerApprovalReq,
+  AnswerNativePromptReq,
+  NativeAnswerReceipt,
+  NativePromptState,
   AnswerReq,
   ApprovalPrompt,
   Attachment,
@@ -231,6 +234,10 @@ export const api = {
   approval: (memberId: string) => get<{ approval: ApprovalPrompt | null }>(`/api/members/${seg(memberId)}/approval`),
   /** 고른 선택지를 칸에서 누른다. 서버가 누르기 직전에 다시 읽어 fingerprint 가 다르면 409. note 는 거절일 때만. */
   answerApproval: (memberId: string, req: AnswerApprovalReq) => post<{ ok: true }>(`/api/members/${seg(memberId)}/approval`, req),
+  /** 대화의 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 귀속. */
+  nativePrompt: (memberId: string) => get<NativePromptState>(`/api/members/${seg(memberId)}/prompt`),
+  /** 그 창에 한 번 답한다. 같은 operationId 는 처음 결과를 돌려준다. */
+  answerNativePrompt: (memberId: string, req: AnswerNativePromptReq) => post<NativeAnswerReceipt>(`/api/members/${seg(memberId)}/prompt/answer`, req),
 
   /** 전달 알림(대표 차례·확인 중인 전달). 앱의 전달 알림 패널과 같은 서버 API다. */
   deliveryNotices: (memberId: string, signal?: AbortSignal) => get<DeliveryNoticePage>(`/api/members/${seg(memberId)}/delivery-notices?limit=50`, signal),

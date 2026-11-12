@@ -448,6 +448,56 @@ export interface ApprovalPrompt {
   options: ApprovalOption[];
   fingerprint: string;
 }
+/** 직원 CLI 가 띄운 질문·선택·승인 창의 선택지. detail 은 선택지 설명, freeText 는 고르면 글을 직접 쳐서 내는 줄. */
+export interface NativePromptOption extends ApprovalOption { detail?: string; freeText?: boolean }
+/**
+ * 직원 CLI 가 화면에 띄운 질문·선택·승인 창. limited 면 선택지를 확실히 읽지 못한 것이라 버튼 없이 raw(화면 원문)만 보인다.
+ * selected 는 지금 커서가 있는 선택지 자리(0부터). 서버는 이 자리에서 화살표로 옮겨 Enter 한 번으로 고른다.
+ */
+export interface NativePrompt extends ApprovalPrompt {
+  kind: "permission" | "question" | "menu" | "setup" | "unknown";
+  provider: CliProvider;
+  options: NativePromptOption[];
+  selected: number;
+  limited: boolean;
+  limitedReason?: string;
+  raw: string;
+}
+/** 대화의 '답을 기다림' 카드가 고정하는 귀속. 누를 때 서버가 지금 것과 같은지 다시 본다. */
+export interface NativePromptContext {
+  projectId: string;
+  memberId: string;
+  /** 세션 세대(새 세션·다시 열기마다 바뀐다) */
+  generation: number;
+  /** 지금 실행(턴)을 가르는 id. 실행 기록이 없으면 null */
+  executionId: string | null;
+  /** 그 실행이 받은 글의 작업(없으면 전체) */
+  taskId: string | null;
+  /** 창이 뜬 차례(같은 창이 다시 떠도 다르게 센다)와 창 지문 */
+  promptId: string;
+}
+export interface NativePromptState { prompt: NativePrompt | null; context: NativePromptContext | null }
+export interface AnswerNativePromptReq {
+  operationId: string;
+  promptId: string;
+  generation: number;
+  executionId: string | null;
+  /** 고른 선택지 번호. text 와 함께면 그 줄이 자유 응답 줄이어야 한다 */
+  option: number;
+  text?: string;
+}
+export type NativeAnswerStatus = "answered" | "already_answered" | "changed" | "gone" | "busy" | "stale" | "unsupported";
+export interface NativeAnswerReceipt {
+  operationId: string;
+  status: NativeAnswerStatus;
+  /** 사람에게 보일 한 줄 */
+  note: string;
+  memberId: string;
+  promptId: string;
+  option: number | null;
+  label: string | null;
+  at: string;
+}
 export interface AnswerApprovalReq { fingerprint: string; option: number; /** 거절할 때 직원에게 전할 말 */ note?: string }
 
 /** 전체 설정 하나가 전부다. 프로젝트마다 따로 두지 않는다. */

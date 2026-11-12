@@ -204,6 +204,14 @@ const AnswerApprovalSchema = z.strictObject({
 });
 const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
+const AnswerNativePromptSchema = z.strictObject({
+  operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  promptId: z.string().min(1).max(200),
+  generation: z.number().int().min(0),
+  executionId: z.string().min(1).max(200).nullable(),
+  option: z.number().int().min(1).max(99),
+  text: z.string().min(1).max(4000).optional(),
+});
 const TerminalSendSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
   text: z.string().min(1).max(131072).optional(),
@@ -879,6 +887,16 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (!orch.answerApproval) throw new ApiError(501, "이 실행 방식에는 승인 창이 없습니다");
       await orch.answerApproval(id!, await parseBody(req, AnswerApprovalSchema));
       return Response.json({ ok: true });
+    }),
+    // 대화의 '답을 기다림' 카드. 대표만 답한다(agentRoutes 에 없다).
+    route("GET", "/api/members/:id/prompt", async (_req, _url, [id]) => {
+      store.requireMember(id!);
+      return Response.json(orch.memberNativePrompt ? await orch.memberNativePrompt(id!) : { prompt: null, context: null });
+    }),
+    route("POST", "/api/members/:id/prompt/answer", async (req, _url, [id]) => {
+      store.requireMember(id!);
+      if (!orch.answerNativePrompt) throw new ApiError(501, "이 실행 방식에서는 대화에서 답할 수 없습니다");
+      return Response.json(await orch.answerNativePrompt(id!, await parseBody(req, AnswerNativePromptSchema)));
     }),
     route("POST", "/api/members/:id/sleep", async (req, url, params) => {
       // 본문은 '그래도 재우기'를 눌렀을 때만 온다. 빈 본문은 force 없음이다.

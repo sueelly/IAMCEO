@@ -1,4 +1,6 @@
 // 대화: 보고와 내 말을 시간순으로. 본문 스크롤은 Shell 의 data-scroll-root 가 맡는다.
+import NativePromptCard from "../components/NativePromptCard";
+import { useRecentAnswers } from "../lib/nativeAnswers";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Decision, FileDoc, Member, Message, MessageKind, Task } from "@shared/types";
 import { GlassButton } from "../glass";
@@ -266,6 +268,10 @@ export default function Thread() {
   const task = draft.taskId ? tasks.find((t) => t.id === draft.taskId) ?? null : null;
   const taskTitles = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks]);
   const history = useTaskHistory(projectId, task?.id ?? null);
+  // 질문·선택·승인 창 앞에서 멈춘 직원. 작업 칩과 상관없이 늘 보인다(카드가 자기 작업을 적는다).
+  // 답한 뒤 막힘이 풀려도 결과 줄(답함·이미 답함·실패)을 잠시 더 보인다.
+  const recentAnswers = useRecentAnswers();
+  const waiting = useMemo(() => (project?.members ?? []).filter((m) => m.origin !== "manual" && (m.status === "blocked" || recentAnswers.has(m.id))), [project?.members, recentAnswers]);
   const allMessages = project?.messages;
   const messages = useMemo(() => {
     const all = allMessages ?? [];
@@ -444,6 +450,11 @@ export default function Thread() {
           </div>
         </>
       )}
+      {waiting.length ? (
+        <div className="th-waits" aria-label="답을 기다리는 직원">
+          {waiting.map((m) => <NativePromptCard key={m.id} member={m} tasks={tasks} />)}
+        </div>
+      ) : null}
       {atBottom ? null : (
         <div className="th-down">
           <GlassButton variant={unread > 0 ? "primary" : "glass"} size="s" onClick={pin}>
