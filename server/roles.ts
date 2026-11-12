@@ -13,6 +13,8 @@ export interface RoleVars {
   CONDUCTOR: string;
   /** 서브에이전트 effort 규칙 한 줄. 정하지 않았으면 빈 글. */
   SUBAGENT_EFFORT?: string;
+  /** 개발 기억 운영 단락. 기억이 켜진 프로젝트에만 들어가고, 아니면 빈 글. */
+  MEMORY?: string;
 }
 
 /** 대표에게 보이는 글 지침. 모든 직원 종류와 CLI(Claude·Codex·Antigravity)의 역할 글 끝에 한 번 붙는다. */
@@ -56,8 +58,9 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
     warned.add(custom);
     console.warn(`역할 템플릿 ${custom} 에 승인 규칙이 없습니다. 기본 규칙 전체를 대체하므로 직원이 승인 없이 일할 수 있습니다. 'iamceo roles export' 로 기본 규칙을 꺼내 고치세요`);
   }
-  const rule = vars.SUBAGENT_EFFORT ?? "";
   // 줄이 통째로 자리표시면 비었을 때 빈 줄을 남기지 않는다. 고쳐 쓴 템플릿에 자리표시가 없어도 규칙은 빠지지 않게 끝에 붙인다.
-  const placed = template.includes("{{SUBAGENT_EFFORT}}") ? (rule ? template : template.replace(/^[ \t]*\{\{SUBAGENT_EFFORT\}\}[ \t]*\n?/gm, "")) : rule ? `${template.trimEnd()}\n${rule}\n` : template;
-  return placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
+  const place = (text: string, key: "SUBAGENT_EFFORT" | "MEMORY", value: string, gap: string): string =>
+    text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value ? `${text.trimEnd()}${gap}${value}\n` : text;
+  const placed = place(place(template, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n");
+  return placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
 }
