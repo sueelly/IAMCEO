@@ -56,7 +56,7 @@ describe("작업 고르기", () => {
     const tasks = [task("old", "w1", "2026-11-01T00:00:00Z"), task("new", "w2", "2026-11-03T00:00:00Z"), task("mid", "w1", "2026-11-02T00:00:00Z"), task("lead", "c1", "2026-11-04T00:00:00Z")];
     expect(visibleTasks(tasks, null).map((t) => t.id)).toEqual(["lead", "new", "mid", "old"]);
     expect(visibleTasks(tasks, "w1").map((t) => t.id)).toEqual(["mid", "old"]);
-    const workers = [{ id: "w1" }, { id: "w2" }];
+    const workers = [{ id: "w1", name: "가" }, { id: "w2", name: "나" }];
     expect(taskTarget(tasks[0]!, workers)).toBe("w1");
     // 총괄이 등록했거나 닫힌 직원의 작업이면 기본 대상(총괄)
     expect(taskTarget(tasks[3]!, workers)).toBeNull();

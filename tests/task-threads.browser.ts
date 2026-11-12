@@ -107,6 +107,9 @@ async function openThread(page: Page) {
 }
 const chips = (page: Page) => page.locator(".cmp-task");
 const chip = (page: Page, name: string) => page.locator(".cmp-task", { hasText: name });
+// 칩 글: 작업 제목만(맡은 사람 표시는 따로 본다). '전체'는 제목 칸이 없다.
+const chipTitles = (page: Page) => page.locator(".cmp-task").evaluateAll((els) => els.map((e) => (e.querySelector(".cmp-task__title") ?? e).textContent));
+const chipWho = (page: Page) => page.locator(".cmp-task__who").allInnerTexts();
 const rows = (page: Page) => page.locator(".th-list .th-row");
 const listText = (page: Page) => page.locator(".th-list").innerText();
 
@@ -115,7 +118,9 @@ describe("웹 작업별 대화", () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await openThread(page);
     // '전체'가 기본이고, 작업은 최신 등록부터
-    await expect(chips(page).allInnerTexts()).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
+    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
+    // 총괄에게 보낼 때는 칩마다 맡은 직원이 보인다
+    await expect(chipWho(page)).resolves.toEqual(["검색 개선", "결제 연동"]);
     await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
     // 전체: 옛 글과 두 작업 글이 모두 보이고, 작업 글에는 작업 표지가 붙는다
     let text = await listText(page);
@@ -171,16 +176,18 @@ describe("웹 작업별 대화", () => {
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
 
     // 작업을 골라 둔 동안에도 다른 작업으로 바로 옮길 수 있게 모든 작업이 보인다
-    await expect(chips(page).allInnerTexts()).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
+    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
     // 직원 선택과 함께: 대상을 검색 직원으로 바꾸면 환불 작업 선택이 풀리고 검색 직원의 작업만 남는다
     await page.locator(".cmp-chip--target").click();
     await page.locator(".cmp-menu__item", { hasText: "검색 개선" }).click();
-    await expect(chips(page).allInnerTexts()).resolves.toEqual(["전체", "검색 속도"]);
+    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도"]);
+    // 한 직원의 작업만 보일 때는 맡은 사람을 되풀이하지 않는다
+    await expect(chipWho(page)).resolves.toEqual([]);
     await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
     // 총괄로 돌리면 모든 작업이 다시 보인다
     await page.locator(".cmp-chip--target").click();
     await page.locator(".cmp-menu__item").first().click();
-    await expect(chips(page).allInnerTexts()).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
+    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
     // 작업을 고른 뒤 '전체'를 누르면 작업도 받는 사람도 기본으로 돌아온다
     await chip(page, "검색 속도").click();
     await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
@@ -213,7 +220,7 @@ describe("웹 작업별 대화", () => {
     // 페이지 자체는 가로로 넘치지 않는다
     await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
     await expect(chips(page).first().innerText()).resolves.toBe("전체");
-    await expect(chips(page).nth(1).innerText()).resolves.toBe("추가 작업 7번 제목이 조금 길다");
+    await expect(chips(page).nth(1).locator(".cmp-task__title").innerText()).resolves.toBe("추가 작업 7번 제목이 조금 길다");
     await page.screenshot({ path: join(SHOTS, "4-phone-start.png") });
     // 맨 끝(가장 오래된 환불 기능)까지 밀어서 고른다
     await strip.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
@@ -376,4 +383,41 @@ describe("웹 작업별 대화", () => {
     await phone.screenshot({ path: join(SHOTS, "11-phone-after-tap.png") });
     await phone.close();
   }, 120_000);
+
+  // 대표: "총괄에서는 잘 뜨는데 각 직원별로는 몇 개만 뜨네? 통일시켜" — 진행판에서 총괄이 만든 작업도 담당 직원 칩에서 보인다.
+  test("진행판 작업: 담당 직원을 고르면 그 작업도 보이고, 고르면 그 직원에게 그 작업으로 보낸다", async () => {
+    const item = store.upsertWork({ projectId: project.id, sec: "doing", title: "환불 정산 확인", who: "총괄·결제 연동" });
+    await settle();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openThread(page);
+    await chip(page, "전체").click();
+    await page.locator(".cmp-chip--target").click();
+    await page.locator(".cmp-menu__item").first().click();
+    // 총괄 쪽: 진행판 작업에도 맡은 직원 이름이 붙는다
+    await expect(chip(page, "환불 정산 확인").locator(".cmp-task__who").innerText()).resolves.toBe("결제 연동");
+    // 결제 연동을 고르면 그 직원이 등록한 작업과 진행판 담당 작업이 함께 보인다
+    await page.locator(".cmp-chip--target").click();
+    await page.locator(".cmp-menu__item", { hasText: "결제 연동" }).click();
+    const titles = await chipTitles(page);
+    expect(titles).toContain("환불 정산 확인");
+    expect(titles).toContain("환불 기능");
+    expect(titles).not.toContain("검색 속도");
+    await page.screenshot({ path: join(SHOTS, "6-worker-chips.png") });
+    // 그 작업을 고르면 받는 사람은 그대로 결제 연동
+    await chip(page, "환불 정산 확인").click();
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
+    await page.getByLabel("입력칸").fill("정산 숫자 확인해 주세요");
+    await page.getByLabel("입력칸").press("Enter");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("정산 숫자 확인해 주세요"));
+    expect(await stored("정산 숫자 확인해 주세요")).toMatchObject({ taskId: `tk_${item.id}`, targetMemberId: pay.id });
+    // 총괄로 바꿔도 진행판 작업은 남는다(총괄도 그 작업의 담당)
+    await page.locator(".cmp-chip--target").click();
+    await page.locator(".cmp-menu__item").first().click();
+    await expect(chip(page, "환불 정산 확인").getAttribute("aria-pressed")).resolves.toBe("true");
+    // 담당이 아닌 직원을 고르면 작업 선택이 풀린다
+    await page.locator(".cmp-chip--target").click();
+    await page.locator(".cmp-menu__item", { hasText: "검색 개선" }).click();
+    await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
+    await page.close();
+  }, 90_000);
 });
