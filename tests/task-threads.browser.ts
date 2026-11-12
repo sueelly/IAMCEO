@@ -229,4 +229,151 @@ describe("웹 작업별 대화", () => {
     await page.screenshot({ path: join(SHOTS, "5-phone-refund.png") });
     await page.close();
   }, 90_000);
+
+  test("대화 글의 작업 표지를 누르면 그 작업 글만 보이고, 입력칸의 작업·받는 사람도 같이 바뀐다", async () => {
+    const report = (m: Member, title: string, taskId: string | null) =>
+      store.createMessage({ projectId: project.id, memberId: m.id, who: m.name, kind: "진행", title, body: "", taskId });
+    // 전체 첫 화면(최근 200개)에 들지 않는 옛 작업 글
+    report(pay, "환불 아주 옛 보고", taskPay.id);
+    for (let i = 1; i <= 180; i++) store.createMessage({ projectId: project.id, mine: true, who: "나", kind: "나", body: `전체 글 ${i}` });
+    report(search, "검색 중간 보고", taskSearch.id);
+    for (let i = 181; i <= 200; i++) store.createMessage({ projectId: project.id, mine: true, who: "나", kind: "나", body: `전체 글 ${i}` });
+    report(pay, "환불 기준 보고", taskPay.id);
+    for (let i = 1; i <= 40; i++) report(pay, `환불 진행 ${i}`, taskPay.id);
+    report(pay, "마지막 환불 보고", taskPay.id);
+    // 진행판에서 끝낸 일의 작업: 칩에는 없지만 글의 표지로 지난 대화를 볼 수 있다
+    const work = store.upsertWork({ projectId: project.id, sec: "doing", title: "끝난 일", who: "작업 실행 체계" });
+    const doneTask = Store.workTaskId(work.id);
+    store.createMessage({ projectId: project.id, who: "작업 실행 체계", kind: "완료", title: "끝난 일 보고", body: "", taskId: doneTask });
+    store.upsertWork({ projectId: project.id, id: work.id, sec: "done", title: "끝난 일" });
+    const empty = orch.saveTask(search, { title: "빈 작업", branch: "feat/empty" }).task;
+    await settle();
+
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openThread(page);
+    const label = (row: string) => page.locator(".th-row", { hasText: row }).locator(".th-card__task");
+    /** 누른 글이 대화 칸 안에 보이는지(스크롤 밖이 아닌지) */
+    const inView = (text: string) => page.evaluate((t) => {
+      const root = document.querySelector<HTMLElement>("[data-scroll-root]")!;
+      const row = [...document.querySelectorAll<HTMLElement>(".th-list .th-row")].find((r) => r.textContent?.includes(t));
+      if (!row) return false;
+      const a = root.getBoundingClientRect(), b = row.getBoundingClientRect();
+      return b.top >= a.top - 1 && b.bottom <= a.bottom + 1;
+    }, text);
+    await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("끝난 일 보고"));
+    let text = await listText(page);
+    expect(text).not.toContain("환불 아주 옛 보고");
+    // 작업이 없는 글(옛 글)에는 표지를 달지 않는다
+    await expect(page.locator(".th-row", { hasText: "전체 글 200" }).locator(".th-card__task, .th-mine__task").count()).resolves.toBe(0);
+    await expect(chip(page, "끝난 일").count()).resolves.toBe(0);
+    await page.screenshot({ path: join(SHOTS, "6-all-before-click.png") });
+
+    // 1) 중간의 검색 보고 표지를 누른다 → 검색 작업 글만, 받는 사람은 검색 직원, 첫 화면 밖의 옛 검색 글도 서버에서 받아 온다
+    await label("검색 중간 보고").scrollIntoViewIfNeeded();
+    await label("검색 중간 보고").click();
+    await page.locator(".th-task", { hasText: "검색 속도" }).waitFor();
+    await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("검색 색인 점검"));
+    text = await listText(page);
+    expect(text).toContain("검색 중간 보고");
+    for (const s of ["전체 글", "환불", "작업 전의 옛 지시"]) expect(text).not.toContain(s);
+    await expect(inView("검색 중간 보고")).resolves.toBe(true);
+    await page.screenshot({ path: join(SHOTS, "7-search-from-label.png") });
+
+    // 새로고침해도 표지로 고른 작업이 남는다
+    await page.reload();
+    await page.locator(".th-task", { hasText: "검색 속도" }).waitFor({ timeout: 20_000 });
+    await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
+
+    // 2) '전체'로 돌아온다(입력칸 위 칩, 기존 길)
+    await chip(page, "전체").click();
+    await expect(page.locator(".th-task").count()).resolves.toBe(0);
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("전체 글 200"));
+
+    // 3) 환불 기준 보고(뒤에 같은 작업 글 40개)의 표지를 누르면 맨 아래가 아니라 그 글을 보인다
+    await label("환불 기준 보고").scrollIntoViewIfNeeded();
+    await label("환불 기준 보고").click();
+    await page.locator(".th-task", { hasText: "환불 기능" }).waitFor();
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("환불 아주 옛 보고"));
+    await page.waitForTimeout(300);
+    await expect(inView("환불 기준 보고")).resolves.toBe(true);
+    await expect(inView("환불 진행 40")).resolves.toBe(false);
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
+    // 작업이 많아 칩 목록이 밀려 있어도 고른 칩이 보인다
+    await expect(page.evaluate(() => {
+      const strip = document.querySelector(".cmp-tasks")!.getBoundingClientRect();
+      const on = document.querySelector('.cmp-task[aria-pressed="true"]')!.getBoundingClientRect();
+      return on.left >= strip.left - 1 && on.right <= strip.right + 1;
+    })).resolves.toBe(true);
+    text = await listText(page);
+    expect(text).not.toContain("전체 글");
+    expect(text).not.toContain("검색");
+    await page.screenshot({ path: join(SHOTS, "8-refund-from-label.png") });
+
+    // 4) 같은 작업으로 보낸다 → 이 작업·결제 직원에게 남는다
+    await page.getByLabel("입력칸").fill("기준 보고를 보고 보냄");
+    await page.getByLabel("입력칸").press("Enter");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("기준 보고를 보고 보냄"));
+    expect(await stored("기준 보고를 보고 보냄")).toMatchObject({ taskId: taskPay.id, targetMemberId: pay.id });
+
+    // 5) 전체에서 내가 보낸 글의 작업 표지도 누를 수 있다
+    await chip(page, "전체").click();
+    const mine = page.locator(".th-row--mine", { hasText: "기준 보고를 보고 보냄" }).locator(".th-mine__task");
+    await expect(mine.innerText()).resolves.toBe("작업 환불 기능");
+    await mine.click();
+    await page.locator(".th-task", { hasText: "환불 기능" }).waitFor();
+    await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
+    await chip(page, "전체").click();
+
+    // 6) 끝낸 일의 작업: 칩에 없어도 표지로 지난 대화를 보고, '전체'로 돌아오면 칩도 다시 숨는다
+    await label("끝난 일 보고").click();
+    await page.locator(".th-task", { hasText: "끝난 일" }).waitFor();
+    await expect(chip(page, "끝난 일").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("끝난 일 보고"));
+    expect(await listText(page)).not.toContain("전체 글");
+    await page.screenshot({ path: join(SHOTS, "9-done-task-from-label.png") });
+    await chip(page, "전체").click();
+    await expect(chip(page, "끝난 일").count()).resolves.toBe(0);
+
+    // 7) 빈 작업은 칩으로 고르면 빈 안내가 보인다(글이 없어 대화에 표지가 없다)
+    await chip(page, "빈 작업").click();
+    await page.getByText("이 작업의 대화가 아직 없습니다").waitFor();
+    expect(empty.id).toBeTruthy();
+    await chip(page, "전체").click();
+    await page.close();
+
+    // 8) 저장된 선택이 없는 작업(다른 서버의 작업 등)을 가리키면 '전체'로 보이고, 보낸 글도 작업 없이 남는다
+    const stale = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await stale.goto(`${base}/api/health`);
+    await stale.evaluate(({ code, key }) => {
+      localStorage.setItem("iamceo.accessCode", code);
+      localStorage.setItem(key, JSON.stringify({ version: 2, draft: { text: "남은 초안", targetId: null, uploads: [], error: null, taskId: "tk_ghost_none" }, revision: "r-stale" }));
+    }, { code: CODE, key: `iamceo.draft.host.${encodeURIComponent(base.replace(/\/$/, ""))}.${encodeURIComponent(project.id)}` });
+    await stale.goto(`${base}/#/p/${encodeURIComponent(project.id)}/thread`);
+    await stale.locator(".cmp-tasks").waitFor({ timeout: 20_000 });
+    await expect(chip(stale, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(stale.locator(".th-task").count()).resolves.toBe(0);
+    // 저장된 초안을 실제로 읽었는지(열쇠가 맞는지) 본다
+    await expect(stale.getByLabel("입력칸").inputValue()).resolves.toBe("남은 초안");
+    await stale.getByLabel("입력칸").fill("없는 작업에서 보냄");
+    await stale.getByLabel("입력칸").press("Enter");
+    expect((await stored("없는 작업에서 보냄")).taskId).toBeNull();
+    await stale.close();
+
+    // 9) 폰 폭: 표지를 손가락으로 눌러 옮기고, 페이지가 가로로 넘치지 않는다
+    const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await openThread(phone);
+    const pl = phone.locator(".th-row", { hasText: "환불 진행 40" }).locator(".th-card__task");
+    await pl.scrollIntoViewIfNeeded();
+    await phone.screenshot({ path: join(SHOTS, "10-phone-before-tap.png") });
+    await pl.tap();
+    await phone.locator(".th-task", { hasText: "환불 기능" }).waitFor();
+    await expect(phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+    await phone.screenshot({ path: join(SHOTS, "11-phone-after-tap.png") });
+    await phone.close();
+  }, 120_000);
 });
