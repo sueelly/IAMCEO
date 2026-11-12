@@ -102,3 +102,113 @@ describe("화면: 칩으로 보일 작업", () => {
     expect(visibleTasks(liveTasks(tasks, work), "w1").map((x) => x.id)).toEqual(["tk_mine"]);
   });
 });
+
+// 대표가 작업 칩을 눌렀을 때 대화가 비던 원인: 총괄이 진행판 항목(칩)을 만든 뒤에도 지시·자기 글에 task_id 를 넣지 않아
+// 모두 전체로 갔다. 서버는 작업을 추측하지 않고, 작업을 쓰는 프로젝트에서는 총괄이 작업을 밝히게 한다.
+describe("작업 귀속: 칩 → 지시 → 보고", () => {
+  async function team() {
+    const t = setup();
+    const orch = new Orchestrator({ config: t.config, store: t.store, runners: new Map<Backend, Runner>() });
+    const lead = t.store.createMember({ projectId: t.project.id, kind: "conductor", name: "총괄", handle: "lead", role: "총괄" } as never);
+    const w = t.store.createMember({ projectId: t.project.id, kind: "worker", name: "철수", handle: "w1", role: "개발" } as never);
+    const deliveries = () => t.store.listDeliveries(t.project.id).filter((d) => d.memberId === w.id && d.kind === "instruction");
+    const chip = async (title: string) => {
+      const r = await orch.handleAgentTool(lead, "work_set", { sec: "doing", title, who: "철수" });
+      return /대화 작업 #(tk_w_[A-Za-z0-9_-]+)/.exec(r.text)![1]!;
+    };
+    const taskMessages = (taskId: string) => t.store.listMessagePage(t.project.id, { scope: { kind: "task", taskId } }).items;
+    return { ...t, orch, lead, w, deliveries, chip, taskMessages };
+  }
+
+  test("작업이 없는 프로젝트는 예전대로: task_id 없이 맡기고 총괄 글은 전체", async () => {
+    const t = await team();
+    const r = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "확인해 주세요" });
+    expect(r.isError).toBeFalsy();
+    expect(t.store.deliveryTaskId(t.deliveries()[0]!.id)).toBeNull();
+    const p = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "맡겼습니다" });
+    expect(p.isError).toBeFalsy();
+    await t.orch.shutdown();
+  });
+
+  test("칩이 생긴 뒤 task_id 를 빼면 지시·총괄 글을 거절하고, 밝히면 지시·보고가 같은 칩에 모인다", async () => {
+    const t = await team();
+    const a = await t.chip("작업A");
+    const b = await t.chip("작업B");
+
+    const miss = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "A 하세요" });
+    expect(miss.isError).toBe(true);
+    expect(miss.text).toContain("task_id 가 없습니다");
+    expect(miss.text).toContain("work_set");
+    expect(t.deliveries()).toHaveLength(0);
+
+    const ok = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "A 하세요", task_id: a });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.text).toContain(`작업 #${a}`);
+    const d = t.deliveries()[0]!;
+    expect(t.store.deliveryTaskId(d.id)).toBe(a);
+    expect(d.text).toContain(`작업 #${a}`);
+
+    // 총괄 자기 글도 밝혀야 한다(빼면 전체로 새지 않게 거절)
+    const leadMiss = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다" });
+    expect(leadMiss.isError).toBe(true);
+    expect(leadMiss.text).toContain("work_set");
+    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다", task_id: a })).isError).toBeFalsy();
+    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "알림", title: "판 정리", task_id: null })).isError).toBeFalsy();
+
+    // 직원 보고·결재·자료
+    expect((await t.orch.handleAgentTool(t.w, "post", { kind: "완료", title: "A 끝", task_id: a })).isError).toBeFalsy();
+    expect((await t.orch.handleAgentTool(t.w, "ask", { title: "A 합칠까요?", detail: "합칠지", task_id: a })).isError).toBeFalsy();
+    expect((await t.orch.handleAgentTool(t.w, "file", { title: "A 결과", content: "# A", task_id: a })).isError).toBeFalsy();
+
+    const titles = t.taskMessages(a).map((m) => m.title);
+    expect(titles).toEqual(expect.arrayContaining(["A 맡겼습니다", "A 끝", "A 합칠까요?"]));
+    expect(t.taskMessages(b)).toHaveLength(0);
+    expect(t.store.listMessagePage(t.project.id).items.find((m) => m.title === "판 정리")!.taskId ?? null).toBeNull();
+
+    // 일부러 전체 지시는 null 로
+    expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "전체 일", task_id: null })).isError).toBeFalsy();
+    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBeNull();
+    await t.orch.shutdown();
+  });
+
+  test("대표가 칩에서 보낸 글을 인용하면 그 작업이 증거가 되고, 다른 작업을 넣으면 거절한다. 전체 글은 옮기지 않는다", async () => {
+    const t = await team();
+    const a = await t.chip("작업A");
+    const b = await t.chip("작업B");
+    const onB = await t.orch.sendUserMessage(t.project.id, { text: "B 버튼 색을 파랗게 바꿔 줘", taskId: b });
+    expect(onB.taskId).toBe(b);
+    const whole = await t.orch.sendUserMessage(t.project.id, { text: "전체에서 보낸 다른 부탁이야", taskId: null });
+
+    const quoted = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "B 색 바꾸기", user_quote: "B 버튼 색을 파랗게 바꿔 줘" });
+    expect(quoted.isError).toBeFalsy();
+    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(b);
+
+    const wrong = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "B 색 바꾸기", user_quote: "B 버튼 색을 파랗게 바꿔 줘", task_id: a });
+    expect(wrong.isError).toBe(true);
+    expect(wrong.text).toContain(b);
+
+    // 전체 글 인용만으로는 작업이 정해지지 않는다(밝혀야 한다)
+    const fromWhole = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "다른 부탁", user_quote: "전체에서 보낸 다른 부탁이야" });
+    expect(fromWhole.isError).toBe(true);
+    // 총괄이 새 칩으로 맡겨도 대표의 원래 전체 글은 전체에 남는다
+    const c = await t.chip("작업C");
+    expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "다른 부탁", user_quote: "전체에서 보낸 다른 부탁이야", task_id: c })).isError).toBeFalsy();
+    expect(t.store.getMessage(whole.id)!.taskId ?? null).toBeNull();
+    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(c);
+    await t.orch.shutdown();
+  });
+
+  test("결재 닫기의 후속 지시는 그 결재 카드의 작업을 잇는다", async () => {
+    const t = await team();
+    const a = await t.chip("작업A");
+    const asked = await t.orch.handleAgentTool(t.w, "ask", { title: "A 방식?", detail: "고르기", task_id: a });
+    const decisionId = /#(d_[A-Za-z0-9_-]+)/.exec(asked.text)![1]!;
+    const rep = await t.orch.sendUserMessage(t.project.id, { text: "A 는 첫 번째 방식으로 해", taskId: null });
+    const closed = await t.orch.handleAgentTool(t.lead, "ask_close", { id: decisionId, kind: "decided", reason: "대표가 대화에서 정함", user_quote: "A 는 첫 번째 방식으로 해", follow_up: { kind: "instruction", member_id: t.w.id, text: "첫 번째 방식으로 진행", source_message_id: rep.id } });
+    expect(closed.isError).toBeFalsy();
+    const d = t.deliveries().at(-1)!;
+    expect(t.store.deliveryTaskId(d.id)).toBe(a);
+    expect(d.text).toContain(`작업 #${a}`);
+    await t.orch.shutdown();
+  });
+});

@@ -11,6 +11,7 @@ import { getState, loadOlderMessages, routeHash, sendMessage, useProject, useSto
 import { Attachments } from "../components/Attachments";
 import { Badge, Empty, Markdown, Time } from "../components/ui";
 import { kindTone } from "../lib/tone";
+import { workIdOf } from "../lib/tasks";
 import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
 import { useGate } from "../components/ConnectGate";
 import { HqLeadStrip } from "./Inbox";
@@ -83,6 +84,15 @@ function TaskBar({ task }: { task: Task }) {
       <span className="th-task__meta">{[task.who, task.branch, task.worktree].filter(Boolean).join(" · ")}</span>
     </div>
   );
+}
+
+/** 빈 작업 칩의 안내. 진행판 항목에서 생긴 칩은 '이 작업으로 보낸 글만 모인다'는 것을 먼저 알린다(전체에서 보낸 글은 옮기지 않는다). */
+function emptyTaskText(task: Task, members: readonly Member[]): string {
+  const worker = task.memberId ? members.find((m) => m.kind === "worker" && m.id === task.memberId) : undefined;
+  const to = worker?.name ?? members.find((m) => m.kind === "root" || m.kind === "conductor")?.name ?? "총괄";
+  const send = `아래 입력칸에 적으면 이 작업으로 ${to}에게 갑니다.`;
+  if (!workIdOf(task)) return `${send} 전체 대화는 입력칸 위 ‘전체’에서 봅니다.`;
+  return `팀 화면 일 목록에서 생긴 작업입니다. 이 작업으로 보낸 글·지시·보고만 여기에 모입니다. 전체에서 보낸 글은 ‘전체’에 남습니다. ${send}`;
 }
 
 function decisionLinkText(d: Decision | undefined): string {
@@ -421,7 +431,7 @@ export default function Thread() {
           history.busy ? (
             <Empty title="불러오는 중">이 작업의 대화를 불러오고 있습니다.</Empty>
           ) : (
-            <Empty title="이 작업의 대화가 아직 없습니다">아래 입력칸에 적으면 이 작업으로 {task.who}에게 갑니다. 전체 대화는 입력칸 위 ‘전체’에서 봅니다.</Empty>
+            <Empty title="이 작업의 대화가 아직 없습니다">{emptyTaskText(task, project?.members ?? [])}</Empty>
           )
         ) : (
           <Empty title="아직 대화가 없습니다">아래 입력칸에 지시를 적으면 여기에 이어집니다.</Empty>

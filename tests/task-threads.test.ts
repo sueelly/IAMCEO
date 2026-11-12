@@ -268,7 +268,7 @@ describe("작업별 대화", () => {
     expect((await t.call(a, "post", { kind: "진행", title: "섞기", task_id: foreign.id })).isError).toBe(true);
   });
 
-  test("총괄이 작업을 이어 맡기면 지시에 작업 줄이 붙고, 작업 없이 맡기면 전체 줄이 붙는다", async () => {
+  test("총괄이 작업을 이어 맡기면 지시에 작업 줄이 붙고, 작업을 빼면 거절하며, null 로 맡기면 전체 줄이 붙는다", async () => {
     const t = await setup();
     const a = await t.worker("결제", "pay");
     const ta = await t.register(a, { title: "결제 연동", branch: "feat/pay", worktree: "/repo/.wt/pay" });
@@ -278,7 +278,11 @@ describe("작업별 대화", () => {
     expect(t.sentTo(a).find((s) => s.includes("결제 실패 문구"))).toContain(`작업 #${ta.id} '결제 연동'`);
     t.runner.end(a.id);
     await settle();
-    await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요" });
+    // 작업을 쓰는 프로젝트에서 작업을 빼면 거절한다(말없이 전체로 가 칩이 비지 않게). 전체 지시는 null 로 밝힌다.
+    const missing = await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요" });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("task_id: null");
+    await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: null });
     await settle();
     expect(t.sentTo(a).find((s) => s.includes("회의록"))).toContain("작업: 전체");
   });
