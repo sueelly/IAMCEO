@@ -6,12 +6,12 @@ import type { Decision, FileDoc, Member, Message, Task } from "@shared/types";
 import { GlassButton } from "../glass";
 import { api, errorText } from "../lib/api";
 import { mergeHistoryMessages } from "../lib/history";
-import { useSubmissionDraft } from "../lib/submission-client";
+import { submissions, useSubmissionDraft } from "../lib/submission-client";
 import { getState, loadOlderMessages, routeHash, sendMessage, useProject, useStore } from "../lib/store";
 import { Attachments } from "../components/Attachments";
 import { Badge, Empty, Markdown, Time } from "../components/ui";
 import { kindTone } from "../lib/tone";
-import { workIdOf } from "../lib/tasks";
+import { taskTarget, workIdOf } from "../lib/tasks";
 import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
 import { useGate } from "../components/ConnectGate";
 import { HqLeadStrip } from "./Inbox";
@@ -76,12 +76,15 @@ function useTaskHistory(projectId: string, taskId: string | null) {
   return { ...fresh, loadOlder: () => (fresh.cursor && !fresh.busy ? load(fresh.cursor) : Promise.resolve()) };
 }
 
-function TaskBar({ task }: { task: Task }) {
+function TaskBar({ task, onAll }: { task: Task; onAll: () => void }) {
   return (
     <div className="th-task" role="note">
       <span className="th-task__label">작업</span>
       <span className="th-task__title">{task.title}</span>
       <span className="th-task__meta">{[task.who, task.branch, task.worktree].filter(Boolean).join(" · ")}</span>
+      <button type="button" className="th-task__all" onClick={onAll}>
+        전체 보기
+      </button>
     </div>
   );
 }
@@ -141,13 +144,29 @@ function RetryButton({ m }: { m: Message }) {
   );
 }
 
-function MineRow({ m, taskTitle }: { m: Message; taskTitle?: string }) {
+/** 글에 붙은 작업 표지. 누르면 그 작업의 글만 보고, 입력칸도 그 작업으로 보낸다. */
+function TaskTag({ taskId, title, onTask, className }: { taskId: string; title: string; onTask?: (taskId: string) => void; className: string }) {
+  if (!onTask) return <span className={className}>{title}</span>;
+  return (
+    <button type="button" className={className} title={`작업 '${title}'의 글만 보기`} onClick={() => onTask(taskId)}>
+      {title}
+    </button>
+  );
+}
+
+function MineRow({ m, taskTitle, onTask }: { m: Message; taskTitle?: string; onTask?: (taskId: string) => void }) {
   const delivery = deliveryLabel(m);
-  const to = [m.targetName ? `${m.targetName}에게` : null, taskTitle ? `작업 ${taskTitle}` : null].filter(Boolean).join(" · ");
+  const to = m.targetName ? `${m.targetName}에게` : null;
   return (
     <article className="th-row th-row--mine">
       <div className="th-mine">
-        {to ? <p className="th-mine__to">{to}</p> : null}
+        {to || taskTitle ? (
+          <p className="th-mine__to">
+            {to}
+            {to && taskTitle ? " · " : null}
+            {taskTitle && m.taskId ? <TaskTag taskId={m.taskId} title={`작업 ${taskTitle}`} onTask={onTask} className="th-mine__task" /> : null}
+          </p>
+        ) : null}
         {m.body ? <Markdown text={m.body} className="th-md" /> : null}
         <Attachments items={m.attachments} />
       </div>
@@ -195,7 +214,7 @@ function OwnerBand({ m, action }: { m: Message; action: string }) {
   );
 }
 
-function ReportRow({ m, decision, file, taskTitle }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string }) {
+function ReportRow({ m, decision, file, taskTitle, onTask }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string; onTask?: (taskId: string) => void }) {
   const { action: ownerAction, rest: body } = splitOwnerLine(m.body);
   // 한 줄짜리 자동 보고는 제목이 곧 본문이다.
   const repeated = m.title.replace(/^\(자동\) /, "") === body.trim();
@@ -206,7 +225,7 @@ function ReportRow({ m, decision, file, taskTitle }: { m: Message; decision?: De
         <header className="th-card__head">
           <Badge tone={kindTone(m.kind)}>{m.kind}</Badge>
           <span className="th-card__who">{m.who}</span>
-          {taskTitle ? <span className="th-card__task" title={`작업 ${taskTitle}`}>{taskTitle}</span> : null}
+          {taskTitle && m.taskId ? <TaskTag taskId={m.taskId} title={taskTitle} onTask={onTask} className="th-card__task" /> : null}
           <Time iso={m.at} className="th-card__time" />
         </header>
         {m.title ? <h3 className="th-card__title">{m.title}</h3> : null}
@@ -234,11 +253,11 @@ function CardCopyRow({ m, decision }: { m: Message; decision?: Decision }) {
 
 // 글 하나가 바뀌어도 나머지 마크다운을 다시 그리지 않는다(store 는 안 바뀐 글의 객체를 그대로 둔다)
 // taskTitle 은 '전체'에서만 준다. 작업을 골라 보는 중에는 모든 글이 그 작업이라 표시하지 않는다.
-const Row = memo(function Row({ m, decision, file, taskTitle }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string }) {
-  if (m.mine) return <MineRow m={m} taskTitle={taskTitle} />;
+const Row = memo(function Row({ m, decision, file, taskTitle, onTask }: { m: Message; decision?: Decision; file?: FileDoc; taskTitle?: string; onTask?: (taskId: string) => void }) {
+  if (m.mine) return <MineRow m={m} taskTitle={taskTitle} onTask={onTask} />;
   if (m.kind === "시스템") return <SystemRow m={m} />;
   if (isCardCopy(m)) return <CardCopyRow m={m} decision={decision} />;
-  return <ReportRow m={m} decision={decision} file={file} taskTitle={taskTitle} />;
+  return <ReportRow m={m} decision={decision} file={file} taskTitle={taskTitle} onTask={onTask} />;
 });
 
 /** 총괄의 과정 글(맡김, 다시 알림)을 접은 한 줄. 누르면 펼친다. */
@@ -300,9 +319,20 @@ export default function Thread() {
       if (!next.delete(id)) next.add(id);
       return next;
     });
+  // 글의 작업 표지를 누르면 입력칸의 작업 칩을 고른 것과 같다: 그 작업의 글만 보이고, 받는 사람도 그 작업의 직원으로 맞춘다.
+  // 작업 목록(입력칸 위 칩)의 '전체'로 돌아온다.
+  const workersKey = (project?.members ?? []).filter((m) => m.kind === "worker").map((m) => m.id).join("|");
+  const openTask = useCallback((taskId: string) => {
+    const next = getState().project?.tasks?.find((t) => t.id === taskId);
+    if (!next) return;
+    const workers = workersKey ? workersKey.split("|").map((id) => ({ id })) : [];
+    submissions.patchDraft(projectId, (d) => ({ ...d, taskId: next.id, targetId: taskTarget(next, workers) }));
+  }, [projectId, workersKey]);
+  // '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다(입력칸 칩의 '전체'와 같다).
+  const openAll = useCallback(() => submissions.patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d)), [projectId]);
   const row = (m: Message) => (
     <Row key={m.id} m={m} decision={m.decisionId ? decisions.get(m.decisionId) : undefined} file={m.fileId ? files.get(m.fileId) : undefined}
-      taskTitle={!task && m.taskId ? taskTitles.get(m.taskId) : undefined} />
+      taskTitle={!task && m.taskId ? taskTitles.get(m.taskId) : undefined} onTask={openTask} />
   );
 
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -424,7 +454,7 @@ export default function Thread() {
   return (
     <div ref={anchorRef} className="th">
       {hqLead ? <HqLeadStrip lead={hqLead} /> : null}
-      {task ? <TaskBar task={task} /> : null}
+      {task ? <TaskBar task={task} onAll={openAll} /> : null}
       {task && history.error && messages.length === 0 ? <p className="th-older__error">{history.error}</p> : null}
       {messages.length === 0 ? (
         task ? (
