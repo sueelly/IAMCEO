@@ -115,7 +115,7 @@ async function setup(opts: { backend?: Backend | null; runnerEnabled?: boolean }
   if (server.port === 7878) { await server.stop(); throw new Error("Fixture allocated live port"); }
   orch.setServerUrl(server.urls[0]!);
   const base = server.urls[0]!;
-  const project = store.createProject({ name: "시험", cwd: work, runnerEnabled: opts.runnerEnabled ?? true });
+  const project = store.createProject({ name: "시험", cwd: work, runnerEnabled: opts.runnerEnabled ?? true, chiefCli: "claude" });
   const api = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${base}${path}`, { method, headers: { Authorization: "Bearer code", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await res.text();

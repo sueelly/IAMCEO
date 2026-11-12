@@ -138,7 +138,7 @@ describe("저장과 초기화", () => {
     const config = loadConfig(env);
     const db = openDb(config.dbPath);
     const s = new Store(db, new Bus());
-    const p = s.createProject({ name: "창 시험", cwd: config.home });
+    const p = s.createProject({ name: "창 시험", cwd: config.home, chiefCli: "claude" });
     const m = s.createMember({ projectId: p.id, handle: "w", name: "직원", kind: "worker", backend: "herdr", sessionId: "s1", paneId: "p1" });
     return { s, m, db, config };
   }
@@ -291,7 +291,7 @@ async function server(home?: { home: string; env: Record<string, string> }) {
 type Server = Awaited<ReturnType<typeof server>>;
 
 async function worker(t: Server): Promise<Member> {
-  const project = t.store.listProjects().find((p) => p.name === "창 시험") ?? t.store.createProject({ name: "창 시험", cwd: t.home.home });
+  const project = t.store.listProjects().find((p) => p.name === "창 시험") ?? t.store.createProject({ name: "창 시험", cwd: t.home.home, chiefCli: "claude" });
   return (await t.orch.addMember(project.id, { name: "플레이스토어", handle: "store" })).member;
 }
 

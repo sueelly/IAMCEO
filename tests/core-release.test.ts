@@ -85,7 +85,7 @@ export async function createReleaseFixture() {
   const config = loadConfig(env);
   let db = openDb(config.dbPath), bus = new Bus(), store = new Store(db, bus);
   store.patchSettings({ boardTidyHours: 0, maxConcurrentTurns: 2 });
-  const project = store.createProject({ name: "W10 release", cwd: runtime.paths.work });
+  const project = store.createProject({ name: "W10 release", cwd: runtime.paths.work, chiefCli: "claude" });
   let runner!: CoreRunner, orch!: Orchestrator, server: RunningServer | undefined;
   async function boot(recover: boolean) {
     runner = new CoreRunner(runtime.runnerOptions(runtime.providerHomes), { recoveryStore: store, pollMs: 20, rpcTimeoutMs: 250, sendTimeoutMs: 100 });

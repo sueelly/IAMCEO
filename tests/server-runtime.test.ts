@@ -47,7 +47,7 @@ function fixture() {
   const runner = new FakeCore();
   const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), timings: { tickMs: 60_000, healthMs: 60_000 } });
   cleanup.push(() => orch.shutdown(), () => db.close());
-  const project = store.createProject({ name: "새 프로젝트", cwd: home });
+  const project = store.createProject({ name: "새 프로젝트", cwd: home, chiefCli: "claude" });
   return { config, bus, db, store, runner, orch, project };
 }
 

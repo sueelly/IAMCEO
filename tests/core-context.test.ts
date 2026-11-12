@@ -60,7 +60,7 @@ function fixture() {
   const makeOrch = () => new Orchestrator({ config, store, runners, providerHomes: runtime.providerHomes,
     timings: { tickMs: 60_000, healthMs: 60_000, compactTimeoutMs: 30, retryMs: 5 } });
   const orch = makeOrch();
-  const project = store.createProject({ name: "문맥", cwd: runtime.paths.work, runnerEnabled: true });
+  const project = store.createProject({ name: "문맥", cwd: runtime.paths.work, runnerEnabled: true, chiefCli: "claude" });
   const member = store.createMember({ projectId: project.id, handle: "worker", name: "직원", kind: "worker", origin: "runner", backend: "core", status: "idle", paneId: "terminal", sessionId: "native" });
   store.ensureContextState(member.id);
   const emit = async (e: RunnerEvent) => { fake.callback(e); await Bun.sleep(2); };
