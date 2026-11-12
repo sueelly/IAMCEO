@@ -218,7 +218,7 @@ export default function NativePromptCard({ member, tasks }: { member: Member; ta
       ) : (
         <>
           <div className="apv-opts" role="group" aria-label="선택지">
-            {prompt.options.map((o, i) => (
+            {prompt.options.map((o) => (
               <button key={o.n} type="button" className="apv-opt" data-reject={o.reject ? "" : undefined} aria-pressed={pick === o.n} disabled={busy} onClick={() => choose(pick === o.n ? null : o.n)}>
                 <span className="apv-opt__n t-tabular">{o.n}.</span>
                 <span className="apv-opt__main">
@@ -228,7 +228,6 @@ export default function NativePromptCard({ member, tasks }: { member: Member; ta
                     {o.reject ? <Badge tone="danger">거절</Badge> : null}
                     {o.freeText ? <Badge tone="neutral">직접 입력</Badge> : null}
                     {!o.reject && PERSISTS.test(o.label) ? <span className="apv-opt__persist">이후에도 적용</span> : null}
-                    {i === prompt.selected ? <span className="apv-opt__persist">지금 커서</span> : null}
                   </span>
                 </span>
               </button>
