@@ -211,6 +211,18 @@ export default function Composer() {
     inputRef.current?.focus();
   };
 
+  // 대화의 작업 표지를 눌러 작업이 바뀌어도 고른 칩이 칩 줄 안에 보이게 옮긴다.
+  const tasksRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const chip = tasksRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    const row = tasksRef.current;
+    if (!chip || !row) return;
+    const r = row.getBoundingClientRect();
+    const c = chip.getBoundingClientRect();
+    if (c.left >= r.left && c.right <= r.right) return;
+    row.scrollTo({ left: Math.max(0, row.scrollLeft + c.left - r.left - 24), behavior: "smooth" });
+  }, [task?.id]);
+
   const pickTask = (next: Task | null) => {
     // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다. 작업 없이 직원만 골라 둔 상태면 그대로 둔다.
     if (!next) patchDraft(projectId, (d) => (d.taskId ? { ...d, taskId: null, targetId: null } : d));
@@ -371,7 +383,7 @@ export default function Composer() {
             </svg>
           </button>
           {shownTasks.length > 0 || task ? (
-            <div className="cmp-tasks" role="group" aria-label="작업 고르기">
+            <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="작업 고르기">
               <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
                 전체
               </button>

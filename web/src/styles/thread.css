@@ -103,3 +103,9 @@
 .th-task__meta { min-width:0; font-size:12px; color:var(--ink-2); overflow-wrap:anywhere; }
 /* 전체에서 글이 속한 작업 */
 .th-card__task { flex:none; max-width:40%; padding:1px 7px; border-radius:999px; font-size:11.5px; font-weight:500; color:var(--link); background:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* 작업 표지는 누르면 그 작업의 글만 본다 */
+button.th-card__task { min-height:24px; cursor:pointer; text-align:left; }
+@media (hover:hover) { button.th-card__task:hover { background:var(--btn-sel); } }
+.th-mine__task { display:inline; padding:0; font:inherit; color:inherit; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1px; cursor:pointer; }
+.th-task__all { margin-left:auto; min-height:32px; padding:0 10px; border-radius:10px; font-size:12.5px; font-weight:600; color:var(--link); }
+@media (hover:hover) { .th-task__all:hover { background:var(--hover); } }

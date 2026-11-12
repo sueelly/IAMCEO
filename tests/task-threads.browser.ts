@@ -229,4 +229,52 @@ describe("웹 작업별 대화", () => {
     await page.screenshot({ path: join(SHOTS, "5-phone-refund.png") });
     await page.close();
   }, 90_000);
+  test("대화의 작업 표지를 누르면 그 작업 글만 보이고, 그 작업으로 보내며, '전체 보기'로 돌아온다(PC·폰)", async () => {
+    for (const [w, h, phone] of [[1280, 900, false], [390, 844, true]] as const) {
+      const page = await browser.newPage({ viewport: { width: w, height: h }, ...(phone ? { hasTouch: true, isMobile: true } : {}) });
+      await openThread(page);
+      if (await chip(page, "전체").getAttribute("aria-pressed") !== "true") await chip(page, "전체").click();
+      await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("작업 전의 옛 지시"));
+      // 전체에서 보고 카드의 작업 표지(검색 속도)를 누른다
+      const tag = page.locator("button.th-card__task", { hasText: "검색 속도" }).first();
+      await tag.scrollIntoViewIfNeeded();
+      await tag.click();
+      await page.locator(".th-task").waitFor();
+      await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
+      await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+      await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("검색 색인 점검"));
+      let text = await listText(page);
+      expect(text).not.toContain("작업 전의 옛 지시");
+      expect(text).not.toContain("부분 환불");
+      // 고른 칩이 칩 줄 안에 보인다
+      await page.waitForFunction(() => {
+        const row = document.querySelector(".cmp-tasks")!.getBoundingClientRect();
+        const c = document.querySelector('.cmp-task[aria-pressed="true"]')!.getBoundingClientRect();
+        return c.left >= row.left - 1 && c.right <= row.right + 1;
+      }, null, { timeout: 3_000 });
+      await page.screenshot({ path: join(SHOTS, `6-tag-${phone ? "phone" : "pc"}.png`) });
+      // 그 작업으로 보낸다
+      const body = `표지에서 보냄 ${phone ? "폰" : "PC"}`;
+      await page.getByLabel("입력칸").fill(body);
+      await page.getByRole("button", { name: "보내기" }).click();
+      await page.waitForFunction((b) => document.querySelector(".th-list")?.textContent?.includes(b), body);
+      expect(await stored(body)).toMatchObject({ taskId: taskSearch.id, targetMemberId: search.id });
+      // '전체 보기'로 돌아오면 작업도 받는 사람도 기본
+      await page.locator(".th-task__all").scrollIntoViewIfNeeded();
+      await page.locator(".th-task__all").click();
+      await expect(page.locator(".th-task").count()).resolves.toBe(0);
+      await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
+      await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+      await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("작업 전의 옛 지시"));
+      text = await listText(page);
+      expect(text).toContain(body);
+      // 내가 보낸 글의 작업 표지도 누를 수 있다
+      await page.locator(".th-mine__task", { hasText: "환불 기능" }).first().click();
+      await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
+      await page.waitForFunction(() => !document.querySelector(".th-list")?.textContent?.includes("검색 색인 점검"));
+      await chip(page, "전체").click();
+      await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+      await page.close();
+    }
+  }, 120_000);
 });
