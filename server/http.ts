@@ -189,6 +189,7 @@ const CreateProjectSchema = z.strictObject({
   goal: z.string().optional(),
   startConductor: z.boolean().optional(),
   chiefCli: cliProvider.optional(),
+  memory: z.boolean().optional(),
 });
 const PatchProjectSchema = z.strictObject({
   name: nonEmpty.optional(),
@@ -196,6 +197,7 @@ const PatchProjectSchema = z.strictObject({
   runnerEnabled: z.boolean().optional(),
   now: z.string().optional(),
   archived: z.boolean().optional(),
+  memory: z.boolean().optional(),
 });
 const AnswerApprovalSchema = z.strictObject({
   fingerprint: z.string().regex(/^[0-9a-f]{8,64}$/),

@@ -67,6 +67,8 @@ export interface MemoryUpload {
   nextAt: string;
   lastError: string | null;
   remoteId: string | null;
+  /** 이 기록이 대체하는 앞 기록의 event_id. 앞 기록이 게이트웨이에 들어가 id 를 받은 뒤에만 보낸다. */
+  supersedesEventId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,7 +77,56 @@ function toMemoryUpload(r: Row): MemoryUpload {
   return {
     eventId: r.event_id as string, projectId: r.project_id as string, refType: r.ref_type as string, refId: r.ref_id as string, body: r.body as string,
     status: r.status as MemoryUpload["status"], attempts: r.attempts as number, nextAt: r.next_at as string, lastError: (r.last_error as string | null) ?? null,
-    remoteId: (r.remote_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+    remoteId: (r.remote_id as string | null) ?? null, supersedesEventId: (r.supersedes_event_id as string | null) ?? null, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+  };
+}
+
+/** 총괄이 대화에서 고른 대표의 결정·제약·수정·피드백 한 건. 원문은 messages 의 대표 글이다. */
+export interface MemoryCapture {
+  id: string;
+  projectId: string;
+  eventId: string;
+  type: "decision" | "constraint" | "correction" | "feedback";
+  scope: "task" | "project" | "artifact";
+  standing: boolean;
+  messageIds: string[];
+  taskId: string | null;
+  interpretation: string;
+  fileRefs: { fileId: string; title: string; version: string }[];
+  supersedesId: string | null;
+  capturedBy: string;
+  createdAt: string;
+}
+
+function toMemoryCapture(r: Row): MemoryCapture {
+  return {
+    id: r.id as string, projectId: r.project_id as string, eventId: r.event_id as string, type: r.type as MemoryCapture["type"], scope: r.scope as MemoryCapture["scope"],
+    standing: !!r.standing, messageIds: JSON.parse(r.message_ids as string) as string[], taskId: (r.task_id as string | null) ?? null, interpretation: r.interpretation as string,
+    fileRefs: JSON.parse((r.file_refs as string) || "[]") as MemoryCapture["fileRefs"], supersedesId: (r.supersedes_id as string | null) ?? null, capturedBy: r.captured_by as string, createdAt: r.created_at as string,
+  };
+}
+
+/** 서버가 일을 넣기 전에(또는 직원이 도구로) 한 기억 검색 한 번. ok·empty·error 를 나눠 남긴다. */
+export interface MemorySearch {
+  id: string;
+  projectId: string;
+  memberId: string;
+  taskId: string | null;
+  trigger: "delivery" | "tool";
+  queryHash: string;
+  status: "ok" | "empty" | "error";
+  resultIds: string[];
+  /** 직원에게 넣은 글(같은 검색을 다시 쓸 때 그대로 쓴다). */
+  block: string | null;
+  detail: string | null;
+  createdAt: string;
+}
+
+function toMemorySearch(r: Row): MemorySearch {
+  return {
+    id: r.id as string, projectId: r.project_id as string, memberId: r.member_id as string, taskId: (r.task_id as string | null) ?? null, trigger: r.trigger as MemorySearch["trigger"],
+    queryHash: r.query_hash as string, status: r.status as MemorySearch["status"], resultIds: JSON.parse((r.result_ids as string) || "[]") as string[], block: (r.block as string | null) ?? null,
+    detail: (r.detail as string | null) ?? null, createdAt: r.created_at as string,
   };
 }
 
@@ -97,6 +148,8 @@ export interface NewProject {
   name: string;
   cwd: string;
   chiefCli?: CliProvider;
+  /** 개발 기억 운영. 생략하면 켠다(본사는 끈다). */
+  memory?: boolean;
   runnerEnabled?: boolean;
   now?: string;
   creationGoal?: string | null;
@@ -140,6 +193,8 @@ export interface AppliedConfig {
   effort: Effort | null;
   staffModel: string | null;
   staffEffort: Effort | null;
+  /** 세션을 띄울 때 서버가 준 도구 목록(이름·입력 형식)의 지문. 다르면 쉴 때 같은 대화를 이어 다시 연다. 옛 세션은 없다. */
+  toolsSig?: string | null;
 }
 
 export interface NewDecision {
@@ -313,7 +368,14 @@ export function attachmentUrl(id: string, name: string): string {
   return `/files/${id}/${encodeURIComponent(name)}`;
 }
 
-function toProject(r: Row, connection: ProjectConnection): Project {
+/** 새 프로젝트의 기억 운영 값. 대표가 따로 정하지 않으면 켠다. 본사는 직원이 없어 NULL(서버 목록을 따름)로 둔다. */
+function memoryMode(id: string, memory: boolean | undefined): "on" | "off" | null {
+  if (memory !== undefined) return memory ? "on" : "off";
+  return id === "hq" ? null : "on";
+}
+
+function toProject(r: Row, connection: ProjectConnection, legacyMemory: ReadonlySet<string>): Project {
+  const mode = r.memory_mode === "on" || r.memory_mode === "off" ? r.memory_mode as "on" | "off" : null;
   return {
     id: r.id,
     name: r.name,
@@ -330,6 +392,7 @@ function toProject(r: Row, connection: ProjectConnection): Project {
     updatedAt: r.updated_at,
     connection,
     tidiedAt: r.board_tidied_at ?? null,
+    memory: { mode: mode ?? "legacy", on: mode === "on" || (mode === null && legacyMemory.has(r.id)), enabledAt: r.memory_enabled_at ?? null },
   };
 }
 
@@ -693,6 +756,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private lastMessageMs = 0;
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
+  /** 이전 프로젝트(memory_mode NULL) 가운데 서버 환경 목록(IAMCEO_MEMORY_PROJECTS)으로 켠 것. */
+  private legacyMemory: ReadonlySet<string> = new Set();
 
   constructor(
     db: Database,
@@ -870,7 +935,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   private projectFrom(r: Row): Project {
-    return toProject(r, this.connectionOf(r.id, !!r.runner_enabled, !!r.archived));
+    return toProject(r, this.connectionOf(r.id, !!r.runner_enabled, !!r.archived), this.legacyMemory);
   }
 
   /**
@@ -965,8 +1030,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = input.id ?? newId("p_");
       const now = input.now ?? "";
       this.run(
-        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, is_hq, cwd, runner_enabled, now, now_at, created_at, updated_at, creation_goal, chief_cli, memory_mode, memory_enabled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.name,
         id === "hq" ? 1 : 0,
@@ -978,6 +1043,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         input.creationGoal ?? null,
         input.chiefCli ?? "codex",
+        // 새 프로젝트는 기억 운영을 켠 채로 만든다(본사는 직원이 없어 따로 켤 때만). 서버에 연결 설정이 없으면 '미연결'로 보인다.
+        memoryMode(id, input.memory),
+        memoryMode(id, input.memory) === "on" ? at : null,
       );
       const project = this.requireProject(id);
       this.emit({ type: "project", project });
@@ -1690,13 +1758,113 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */
-  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string }): boolean {
+  enqueueMemoryUpload(input: { eventId: string; projectId: string; refType: string; refId: string; body: string; supersedesEventId?: string | null }): boolean {
     const at = new Date().toISOString();
     const before = this.row("SELECT 1 AS hit FROM memory_outbox WHERE event_id = ?", input.eventId);
     if (before) return false;
-    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)",
-      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at);
+    this.run("INSERT INTO memory_outbox (event_id, project_id, ref_type, ref_id, body, status, attempts, next_at, created_at, updated_at, supersedes_event_id) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)",
+      input.eventId, input.projectId, input.refType, input.refId, input.body, at, at, at, input.supersedesEventId ?? null);
     return true;
+  }
+
+  getMemoryUpload(eventId: string): MemoryUpload | null {
+    const r = this.row("SELECT * FROM memory_outbox WHERE event_id = ?", eventId);
+    return r ? toMemoryUpload(r) : null;
+  }
+
+  // ---- 기억 운영: 프로젝트 기본값 ----
+  /** 서버 환경 목록으로 켠 이전 프로젝트. 프로젝트가 따로 정한 값(on·off)이 있으면 그쪽이 앞선다. */
+  setLegacyMemoryProjects(ids: readonly string[]): void {
+    this.legacyMemory = new Set(ids);
+  }
+
+  /** 대표가 프로젝트의 기억 운영을 켜거나 끈다. 끈 값은 다른 기본값이 덮지 않는다. 켤 때만 켠 시각을 새로 적는다. */
+  setProjectMemory(id: string, on: boolean): Project {
+    return this.transaction(() => {
+      const before = this.requireProject(id);
+      if (before.memory?.mode === (on ? "on" : "off")) return before;
+      const at = nowIso();
+      this.run("UPDATE projects SET memory_mode = ?, memory_enabled_at = CASE WHEN ? THEN COALESCE(CASE WHEN memory_mode = 'on' THEN memory_enabled_at END, ?) ELSE memory_enabled_at END, updated_at = ? WHERE id = ?",
+        on ? "on" : "off", on ? 1 : 0, at, at, id);
+      const project = this.requireProject(id);
+      this.emit({ type: "project", project });
+      this.emitProjects();
+      return project;
+    });
+  }
+
+  /**
+   * 결재 답 가운데 기억 대기열에 없는 것. 원본 저장과 대기열 넣기 사이에 서버가 멈추면 생기는 빈틈을 메운다.
+   * 프로젝트가 기억을 켠 뒤(켠 시각, 이전 프로젝트는 첫 업로드 시각) 답한 것만 본다. 그 전의 지난 결재는 모아 올리지 않는다.
+   */
+  answeredDecisionsMissingMemory(projectId: string): Decision[] {
+    const project = this.requireProject(projectId);
+    const since = project.memory?.enabledAt ?? (this.row("SELECT MIN(created_at) AS at FROM memory_outbox WHERE project_id = ?", projectId)?.at as string | null) ?? null;
+    if (!since) return [];
+    return this.rows(
+      `SELECT * FROM decisions d WHERE d.project_id = ? AND d.status IN ('answered','delivered') AND d.answered_at >= ?
+         AND NOT EXISTS (SELECT 1 FROM memory_outbox o WHERE o.ref_type = 'decision' AND o.ref_id = d.id) ORDER BY d.answered_at`,
+      projectId, since,
+    ).map(toDecision);
+  }
+
+  // ---- 기억 운영: 총괄의 선별 기록 ----
+  /** 선별 기록과 그 업로드를 한 트랜잭션에 남긴다(기록만 있고 대기열이 빠지는 일이 없다). 같은 사건이면 처음 것을 돌려준다. */
+  saveMemoryCapture(input: Omit<MemoryCapture, "id" | "createdAt">, upload: { body: string; supersedesEventId: string | null }): { capture: MemoryCapture; created: boolean } {
+    return this.transaction(() => {
+      const before = this.row("SELECT * FROM memory_captures WHERE event_id = ?", input.eventId);
+      if (before) return { capture: toMemoryCapture(before), created: false };
+      const id = newId("mc_");
+      const at = nowIso();
+      this.run(
+        `INSERT INTO memory_captures (id, project_id, event_id, type, scope, standing, message_ids, task_id, interpretation, file_refs, supersedes_id, captured_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, input.projectId, input.eventId, input.type, input.scope, input.standing ? 1 : 0, JSON.stringify(input.messageIds), input.taskId, input.interpretation,
+        JSON.stringify(input.fileRefs), input.supersedesId, input.capturedBy, at,
+      );
+      this.enqueueMemoryUpload({ eventId: input.eventId, projectId: input.projectId, refType: "owner_note", refId: id, body: upload.body, supersedesEventId: upload.supersedesEventId });
+      return { capture: toMemoryCapture(this.row("SELECT * FROM memory_captures WHERE id = ?", id)!), created: true };
+    });
+  }
+
+  getMemoryCapture(id: string): MemoryCapture | null {
+    const r = this.row("SELECT * FROM memory_captures WHERE id = ?", id);
+    return r ? toMemoryCapture(r) : null;
+  }
+
+  listMemoryCaptures(projectId: string): MemoryCapture[] {
+    return this.rows("SELECT * FROM memory_captures WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemoryCapture);
+  }
+
+  // ---- 기억 운영: 일 시작 전 검색 ----
+  /** 이미 기억을 찾아 붙인 전달인가(재전송·재시작 뒤에도 같은 전달은 다시 찾지 않는다). */
+  memorySearchedDelivery(deliveryId: string): boolean {
+    return !!this.row("SELECT 1 AS hit FROM memory_search_deliveries WHERE delivery_id = ?", deliveryId);
+  }
+
+  /** 같은 직원이 최근에 같은 검색어로 찾은 결과(같은 검토의 후속이면 다시 쓴다). 실패한 검색은 다시 쓰지 않는다. */
+  recentMemorySearch(projectId: string, memberId: string, queryHash: string, since: string): MemorySearch | null {
+    const r = this.row("SELECT * FROM memory_searches WHERE project_id = ? AND member_id = ? AND query_hash = ? AND status != 'error' AND created_at >= ? ORDER BY created_at DESC LIMIT 1", projectId, memberId, queryHash, since);
+    return r ? toMemorySearch(r) : null;
+  }
+
+  /** 검색 기록과(전달로 넣을 때는) 직원에게 넣을 글을 한 트랜잭션에 남긴다. */
+  recordMemorySearch(input: Omit<MemorySearch, "id" | "createdAt">, link?: { deliveryIds: string[]; notice: NewDelivery | null }): MemorySearch {
+    return this.transaction(() => {
+      const id = newId("ms_");
+      const at = nowIso();
+      this.run(
+        "INSERT INTO memory_searches (id, project_id, member_id, task_id, trigger, query_hash, status, result_ids, block, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, input.projectId, input.memberId, input.taskId, input.trigger, input.queryHash, input.status, JSON.stringify(input.resultIds), input.block, input.detail, at,
+      );
+      for (const deliveryId of link?.deliveryIds ?? []) this.run("INSERT OR IGNORE INTO memory_search_deliveries (delivery_id, search_id) VALUES (?, ?)", deliveryId, id);
+      if (link?.notice) this.enqueue(link.notice);
+      return toMemorySearch(this.row("SELECT * FROM memory_searches WHERE id = ?", id)!);
+    });
+  }
+
+  listMemorySearches(projectId: string): MemorySearch[] {
+    return this.rows("SELECT * FROM memory_searches WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemorySearch);
   }
 
   dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {

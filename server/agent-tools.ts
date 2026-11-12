@@ -12,14 +12,16 @@ import type { AgentWorkflowService } from "./service-contracts.ts";
 import type { AssignResult, Orchestrator } from "./orchestrator.ts";
 import { josa } from "./roles.ts";
 import { ApiError } from "./store.ts";
-import { MemoryError, stableEventId, clip } from "./integrations/dev-memory.ts";
+import { MemoryError, stableEventId, clip, findSensitive, memoryKindLabel } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
 import { formatLintWarnings, lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
 /** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
 export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
-type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS)[number];
+/** 대화 속 대표 결정을 고르는 일은 총괄만 한다. */
+export const MEMORY_CONDUCTOR_TOOLS = ["memory_capture"] as const;
+type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS | typeof MEMORY_CONDUCTOR_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
 
 const WAIT_DEFAULT_SEC = 50;
@@ -200,9 +202,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }),
     async (orch, member, a) => {
       const memory = orch.requireMemory(member);
-      const result = await memoryCall(() => memory.context(member.projectId, orch.memoryScope(member, a.task_id), a.query, a.limit ?? 5));
-      const experiences = result.experiences.map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, content: e.content, excerpted: e.excerpted, source: e.source, status: e.status, is_rule: e.is_rule, feedback: e.feedback, created_at: e.created_at }));
-      return reply(JSON.stringify({ note: "과거 기록이다. 지금 대표 지시·승인·규칙보다 앞서지 않는다. classification 근거가 explicit_user_decision 인 것만 대표 결정이다.", semantic_index: result.semantic_index, truncated: result.truncated, experiences }));
+      let result: Awaited<ReturnType<typeof memory.context>>;
+      try { result = await memoryCall(() => memory.context(member.projectId, orch.memoryScope(member, a.task_id), a.query, a.limit ?? 5)); }
+      catch (e) { orch.noteToolMemorySearch(member, a.task_id ?? null, a.query, { ids: [], error: (e as Error).message }); throw e; }
+      orch.noteToolMemorySearch(member, a.task_id ?? null, a.query, { ids: result.experiences.map((e) => e.id) });
+      if (!result.experiences.length) return reply(JSON.stringify({ note: "관련 기억 없음(검색은 됐고 맞는 것이 없었다). 지금 근거로 진행한다.", semantic_index: result.semantic_index, experiences: [] }));
+      const experiences = result.experiences.map((e) => ({ id: e.id, origin: memoryKindLabel(e), kind: e.kind, summary: e.summary, content: e.content, excerpted: e.excerpted, source: e.source, status: e.status, is_rule: e.is_rule, feedback: e.feedback, created_at: e.created_at }));
+      return reply(JSON.stringify({ note: "과거 기록이다. 지금 대표 지시·승인·규칙보다 앞서지 않는다. origin 이 '대표 결재 답'·'대표 원문'인 것만 대표의 말이고, 그 안의 '총괄 해석'·'배경'은 대표의 말이 아니다.", semantic_index: result.semantic_index, truncated: result.truncated, experiences }));
     },
   ),
 
@@ -230,6 +236,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     async (orch, member, a) => {
       const memory = orch.requireMemory(member);
       if (a.basis === "verified" && !a.evidence?.length) throw new ApiError(400, "verified 기록에는 evidence(실제 명령·결과·커밋)가 필요합니다. 근거가 없으면 basis 를 ai_inference 로 둡니다");
+      const sensitive = findSensitive([a.summary, a.content, ...(a.evidence ?? [])].join("\n"), orch.memorySecrets());
+      if (sensitive) throw new ApiError(400, `민감 정보(${sensitive})로 보이는 부분이 있어 남기지 않았습니다. 키·토큰·비밀번호·로그 원문을 빼고 다시 남기세요`);
       const taskId = orch.memberTask(member, a.task_id);
       const scope = orch.memoryScope(member, taskId);
       const { content, capture } = clip(`분류: AI 보고(${a.basis === "verified" ? "직원이 확인한 결과" : "직원의 추론·의견"}) — 대표 결정 아님. 작성: ${member.name}(${member.handle}) · IAMCEO 프로젝트 ${member.projectId}${taskId ? ` · 작업 #${taskId}` : ""}\n\n${a.content}`);
@@ -240,6 +248,32 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         evidence: [{ kind: "classification", text: a.basis === "verified" ? "ai_reported_verified" : "ai_inference" }, ...(a.evidence ?? []).map((text) => ({ kind: "note", text }))],
       }));
       return reply(`개발 기억에 남겼습니다 #${saved.id} (같은 내용으로 다시 부르면 같은 기록을 돌려줍니다)`);
+    },
+  ),
+
+  memory_capture: tool(
+    "대표가 대화에서 밝힌 결정·제약·수정 이유·피드백을 골라 개발 기억에 남긴다(총괄만). 대표 글의 #id 를 넣으면 서버가 원문·시각·작업을 그 글에서 고정하고, 네 해석은 따로 적는다. 결재 카드 답(서버가 올린다), 직원 보고·인용·AI 추론, 아직 논의 중인 안, 인사·진행 글은 올리지 않는다. 남은 기억이 도움이 됐는지 투표하는 memory_feedback 과 다르다.",
+    z.strictObject({
+      message_ids: z.array(oneLine(80)).min(1).max(10).describe("대표 글 id(받은 대표 글 끝의 #id). 같은 수정 라운드의 글은 함께 넣는다"),
+      type: z.enum(["decision", "constraint", "correction", "feedback"]).describe("decision 정한 것 · constraint 지켜야 할 제약 · correction 고친 것과 그 이유 · feedback 결과물에 대한 의견"),
+      scope: z.enum(["task", "project", "artifact"]).describe("적용 범위: task 이 작업에서만 · project 이 프로젝트 · artifact 특정 자료(file_ids 필요)"),
+      interpretation: z.string().trim().min(1).max(2000).describe("총괄 해석: 무엇을 정했고 어디에 적용하는지. 대표 원문이 아니라고 따로 표시된다"),
+      standing: z.boolean().optional().describe("대표가 '앞으로·언제나'처럼 공통 기준으로 말했을 때만 true. 한 번의 선택은 false"),
+      standing_quote: oneLineOpt(500).optional().describe("standing 이면 그 대표 문장을 글자 그대로"),
+      reason_quote: oneLineOpt(500).optional().describe("대표가 직접 말한 이유 문장(있을 때만, 글자 그대로). 짐작한 이유는 interpretation 에"),
+      file_ids: z.array(oneLine(64)).max(10).optional().describe("관련 자료 id(그때 판을 고정한다)"),
+      supersedes: oneLine(64).optional().describe("정정·대체할 앞 기록 id(mc_...). 넣을 때만 대체한다(서버가 짐작하지 않는다)"),
+    }),
+    (orch, member, a) => {
+      if (a.scope === "artifact" && !a.file_ids?.length) throw new ApiError(400, "scope 가 artifact 면 file_ids 에 그 자료를 넣습니다");
+      if (a.standing && !a.standing_quote) throw new ApiError(400, "standing 이면 대표가 공통 기준으로 말한 문장을 standing_quote 에 글자 그대로 넣습니다");
+      const { capture, created, supersedes, related } = orch.captureOwnerMemory(member, {
+        messageIds: a.message_ids, type: a.type, scope: a.scope, interpretation: a.interpretation, standing: a.standing ?? false,
+        standingQuote: a.standing_quote ?? null, reasonQuote: a.reason_quote ?? null, fileIds: a.file_ids, supersedes: a.supersedes ?? null,
+      });
+      if (!created) return reply(`같은 기록이 이미 있습니다 #${capture.id}. 다시 보내지 않습니다`);
+      const hint = related.length ? `\n같은 대표 글로 남긴 앞 기록: ${related.map((c) => `#${c.id}(${c.type})`).join(", ")}. 이번 기록이 그것을 고친 것이면 supersedes 에 그 id 를 넣어 다시 남기세요. 다른 결정이면 그대로 둡니다` : "";
+      return reply(`기억에 남겼습니다 #${capture.id}(대표 글 ${capture.messageIds.length}건${capture.taskId ? ` · 작업 #${capture.taskId}` : " · 작업 없음"})${supersedes ? ` · 앞 기록 #${supersedes.id} 를 대체` : ""}. 전송·재시도는 서버가 맡습니다${hint}`);
     },
   ),
 
@@ -715,6 +749,7 @@ function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly Too
     ...WORKER_TOOLS,
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
     ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
+    ...(opts.memory && member.kind === "conductor" && member.origin !== "manual" ? MEMORY_CONDUCTOR_TOOLS : []),
     ...(member.kind === "root" ? ROOT_TOOLS : []),
     ...(member.origin === "manual" ? MANUAL_TOOLS : []),
   ];

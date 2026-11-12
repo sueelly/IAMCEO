@@ -111,7 +111,8 @@ async function setup(opts: { memory: boolean; keyFile?: string } = { memory: tru
   const keyFile = opts.keyFile ?? join(home, "memory-key");
   if (!opts.keyFile) writeFileSync(keyFile, SERVICE_KEY + "\n", { mode: 0o600 });
   const project = store.createProject({ name: "기억 켠 프로젝트", cwd: home });
-  const other = store.createProject({ name: "다른 프로젝트", cwd: home });
+  // 새 프로젝트는 기억을 켠 채로 생긴다. 끈 프로젝트를 보려고 하나는 대표가 끈 것으로 만든다.
+  const other = store.createProject({ name: "다른 프로젝트", cwd: home, memory: false });
   const devMemory = opts.memory ? new DevMemory({ baseUrl: gw.url, keyFile, projects: [project.id] }) : null;
   const runner = new FakeRunner();
   const orch = new Orchestrator({ config, store, runners: new Map<Backend, Runner>([["headless", runner]]), devMemory });
@@ -148,7 +149,8 @@ describe("개발 기억 연결", () => {
     expect(t.gw.seen).toHaveLength(0);
 
     expect(devMemoryConfigFromEnv({})).toBeNull();
-    expect(devMemoryConfigFromEnv({ IAMCEO_MEMORY_URL: "https://x.tail1.ts.net:11443", IAMCEO_MEMORY_KEY_FILE: "/k" })).toBeNull(); // 켤 프로젝트가 없으면 꺼짐
+    // 프로젝트 목록이 없어도 연결 설정만 있으면 켠다. 쓸지 말지는 프로젝트마다 정한다(목록은 이전 프로젝트용).
+    expect(devMemoryConfigFromEnv({ IAMCEO_MEMORY_URL: "https://x.tail1.ts.net:11443", IAMCEO_MEMORY_KEY_FILE: "/k" })).toEqual({ baseUrl: "https://x.tail1.ts.net:11443", keyFile: "/k", projects: [] });
     expect(validateBaseUrl("https://hyejoo-mac-mini.tail5169d3.ts.net:11443")).toBe("https://hyejoo-mac-mini.tail5169d3.ts.net:11443");
     expect(() => validateBaseUrl("http://hyejoo-mac-mini.tail5169d3.ts.net:11443")).toThrow();
     expect(() => validateBaseUrl("https://brain.enouv.studio")).toThrow();
@@ -179,7 +181,7 @@ describe("개발 기억 연결", () => {
     await t.devMemory!.flush(t.store);
     expect(t.gw.records).toHaveLength(1);
     expect(t.store.listMemoryUploads()).toHaveLength(1);
-    // 켜지 않은 프로젝트의 결재는 올리지 않는다
+    // 대표가 끈 프로젝트의 결재는 올리지 않는다
     const ow = await t.worker(t.other.id, "o1");
     const od = t.store.createDecision({ projectId: t.other.id, memberId: ow.id, who: ow.name, title: "다른 일", options: [{ k: "a", label: "가" }] });
     await t.orch.answerDecision(od.id, { choice: "a" });

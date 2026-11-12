@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { Store, MemoryUpload } from "../store.ts";
+import type { MemoryServiceInfo } from "../../shared/types.ts";
 
 /** 게이트웨이의 프로젝트·작업·턴 ID 형식: 영문·숫자·_·- 1~100자. */
 const ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
@@ -17,7 +18,10 @@ const CONTENT_MAX = 30_000;
 export interface DevMemoryConfig {
   baseUrl: string;
   keyFile: string;
-  /** 연결을 켠 IAMCEO 프로젝트 id. 여기 없는 프로젝트는 올리지도 찾지도 않는다. */
+  /**
+   * 이전 방식으로 연결을 켠 IAMCEO 프로젝트 id(IAMCEO_MEMORY_PROJECTS). 새 프로젝트는 프로젝트 설정(memory_mode)으로 켜고,
+   * 이 목록은 그 값이 없는 이전 프로젝트에만 쓴다. 프로젝트가 끈 값은 이 목록이 덮지 않는다.
+   */
   projects: string[];
 }
 
@@ -27,13 +31,43 @@ export class MemoryError extends Error {
   }
 }
 
-/** 환경 변수로만 켠다. 셋 중 하나라도 없으면 꺼진 상태(외부 호출 0건)다. */
+/** 서버 공통 연결은 환경 변수로만 정한다. 주소·키 파일 중 하나라도 없으면 연결이 없는 상태(외부 호출 0건)다. */
 export function devMemoryConfigFromEnv(env: NodeJS.ProcessEnv): DevMemoryConfig | null {
   const baseUrl = env.IAMCEO_MEMORY_URL?.trim();
   const keyFile = env.IAMCEO_MEMORY_KEY_FILE?.trim();
   const projects = (env.IAMCEO_MEMORY_PROJECTS ?? "").split(",").map((p) => p.trim()).filter(Boolean);
-  if (!baseUrl || !keyFile || projects.length === 0) return null;
+  if (!baseUrl || !keyFile) return null;
   return { baseUrl: validateBaseUrl(baseUrl), keyFile, projects };
+}
+
+/**
+ * 보내면 안 되는 글을 찾는다(키·토큰·비밀번호·개인 키 모양). 찾으면 그 종류를, 없으면 null.
+ * 게이트웨이도 일부 키 모양을 거부하지만 모든 민감 정보를 알아보지는 못하므로 보내기 전에 서버가 먼저 거른다.
+ * extra: 이 서버가 아는 실제 비밀(접속 코드·서비스 키). 글에 그대로 들어 있으면 막는다.
+ */
+const SENSITIVE: [RegExp, string][] = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "개인 키"],
+  [/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{20,}/g, "API 키"],
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/g, "GitHub 토큰"],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, "Slack 토큰"],
+  [/\bAKIA[0-9A-Z]{16}\b/g, "AWS 키"],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/gi, "인증 헤더"],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "JWT"],
+  [/(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|token|비밀번호|암호|접속\s*코드)\s*[:=]\s*\S{6,}/gi, "비밀번호·키 값"],
+];
+
+export function findSensitive(text: string, extra: readonly string[] = []): string | null {
+  for (const secret of extra) if (secret && secret.length >= 8 && text.includes(secret)) return "서버 비밀값";
+  for (const [re, kind] of SENSITIVE) { re.lastIndex = 0; if (re.test(text)) return kind; }
+  return null;
+}
+
+/** 서버가 스스로 올리는 글(결재 답 등)은 되물을 사람이 없어 민감해 보이는 부분만 가리고 보낸다. */
+export function redactSensitive(text: string, extra: readonly string[] = []): string {
+  let out = text;
+  for (const secret of extra) if (secret && secret.length >= 8) out = out.split(secret).join("[가림: 서버 비밀값]");
+  for (const [re, kind] of SENSITIVE) out = out.replace(re, `[가림: ${kind}]`);
+  return out;
 }
 
 /** 문서 계약: 주소에는 경로·자격 증명이 없어야 하고, 루프백 또는 Tailscale(.ts.net) HTTPS 만 쓴다. 재지정은 따라가지 않는다. */
@@ -87,6 +121,8 @@ export interface ExperienceInput {
   source: { task_id: string; turn_id?: string; item_id?: string; commit_sha?: string; service: string };
   evidence?: { kind: string; text: string }[];
   capture?: "complete" | "excerpt";
+  /** 같은 프로젝트의 앞 경험 id. 게이트웨이는 대체된 원본을 지우지 않고 기본 검색에서 뺀다(신뢰하는 REST 서비스만). */
+  supersedes?: string;
 }
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
@@ -94,12 +130,44 @@ type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 export class DevMemory {
   private readonly sessions = new Map<string, { path: string; token: string; initialized: boolean }>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
   private flushing: Promise<void> | null = null;
+  private gate: (projectId: string) => boolean;
+  private state: MemoryServiceInfo = { state: "unknown", detail: null, checkedAt: null };
 
-  constructor(readonly config: DevMemoryConfig, private readonly fetchImpl: Fetch = fetch) {}
+  constructor(readonly config: DevMemoryConfig, private readonly fetchImpl: Fetch = fetch) {
+    this.gate = (projectId) => this.config.projects.includes(projectId);
+  }
+
+  /** 어느 프로젝트가 기억을 쓰는지는 서버(프로젝트 설정)가 정한다. 정하지 않으면 환경 목록만 본다. */
+  setProjectGate(gate: (projectId: string) => boolean): void {
+    this.gate = gate;
+  }
 
   enabledFor(projectId: string): boolean {
-    return this.config.projects.includes(projectId);
+    return this.gate(projectId);
+  }
+
+  /** 마지막으로 확인한 연결 상태. 화면에 사실대로 보인다(키 내용·전체 경로는 싣지 않는다). */
+  status(): MemoryServiceInfo {
+    return { ...this.state };
+  }
+
+  private note(state: MemoryServiceInfo["state"], detail: string | null): void {
+    this.state = { state, detail, checkedAt: new Date().toISOString() };
+  }
+
+  /** 키 파일을 읽을 수 있는지와 게이트웨이 /healthz(인증 없음)를 본다. 키 내용은 밖으로 내지 않는다. */
+  async checkHealth(): Promise<MemoryServiceInfo> {
+    try { this.key(); } catch (e) { this.note("key_unreadable", (e as Error).message); return this.status(); }
+    try {
+      const res = await this.fetchImpl(this.config.baseUrl + "/healthz", { redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (res.ok) this.note("ok", null);
+      else this.note("unreachable", `개발 기억 서버 상태 확인이 실패했습니다(HTTP ${res.status})`);
+    } catch (e) {
+      this.note("unreachable", `개발 기억 서버에 닿지 못했습니다: ${(e as Error).name === "TimeoutError" ? "시간 초과" : (e as Error).message}`);
+    }
+    return this.status();
   }
 
   private key(): string {
@@ -110,11 +178,16 @@ export class DevMemory {
       if (!key) throw new Error("empty");
       return key;
     } catch {
-      throw new MemoryError("key_unreadable", `개발 기억 서비스 키 파일을 읽을 수 없습니다(${this.config.keyFile})`);
+      throw new MemoryError("key_unreadable", `개발 기억 서비스 키 파일을 읽을 수 없습니다(${this.config.keyFile.split("/").pop()})`);
     }
   }
 
-  private async send(path: string, body: unknown, token: string): Promise<{ status: number; json: unknown }> {
+  /** 글에 서비스 키가 그대로 들어 있는지 보려고 쓴다. 키를 읽지 못하면 빈 목록. */
+  secrets(): string[] {
+    try { return [this.key()]; } catch { return []; }
+  }
+
+  private async send(path: string, body: unknown, token: string, timeoutMs = TIMEOUT_MS): Promise<{ status: number; json: unknown }> {
     let res: Response;
     try {
       res = await this.fetchImpl(this.config.baseUrl + path, {
@@ -122,11 +195,14 @@ export class DevMemory {
         headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "manual",
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      throw new MemoryError("unreachable", `개발 기억 서버에 닿지 못했습니다: ${(e as Error).name === "TimeoutError" ? "시간 초과" : (e as Error).message}`, undefined, true);
+      const err = new MemoryError("unreachable", `개발 기억 서버에 닿지 못했습니다: ${(e as Error).name === "TimeoutError" ? "시간 초과" : (e as Error).message}`, undefined, true);
+      this.note("unreachable", err.message);
+      throw err;
     }
+    if (res.status < 500) this.note("ok", null);
     if (res.status >= 300 && res.status < 400) throw new MemoryError("redirect", "개발 기억 서버가 다른 주소로 보냈습니다. 자격 증명을 옮기지 않으려고 따라가지 않았습니다", res.status);
     const text = await res.text();
     let json: unknown = null;
@@ -139,8 +215,10 @@ export class DevMemory {
     return { status: res.status, json };
   }
 
-  private rest<T>(path: string, body?: unknown): Promise<T> {
-    return this.send(path, body, this.key()).then((r) => r.json as T);
+  private rest<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+    let key: string;
+    try { key = this.key(); } catch (e) { this.note("key_unreadable", (e as Error).message); throw e; }
+    return this.send(path, body, key, timeoutMs).then((r) => r.json as T);
   }
 
   async health(): Promise<{ ok: boolean }> {
@@ -149,10 +227,10 @@ export class DevMemory {
   }
 
   /** 검색. 프로젝트는 호출한 직원의 IAMCEO 프로젝트로만 정해진다. 함께 온 작업 MCP 키는 서버 안에만 둔다. */
-  async context(projectId: string, taskId: string, query: string, limit = 5): Promise<{ experiences: Experience[]; semantic_index?: string; truncated?: boolean }> {
+  async context(projectId: string, taskId: string, query: string, limit = 5, timeoutMs?: number): Promise<{ experiences: Experience[]; semantic_index?: string; truncated?: boolean }> {
     if (!this.enabledFor(projectId)) throw new MemoryError("not_configured", "이 프로젝트는 개발 기억 연결이 켜져 있지 않습니다");
     const project = memoryProjectId(projectId);
-    const result = await this.rest<{ experiences: Experience[]; semantic_index?: string; truncated?: boolean; mcp?: { path: string; token: string } }>("/v1/context", { project_id: project, task_id: checkedId(taskId), query, limit });
+    const result = await this.rest<{ experiences: Experience[]; semantic_index?: string; truncated?: boolean; mcp?: { path: string; token: string } }>("/v1/context", { project_id: project, task_id: checkedId(taskId), query, limit }, timeoutMs);
     if (result.mcp?.path && result.mcp.token) {
       const key = `${project}/${taskId}`;
       const prev = this.sessions.get(key);
@@ -209,10 +287,23 @@ export class DevMemory {
   }
 
   private async sendJob(store: Store, job: MemoryUpload): Promise<void> {
+    const experience = JSON.parse(job.body) as ExperienceInput;
+    // 대체 관계는 앞 기록이 게이트웨이 id 를 받은 뒤에만 실을 수 있다. 앞 기록이 아직이면 시도 수를 쓰지 않고 미룬다.
+    // 앞 기록도 횟수 제한이 있어 끝내 sent·rejected 로 끝나므로 이 미룸도 끝이 있다. 거절됐으면 대체 없이 보내고 그 사실을 남긴다.
+    let note: string | null = null;
+    if (job.supersedesEventId) {
+      const previous = store.getMemoryUpload(job.supersedesEventId);
+      if (previous?.status === "pending") {
+        store.settleMemoryUpload(job.eventId, { status: "pending", attempts: job.attempts, nextAt: new Date(Date.now() + 60_000).toISOString(), lastError: "앞 기록이 아직 전송 전이라 기다립니다" });
+        return;
+      }
+      if (previous?.status === "sent" && previous.remoteId) experience.supersedes = previous.remoteId;
+      else note = "앞 기록이 게이트웨이에 없어 대체 관계 없이 보냈습니다";
+    }
     const attempts = job.attempts + 1;
     try {
-      const saved = await this.record(job.projectId, JSON.parse(job.body) as ExperienceInput);
-      store.settleMemoryUpload(job.eventId, { status: "sent", attempts, lastError: null, remoteId: saved?.id ?? null });
+      const saved = await this.record(job.projectId, experience);
+      store.settleMemoryUpload(job.eventId, { status: "sent", attempts, lastError: note, remoteId: saved?.id ?? null });
     } catch (e) {
       const err = e instanceof MemoryError ? e : new MemoryError("unreachable", (e as Error).message, undefined, true);
       const retry = (err.retryable || err.code === "key_unreadable") && attempts < MAX_ATTEMPTS;
@@ -221,17 +312,29 @@ export class DevMemory {
     }
   }
 
-  start(store: Store, everyMs = 60_000): void {
+  start(store: Store, everyMs = 60_000, healthMs = 10 * 60_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.flush(store).catch((e) => console.warn("개발 기억 업로드 실패:", (e as Error).message)), everyMs);
     (this.timer as { unref?: () => void }).unref?.();
+    this.healthTimer = setInterval(() => void this.checkHealth().catch(() => {}), healthMs);
+    (this.healthTimer as { unref?: () => void }).unref?.();
+    void this.checkHealth().catch(() => {});
     void this.flush(store).catch(() => {});
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.healthTimer) clearInterval(this.healthTimer);
     this.timer = null;
+    this.healthTimer = null;
   }
+}
+
+/** 누가 남긴 기록인가. 요약 글은 직원도 쓸 수 있어 서버가 만든 event_id 머리로 가린다. */
+export function memoryKindLabel(e: Pick<Experience, "kind" | "event_id">): string {
+  const id = e.event_id ?? "";
+  const origin = id.startsWith("iamceo-decision-") ? "대표 결재 답 기록" : id.startsWith("iamceo-owner-") ? "대표 원문 기록 · 총괄 해석 따로" : id.startsWith("iamceo-ai-") ? "직원·AI 보고" : "다른 경로의 기록";
+  return `${e.kind} · ${origin}`;
 }
 
 export function stableEventId(prefix: string, ...parts: string[]): string {

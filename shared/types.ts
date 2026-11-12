@@ -47,7 +47,18 @@ export interface Project {
   connection: ProjectConnection;
   /** 마지막으로 총괄에게 판 정리를 맡긴(또는 그 턴이 끝난) 시각. 한 번도 안 했으면 null. */
   tidiedAt: string | null;
+  /** 개발 기억 운영. 옛 서버는 이 필드를 보내지 않는다. */
+  memory?: ProjectMemory;
 }
+
+/**
+ * 프로젝트의 개발 기억 운영 값. mode: 대표가 정한 값(on·off) 또는 이전 프로젝트(legacy: 서버 환경 목록을 따름).
+ * on 은 이 프로젝트가 기억을 쓰기로 한 것이다. 실제로 닿는지는 RuntimeInfo.memory(서버 연결 상태)로 따로 본다.
+ */
+export interface ProjectMemory { mode: "on" | "off" | "legacy"; on: boolean; enabledAt: string | null }
+
+/** 서버의 개발 기억 연결 상태. not_configured: 연결 설정 없음 · key_unreadable: 키 파일을 못 읽음 · unreachable: 서버가 응답 안 함 · ok: 마지막 확인에서 닿음 · unknown: 아직 확인 전 */
+export interface MemoryServiceInfo { state: "not_configured" | "key_unreadable" | "unreachable" | "ok" | "unknown"; detail: string | null; checkedAt: string | null }
 
 export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "cwd" | "now" | "runnerEnabled" | "connection"> {
   decisionCount: number; // 열린 결재
@@ -475,7 +486,7 @@ export interface Settings {
   boardTidyHours: number;
 }
 
-export interface RuntimeInfo { backend: "core"; core: { installed: boolean; available: boolean; version: string | null; detail: string | null }; providers: Record<CliProvider, { installed: boolean }> }
+export interface RuntimeInfo { backend: "core"; core: { installed: boolean; available: boolean; version: string | null; detail: string | null }; providers: Record<CliProvider, { installed: boolean }>; memory?: MemoryServiceInfo }
 
 export interface HerdrInfo { installed: boolean; running: boolean; version: string | null; protocol: number | null; compatible: boolean; warning: string | null }
 export interface LiveAgent { paneId: string; name: string | null; agent: string | null; status: string; cwd: string | null; sessionId: string | null; workspaceId: string | null; tabId: string | null; adopted: boolean }
@@ -553,9 +564,9 @@ export type RealtimeEvent =
   | (WsChangeEvent & SyncCursor);
 
 // ---- REST 요청 ----
-export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider }
+export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider; /** 개발 기억 운영. 생략하면 켠다. */ memory?: boolean }
 export interface CreateMemberReq { name: string; role?: string; cli?: CliProvider; modelOverride?: string | null }
-export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean }
+export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
 /** PUT /api/settings. ranks·codexRanks 는 고친 칸만 보내도 된다(나머지 유지). */
 export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "resetEfforts">> & {
   ranks?: Partial<Record<Rank, Partial<RankConfig>>>;
