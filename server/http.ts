@@ -590,18 +590,20 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
         }
       }));
     }),
-    // ---- Agent-A 연결(체험판). 열쇠·주소는 서버에만 있고 응답에 싣지 않는다. ----
+    // ---- Agent-A 연결(체험판). 열쇠는 서버에만 있고 응답에 싣지 않는다. 원래 화면 주소는 열쇠 없는 기본 방식일 때만 준다. ----
     route("GET", "/api/projects/:id/agent-a", async (_req, _url, [id]) => {
       activeProject(id!);
-      if (!ctx.agentA) return Response.json({ enabled: false, reachable: false, error: null, docs: [], staff: [] });
+      if (!ctx.agentA) return Response.json({ enabled: false, reachable: false, error: null, uiUrl: null, uiBlocked: null, docs: [], staff: [] });
       return Response.json(await ctx.agentA.projectInfo(id!));
     }),
     route("POST", "/api/projects/:id/agent-a/docs", async (req, _url, [id]) => {
       activeProject(id!);
       const agentA = requireAgentA();
-      const body = await parseBody(req, z.strictObject({ title: z.string(), markdown: z.string(), taskId: z.string().nullable().optional(), executor: z.enum(["agent_a", "staff"]).optional(), assigneeId: z.string().nullable().optional() }));
+      const image = z.strictObject({ title: z.string(), name: z.string().max(500), mediaType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]), base64: z.string().max(6 * 1024 * 1024) });
+      const body = await parseBody(req, z.strictObject({ title: z.string(), markdown: z.string(), images: z.array(image).max(10).optional(), taskId: z.string().nullable().optional(), executor: z.enum(["agent_a", "staff"]).optional(), assigneeId: z.string().nullable().optional() }));
       return Response.json(await agentA.createDoc(id!, body));
     }),
+    route("POST", "/api/agent-a/docs/:id/read", async (_req, _url, [id]) => Response.json(requireAgentA().markRead(id!))),
     route("GET", "/api/agent-a/docs/:id", async (_req, _url, [id]) => Response.json(await requireAgentA().view(id!))),
     route("PATCH", "/api/agent-a/docs/:id", async (req, _url, [id]) => {
       const agentA = requireAgentA();
@@ -1205,7 +1207,7 @@ function artifactFrameResponse(): Response {
 }
 
 /** 직원 글에 뭐가 들어와도 외부로 요청이 나가거나 스크립트가 돌지 못하게 하는 마지막 줄. */
-function pageHeaders(host: string): Record<string, string> {
+function pageHeaders(host: string, frames: string[] = []): Record<string, string> {
   const csp = [
     "default-src 'self'",
     "script-src 'self'",
@@ -1213,7 +1215,8 @@ function pageHeaders(host: string): Record<string, string> {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     `connect-src 'self' ws://${host} wss://${host}`,
-    "frame-src 'self' blob:", // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다)
+    // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다). Agent-A 를 켰으면 그 원래 화면 주소만 더한다.
+    `frame-src 'self' blob:${frames.map((f) => ` ${f}`).join("")}`,
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -1223,12 +1226,12 @@ function pageHeaders(host: string): Record<string, string> {
 }
 
 /** HTML 번들은 Bun 이 routes 에서만 내준다. 안쪽 주소에 띄워 두고, IP·Origin 검사를 지난 요청만 넘겨준다. */
-async function proxyWeb(origin: string, req: Request, url: URL): Promise<Response> {
+async function proxyWeb(origin: string, req: Request, url: URL, frames: string[] = []): Promise<Response> {
   if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "허용되지 않는 메서드입니다");
   const res = await fetch(`${origin}${url.pathname}${url.search}`, { method: req.method });
   const headers = new Headers(res.headers);
   for (const name of ["content-encoding", "content-length", "transfer-encoding"]) headers.delete(name);
-  for (const [k, v] of Object.entries(pageHeaders(req.headers.get("host") ?? url.host))) headers.set(k, v);
+  for (const [k, v] of Object.entries(pageHeaders(req.headers.get("host") ?? url.host, frames))) headers.set(k, v);
   return new Response(res.body, { status: res.status, headers });
 }
 
@@ -1355,7 +1358,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (!member) return fail(401, "인증이 필요합니다");
       return dispatch(agentRoutes(ctx, member), req, url);
     }
-    if (webOrigin) return proxyWeb(webOrigin, req, url);
+    if (webOrigin) return proxyWeb(webOrigin, req, url, ctx.agentA ? [ctx.agentA.client.baseUrl] : []);
     if (path === "/" && !webIndex) return fail(503, "화면이 아직 빌드되지 않았습니다");
     return fail(404, "없는 경로입니다");
   };

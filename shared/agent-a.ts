@@ -138,8 +138,19 @@ export interface AgentAProjectInfo {
   /** Agent-A 서버에 닿는가. 닿지 않으면 까닭. */
   reachable: boolean;
   error: string | null;
+  /** Agent-A 원래 화면 주소(열쇠 없이 이 기기에서만 열리는 기본 방식일 때만). 열쇠를 요구하면 null 과 까닭. */
+  uiUrl: string | null;
+  uiBlocked: string | null;
   docs: AgentADocSummary[];
   staff: { id: string; name: string }[];
+}
+
+/** 자료를 만들 때 함께 넣는 그림(Agent-A 이미지 블록이 된다). */
+export interface AgentAImageInput {
+  title: string;
+  name: string;
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  base64: string;
 }
 
 export interface AgentACreateRequestReq {

@@ -5,7 +5,7 @@ import type { FileDoc, FileKind } from "@shared/types";
 import type { AgentADocSummary, AgentAProjectInfo } from "@shared/agent-a";
 import { Glass } from "../glass";
 import { api, fileUrl } from "../lib/api";
-import { AgentADoc } from "../components/AgentADoc";
+import { AgentAFrame } from "../components/AgentAFrame";
 import { routeHash, useProject, useRoute } from "../lib/store";
 import { Empty, MQ_DESKTOP, Time, copyText, useMediaQuery } from "../components/ui";
 import { FileViewer, KIND_LABEL, KIND_ORDER } from "../components/viewers";
@@ -46,7 +46,7 @@ function useAgentA(projectId: string): AgentAProjectInfo | null {
           // 연결이 꺼진 서버·오류는 자료 화면을 막지 않는다
         }
       }
-      if (!stopped) timer = setTimeout(run, pending ? 4_000 : 30_000);
+      if (!stopped) timer = setTimeout(run, pending ? 4_000 : 8_000);
     };
     void run();
     const onVisible = () => {
@@ -65,7 +65,7 @@ function useAgentA(projectId: string): AgentAProjectInfo | null {
   return info?.enabled ? info : null;
 }
 
-/** 다른 자료를 보는 동안 앞 자료에 답이 오면 한 줄로 알린다. 누르면 원래 댓글로 간다. */
+/** 다른 자료를 보는 동안 앞 자료의 댓글에 답이 오면 한 줄로 알린다. 누르면 그 자료를 열고, 원래 화면의 '내 차례'에서 그 댓글로 간다. */
 function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProjectInfo; files: FileDoc[]; projectId: string; selectedId: string | null }) {
   const seen = useRef<Map<string, number> | null>(null);
   const [notice, setNotice] = useState<{ doc: AgentADocSummary; title: string } | null>(null);
@@ -81,8 +81,8 @@ function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProj
   return (
     <div className="aa-notice" role="status">
       <span>'{notice.title}' 댓글에 답이 왔습니다</span>
-      <a className="aa-btn" href={routeHash({ projectId, tab: "files", sub: notice.doc.fileId, focus: notice.doc.latestUnseen })} onClick={() => setNotice(null)}>
-        원래 댓글 열기
+      <a className="aa-btn" href={routeHash({ projectId, tab: "files", sub: notice.doc.fileId })} onClick={() => setNotice(null)}>
+        자료 열기
       </a>
       <button type="button" className="aa-link" onClick={() => setNotice(null)}>
         닫기
@@ -91,7 +91,7 @@ function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProj
   );
 }
 
-function Reader({ file, agentA, focus }: { file: FileDoc; agentA?: AgentAProjectInfo | null; focus?: string | null }) {
+function Reader({ file, agentA }: { file: FileDoc; agentA?: AgentAProjectInfo | null }) {
   const linked = agentA?.docs.some((d) => d.fileId === file.id) ?? false;
   return (
     <article className="fl-doc" data-kind={file.kind} data-agent-a={linked ? "" : undefined}>
@@ -106,7 +106,7 @@ function Reader({ file, agentA, focus }: { file: FileDoc; agentA?: AgentAProject
       {file.summary ? <p className="fl-doc__summary">{file.summary}</p> : null}
       {/* 아티팩트는 그림이 주인공이다. 원본 경로는 다른 종류에서만 보여 준다. */}
       {file.path && file.kind !== "artifact" ? <PathLine path={file.path} /> : null}
-      {linked && agentA ? <AgentADoc fileId={file.id} projectId={file.projectId} focus={focus ?? null} staff={agentA.staff} /> : <FileViewer file={file} />}
+      {linked && agentA ? <AgentAFrame fileId={file.id} title={file.title} info={agentA} /> : <FileViewer file={file} />}
     </article>
   );
 }
@@ -220,7 +220,7 @@ export default function Files() {
         {list}
         <Glass level="regular" tint className="fl-panel fl-panel--reader">
           <div ref={readerRef} className="fl-reader">
-            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} focus={route.focus} /> : <Missing />}
+            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} /> : <Missing />}
           </div>
         </Glass>
         {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
@@ -246,7 +246,7 @@ export default function Files() {
         자료
       </a>
       <Glass level="regular" tint className="fl-panel fl-panel--phone">
-        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} focus={route.focus} /> : <Missing />}
+        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} /> : <Missing />}
       </Glass>
       {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
     </div>

@@ -24,6 +24,11 @@ function fakeAgentA() {
   const calls: { method: string; path: string; as: string }[] = [];
   let dropAfter: RegExp | null = null;
   let down = false;
+  // 원래 화면(Plannotator) 쪽: 검토 세션·댓글 목록·그림 등록. 열쇠 없는 기본 방식(localMode)도 흉내 낸다.
+  const comments = new Map<string, any[]>();
+  const sessions: { id: string; artifact_id: string; key: string }[] = [];
+  const assets: any[] = [];
+  let localMode = false;
   const clone = (v: any) => structuredClone(v);
   const fail = (status: number, code: string, message = code) => Response.json({ error: code, code, message }, { status });
   function block(s: any, id: string) { return s.blocks.find((b: any) => b.id === id); }
@@ -95,17 +100,39 @@ function fakeAgentA() {
     const method = init.method ?? "GET";
     const token = String((init.headers as Record<string, string>).authorization ?? "").replace(/^Bearer /, "");
     calls.push({ method, path, as: token === AGENT ? "agent" : token === APP ? "user" : "none" });
+    const headers = init.headers as Record<string, string>;
     if (down) throw new TypeError("fetch failed");
     const body = init.body ? JSON.parse(String(init.body)) : null;
     const respond = (): Response => {
       if (token === AGENT && !(method === "POST" && path === "/api/agent-results")) return fail(403, "forbidden");
-      if (token !== AGENT && token !== APP) return fail(401, "unauthorized");
+      if (token !== AGENT && token !== APP && !localMode) return fail(401, "unauthorized");
       if (token !== AGENT && path === "/api/agent-results") return fail(403, "forbidden");
-      if (path === "/api/config") return Response.json({ adapter_enabled: true, auth_required: true, mode: "local" });
+      if (path === "/api/config") return Response.json({ adapter_enabled: true, auth_required: !localMode, mode: "local" });
+      if (method === "POST" && path === "/api/assets") {
+        const asset = { id: "a".repeat(64), revision: 1, src: `/assets/user/${"a".repeat(64)}/1`, width: 900, height: 334 };
+        assets.push({ ...body });
+        return Response.json(asset);
+      }
+      if (method === "POST" && path === "/api/plannotator/sessions") {
+        const s = artifacts.get(body.artifact_id);
+        if (!s) return fail(404, "not_found");
+        const key = `${s.artifact_revision}.${s.context_revision}.${s.layout_revision}`;
+        let found = sessions.find((x) => x.artifact_id === s.id && x.key === key);
+        if (!found) { found = { id: `sess-${sessions.length + 1}`, artifact_id: s.id, key }; sessions.push(found); }
+        return Response.json({ id: found.id });
+      }
+      if (method === "GET" && path === "/api/external-annotations") {
+        const sess = sessions.find((x) => x.id === headers["x-enouv-review-session"]);
+        if (!sess || sess.artifact_id !== headers["x-enouv-artifact"]) return fail(409, "session_mismatch");
+        const list = comments.get(sess.artifact_id) ?? [];
+        const version = JSON.stringify(list).length * 7 + list.length;
+        if (url.searchParams.get("since") === String(version)) return new Response(null, { status: 304 });
+        return Response.json({ artifact_id: sess.artifact_id, version, annotations: list });
+      }
       if (method === "POST" && path === "/api/artifacts") {
         if (artifacts.has(body.id)) return fail(409, "duplicate_id");
         const s = { id: body.id, title: body.title, project_id: body.project_id, task_id: body.task_id, artifact_revision: 1, context_revision: 1, layout_revision: 1, event_seq: 0,
-          blocks: body.blocks.map((b: any) => ({ id: b.id, kind: "markdown", revision: 1, archived: false, content: b.content, history: [] })), branches: [], proposals: [], feedback: [], events: [] };
+          blocks: body.blocks.map((b: any) => ({ id: b.id, kind: b.kind ?? "markdown", revision: 1, archived: false, content: b.content, ...(b.asset ? { asset: b.asset } : {}), history: [] })), branches: [], proposals: [], feedback: [], events: [] };
         artifacts.set(s.id, s);
         return Response.json(s);
       }
@@ -139,7 +166,10 @@ function fakeAgentA() {
     return res;
   };
   return {
-    transport, artifacts, jobs, calls,
+    transport, artifacts, jobs, calls, sessions, assets,
+    setLocalMode(v: boolean) { localMode = v; },
+    /** 원래 화면에서 댓글을 달고 Agent-A 가 답을 쓰는 것처럼 목록을 바꾼다. */
+    setComments(artifactId: string, list: any[]) { comments.set(artifactId, structuredClone(list)); },
     dropNextWrite(pattern: RegExp) { dropAfter = pattern; },
     setDown(v: boolean) { down = v; },
     /** Agent-A 자체 AI(Codex 실행기)가 job 을 끝낸 것처럼 결과를 저장한다. */
@@ -154,13 +184,13 @@ function fakeAgentA() {
   };
 }
 
-function setup(fake = fakeAgentA(), dbPath?: string) {
+function setup(fake = fakeAgentA(), dbPath?: string, appToken: string | null = APP) {
   const dir = mkdtempSync(join(tmpdir(), "iamceo-agent-a-"));
   dirs.push(dir);
   const db = openDb(dbPath ?? join(dir, "iamceo.db"));
   const store = new Store(db, new Bus());
   const woke: string[] = [];
-  const client = new AgentAClient({ baseUrl: "http://127.0.0.1:1", appToken: APP, agentToken: AGENT }, fake.transport);
+  const client = new AgentAClient({ baseUrl: "http://127.0.0.1:1", appToken, agentToken: AGENT }, fake.transport);
   const svc = new AgentAService(store, client, { wake: (id) => woke.push(id) });
   return { fake, store, svc, woke, dbPath: dbPath ?? join(dir, "iamceo.db"), dir };
 }
@@ -368,4 +398,87 @@ test("서버를 다시 켜면 저장된 요청 id 로 상태만 다시 보고, �
   const stopped = await second.svc.stopRequest(r2.id);
   expect(stopped.state).toBe("unknown");
   expect(stopped.error).toContain("멈춤을 확인");
+});
+
+test("원래 화면 댓글의 답은 다 쓴 뒤 한 번만 알리고, 처음 본 답은 알리지 않으며, 자료를 열면 읽음이 된다", async () => {
+  const { fake, store, svc } = setup();
+  const project = store.createProject({ name: "체험", cwd: tmpdir() });
+  const a = await svc.createDoc(project.id, { title: "자료 A", markdown: DOC_A });
+  const q = (id: string, text: string) => ({ id, type: "COMMENT", text, originalText: "가입 전환율" });
+  const r = (id: string, parent: string, text: string, extra: Record<string, unknown> = {}) => ({ id, type: "COMMENT", inReplyTo: parent, isAIReply: true, author: "Codex", text, ...extra });
+  // 연결 전에 이미 끝난 답: 기준으로만 삼는다.
+  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답")]);
+  await svc.watchComments();
+  // 새 댓글: 답을 쓰는 중 → 다 씀 → 한 번 더 같으면 알림.
+  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "답변을 준비하고 있습니다…")]);
+  await svc.watchComments();
+  expect((await svc.projectInfo(project.id)).docs[0]!.pending).toBe(1);
+  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "전환율 5%")]);
+  await svc.watchComments();
+  expect(store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"))).toHaveLength(0);
+  await svc.watchComments(); // 바뀐 것 없음(304)
+  fake.setComments(a.artifactId, [q("c0", "예전 질문"), r("comment-answer-0", "c0", "예전 답"), q("c1", "목표를 숫자로"), r("comment-answer-1", "c1", "전환율 5%"), q("c2", "다시")]);
+  await svc.watchComments();
+  const notes = store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"));
+  expect(notes).toHaveLength(1);
+  expect(notes[0]!.body).toContain("목표를 숫자로");
+  expect(notes[0]!.body).toContain(`/files/${a.fileId})`);
+  let info = await svc.projectInfo(project.id);
+  expect(info.docs[0]!).toMatchObject({ unseen: 1, pending: 0 });
+  // 같은 답을 다시 보아도 두 번 알리지 않는다.
+  await svc.watchComments();
+  await svc.watchComments();
+  expect(store.listMessages(project.id).filter((m) => m.title.includes("댓글에 답이 왔습니다"))).toHaveLength(1);
+  svc.markRead(a.fileId);
+  info = await svc.projectInfo(project.id);
+  expect(info.docs[0]!.unseen).toBe(0);
+  // 답을 못 받은 댓글도 알린다.
+  const failed = r("comment-answer-3", "c3", "", { answerError: { message: "모델 연결 실패" } });
+  fake.setComments(a.artifactId, [q("c3", "실패할 질문"), failed]);
+  await svc.watchComments();
+  await svc.watchComments();
+  fake.setComments(a.artifactId, [q("c3", "실패할 질문"), failed, q("c4", "x")]);
+  await svc.watchComments();
+  expect(store.listMessages(project.id).filter((m) => m.title.includes("답을 받지 못했습니다"))).toHaveLength(1);
+});
+
+test("정본 판이 바뀌면 원래 화면과 같이 새 검토 세션으로 댓글을 읽는다", async () => {
+  const { fake, store, svc } = setup();
+  const project = store.createProject({ name: "체험", cwd: tmpdir() });
+  const a = await svc.createDoc(project.id, { title: "자료 A", markdown: DOC_A });
+  await svc.watchComments();
+  expect(fake.sessions).toHaveLength(1);
+  await svc.watchComments();
+  expect(fake.sessions).toHaveLength(1);
+  fake.artifacts.get(a.artifactId).artifact_revision = 2;
+  await svc.watchComments();
+  expect(fake.sessions).toHaveLength(2);
+});
+
+test("열쇠 없는 기본 방식이면 열쇠를 보내지 않고 원래 화면 주소를 준다. 열쇠를 요구하면 주소를 주지 않는다", async () => {
+  const local = fakeAgentA();
+  local.setLocalMode(true);
+  const one = setup(local, undefined, null);
+  const p1 = one.store.createProject({ name: "체험", cwd: tmpdir() });
+  const info = await one.svc.projectInfo(p1.id);
+  expect(info).toMatchObject({ reachable: true, uiUrl: "http://127.0.0.1:1", uiBlocked: null });
+  expect(local.calls.every((c) => c.as === "none")).toBe(true);
+  const keyed = setup();
+  const p2 = keyed.store.createProject({ name: "체험", cwd: tmpdir() });
+  const info2 = await keyed.svc.projectInfo(p2.id);
+  expect(info2.uiUrl).toBeNull();
+  expect(info2.uiBlocked).toContain("열쇠");
+});
+
+test("그림을 넣으면 Agent-A 에 등록한 뒤 이미지 블록으로 만든다", async () => {
+  const { fake, store, svc } = setup();
+  const project = store.createProject({ name: "체험", cwd: tmpdir() });
+  const png = "iVBORw0KGgo=";
+  const doc = await svc.createDoc(project.id, { title: "자료 C", markdown: "## 설명\n그림 설명", images: [{ title: "가입 단계", name: "f.png", mediaType: "image/png", base64: png }] });
+  expect(fake.assets).toHaveLength(1);
+  const state = fake.artifacts.get(doc.artifactId);
+  const img = state.blocks.find((b: any) => b.kind === "image");
+  expect(img.asset.src).toStartWith("/assets/user/");
+  expect(img.content.title).toBe("가입 단계");
+  await expect(svc.createDoc(project.id, { title: "자료 D", markdown: "본문", images: [{ title: "", name: "f.png", mediaType: "image/png", base64: png }] })).rejects.toThrow("그림 제목");
 });

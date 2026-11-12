@@ -7,6 +7,7 @@
 // - 외부 실행자(IAMCEO 직원): POST /api/agent-results (어댑터 전용 열쇠, 결과 제출만 허용).
 // 요청마다 실행하는 곳을 하나로 고정한다. 직원 담당 요청에는 /run 을 부르지 않는다.
 // 열쇠는 이 서버 프로세스에만 있다. 화면 응답·자료·주소·보고에 싣지 않는다.
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import { ApiError, type Store } from "../store.ts";
@@ -17,6 +18,7 @@ import type {
   AgentADocSummary,
   AgentADocView,
   AgentAExecutor,
+  AgentAImageInput,
   AgentALateResult,
   AgentAOpResult,
   AgentAProjectInfo,
@@ -31,7 +33,8 @@ import type { Member } from "../../shared/types.ts";
 
 export interface AgentAConfig {
   baseUrl: string;
-  appToken: string;
+  /** 없으면 Agent-A 기본 방식(이 기기에서 온 요청만 받음)으로 부른다. 이때만 원래 화면을 자료 칸에 붙일 수 있다. */
+  appToken: string | null;
   /** 외부 실행자(직원) 결과 제출용. 없으면 직원 담당 요청을 받지 않는다. */
   agentToken: string | null;
 }
@@ -51,10 +54,10 @@ export function agentAConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Agent
   const url = new URL(raw);
   const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
   if (!loopback && url.protocol !== "https:") throw new Error("Agent-A 주소는 이 Mac(127.0.0.1)이거나 https 여야 합니다");
-  if (!env.IAMCEO_AGENT_A_TOKEN_FILE) throw new Error("IAMCEO_AGENT_A_TOKEN_FILE 이 필요합니다");
+  if (!loopback && !env.IAMCEO_AGENT_A_TOKEN_FILE) throw new Error("https Agent-A 에는 IAMCEO_AGENT_A_TOKEN_FILE 이 필요합니다");
   return {
     baseUrl: url.origin,
-    appToken: readSecret(env.IAMCEO_AGENT_A_TOKEN_FILE, "Agent-A 사용자 열쇠"),
+    appToken: env.IAMCEO_AGENT_A_TOKEN_FILE ? readSecret(env.IAMCEO_AGENT_A_TOKEN_FILE, "Agent-A 사용자 열쇠") : null,
     agentToken: env.IAMCEO_AGENT_A_AGENT_TOKEN_FILE ? readSecret(env.IAMCEO_AGENT_A_AGENT_TOKEN_FILE, "Agent-A 결과 제출 열쇠") : null,
   };
 }
@@ -146,14 +149,18 @@ export class AgentAClient {
     return this.config.agentToken !== null;
   }
 
-  private async call<T>(method: string, path: string, body?: unknown, as: "user" | "agent" = "user"): Promise<T> {
+  get baseUrl(): string {
+    return this.config.baseUrl;
+  }
+
+  private async call<T>(method: string, path: string, body?: unknown, as: "user" | "agent" = "user", extra: Record<string, string> = {}): Promise<T> {
     const token = as === "agent" ? this.config.agentToken : this.config.appToken;
-    if (!token) throw new AgentAError("auth", 0, "no_agent_token", "결과 제출 열쇠가 설정되지 않았습니다");
+    if (as === "agent" && !token) throw new AgentAError("auth", 0, "no_agent_token", "결과 제출 열쇠가 설정되지 않았습니다");
     let res: Response;
     try {
       res = await this.transport(`${this.config.baseUrl}${path}`, {
         method,
-        headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { "content-type": "application/json" } : {}), ...extra },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -167,6 +174,7 @@ export class AgentAClient {
     } catch {
       json = null;
     }
+    if (res.status === 304) return null as T;
     if (res.ok) return json as T;
     const err = (json ?? {}) as { code?: string; error?: string; message?: string };
     const code = err.code ?? err.error ?? `http_${res.status}`;
@@ -203,6 +211,31 @@ export class AgentAClient {
   submitResult(body: { receipt_id: string; answers: { feedback_id: string; body: string }[]; proposals: unknown[] }): Promise<AReceipt> {
     return this.call("POST", "/api/agent-results", body, "agent");
   }
+  uploadAsset(body: { name: string; media_type: string; base64: string }): Promise<AAsset> {
+    return this.call("POST", "/api/assets", body);
+  }
+  /** Agent-A 원래 화면이 문서를 열 때 쓰는 검토 세션. 같은 판이면 Agent-A 가 기존 세션을 돌려준다. */
+  reviewSession(artifactId: string): Promise<{ id: string }> {
+    return this.call("POST", "/api/plannotator/sessions", { artifact_id: artifactId });
+  }
+  /** 원래 화면의 댓글·답글 목록. since 가 그대로면 null(바뀐 것 없음). */
+  comments(artifactId: string, sessionId: string, since: number | null): Promise<AComments | null> {
+    return this.call("GET", `/api/external-annotations${since !== null ? `?since=${since}` : ""}`, undefined, "user", { "x-enouv-artifact": artifactId, "x-enouv-review-session": sessionId });
+  }
+}
+
+export interface AAsset {
+  id: string;
+  revision: number;
+  src: string;
+  width: number;
+  height: number;
+}
+
+/** Agent-A /api/external-annotations 응답 중 IAMCEO 가 쓰는 부분. */
+export interface AComments {
+  version: number;
+  annotations: { id: string; text?: string; originalText?: string; inReplyTo?: string; isAIReply?: boolean; author?: string; answerError?: { message: string } }[];
 }
 
 // ---- 저장 ----
@@ -255,6 +288,16 @@ CREATE TABLE IF NOT EXISTS agent_a_requests (
 );
 CREATE INDEX IF NOT EXISTS agent_a_requests_file ON agent_a_requests(file_id, created_at);
 CREATE INDEX IF NOT EXISTS agent_a_requests_due ON agent_a_requests(state, next_check_at);
+CREATE TABLE IF NOT EXISTS agent_a_comment_replies (
+  file_id TEXT NOT NULL,
+  reply_id TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  state TEXT NOT NULL,
+  notified_at TEXT,
+  read_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (file_id, reply_id)
+);
 CREATE TABLE IF NOT EXISTS agent_a_ops (
   op_id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -275,6 +318,10 @@ const OPEN_STATES: AgentARequestState[] = ["sending", "unconfirmed", "queued", "
 const ID = /^[a-zA-Z0-9_-]{8,100}$/;
 const BACKOFF_MS = [3_000, 3_000, 10_000, 10_000, 30_000];
 const STAFF_CHECK_MS = 30_000;
+const COMMENT_POLL_MS = 4_000;
+/** 원래 화면이 답을 쓰는 동안 보여 주는 글. 이 글이면 아직 답이 아니다. */
+const ANSWER_PLACEHOLDERS = new Set(["현재 답변이 끝나기를 기다리고 있습니다…", "답변을 준비하고 있습니다…"]);
+const hashText = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 function bad(message: string, status = 400, code?: string): never {
   throw new ApiError(status, message, code);
@@ -322,8 +369,12 @@ export class AgentAService {
   private readonly db: Database;
   private readonly locks = new Map<string, Promise<unknown>>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private commentTimer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
-  private reach: { at: number; ok: boolean; error: string | null } = { at: 0, ok: false, error: null };
+  private watching = false;
+  private reach: { at: number; ok: boolean; error: string | null; authRequired: boolean } = { at: 0, ok: false, error: null, authRequired: false };
+  /** 문서마다 원래 화면 댓글을 읽는 검토 세션과 마지막 판·목록 표시. */
+  private readonly watchers = new Map<string, { revKey: string; sessionId: string; since: number | null }>();
 
   constructor(
     private readonly store: Store,
@@ -343,11 +394,102 @@ export class AgentAService {
     this.db.query("UPDATE agent_a_requests SET next_check_at = ? WHERE state IN ('sending','unconfirmed','queued','running','waiting_staff','stop_requested')").run(this.now());
     this.timer = setInterval(() => void this.tick(), intervalMs);
     (this.timer as { unref?: () => void }).unref?.();
+    this.commentTimer = setInterval(() => void this.watchComments(), COMMENT_POLL_MS);
+    (this.commentTimer as { unref?: () => void }).unref?.();
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.commentTimer) clearInterval(this.commentTimer);
     this.timer = null;
+    this.commentTimer = null;
+  }
+
+  // ---- 원래 화면 댓글 답 알림 ----
+
+  /**
+   * Agent-A 원래 화면에서 단 댓글의 답을 IAMCEO 가 알아챈다(다른 자료를 보고 있어도 알림).
+   * 원래 화면과 같은 API(검토 세션 + 댓글 목록)만 읽는다. 처음 보는 문서는 이미 있는 답을 알림 없이 기준으로 삼는다.
+   * 답은 글이 두 번 연속 같을 때(쓰는 중이 아닐 때) 한 번만 알린다.
+   */
+  async watchComments(): Promise<void> {
+    if (this.watching) return;
+    this.watching = true;
+    try {
+      const docs = this.db.query("SELECT file_id, project_id, artifact_id FROM agent_a_docs").all() as Row[];
+      for (const d of docs) await this.watchDoc(d).catch(() => {});
+    } finally {
+      this.watching = false;
+    }
+  }
+
+  private async watchDoc(d: Row): Promise<void> {
+    const fileId = d.file_id as string;
+    const artifactId = d.artifact_id as string;
+    const state = await this.client.artifact(artifactId);
+    const revKey = `${state.artifact_revision}.${state.context_revision}.${state.layout_revision}`;
+    let w = this.watchers.get(fileId);
+    if (!w || w.revKey !== revKey) {
+      // 판이 바뀌면 원래 화면도 새 세션으로 연다. 그 세션 기준으로 다시 읽는다.
+      w = { revKey, sessionId: (await this.client.reviewSession(artifactId)).id, since: null };
+      this.watchers.set(fileId, w);
+    }
+    const list = await this.client.comments(artifactId, w.sessionId, w.since);
+    if (!list) return;
+    w.since = list.version;
+    const baseline = (this.db.query("SELECT COUNT(*) AS n FROM agent_a_comment_replies WHERE file_id = ?").get(fileId) as { n: number }).n === 0 && !this.baselined.has(fileId);
+    this.baselined.add(fileId);
+    const byId = new Map(list.annotations.map((a) => [a.id, a]));
+    for (const reply of list.annotations.filter((a) => a.isAIReply)) {
+      const text = (reply.text ?? "").trim();
+      const failed = Boolean(reply.answerError);
+      const writing = !failed && (!text || ANSWER_PLACEHOLDERS.has(text));
+      const h = hashText(`${failed ? "!" : ""}${text}`);
+      const row = this.db.query("SELECT * FROM agent_a_comment_replies WHERE file_id = ? AND reply_id = ?").get(fileId, reply.id) as Row | null;
+      if (!row) {
+        this.db.query("INSERT INTO agent_a_comment_replies (file_id, reply_id, text_hash, state, created_at) VALUES (?, ?, ?, ?, ?)").run(fileId, reply.id, h, baseline ? "baseline" : writing ? "writing" : "seen_once", nowIso());
+        continue;
+      }
+      if (row.state === "baseline" || row.state === "notified") continue;
+      if (writing) {
+        this.db.query("UPDATE agent_a_comment_replies SET text_hash = ?, state = 'writing' WHERE file_id = ? AND reply_id = ?").run(h, fileId, reply.id);
+      } else if (row.text_hash === h && row.state === "seen_once") {
+        this.db.query("UPDATE agent_a_comment_replies SET state = 'notified', notified_at = ? WHERE file_id = ? AND reply_id = ?").run(nowIso(), fileId, reply.id);
+        const parent = reply.inReplyTo ? byId.get(reply.inReplyTo) : undefined;
+        this.notifyComment(d, reply.id, parent?.text ?? null, failed);
+      } else {
+        this.db.query("UPDATE agent_a_comment_replies SET text_hash = ?, state = 'seen_once' WHERE file_id = ? AND reply_id = ?").run(h, fileId, reply.id);
+      }
+    }
+  }
+  private readonly baselined = new Set<string>();
+
+  private notifyComment(d: Row, replyId: string, question: string | null, failed: boolean): void {
+    const file = this.store.getFile(d.file_id as string);
+    if (!file) return;
+    const link = `#/p/${encodeURIComponent(d.project_id as string)}/files/${encodeURIComponent(d.file_id as string)}`;
+    const quote = question ? `> ${question.replace(/\s+/g, " ").slice(0, 120)}\n\n` : "";
+    try {
+      this.store.createMessage({
+        id: `msg_aa_c_${hashText(`${d.file_id}:${replyId}`)}`,
+        projectId: d.project_id as string,
+        kind: "알림",
+        who: "Agent-A",
+        title: failed ? `'${file.title}' 댓글의 답을 받지 못했습니다` : `'${file.title}' 댓글에 답이 왔습니다`,
+        body: `${quote}자료를 열면 오른쪽 '내 차례'에서 그 댓글로 갑니다.\n\n[자료 열기](${link})`,
+        fileId: d.file_id as string,
+        taskId: null,
+      });
+    } catch (e) {
+      console.error("Agent-A 댓글 알림 저장 실패:", e);
+    }
+  }
+
+  /** 대표가 IAMCEO 에서 그 자료를 열었다. 알린 답을 읽은 것으로 둔다. */
+  markRead(fileId: string): { ok: true } {
+    this.docRow(fileId);
+    this.db.query("UPDATE agent_a_comment_replies SET read_at = ? WHERE file_id = ? AND state = 'notified' AND read_at IS NULL").run(nowIso(), fileId);
+    return { ok: true };
   }
 
   /** 기한이 된 열린 요청을 한 번씩 진행한다. 시험은 직접 부른다. */
@@ -395,20 +537,21 @@ export class AgentAService {
   async projectInfo(projectId: string): Promise<AgentAProjectInfo> {
     if (this.now() - this.reach.at > 10_000) {
       try {
-        await this.client.config_();
-        this.reach = { at: this.now(), ok: true, error: null };
+        const cfg = await this.client.config_();
+        this.reach = { at: this.now(), ok: true, error: null, authRequired: Boolean(cfg?.auth_required) };
       } catch (e) {
-        this.reach = { at: this.now(), ok: false, error: e instanceof AgentAError && e.kind === "auth" ? "Agent-A 연결 열쇠를 확인해야 합니다" : "Agent-A 서버에 닿지 않습니다" };
+        this.reach = { at: this.now(), ok: false, error: e instanceof AgentAError && e.kind === "auth" ? "Agent-A 연결 열쇠를 확인해야 합니다" : "Agent-A 서버에 닿지 않습니다", authRequired: false };
       }
     }
     const docs = (this.db.query("SELECT file_id, artifact_id FROM agent_a_docs WHERE project_id = ? ORDER BY created_at").all(projectId) as Row[]).map((d): AgentADocSummary => {
       const reqs = this.db.query("SELECT id, state, seen FROM agent_a_requests WHERE file_id = ? ORDER BY updated_at DESC").all(d.file_id as string) as Row[];
       const unseen = reqs.filter((r) => !r.seen && ["answered", "failed", "unknown"].includes(r.state as string));
+      const comments = this.db.query("SELECT state FROM agent_a_comment_replies WHERE file_id = ? AND (state IN ('writing','seen_once') OR (state = 'notified' AND read_at IS NULL))").all(d.file_id as string) as Row[];
       return {
         fileId: d.file_id as string,
         artifactId: d.artifact_id as string,
-        pending: reqs.filter((r) => OPEN_STATES.includes(r.state as AgentARequestState)).length,
-        unseen: unseen.length,
+        pending: reqs.filter((r) => OPEN_STATES.includes(r.state as AgentARequestState)).length + comments.filter((c) => c.state !== "notified").length,
+        unseen: unseen.length + comments.filter((c) => c.state === "notified").length,
         latestUnseen: (unseen[0]?.id as string | undefined) ?? null,
       };
     });
@@ -416,7 +559,9 @@ export class AgentAService {
       .listMembers(projectId)
       .filter((m) => m.kind === "worker")
       .map((m) => ({ id: m.id, name: m.name }));
-    return { enabled: true, reachable: this.reach.ok, error: this.reach.error, docs, staff };
+    const uiUrl = this.reach.ok && !this.reach.authRequired ? this.client.baseUrl : null;
+    const uiBlocked = !this.reach.ok ? this.reach.error : this.reach.authRequired ? "Agent-A 가 열쇠를 요구하는 방식이라 원래 화면을 자료 칸에 붙이지 않습니다(열쇠를 브라우저에 넘기지 않습니다)" : null;
+    return { enabled: true, reachable: this.reach.ok, error: this.reach.error, uiUrl, uiBlocked, docs, staff };
   }
 
   async view(fileId: string): Promise<AgentADocView> {
@@ -505,7 +650,7 @@ export class AgentAService {
   // ---- 문서 연결 ----
 
   /** 새 Agent-A 정본 문서를 만들고 자료 목록에 한 줄로 잇는다. 자료 본문은 첫 판의 고정 내보내기다. */
-  async createDoc(projectId: string, input: { title: string; markdown: string; taskId?: string | null; executor?: AgentAExecutor; assigneeId?: string | null }): Promise<AgentADocView> {
+  async createDoc(projectId: string, input: { title: string; markdown: string; images?: AgentAImageInput[]; taskId?: string | null; executor?: AgentAExecutor; assigneeId?: string | null }): Promise<AgentADocView> {
     const project = this.store.requireProject(projectId);
     if (project.archived) bad("보관한 프로젝트입니다", 404);
     const title = input.title.trim();
@@ -516,6 +661,15 @@ export class AgentAService {
     const executor = input.executor ?? "agent_a";
     const assigneeId = executor === "staff" ? this.requireStaff(projectId, input.assigneeId ?? null).id : null;
     const blocks = splitMarkdown(input.markdown, title);
+    const images = input.images ?? [];
+    if (images.length > 10) bad("그림은 10장까지 넣습니다");
+    const imageBlocks: Record<string, unknown>[] = [];
+    for (const [i, img] of images.entries()) {
+      if (!img.title?.trim() || !/^[A-Za-z0-9+/]+=*$/.test(img.base64 ?? "")) bad("그림 제목과 내용이 필요합니다");
+      // Agent-A 가 형식·크기·해시를 확인해 등록한 그림만 이미지 블록이 된다(영역을 골라 물을 수 있다).
+      const asset = await this.client.uploadAsset({ name: img.name, media_type: img.mediaType, base64: img.base64 });
+      imageBlocks.push({ id: `img${i + 1}`, kind: "image", content: { title: img.title.trim(), summary: "", body: img.title.trim(), sources: [] }, asset });
+    }
     const artifactId = `iamceo-${newId("")}`;
     await this.client.createArtifact({
       id: artifactId,
@@ -523,7 +677,7 @@ export class AgentAService {
       goal: `IAMCEO 자료 '${title}'의 정본. 대표가 고른 수정안만 반영한다.`,
       project_id: projectId,
       task_id: taskId,
-      blocks: blocks.map((b) => ({ id: b.id, kind: "markdown", content: { title: b.title, summary: "", body: b.body, sources: [] } })),
+      blocks: [...blocks.map((b) => ({ id: b.id, kind: "markdown", content: { title: b.title, summary: "", body: b.body, sources: [] } })), ...imageBlocks],
     });
     const file = this.store.createFile({
       projectId,
