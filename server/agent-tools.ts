@@ -541,11 +541,12 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
-      task_id: z.string().trim().min(1).max(64).optional().describe("대표가 특정 작업에서 보낸 글을 잇는 지시면 그 작업 id(받은 글의 '작업 #' 줄). 진행판 일 항목의 일을 맡길 때는 그 항목의 대화 작업 id(tk_<일 항목 id>, work_set 결과에 나온다). 생략하면 작업 없는 지시"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 지시가 속한 작업 id. 대표 글에 '작업 #' 줄이 있으면 그 작업. 진행판 일 항목의 일이면 맡기기 전에 work_set 으로 만든 항목의 대화 작업 id(tk_w_…). 어느 작업에도 속하지 않으면 null. 작업을 쓰는 프로젝트에서 빼면 거절된다(인용한 대표 글이 작업에서 온 글이면 그 작업)"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
-      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId: a.task_id }, member))}`);
+      const taskId = orch.instructionTask(member, a.task_id, a.user_quote);
+      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
     },
   ),
 
@@ -556,11 +557,12 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       expect_run_id: oneLine(100).optional().describe("roster 의 run.id. 지금 실행이 이것과 다르면 멈추지 않는다"),
       then: z.string().trim().min(1).max(20000).optional().describe("멈춘 뒤 이어서 할 지시(끝났다고 볼 기준 포함)"),
       user_quote: userQuote,
-      task_id: z.string().trim().min(1).max(64).optional().describe("then 이 특정 작업의 지시면 그 작업 id"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("then 이 속한 작업 id(team_assign 과 같은 규칙). 어느 작업에도 속하지 않으면 null"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
-      const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId: a.task_id }, member) : null;
+      const taskId = a.then ? orch.instructionTask(member, a.task_id, a.user_quote) : null;
+      const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId }, member) : null;
       const r = await orch.stopMember(target.id, { by: `agent-${member.id}`, expectRunId: a.expect_run_id ?? null });
       return { text: `${target.name}: ${stopNote(r)}${queued ? ` · 이어서 할 지시: ${assignNote(queued)}` : ""}`, ...(r.outcome === "failed" ? { isError: true } : {}) };
     },
@@ -690,7 +692,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     (orch, member, a) => {
       const item = orch.setWork(member.projectId, a);
       const task = orch.store.getTask(Store.workTaskId(item.id));
-      return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩. 이 일로 맡기는 team_assign 에 task_id 로 넣으면 보고가 이 칩에 모인다)` : ""}`);
+      return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`);
     },
   ),
 

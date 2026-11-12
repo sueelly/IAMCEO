@@ -192,6 +192,9 @@ export function formatTodoUndone(t: Todo): string {
   return `[대표] '${quotedInline(t.title)}' 아직 안 했음(체크를 풀었습니다) #${t.id}${taskTag(t.taskId)}`;
 }
 
+/** 총괄에게 작업 id 를 어디서 얻는지 알리는 꼬리말. */
+const WORK_TASK_HINT = ". 진행판 일 항목의 일이면 맡기기 전에 work_set 으로 항목을 만들고, 결과의 대화 작업 id(tk_w_…)를 넣으세요.";
+
 export interface QuoteSource {
   id: string;
   text: string;
@@ -3572,8 +3575,35 @@ export class Orchestrator implements OrchestratorApi {
     const fixed = [...new Set(sources.filter((id): id is string => !!id))];
     if (fixed.length === 1) return fixed[0]!;
     if (fixed.length > 1) throw new ApiError(400, `이어 준 결재·자료가 서로 다른 작업(${fixed.join(", ")})이라 어느 작업의 글인지 정할 수 없습니다. task_id 를 넣어 다시 부르세요`);
-    if (!this.store.memberUsesTasks(member.id)) return null;
-    throw new ApiError(400, "task_id 가 없습니다. 작업을 쓰는 중이라 작업을 밝히지 않은 글을 서버가 어느 작업에 둘지 정하지 않습니다. 이 글이 속한 작업의 id(받은 글의 '작업 #' 줄)를 task_id 로 넣거나, 어느 작업에도 속하지 않는 글이면 task_id: null 로 다시 부르세요");
+    const lead = this.conductorUsesTasks(member);
+    if (!lead && !this.store.memberUsesTasks(member.id)) return null;
+    throw new ApiError(400, `task_id 가 없습니다. 작업을 쓰는 중이라 작업을 밝히지 않은 글을 서버가 어느 작업에 둘지 정하지 않습니다. 이 글이 속한 작업의 id(받은 글의 '작업 #' 줄)를 task_id 로 넣거나, 어느 작업에도 속하지 않는 글이면 task_id: null 로 다시 부르세요${lead ? WORK_TASK_HINT : ""}`);
+  }
+
+  /**
+   * 총괄은 진행판(work_set)으로 작업 칩을 만드는 쪽이다. 프로젝트에 작업이 하나라도 있으면 작업을 쓰는 직원으로 본다.
+   * 그러지 않으면 총괄이 task_id 를 빼먹은 글·카드가 말없이 전체로 가고, 작업 칩은 비어 보인다.
+   */
+  private conductorUsesTasks(member: Member): boolean {
+    return this.store.getConductor(member.projectId)?.id === member.id && this.store.listTasks(member.projectId).length > 0;
+  }
+
+  /**
+   * 총괄 지시(team_assign·team_stop then)의 작업. 서버는 증거로만 정한다(마지막 작업으로 추측하지 않는다).
+   * 1) 밝힌 task_id(null 은 일부러 전체). 2) 인용한 대표 글이 작업에서 보낸 글이면 그 작업.
+   * 3) 둘 다 없으면: 작업을 쓰는 프로젝트에서는 거절해 다시 부르게 하고, 작업이 없는 프로젝트는 예전대로 전체.
+   */
+  instructionTask(member: Member, explicit: string | null | undefined, userQuote?: string | null): string | null {
+    if (explicit === null) return null;
+    const source = userQuote?.trim() ? this.findQuoteSource(member.projectId, userQuote) : null;
+    const quoted = source ? this.store.getMessage(source.id)?.taskId ?? null : null;
+    if (explicit !== undefined) {
+      if (quoted && quoted !== explicit) throw new ApiError(400, `인용한 대표 글은 작업 #${quoted} 에서 보낸 글인데 task_id 는 ${explicit} 입니다. 대표가 고른 작업(${quoted})으로 다시 부르세요. 다른 일로 나누는 것이면 그 대표 글을 인용하지 마세요`);
+      return explicit;
+    }
+    if (quoted) return quoted;
+    if (!this.store.listTasks(member.projectId).length) return null;
+    throw new ApiError(400, `task_id 가 없습니다. 이 프로젝트는 작업 칩을 쓰므로 지시가 어느 작업의 일인지 밝혀야 대표 대화의 그 칩에 지시와 보고가 모입니다${WORK_TASK_HINT} 어느 작업에도 속하지 않는 지시면 task_id: null 로 다시 부르세요`);
   }
 
   /** 턴 마지막 글(자동 보고)의 작업: 그 턴에 받은 대표 글·답·지시가 모두 같은 작업일 때만 그 작업, 아니면 전체. */
@@ -3745,7 +3775,10 @@ export class Orchestrator implements OrchestratorApi {
         this.store.setDecisionFollowUp(decision.id, followUp);
         if (followUp.kind === "instruction") {
           const source = this.store.requireMessage(followUp.sourceMessageId);
-          const delivery = this.store.enqueue({ projectId: member.projectId, memberId: followUp.memberId, kind: "instruction", text: formatInstruction(member.name, `${followUp.text}\n결재 #${decision.id} 닫기의 후속 지시`, { text: input.userQuote ?? source.body, verified: true, source: { id: source.id, text: source.body, at: source.at } }) });
+          // 후속 지시는 닫은 결재 카드의 작업을 잇는다(카드가 전체면 대표 원문 글의 작업). 칩에서 시작한 일이 전체로 새지 않게 한다.
+          const taskId = decision.taskId ?? source.taskId ?? null;
+          const taskLine = this.taskLineFor(member.projectId, taskId);
+          const delivery = this.store.enqueue({ projectId: member.projectId, memberId: followUp.memberId, kind: "instruction", text: [formatInstruction(member.name, `${followUp.text}\n결재 #${decision.id} 닫기의 후속 지시`, { text: input.userQuote ?? source.body, verified: true, source: { id: source.id, text: source.body, at: source.at } }), ...(taskLine ? [taskLine] : [])].join("\n"), taskId });
           this.store.noteDelegation(member.id, delivery, this.isBusy(this.store.requireMember(followUp.memberId)));
           this.store.afterCommit(() => { void this.pump(followUp.memberId); });
         }
