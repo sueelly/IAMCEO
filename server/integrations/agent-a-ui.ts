@@ -194,6 +194,10 @@ export const SHIM_JS = String.raw`(() => {
         set: (v) => { const [pair] = String(v).split(";"); const i = pair.indexOf("="); if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim()); } });
     } catch {}
   }
+  // 문서를 처음 열 때 왼쪽 목차(Contents)는 닫아 둔다. Agent-A 는 첫 화면에서 한 번만 이 설정을 보고 목차를 연다.
+  // 값이 없을 때만 넣으므로, 열어 둔 뒤 사람이 'Contents' 로 다시 열고 닫는 것은 막지 않는다.
+  // Agent-A 는 설정을 localStorage 의 'enouv.plannotator.' 열쇠에 둔다(칸 안에서는 위의 메모리 저장소).
+  try { const k = "enouv.plannotator.plannotator-toc-enabled"; if (localStorage.getItem(k) === null) localStorage.setItem(k, "false"); } catch {}
   const of = window.fetch.bind(window);
   window.fetch = (input, init) => {
     if (input instanceof Request) { const f = fix(input.url); return of(f === input.url ? input : new Request(f, input), init); }

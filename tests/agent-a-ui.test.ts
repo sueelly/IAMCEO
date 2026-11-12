@@ -10,7 +10,7 @@ import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { startServer, type RunningServer } from "../server/http.ts";
 import { AgentAClient, AgentAService } from "../server/integrations/agent-a.ts";
-import { AgentAUiTickets, rewriteAsset, rewriteHtml, splitAgentAUiPath } from "../server/integrations/agent-a-ui.ts";
+import { AgentAUiTickets, rewriteAsset, rewriteHtml, SHIM_JS, splitAgentAUiPath } from "../server/integrations/agent-a-ui.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import { Store } from "../server/store.ts";
 
@@ -37,6 +37,20 @@ describe("입장권·주소 고치기", () => {
     const again = t.mint();
     t.clear();
     expect(t.valid(again.ticket)).toBe(false);
+  });
+
+  // 대표: "Default로 보일 때 컨텐츠 목차 패널 숨겨진 상태이길" — 처음 한 번만 닫고, 사람이 다시 연 뒤에는 덮어쓰지 않는다.
+  test("칸을 처음 열 때 Agent-A 목차는 닫힌 설정으로 시작하고, 이미 있는 값은 덮어쓰지 않는다", () => {
+    const line = SHIM_JS.split("\n").find((l) => l.includes("plannotator-toc-enabled"))!;
+    expect(line).toBeTruthy();
+    const run = (start: Record<string, string>) => {
+      const d = new Map(Object.entries(start));
+      const localStorage = { getItem: (k: string) => d.get(k) ?? null, setItem: (k: string, v: string) => void d.set(k, v) };
+      new Function("localStorage", line)(localStorage);
+      return Object.fromEntries(d);
+    };
+    expect(run({})).toEqual({ "enouv.plannotator.plannotator-toc-enabled": "false" });
+    expect(run({ "enouv.plannotator.plannotator-toc-enabled": "true" })).toEqual({ "enouv.plannotator.plannotator-toc-enabled": "true" });
   });
 
   test("경로 나누기", () => {
