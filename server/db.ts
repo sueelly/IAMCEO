@@ -774,6 +774,8 @@ export const MIGRATIONS: string[] = [
      evidence TEXT NOT NULL DEFAULT '[]',
      checks TEXT NOT NULL DEFAULT '[]',
      author TEXT NOT NULL,
+     author_member_id TEXT,
+     author_kind TEXT NOT NULL DEFAULT 'conductor',
      source_message_id TEXT,
      at TEXT NOT NULL,
      PRIMARY KEY (task_id, rev)
@@ -783,6 +785,7 @@ export const MIGRATIONS: string[] = [
      task_id TEXT,
      member_id TEXT NOT NULL,
      run_id TEXT,
+     contract_task_id TEXT,
      contract_rev INTEGER,
      review_needed TEXT,
      at TEXT NOT NULL
@@ -798,7 +801,8 @@ export const MIGRATIONS: string[] = [
      criterion INTEGER,
      PRIMARY KEY (message_id, idx)
    );
-   CREATE INDEX report_harness_task ON report_harness(task_id, at);`,
+   CREATE INDEX report_harness_task ON report_harness(task_id, at);
+   CREATE INDEX report_harness_contract ON report_harness(contract_task_id, contract_rev);`,
 ];
 
 export function openDb(path: string): Database {

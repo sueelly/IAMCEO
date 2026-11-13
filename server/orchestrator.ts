@@ -436,6 +436,8 @@ export interface PostInput {
   checks?: ReportCheckInput[];
   /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
   unverified?: string[];
+  /** 검사가 따른 계약 판 번호. 계약이 있는 업무의 완료는 지금 판과 같아야 받는다. */
+  contractRev?: number | null;
   /** 독립 검토가 필요하면 확인할 변경과 수용 기준. 총괄이 기존 다른 직원에게 검토를 맡길 근거다. */
   reviewNeeded?: string | null;
 }
@@ -3306,7 +3308,7 @@ export class Orchestrator implements OrchestratorApi {
     const task = this.instructionTaskFor(projectId, input.taskId);
     if (input.contract && !task) throw new ApiError(400, "계약은 업무에 붙습니다. task_id 를 함께 넣으세요");
     const delivery = this.store.transaction(() => {
-      if (input.contract && task) this.store.saveTaskContract(task.id, cleanContract(input.contract), { author: assignedBy?.name ?? "대표 화면", sourceMessageId: quote?.verified ? quote.source?.id ?? null : null });
+      if (input.contract && task) this.store.saveTaskContract(task.id, cleanContract(input.contract), { author: assignedBy?.name ?? "대표 화면", authorMemberId: assignedBy?.id ?? null, authorKind: !assignedBy ? "owner" : assignedBy.kind === "worker" ? "worker" : "conductor", sourceMessageId: quote?.verified ? quote.source?.id ?? null : null });
       const taskLine = this.instructionTaskLines(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
         projectId,
@@ -3712,11 +3714,15 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.transaction(() => {
       if (input.taskId) this.requireTaskInProject(member, input.taskId);
       const parent = input.parentTaskId ? this.store.resolveTask(this.requireTaskInProject(member, input.parentTaskId)).id : null;
-      const current = contract && input.taskId ? this.store.getTaskContract(input.taskId) : null;
-      // 직원은 총괄·다른 직원이 정한 계약을 고쳐 기준을 낮추지 못한다(자기 규칙 수정으로 범위를 넓히지 않게).
-      if (current && member.kind === "worker" && current.author !== member.name) throw new ApiError(409, `업무 #${current.taskId} 계약 r${current.rev} 은 ${current.author}이(가) 정했습니다. 직원은 바꾸지 않습니다. 바꿔야 하면 총괄에게 보고하세요`);
+      // 갈래 업무는 위 업무의 계약을 따른다. 직원은 총괄·대표·다른 직원이 정한 계약(이어받은 것 포함)을 고치거나 덮어 기준을 낮추지 못한다.
+      const under = input.taskId ?? parent;
+      const current = contract && under ? this.store.getEffectiveContract(under) : null;
+      if (current && member.kind === "worker" && current.authorMemberId !== member.id) {
+        throw new ApiError(409, `업무 #${current.taskId} 계약 r${current.rev} 은 ${current.author}이(가) 정했습니다${!input.taskId || current.taskId !== input.taskId ? "(갈래 업무는 이 계약을 이어받습니다)" : ""}. 직원은 바꾸거나 덮지 않습니다. 바꿔야 하면 총괄에게 보고하세요`);
+      }
       const saved = this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
-      return { ...saved, contract: contract ? this.store.saveTaskContract(saved.task.id, contract, { author: member.name }) : this.store.getTaskContract(saved.task.id) };
+      const by = { author: member.name, authorMemberId: member.id, authorKind: member.kind === "worker" ? "worker" as const : "conductor" as const };
+      return { ...saved, contract: contract ? this.store.saveTaskContract(saved.task.id, contract, by) : this.store.getEffectiveContract(saved.task.id) };
     });
   }
 
@@ -3821,10 +3827,10 @@ export class Orchestrator implements OrchestratorApi {
   /** 지시 글의 업무 줄. 계약이 있는 업무면 계약 판·원문 참조·최근 검사·열린 결재를 덧붙인다(대화 전량은 넘기지 않는다). */
   private instructionTaskLines(projectId: string, taskId: string | null | undefined): string | null {
     const line = this.taskLineFor(projectId, taskId);
-    const contract = taskId ? this.store.getTaskContract(taskId) : null;
+    const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
     if (!contract || !taskId) return line;
     const openDecisions = this.store.listOpenDecisions(projectId).filter(d => d.taskId === taskId).map(d => ({ id: d.id, title: d.title }));
-    return [line, formatContract(contract, { latest: this.store.latestTaskChecks(taskId), openDecisions })].filter(Boolean).join("\n");
+    return [line, formatContract(contract, { latest: this.store.latestTaskChecks(taskId), openDecisions, forTaskId: taskId })].filter(Boolean).join("\n");
   }
 
   private taskLineFor(projectId: string, taskId: string | null | undefined): string | null {
@@ -3867,8 +3873,10 @@ export class Orchestrator implements OrchestratorApi {
       input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
     ]);
     const checks = harnessChecks(input);
-    const contract = taskId ? this.store.getTaskContract(taskId) : null;
-    if (contract && input.kind === "완료") this.gateCompletion(member, contract, checks);
+    const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
+    if (input.kind === "완료") this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null);
+    // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
+    const recordRev = contract ? (input.contractRev && input.contractRev >= 1 && input.contractRev <= contract.rev ? input.contractRev : contract.rev) : null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
@@ -3877,7 +3885,7 @@ export class Orchestrator implements OrchestratorApi {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
-      if (checks.length || input.reviewNeeded || contract) this.store.recordReportChecks(message, member, checks, { contractRev: contract?.rev ?? null, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null });
+      if (checks.length || input.reviewNeeded || contract) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null });
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind), refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
@@ -3886,21 +3894,49 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
-   * 계약이 있는 업무의 완료 판정. 직원은 자기 검사로, 총괄·본사는 자기 검사가 없으면 이 계약 판으로 통과한 직원 완료 보고가 있어야 한다.
+   * 완료 판정. 계약은 업무에 붙고 갈래 업무는 위 업무의 계약을 따른다(getEffectiveContract).
+   * 1) 직원이 이번 턴에 계약 있는 업무를 받았으면, 받지 않은 계약 없는 업무(직원이 새로 만든 업무 포함)로 완료를 올리지 못한다.
+   *    받은 업무(그 갈래 포함)의 완료와, 따로 계약이 있는 다른 업무의 완료는 그대로 판정한다(여러 업무를 함께 받는 일은 막지 않는다).
+   * 2) 검사는 지금 판(contract_rev)을 밝혀야 받는다. 옛 판의 기준 번호로 새 판을 통과시키지 않는다.
+   * 3) 직원은 자기 검사로, 총괄·본사는 자기 검사가 없으면 이 계약 판으로 통과한 완료 보고가 있어야 한다.
    * 거절된 완료는 글이 아니므로 보고 의무가 남는다(막힘으로 올리면 마감된다).
    */
-  private gateCompletion(member: Member, contract: TaskContract, checks: ReportCheckInput[]): void {
+  private gateCompletion(member: Member, taskId: string | null, contract: TaskContract | null, checks: ReportCheckInput[], declaredRev: number | null): void {
+    const refuse = (reason: string, log = reason): never => {
+      this.store.appendActivity(member.id, "system", `완료 차단: ${log}`);
+      throw new ApiError(400, reason);
+    };
+    const gated = contract && contract.authorKind !== "worker";
+    if (member.kind === "worker" && !gated) {
+      const received = this.turnTasks(this.runtime(member.id).turn?.deliveries).map(id => this.store.getTask(id)).filter((t): t is Task => !!t).map(t => this.store.resolveTask(t).id);
+      const bound = received.map(id => this.store.getEffectiveContract(id)).filter((c): c is TaskContract => !!c && c.authorKind !== "worker");
+      if (bound.length && taskId && !received.some(id => this.isTaskUnder(taskId, id))) {
+        const list = [...new Set(bound.map(c => `#${c.taskId} 계약 r${c.rev}`))].join(", ");
+        refuse(`이번에 받은 업무(${list})는 계약이 있습니다. 그 일의 완료는 그 업무 id 와 contract_rev·checks 로 올리세요. 받지 않은 업무 #${taskId} 의 완료는 이 턴에 계약 없이 받지 않습니다. 정말 다른 일이면 진행·알림으로 남기고 총괄에게 계약을 받으세요`, `받은 업무(${list}) 대신 계약 없는 업무 #${taskId} 로 완료`);
+      }
+    }
+    if (!contract) return;
     if (member.kind !== "worker" && !checks.length) {
       if (this.store.hasPassedCompletion(contract.taskId, contract.rev)) return;
-      const reason = `업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`;
-      this.store.appendActivity(member.id, "system", `완료 차단: ${reason}`);
-      throw new ApiError(400, reason);
+      refuse(`업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 contract_rev 와 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`);
     }
-    const reasons = completionGate(contract, checks);
-    if (!reasons.length) return;
-    const reason = `완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}). ${reasons.join(" / ")}. 고쳐서 다시 검사한 뒤 완료로 올리거나, 막힘으로 올리고 unverified 에 확인하지 못한 것을 적으세요`;
-    this.store.appendActivity(member.id, "system", `완료 차단: ${reasons.join(" / ")}`);
-    throw new ApiError(400, reason);
+    const now = formatContract(contract, { forTaskId: taskId });
+    if (declaredRev != null && declaredRev !== contract.rev) refuse(`완료로 올릴 수 없습니다. 업무 #${contract.taskId} 계약이 r${declaredRev} 에서 r${contract.rev} 로 바뀌었습니다. 옛 판의 검사로는 받지 않습니다. 지금 판의 기준으로 다시 검사하세요.\n${now}`, `옛 판 r${declaredRev} 의 검사(지금 r${contract.rev})`);
+    const reasons = [...(declaredRev == null ? [`검사가 따른 계약 판을 contract_rev 로 밝히지 않았습니다(지금 판 r${contract.rev})`] : []), ...completionGate(contract, checks)];
+    if (reasons.length) refuse(`완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}). ${reasons.join(" / ")}. 고쳐서 다시 검사한 뒤 완료로 올리거나, 막힘으로 올리고 unverified 에 확인하지 못한 것을 적으세요${declaredRev == null ? `\n${now}` : ""}`, reasons.join(" / "));
+  }
+
+  /** taskId 가 root 이거나 root 의 갈래(parent 를 따라 올라가 root 에 닿는다)인지. */
+  private isTaskUnder(taskId: string, root: string): boolean {
+    const seen = new Set<string>();
+    let id: string | null | undefined = taskId;
+    while (id && !seen.has(id) && seen.size < 32) {
+      if (id === root) return true;
+      seen.add(id);
+      const task = this.store.getTask(id);
+      id = task ? this.store.resolveTask(task).parentTaskId ?? null : null;
+    }
+    return false;
   }
 
   /**
@@ -3926,7 +3962,8 @@ export class Orchestrator implements OrchestratorApi {
     const refs = this.reportReferences(message.projectId, message.id);
     const direct = message.title.startsWith("(직접) ");
     const harness = this.store.getReportHarness(message.id);
-    const checksLine = harness ? formatChecksLine(harness.checks, harness.contractRev, harness.reviewNeeded) : "";
+    const contract = harness?.contractTaskId ? this.store.getTaskContract(harness.contractTaskId) : null;
+    const checksLine = harness ? formatChecksLine(harness.checks, harness.contractRev, harness.reviewNeeded, contract) : "";
     return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}${checksLine ? `\n${checksLine}` : ""}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
   }
 
