@@ -114,47 +114,51 @@ const rows = (page: Page) => page.locator(".th-list .th-row");
 const listText = (page: Page) => page.locator(".th-list").innerText();
 
 describe("웹 작업별 대화", () => {
-  test("전체·작업 고르기, 보낸 뒤 작업을 옮겨도 늦은 보고는 원래 작업, 새로고침 유지, 직원 선택과 함께 동작", async () => {
+  // 대표 2026-11-13: "업무 선택할 때, 직원까지 함께 선택될 필요는 없는 것 같아" — 업무와 받는 사람은 따로 고른다.
+  test("업무와 받는 사람은 따로: 업무A·직원1 → 업무B(직원 유지) → 직원2(업무 유지) → 같은 업무로 보냄, 늦은 보고는 원래 업무, 새로고침 유지", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await openThread(page);
-    // '전체'가 기본이고, 작업은 최신 등록부터
+    const target = () => page.locator(".cmp-chip--target").innerText();
+    const pickTarget = async (name: string | null) => {
+      await page.locator(".cmp-chip--target").click();
+      if (name) await page.locator(".cmp-menu__item", { hasText: name }).click();
+      else await page.locator(".cmp-menu__item").first().click();
+    };
+    // '전체'가 기본이고, 업무는 최신 등록부터. 칩마다 맡은 직원이 보인다
     await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
-    // 총괄에게 보낼 때는 칩마다 맡은 직원이 보인다
     await expect(chipWho(page)).resolves.toEqual(["검색 개선", "결제 연동"]);
     await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
-    // 전체: 옛 글과 두 작업 글이 모두 보이고, 작업 글에는 작업 표지가 붙는다
     let text = await listText(page);
     for (const s of ["작업 전의 옛 지시", "옛 답변", "환불 설계 시작", "검색 색인 점검"]) expect(text).toContain(s);
     await expect(page.locator(".th-card__task", { hasText: "환불 기능" }).count()).resolves.toBe(1);
     await page.screenshot({ path: join(SHOTS, "1-all.png") });
 
-    // 환불 작업 고르기: 그 작업 글만, 받는 사람은 등록한 직원
+    // 1) 업무A(환불)를 고르면 그 업무 글만 보이고, 받는 사람은 그대로(총괄)
     await chip(page, "환불 기능").click();
     await page.locator(".th-task").waitFor();
     await expect(page.locator(".th-task").innerText()).resolves.toContain("feat/refund");
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
+    await expect(target()).resolves.toBe("총괄");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("환불 설계 시작") && !document.querySelector(".th-list")?.textContent?.includes("검색 색인"));
-    text = await listText(page);
-    expect(text).not.toContain("작업 전의 옛 지시");
-    expect(text).not.toContain("검색 색인 점검");
-    await page.screenshot({ path: join(SHOTS, "2-refund.png") });
-
-    // 이 작업에서 보낸다
+    // 직원1(결제 연동)을 고르면 업무는 그대로 남는다
+    await pickTarget("결제 연동");
+    await expect(target()).resolves.toBe("@결제 연동");
+    await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
+    // 직원을 골라도 업무 칩 목록은 줄지 않는다
+    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
+    await page.screenshot({ path: join(SHOTS, "2-refund-pay.png") });
     await page.getByLabel("입력칸").fill("부분 환불도 넣어 주세요");
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불도 넣어 주세요"));
-    const sent = await stored("부분 환불도 넣어 주세요");
-    expect(sent).toMatchObject({ taskId: taskPay.id, targetMemberId: pay.id });
+    expect(await stored("부분 환불도 넣어 주세요")).toMatchObject({ taskId: taskPay.id, targetMemberId: pay.id });
     await settle();
     expect(runner.sent.find((s) => s.text.includes("부분 환불도 넣어 주세요"))!.text).toContain(`작업 #${taskPay.id} '환불 기능' · 브랜치 'feat/refund'`);
-    // 보낸 뒤에도 이 작업이 골라져 있다
     await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
 
-    // 곧바로 검색 작업으로 옮긴다. 그 사이 결제 직원의 늦은 보고(받은 글의 작업 줄대로 환불 작업을 밝힘)가 온다
+    // 2) 업무B(검색)로 옮겨도 받는 사람(결제 연동)은 그대로. 그 사이 결제 직원의 늦은 보고는 원래 업무(환불)에 붙는다
     await chip(page, "검색 속도").click();
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    await expect(target()).resolves.toBe("@결제 연동");
     await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 넣음", taskId: taskPay.id });
-    // 작업을 밝히지 않은 늦은 보고는 받지 않는다(어느 작업에도, 화면에서 보고 있는 검색 작업에도 붙지 않는다)
+    // 업무를 밝히지 않은 늦은 보고는 받지 않는다(화면에서 보고 있는 검색 업무에도 붙지 않는다)
     await expect(orch.recordPost(store.requireMember(pay.id), { kind: "알림", title: "작업 없는 늦은 글" })).rejects.toThrow("task_id");
     expect(store.listMessages(project.id).find((m) => m.title.endsWith("부분 환불 넣음"))!.taskId).toBe(taskPay.id);
     await settle();
@@ -162,51 +166,49 @@ describe("웹 작업별 대화", () => {
     text = await listText(page);
     expect(text).toContain("검색 색인 점검");
     expect(text).not.toContain("부분 환불");
-    await page.screenshot({ path: join(SHOTS, "3-search-after-switch.png") });
+    await page.screenshot({ path: join(SHOTS, "3-search-keeps-pay.png") });
 
-    // 새로고침해도 고른 작업(검색)이 남고, 그 작업 대화만 보인다
+    // 새로고침해도 고른 업무(검색)와 받는 사람(결제 연동)이 그대로 남는다
     await page.reload();
     await page.locator(".th-task").waitFor({ timeout: 20_000 });
     await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(target()).resolves.toBe("@결제 연동");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("검색 색인 점검"));
     expect(await listText(page)).not.toContain("환불");
 
-    // 환불로 돌아가면 늦은 보고가 거기에 있다
-    await chip(page, "환불 기능").click();
-    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
+    // 3) 직원2(검색 개선)로 바꿔도 업무(검색)는 풀리지 않는다
+    await pickTarget("검색 개선");
+    await expect(target()).resolves.toBe("@검색 개선");
+    await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(page.locator(".th-task", { hasText: "검색 속도" }).count()).resolves.toBe(1);
 
-    // 작업을 골라 둔 동안에도 다른 작업으로 바로 옮길 수 있게 모든 작업이 보인다
-    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
-    // 직원 선택과 함께: 대상을 검색 직원으로 바꾸면 환불 작업 선택이 풀리고 검색 직원의 작업만 남는다
-    await page.locator(".cmp-chip--target").click();
-    await page.locator(".cmp-menu__item", { hasText: "검색 개선" }).click();
-    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도"]);
-    // 한 직원의 작업만 보일 때는 맡은 사람을 되풀이하지 않는다
-    await expect(chipWho(page)).resolves.toEqual([]);
-    await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
-    // 총괄로 돌리면 모든 작업이 다시 보인다
-    await page.locator(".cmp-chip--target").click();
-    await page.locator(".cmp-menu__item").first().click();
-    await expect(chipTitles(page)).resolves.toEqual(["전체", "검색 속도", "환불 기능"]);
-    // 작업을 고른 뒤 '전체'를 누르면 작업도 받는 사람도 기본으로 돌아온다
-    await chip(page, "검색 속도").click();
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    // 4) 같은 업무(환불)를 다른 직원(검색 개선)에게도 보낸다 → 같은 업무 id 로 남는다
+    await chip(page, "환불 기능").click();
+    await expect(target()).resolves.toBe("@검색 개선");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
+    await page.getByLabel("입력칸").fill("환불 화면의 검색도 봐 주세요");
+    await page.getByLabel("입력칸").press("Enter");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("환불 화면의 검색도 봐 주세요"));
+    expect(await stored("환불 화면의 검색도 봐 주세요")).toMatchObject({ taskId: taskPay.id, targetMemberId: search.id });
+    await settle();
+    expect(runner.sent.find((s) => s.text.includes("환불 화면의 검색도 봐 주세요"))!.text).toContain(`작업 #${taskPay.id} '환불 기능'`);
+    await page.screenshot({ path: join(SHOTS, "4-refund-to-search.png") });
+
+    // 5) '전체'로 돌아와도 받는 사람은 그대로, 업무만 풀린다. 전체 글이 다시 보인다
     await chip(page, "전체").click();
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+    await expect(target()).resolves.toBe("@검색 개선");
     await expect(page.locator(".th-task").count()).resolves.toBe(0);
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("작업 전의 옛 지시"));
     text = await listText(page);
-    for (const s of ["작업 전의 옛 지시", "부분 환불 넣음", "검색 색인 점검"]) expect(text).toContain(s);
-
-    // 전체에서 보낸 글은 작업이 없다(직전 작업에 붙지 않는다)
-    await page.getByLabel("입력칸").fill("@pay 오늘 일정 알려 주세요");
-    await page.getByLabel("입력칸").press("Enter");
-    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("오늘 일정 알려 주세요"));
-    expect(await stored("오늘 일정 알려 주세요")).toMatchObject({ taskId: null, targetMemberId: pay.id });
+    for (const s of ["작업 전의 옛 지시", "부분 환불 넣음", "검색 색인 점검", "환불 화면의 검색도 봐 주세요"]) expect(text).toContain(s);
+    // 총괄로 돌려도 업무 선택(없음)은 그대로
+    await pickTarget(null);
+    await expect(target()).resolves.toBe("총괄");
+    await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
     await page.close();
   }, 120_000);
 
-  test("폰 폭: 작업이 많으면 가로로 밀어 고르고, 입력칸도 쓸 수 있다", async () => {
+  test("폰 폭: 업무가 많으면 가로로 밀어 고르고, 업무를 둔 채 받는 사람만 바꿔 보낸다", async () => {
     for (let i = 1; i <= 7; i++) {
       extra.push(orch.saveTask(i % 2 ? pay : search, { title: `추가 작업 ${i}번 제목이 조금 길다`, branch: `feat/extra-${i}` }).task);
       await settle();
@@ -229,15 +231,20 @@ describe("웹 작업별 대화", () => {
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
     await expect(page.getByLabel("입력칸").isVisible()).resolves.toBe(true);
     await expect(page.locator(".cmp-chip--target").isVisible()).resolves.toBe(true);
+    // 폰에서도 업무를 골라 둔 채 받는 사람만 바꾼다
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+    await page.locator(".cmp-chip--target").tap();
+    await page.locator(".cmp-menu__item", { hasText: "결제 연동" }).tap();
+    await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
     await page.getByLabel("입력칸").fill("폰에서 보냄");
     await page.getByRole("button", { name: "보내기" }).click();
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("폰에서 보냄"));
-    expect((await stored("폰에서 보냄")).taskId).toBe(taskPay.id);
+    expect(await stored("폰에서 보냄")).toMatchObject({ taskId: taskPay.id, targetMemberId: pay.id });
     await page.screenshot({ path: join(SHOTS, "5-phone-refund.png") });
     await page.close();
   }, 90_000);
 
-  test("대화 글의 작업 표지를 누르면 그 작업 글만 보이고, 입력칸의 작업·받는 사람도 같이 바뀐다", async () => {
+  test("대화 글의 업무 이름을 누르면 그 업무 글만 보이고 입력칸 업무도 바뀐다. 받는 사람은 그대로, 끝낸 업무도 이어서 보낸다", async () => {
     const report = (m: Member, title: string, taskId: string | null) =>
       store.createMessage({ projectId: project.id, memberId: m.id, who: m.name, kind: "진행", title, body: "", taskId });
     // 전체 첫 화면(최근 200개)에 들지 않는 옛 작업 글
@@ -276,12 +283,12 @@ describe("웹 작업별 대화", () => {
     await expect(chip(page, "끝난 일").count()).resolves.toBe(0);
     await page.screenshot({ path: join(SHOTS, "6-all-before-click.png") });
 
-    // 1) 중간의 검색 보고 표지를 누른다 → 검색 작업 글만, 받는 사람은 검색 직원, 첫 화면 밖의 옛 검색 글도 서버에서 받아 온다
+    // 1) 중간의 검색 보고 표지를 누른다 → 검색 업무 글만, 받는 사람은 그대로(총괄), 첫 화면 밖의 옛 검색 글도 서버에서 받아 온다
     await label("검색 중간 보고").scrollIntoViewIfNeeded();
     await label("검색 중간 보고").click();
     await page.locator(".th-task", { hasText: "검색 속도" }).waitFor();
     await expect(chip(page, "검색 속도").getAttribute("aria-pressed")).resolves.toBe("true");
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("검색 색인 점검"));
     text = await listText(page);
     expect(text).toContain("검색 중간 보고");
@@ -308,7 +315,7 @@ describe("웹 작업별 대화", () => {
     await page.waitForTimeout(300);
     await expect(inView("환불 기준 보고")).resolves.toBe(true);
     await expect(inView("환불 진행 40")).resolves.toBe(false);
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
     // 작업이 많아 칩 목록이 밀려 있어도 고른 칩이 보인다
     await expect(page.evaluate(() => {
       const strip = document.querySelector(".cmp-tasks")!.getBoundingClientRect();
@@ -317,10 +324,14 @@ describe("웹 작업별 대화", () => {
     })).resolves.toBe(true);
     text = await listText(page);
     expect(text).not.toContain("전체 글");
-    expect(text).not.toContain("검색");
+    expect(text).not.toContain("검색 색인");
+    expect(text).not.toContain("검색 중간 보고");
     await page.screenshot({ path: join(SHOTS, "8-refund-from-label.png") });
 
-    // 4) 같은 작업으로 보낸다 → 이 작업·결제 직원에게 남는다
+    // 4) 받는 사람을 결제 직원으로 고르고 같은 업무로 보낸다 → 이 업무·결제 직원에게 남는다
+    await page.locator(".cmp-chip--target").click();
+    await page.locator(".cmp-menu__item", { hasText: "결제 연동" }).click();
+    await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
     await page.getByLabel("입력칸").fill("기준 보고를 보고 보냄");
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("기준 보고를 보고 보냄"));
@@ -329,26 +340,30 @@ describe("웹 작업별 대화", () => {
     // 5) 전체에서 내가 보낸 글의 작업 표지도 누를 수 있다
     await chip(page, "전체").click();
     const mine = page.locator(".th-row--mine", { hasText: "기준 보고를 보고 보냄" }).locator(".th-mine__task");
-    await expect(mine.innerText()).resolves.toBe("작업 환불 기능");
+    await expect(mine.innerText()).resolves.toBe("업무 환불 기능");
     await mine.click();
     await page.locator(".th-task", { hasText: "환불 기능" }).waitFor();
     await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
     await chip(page, "전체").click();
 
-    // 6) 끝낸 일의 작업: 칩에 없어도 표지로 지난 대화를 보고, '전체'로 돌아오면 칩도 다시 숨는다
+    // 6) 끝낸 일의 업무: 칩에 없어도 표지로 지난 대화를 보고, 받는 사람(결제 연동)은 그대로 둔 채 이어서 보낸다. '전체'로 돌아오면 칩도 다시 숨는다
     await label("끝난 일 보고").click();
     await page.locator(".th-task", { hasText: "끝난 일" }).waitFor();
     await expect(chip(page, "끝난 일").getAttribute("aria-pressed")).resolves.toBe("true");
-    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("끝난 일 보고"));
     expect(await listText(page)).not.toContain("전체 글");
+    await page.getByLabel("입력칸").fill("끝난 일 후속 확인 부탁");
+    await page.getByLabel("입력칸").press("Enter");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("끝난 일 후속 확인 부탁"));
+    expect(await stored("끝난 일 후속 확인 부탁")).toMatchObject({ taskId: doneTask, targetMemberId: pay.id });
     await page.screenshot({ path: join(SHOTS, "9-done-task-from-label.png") });
     await chip(page, "전체").click();
     await expect(chip(page, "끝난 일").count()).resolves.toBe(0);
 
     // 7) 빈 작업은 칩으로 고르면 빈 안내가 보인다(글이 없어 대화에 표지가 없다)
     await chip(page, "빈 작업").click();
-    await page.getByText("이 작업의 대화가 아직 없습니다").waitFor();
+    await page.getByText("이 업무의 대화가 아직 없습니다").waitFor();
     expect(empty.id).toBeTruthy();
     await chip(page, "전체").click();
     await page.close();
@@ -384,40 +399,35 @@ describe("웹 작업별 대화", () => {
     await phone.close();
   }, 120_000);
 
-  // 대표: "총괄에서는 잘 뜨는데 각 직원별로는 몇 개만 뜨네? 통일시켜" — 진행판에서 총괄이 만든 작업도 담당 직원 칩에서 보인다.
-  test("진행판 작업: 담당 직원을 고르면 그 작업도 보이고, 고르면 그 직원에게 그 작업으로 보낸다", async () => {
+  // 맡은 직원은 참고로만 보인다. 직원을 골라도 칩이 줄지 않고, 맡지 않은 직원에게도 그 업무로 보낼 수 있다.
+  test("일 목록 업무: 칩에 맡은 직원이 보이고, 직원을 바꿔도 업무 목록·선택이 그대로이며 맡지 않은 직원에게도 같은 업무로 보낸다", async () => {
     const item = store.upsertWork({ projectId: project.id, sec: "doing", title: "환불 정산 확인", who: "총괄·결제 연동" });
     await settle();
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await openThread(page);
-    await chip(page, "전체").click();
-    await page.locator(".cmp-chip--target").click();
-    await page.locator(".cmp-menu__item").first().click();
-    // 총괄 쪽: 진행판 작업에도 맡은 직원 이름이 붙는다
     await expect(chip(page, "환불 정산 확인").locator(".cmp-task__who").innerText()).resolves.toBe("결제 연동");
-    // 결제 연동을 고르면 그 직원이 등록한 작업과 진행판 담당 작업이 함께 보인다
+    const all = await chipTitles(page);
+    // 결제 연동을 골라도 칩 목록은 같고, 맡은 사람 표시도 남는다
     await page.locator(".cmp-chip--target").click();
     await page.locator(".cmp-menu__item", { hasText: "결제 연동" }).click();
-    const titles = await chipTitles(page);
-    expect(titles).toContain("환불 정산 확인");
-    expect(titles).toContain("환불 기능");
-    expect(titles).not.toContain("검색 속도");
+    await expect(chipTitles(page)).resolves.toEqual(all);
+    await expect(chip(page, "검색 속도").locator(".cmp-task__who").innerText()).resolves.toBe("검색 개선");
     await page.screenshot({ path: join(SHOTS, "6-worker-chips.png") });
-    // 그 작업을 고르면 받는 사람은 그대로 결제 연동
+    // 업무를 골라도 받는 사람은 결제 연동 그대로
     await chip(page, "환불 정산 확인").click();
     await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
     await page.getByLabel("입력칸").fill("정산 숫자 확인해 주세요");
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("정산 숫자 확인해 주세요"));
     expect(await stored("정산 숫자 확인해 주세요")).toMatchObject({ taskId: `tk_${item.id}`, targetMemberId: pay.id });
-    // 총괄로 바꿔도 진행판 작업은 남는다(총괄도 그 작업의 담당)
-    await page.locator(".cmp-chip--target").click();
-    await page.locator(".cmp-menu__item").first().click();
-    await expect(chip(page, "환불 정산 확인").getAttribute("aria-pressed")).resolves.toBe("true");
-    // 담당이 아닌 직원을 고르면 작업 선택이 풀린다
+    // 맡지 않은 직원(검색 개선)으로 바꿔도 업무는 남고, 그 직원에게 같은 업무로 간다
     await page.locator(".cmp-chip--target").click();
     await page.locator(".cmp-menu__item", { hasText: "검색 개선" }).click();
-    await expect(chip(page, "전체").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(chip(page, "환불 정산 확인").getAttribute("aria-pressed")).resolves.toBe("true");
+    await page.getByLabel("입력칸").fill("정산 화면 검색도 봐 주세요");
+    await page.getByLabel("입력칸").press("Enter");
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("정산 화면 검색도 봐 주세요"));
+    expect(await stored("정산 화면 검색도 봐 주세요")).toMatchObject({ taskId: `tk_${item.id}`, targetMemberId: search.id });
     await page.close();
   }, 90_000);
 });

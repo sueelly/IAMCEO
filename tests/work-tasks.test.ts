@@ -10,7 +10,7 @@ import { openDb } from "../server/db.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import type { Runner } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
-import { keepsTask, liveTasks, taskTarget, taskWorkers, visibleTasks, workIdOf } from "../web/src/lib/tasks";
+import { liveTasks, taskWorkers, visibleTasks, workIdOf } from "../web/src/lib/tasks";
 
 function setup() {
   const home = mkdtempSync(join(tmpdir(), "iamceo-worktask-"));
@@ -103,7 +103,7 @@ describe("화면: 칩으로 보일 작업", () => {
   });
 
   // 대표: "총괄에서는 잘 뜨는데 각 직원별로는 몇 개만 뜨네? 통일시켜" — 진행판 담당에 이름이 적힌 직원의 칩에도 그 작업이 보인다.
-  test("진행판 담당에 이름이 적힌 직원을 고르면 그 일 항목 작업도 보이고, 그 직원에게 보낸다", () => {
+  test("진행판 담당에 이름이 적힌 직원의 업무로 셀 수 있다(칩의 맡은 사람 표시)", () => {
     const workers = [{ id: "w1", name: "엘리트사원 클로드" }, { id: "w3", name: "작업 실행 체계" }];
     const t = (id: string, who: string, memberId: string | null = null): Task => ({ ...task(id, memberId), who, createdAt: id });
     const tasks = [t("tk_w_a", "총괄·엘리트사원 클로드"), t("tk_w_b", "작업 실행 체계"), t("tk_w_c", "비서·총괄"), t("tk_mine", "엘리트사원 클로드", "w1")];
@@ -111,15 +111,6 @@ describe("화면: 칩으로 보일 작업", () => {
     expect(taskWorkers(tasks[2]!, workers)).toEqual([]);
     expect(visibleTasks(tasks, "w1", workers).map((x) => x.id).sort()).toEqual(["tk_mine", "tk_w_a"]);
     expect(visibleTasks(tasks, "w3", workers).map((x) => x.id)).toEqual(["tk_w_b"]);
-    // 직원을 골라 둔 채 그 직원의 일 항목 작업을 고르면 받는 사람은 그 직원, 총괄로 고르면 총괄
-    expect(taskTarget(tasks[0]!, workers, "w1")).toBe("w1");
-    expect(taskTarget(tasks[0]!, workers, null)).toBeNull();
-    expect(taskTarget(tasks[0]!, workers, "w3")).toBeNull();
-    // 일 항목 작업은 총괄과 담당 직원 사이를 오가도 작업이 남고, 담당 아닌 직원을 고르면 풀린다
-    expect(keepsTask(tasks[0]!, workers, null)).toBe(true);
-    expect(keepsTask(tasks[0]!, workers, "w1")).toBe(true);
-    expect(keepsTask(tasks[0]!, workers, "w3")).toBe(false);
-    expect(keepsTask(tasks[3]!, workers, null)).toBe(false);
   });
 });
 
