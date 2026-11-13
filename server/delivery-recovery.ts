@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { memberConfig, type Delivery, type DeliveryEvidence, type DeliveryNoticeItem, type DeliveryNoticePage, type DeliveryNoticePageOptions, type DeliveryNotices, type DeliveryRecoveryRequest, type DeliveryRecoveryResult, type Member, type MemberDeliverySummary, type Message, type UnassignedRecoveryRequest, type UnassignedRecoveryResult } from "../shared/types.ts";
 import { ApiError, type Store } from "./store.ts";
+import { ERROR_CODES } from "../shared/error-codes.ts";
+import { textRef } from "../shared/server-text.ts";
 import type { DeliveryDispatch, DeliveryRecoveryRecord, DeliveryRecoveryService } from "./service-contracts.ts";
 import type { DeliveryBaseline, DeliveryInspection, DeliveryRepair, Runner, RunnerMember, RunnerTerminalIdentity, SendResult } from "./runner/types.ts";
 
@@ -42,9 +44,9 @@ export interface DeliveryRecoveryOptions {
 const MAX_REJECTED = 5;
 const CHECK_MS = [1_000, 3_000, 10_000, 30_000, 60_000];
 const RETRY_MS = [2_000, 10_000, 30_000];
-const STOP_NOTE = "추가 전달을 중지했습니다. 과거 수신 여부는 알 수 없습니다";
+const STOP_NOTE = ERROR_CODES.note_stopped.ko;
 const PHYSICAL = ["prepared", "write_started", "unknown"];
-const CHECK_NOTE = "전달 여부를 시스템이 확인하고 있습니다";
+const CHECK_NOTE = ERROR_CODES.note_checking.ko;
 const requestSchema = z.discriminatedUnion("action", [
   z.strictObject({ operationId: z.uuid(), expectedVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), action: z.literal("recheck") }),
   z.strictObject({ operationId: z.uuid(), expectedVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), action: z.literal("stop_retry") }),
@@ -55,28 +57,28 @@ function hash(value: unknown): string { return createHash("sha256").update(JSON.
 function compare(a: string, b: string): number { return Buffer.compare(Buffer.from(a), Buffer.from(b)); }
 function note(reason: string | null, evidence: DeliveryEvidence[] = []): string {
   switch (reason) {
-    case "manual_control": return "직접 조작이 끝나면 다시 확인합니다";
-    case "stale_instruction": return "오래된 미전달 지시입니다. 지금 다시 시도하거나 그만 보내세요";
-    case "input_busy": return "팀원의 입력칸이 비기를 기다리는 중입니다";
-    case "busy": return "받을 수 있을 때 다시 확인합니다";
-    case "blocked": return "승인 창이 닫히면 다시 확인합니다";
-    case "duplicate_draft": return "이미 받은 지시가 입력칸에도 남아 있습니다. 초안을 확인해 주세요";
-    case "source_changed": return "원본이 변경되어 다시 보내지 않습니다. 수신 여부는 계속 확인합니다";
+    case "manual_control": return ERROR_CODES.note_manual_control.ko;
+    case "stale_instruction": return ERROR_CODES.note_stale_instruction.ko;
+    case "input_busy": return ERROR_CODES.note_input_busy.ko;
+    case "busy": return ERROR_CODES.note_busy.ko;
+    case "blocked": return ERROR_CODES.note_blocked.ko;
+    case "duplicate_draft": return ERROR_CODES.note_duplicate_draft.ko;
+    case "source_changed": return ERROR_CODES.note_source_changed.ko;
     case "retry_exhausted": return "자동 재전송 상한에 도달했습니다";
     case "not_received": return "미전달을 확인했습니다. 안전 상태를 다시 확인한 뒤 재전송합니다";
     case "draft_pending": return "입력 제출을 확인 중입니다";
-    case "session_lost": return "세션이나 터미널이 바뀌어 이전 입력의 결과를 이어서 확인하지 못했습니다. 같은 대화인지 터미널과 연결 상태를 확인해 주세요";
-    case "session_unbound": return "CLI의 대화 연결을 아직 확인하지 못했습니다. 터미널에서 세션이 열렸는지 확인한 뒤 다시 확인해 주세요";
-    case "unsupported_schema": return "이 실행기에서는 안전한 전달 확인을 지원하지 않습니다";
-    case "log_missing": return "세션 기록을 찾지 못했습니다. 연결과 기록 경로를 확인한 뒤 다시 확인해 주세요";
-    case "log_incomplete": return "기록을 끝까지 읽지 못해 수신 여부를 확정하지 못했습니다. 다시 확인하거나 터미널에서 확인해 주세요";
-    case "identity_changed": return "세션이 다시 열려 이전 입력의 결과를 이어서 확인하지 못했습니다. 같은 대화인지 터미널에서 확인한 뒤 다시 확인해 주세요";
+    case "session_lost": return ERROR_CODES.note_session_lost.ko;
+    case "session_unbound": return ERROR_CODES.note_session_unbound.ko;
+    case "unsupported_schema": return ERROR_CODES.note_unsupported_schema.ko;
+    case "log_missing": return ERROR_CODES.note_log_missing.ko;
+    case "log_incomplete": return ERROR_CODES.note_log_incomplete.ko;
+    case "identity_changed": return ERROR_CODES.note_identity_changed.ko;
     case "complete_range_without_marker": return evidence.some(e => e.location === "composer" && e.code === "different")
-      ? "기록상 아직 안 들어갔습니다. 입력칸에 다른 글이 있어 자동으로 넣지 않았습니다. 입력칸을 비운 뒤 다시 확인하거나 중복 위험에 동의해 다시 보내세요"
-      : "기록상 아직 안 들어갔습니다. 자동 재전송의 안전 조건을 확인하지 못했습니다. 터미널을 확인한 뒤 중복 위험에 동의해 다시 보낼 수 있습니다";
-    case "legacy_unknown": return "옛 전달의 수신 여부를 확인할 수 없습니다";
-    case "inflight_unsettled": return "원래 입력의 종료 여부를 확인하고 있습니다";
-    default: return "입력 결과를 아직 확정하지 못했습니다. 터미널과 연결을 확인한 뒤 다시 확인해 주세요";
+      ? ERROR_CODES.note_not_written_draft.ko
+      : ERROR_CODES.note_not_written_unsafe.ko;
+    case "legacy_unknown": return ERROR_CODES.note_legacy_unknown.ko;
+    case "inflight_unsettled": return ERROR_CODES.note_inflight_unsettled.ko;
+    default: return ERROR_CODES.note_unsettled.ko;
   }
 }
 
@@ -228,8 +230,8 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       this.store.setDeliveryStatus(d.id, exhausted ? "held" : "queued", { holdReason: exhausted ? "input_busy" : null });
       this.store.patchDeliveryRetry(d.id, { nextAttemptAt, retryReason: exhausted ? "input_busy" : null });
       // 거절이 이어진 까닭을 그대로 말한다. 일하는 중이거나 승인 창 앞인데 '입력칸이 비기를 기다린다'고 하면 대표가 엉뚱한 곳을 본다.
-      const why = refusal === "busy" ? "팀원이 일하는 중이라 넣지 못했습니다. 잠시 뒤 다시 보냅니다" : refusal === "blocked" ? "승인 창 앞이라 넣지 못했습니다. 잠시 뒤 다시 보냅니다"
-        : refusal === "down" || refusal === "gone" ? "세션에 닿지 않아 넣지 못했습니다. 잠시 뒤 다시 보냅니다" : "팀원의 입력칸이 비기를 기다리는 중입니다";
+      const why = refusal === "busy" ? ERROR_CODES.note_retry_busy.ko : refusal === "blocked" ? ERROR_CODES.note_retry_blocked.ko
+        : refusal === "down" || refusal === "gone" ? ERROR_CODES.note_retry_unreachable.ko : ERROR_CODES.note_input_busy.ko;
       if (d.refType === "message" && d.refId) this.store.setMessageDelivery(d.refId, exhausted ? "held" : "queued", exhausted ? why : null);
       return true;
     });
@@ -263,7 +265,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       if (sourceValid) this.projectStatus(d, "delivered", null);
       else this.store.markDelivered(d.id);
       if (sourceValid && d.refType === "decision" && d.refId && this.store.getDecision(d.refId)?.status === "answered") this.store.setDecisionStatus(d.refId, "delivered");
-      this.store.appendActivity(d.memberId, "system", `전달 기록에서 수신을 확인해 표시를 바로잡았습니다 (${d.id})`, `${d.id}:received`);
+      this.store.appendActivity(d.memberId, "system", textRef("activity.delivery_corrected", { id: d.id }), `${d.id}:received`);
     }
     this.store.updateDeliveryRecovery(d.id, r.version, { phase: duplicate ? "needs_owner" : "resolved", reason: duplicate ? "duplicate_draft" : null,
       evidence, nextCheckAt: duplicate ? this.iso(this.now() + 60_000) : null, lastCheckedAt: this.iso() });
@@ -308,7 +310,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
         this.store.updateDeliveryRecovery(item.deliveryId, r.version, { phase: "checking", reason: "inflight_unsettled", autoAttempts: r.autoAttempts + (request.action === "resend" ? 1 : 0), nextCheckAt: this.iso(this.now() + 1_000) });
         this.store.patchDeliveryRetry(item.deliveryId, { nextAttemptAt: null, retryReason: null });
         this.store.setDeliveryStatus(item.deliveryId, "delivering", { attempt: true });
-        this.store.appendActivity(memberId, "system", `${request.action === "submit_only" ? "입력칸의 지시를 다시 넣지 않고 제출합니다" : retry.retryReason?.startsWith("delivery_risk:") ? "중복 위험 동의를 받아 지시를 재전송합니다" : "미전달을 확인해 같은 지시를 자동 재전송합니다"} (${item.deliveryId})`, `${current.dispatchId}:${item.deliveryId}:${request.action}:${r.autoAttempts + 1}`);
+        this.store.appendActivity(memberId, "system", textRef(request.action === "submit_only" ? "activity.submit_only" : retry.retryReason?.startsWith("delivery_risk:") ? "activity.resend_risk" : "activity.resend_auto", { id: item.deliveryId }), `${current.dispatchId}:${item.deliveryId}:${request.action}:${r.autoAttempts + 1}`);
       }
       this.store.updateDispatch(current.dispatchId, current.transportState, "write_started", request.action === "submit_only");
       return true;
@@ -546,7 +548,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
           const r = this.record(d.id), approved = risk(d);
           this.store.updateDeliveryRecovery(d.id, r.version, { autoAttempts: r.autoAttempts + (approved ? 0 : 1), evidence: inspection.evidence, lastCheckedAt: this.iso() });
           if (!this.requeueRejected(d.id, "gone")) { out.undecided.push(d.id); continue; }
-          this.store.appendActivity(memberId, "system", `${approved ? "전달을 받던 터미널이 끝났습니다. 중복 위험 동의를 받아 다시 열린 세션에 다시 보냅니다" : "전달을 받던 터미널이 끝났고 세션 기록에 받은 흔적이 없습니다. 다시 열린 세션에 다시 보냅니다"} (${d.id})`, `${dispatch.dispatchId}:${d.id}:gone_resend`);
+          this.store.appendActivity(memberId, "system", textRef(approved ? "activity.gone_resend_risk" : "activity.gone_resend", { id: d.id }), `${dispatch.dispatchId}:${d.id}:gone_resend`);
           out.requeued.push(d.id);
         }
       }
@@ -790,9 +792,9 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     const sourceKey = `${d.refType}:${d.refId}`;
     const preview = previews.get(sourceKey) ?? ({ user_message: "대표 메시지", answer: "결재 답변", todo_done: "업무 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" }[d.kind]);
     return { ...wait, id: d.id, deliveryId: d.id, messageId: d.refType === "message" && previews.has(sourceKey) ? d.refId : null, memberId: d.memberId, projectId: d.projectId, kind: d.kind, status: d.status,
-      phase: stalled ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: stalled ? "stalled" : r.reason, note: wait.waitReason === "api_outage" ? "인터넷 연결이 돌아오면 보냅니다" : wait.waitReason === "usage_limit" ? "사용 한도가 풀리면 보냅니다" : stalled ? "전달이 진행되지 않고 있습니다. 다시 확인해 주세요" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
+      phase: stalled ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: stalled ? "stalled" : r.reason, note: wait.waitReason === "api_outage" ? ERROR_CODES.note_after_api_outage.ko : wait.waitReason === "usage_limit" ? ERROR_CODES.note_after_usage_limit.ko : stalled ? ERROR_CODES.note_stalled.ko : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : ERROR_CODES.note_queued.ko : note(r.reason, r.evidence),
       version: r.version, createdAt: d.createdAt, lastCheckedAt: r.lastCheckedAt, nextCheckAt: r.nextCheckAt, autoAttempts: r.autoAttempts, evidence: r.evidence,
-      recommendation: stalled ? { code: "recheck", text: "다시 확인" } : r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: stalled ? ["recheck", "stop_retry"] : this.actions(d, r),
+      recommendation: stalled ? { code: "recheck", text: ERROR_CODES.note_recheck.ko } : r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: stalled ? ["recheck", "stop_retry"] : this.actions(d, r),
       ref: d.refType && d.refId ? { type: d.refType, id: d.refId } : null, preview: preview.length > 160 ? preview.slice(0, 157) + "..." : preview };
   }
   private items(projectId: string, includePreviews = true): DeliveryNoticeItem[] {

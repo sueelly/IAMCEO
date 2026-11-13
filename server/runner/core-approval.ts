@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ApprovalPrompt } from "../../shared/types.ts";
+import { ERROR_CODES } from "../../shared/error-codes.ts";
 
 /**
  * Claude Code's observed plain-text setup menu only (2.1.319, 2.1.322). No inferred Codex menus.
@@ -25,8 +26,9 @@ export function claudeFolderTrust(screen: string, cwd: string): { prompt: Approv
   return {
     selected: options.findIndex((option) => option.selected),
     prompt: {
-      title: "폴더 신뢰 확인",
-      body: `${cwd}\n이 폴더에서 AI가 파일을 읽고 고치고 실행할 수 있게 됩니다`,
+      // 0.2.6 Y: 문장은 오류 표의 대표 문장(앱은 영어 화면에서 같은 코드의 영어로 바꾼다. CLIApproval.swift).
+      title: ERROR_CODES.approval_folder_trust.ko,
+      body: `${cwd}\n${ERROR_CODES.approval_folder_trust_detail.ko}`,
       question: "Is this a project you created or one you trust?",
       options: options.map((option, i) => ({ n: i + 1, label: option.label, reject: i === 0 })),
       fingerprint: createHash("sha256").update(screen).digest("hex").slice(0, 24),
@@ -56,7 +58,7 @@ export function codexFolderTrust(screen: string, cwd: string): { prompt: Approva
   const explanation = lines.slice(start, options[0]!.index).filter(Boolean).join(" ");
   if (!explanation.includes("Codex can read, edit, and run files here") || !explanation.endsWith("Your trust decision will be saved.")) return null;
   return { selected: options.findIndex(o => o.selected), prompt: {
-    title: "폴더 신뢰 확인", body: `${cwd}\n${explanation}`, question: "Trust this folder?",
+    title: ERROR_CODES.approval_folder_trust.ko, body: `${cwd}\n${explanation}`, question: "Trust this folder?",
     options: options.map(o => ({ n: o.n, label: o.label, reject: o.label === "Quit" })),
     fingerprint: createHash("sha256").update(screen).digest("hex").slice(0, 24),
   } };

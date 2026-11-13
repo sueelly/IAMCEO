@@ -3,7 +3,11 @@ import { ApiRecovery, API_RESUME_TEXT, NoTerminalError, USAGE_RESUME_OPTION, USA
 import { openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
+import { mustRender, type ServerTextRef } from "../shared/server-text.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+
+/** 0.2.6 Y: 서버가 정한 글은 코드로 온다. 총괄의 연결(systemMessage)처럼 보고 언어(여기서는 한국어)로 그려 본다. */
+const shown = (text: string | ServerTextRef): string => typeof text === "string" ? text : mustRender(text, "ko");
 
 const close: (() => void)[] = [];
 afterEach(() => { for (const fn of close.splice(0)) fn(); });
@@ -21,7 +25,7 @@ function fixture() {
   const notices: string[] = [], pumps: string[] = [], probes: string[] = [], dismissed: string[] = [];
   const options: ApiRecoveryOptions = { store, now: () => now, intervalMs: 30_000, urls: ["https://fake-anthropic.invalid", "https://fake-openai.invalid"],
     probe: async url => { probes.push(url); if (!response) throw new Error("offline"); return { status: 529 }; },
-    notify: (_p, text) => notices.push(text), pump: id => { pumps.push(id); },
+    notify: (_p, text) => notices.push(shown(text)), pump: id => { pumps.push(id); },
     inspect: m => inspect(m), dismiss: (m, fingerprint) => { dismissed.push(fingerprint); return dismiss(m, fingerprint); } };
   let service = new ApiRecovery(options);
   const enqueue = (m = member) => store.enqueue({ projectId: project.id, memberId: m.id, kind: "instruction", text: "기존 지시" });
@@ -98,7 +102,7 @@ describe("영속 API 사고와 이어가기", () => {
     const project = f.store.createProject({ name: "another", cwd: "/private/tmp/fake-other-work" });
     const other = f.store.createMember({ projectId: project.id, handle: "other", name: "다른 직원", kind: "worker" });
     const notices: { projectId: string; text: string; alertOwner: boolean }[] = [];
-    f.options.notify = (projectId, text, alertOwner = true) => notices.push({ projectId, text, alertOwner });
+    f.options.notify = (projectId, text, alertOwner = true) => notices.push({ projectId, text: shown(text), alertOwner });
     f.service.networkFailure(f.member); f.service.networkFailure(second, false); f.restart();
     f.service.networkFailure(other); f.service.networkFailure(other); f.service.networkFailure(second);
     expect(notices.map(n => [n.projectId, n.alertOwner])).toEqual([[f.project.id, true], [project.id, false]]);

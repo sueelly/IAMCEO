@@ -18,6 +18,28 @@ extension ServerErrorText {
         return message
     }
 
+    /// 0.2.6 Y: 코드 없이 문장만 오는 서버의 전달 안내(note·추천)를 화면 언어로. 영어 화면에서 문장이 'note_' 코드의 대표 문장과
+    /// 같을 때만 그 영어 문장이다. 한국어 화면과 모르는 문장은 받은 그대로.
+    static func displayNote(_ message: String, language: AppLanguage = AppLanguage.current) -> String {
+        guard language == .en, let code = noteCodes[normalized(message)], let entry = table[code] else { return message }
+        return entry.en
+    }
+
+    /// 0.2.6 Y: 팀장 상태 관측의 메모(statusObservation.error). 코드 'observation_<code>' 의 대표 문장과 같거나 '<대표 문장>: <폴더>' 꼴이면
+    /// 영어 화면에서 그 영어 문장(폴더는 그대로). 그 밖(CLI 원문 등)은 받은 그대로.
+    static func displayObservation(_ note: String, code: String, language: AppLanguage = AppLanguage.current) -> String {
+        guard language == .en, let entry = table["observation_" + code] else { return note }
+        if normalized(note) == normalized(entry.ko) { return entry.en }
+        let head = entry.ko + ": "
+        return note.hasPrefix(head) ? entry.en + ": " + String(note.dropFirst(head.count)) : note
+    }
+
+    private static let noteCodes: [String: String] = {
+        var out: [String: String] = [:]
+        for (code, entry) in table where code.hasPrefix("note_") { out[normalized(entry.ko)] = code }
+        return out
+    }()
+
     /// 코드의 대표 문장을 화면 언어로. 모르는 코드는 nil.
     static func text(_ code: String, language: AppLanguage = AppLanguage.current) -> String? {
         table[code].map { language == .en ? $0.en : $0.ko }

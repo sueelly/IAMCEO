@@ -42,6 +42,9 @@ enum AppVersion {
     }
     static func apply(to request: inout URLRequest) {
         for (name, value) in headers() { request.setValue(value, forHTTPHeaderField: name) }
+        // 0.2.6 Y: 화면 언어를 직접 적는다(URLSession 이 기기 설정으로 지은 값 대신). 서버는 iPhone 알림을 이 언어로 만들고(push_devices),
+        // 몇몇 거절 문장을 이 언어로 고른다. 옛 서버는 이 머리글을 오류 문장 고르기에만 쓴다.
+        request.setValue(AppLanguage.current.rawValue, forHTTPHeaderField: "Accept-Language")
     }
 }
 

@@ -76,7 +76,7 @@ private func officeDetail(_ member: Member) -> String {
     let now = plainOneLine(member.now)
     switch member.status {
     case "error":
-        if let error = member.lastError, !error.isEmpty { return plainOneLine(friendlyError(error, code: member.fenceCode)) }
+        if let error = member.lastError, !error.isEmpty { return plainOneLine(friendlyError(error, code: member.errorTextCode)) }
     case "idle", "asleep":
         return now.isEmpty ? (member.status == "idle" ? String(localized: "맡은 일 없음") : String(localized: "세션을 내려 두었습니다")) : String(localized: "마지막: \(now)")
     case "offline":

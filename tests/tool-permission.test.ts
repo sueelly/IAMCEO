@@ -19,6 +19,7 @@ import { Store } from "../server/store.ts";
 import { describeToolRequest, redactSecrets, TOOL_PERMISSION_NOTE_ONLY, ToolPermissions, type ToolPermissionDeps } from "../server/tool-permission.ts";
 import type { Decision, Member } from "../shared/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import type { ServerTextRef } from "../shared/server-text.ts";
 
 const dirs: string[] = [];
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -91,7 +92,9 @@ function storeFixture() {
 }
 function permissions(store: Store, extra: Partial<ToolPermissionDeps> = {}) {
   const notes: string[] = [], notices: string[] = [], still: string[] = [];
-  const tp = new ToolPermissions({ store, notify: (title, body) => notices.push(`${title}|${body}`), deliverNote: (_member, decision) => notes.push(decision.note ?? ""),
+  // Y: 알림 글은 코드로 온다. 총괄의 notifyInbox 처럼 보고 언어로 그려 본다.
+  const shown = (text: string | ServerTextRef) => typeof text === "string" ? text : store.renderText(text);
+  const tp = new ToolPermissions({ store, notify: (title, body) => notices.push(`${shown(title)}|${shown(body)}`), deliverNote: (_member, decision) => notes.push(decision.note ?? ""),
     stillBlocked: member => still.push(member.id), ttlMs: 2_000, pollMs: 200, goneMs: 300, graceMs: 80, sweepMs: 20, ...extra });
   cleanups.push(() => tp.dispose());
   return { tp, notes, notices, still };

@@ -115,7 +115,7 @@ export class PushWorker {
         if (!updated.changes) continue;
         return { ...row, attempts: row.attempts + 1, leaseUntil, notification: { environment,
           deviceToken: registration!.deviceToken!, deliveryId: row.id, eventId: row.eventId, serverId: this.push.serverId,
-          kind: event!.kind, target: event!.target, occurredAt: event!.occurredAt, reportSummary: event!.sourceKey.startsWith("report-group:"),
+          kind: event!.kind, target: event!.target, occurredAt: event!.occurredAt, reportSummary: event!.sourceKey.startsWith("report-group:"), lang: registration!.language,
           expiresAt: new Date(Math.min(Date.parse(row.expiresAt), Date.parse(event!.expiresAt))).toISOString() } };
       }
       return null;

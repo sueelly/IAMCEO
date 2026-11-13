@@ -899,6 +899,28 @@ export function ensureUsageTables(db: Database): boolean {
   }
 }
 
+/**
+ * 0.2.6 Y: 서버가 만든 글의 코드와 값(shared/server-text.ts). messages·decisions·activity 의 text_ref 는 {lang, code, params, …} JSON.
+ * 없으면(NULL) 예전처럼 문장만 있다. (알림 기기의 언어 열 push_devices.language 는 server/push/schema.ts 가 더한다.)
+ * 색인과 같은 까닭으로 MIGRATIONS 에 넣지 않는다: 판 번호를 올리면 이전 판 서버가 이 DB 를 열지 못한다. 열을 더하기만 한다.
+ * 이전 판 서버는 이 열을 모른 채 문장만 쓰고 고친다. 응답에 실을 때 문장과 코드가 맞는지 다시 보므로(store.ts) 낡은 코드는 나가지 않는다.
+ * 실패하면 서버가 뜨지 않는다: 글을 쓰고 읽을 때 이 열을 늘 쓴다.
+ */
+export const SERVER_TEXT_COLUMNS: readonly (readonly [table: string, column: string])[] = [
+  ["messages", "text_ref"],
+  ["decisions", "text_ref"],
+  ["activity", "text_ref"],
+];
+
+export function ensureServerTextColumns(db: Database): void {
+  db.transaction(() => {
+    for (const [table, column] of SERVER_TEXT_COLUMNS) {
+      const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+      if (!columns.some(c => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    }
+  })();
+}
+
 const PRE_MIGRATION_KEEP = 3;
 const PRE_MIGRATION_KEEP_MS = 86_400_000;
 
@@ -992,6 +1014,8 @@ export function openDb(path: string): Database {
     ensureToolPermissionColumn(db);
     // T: 사용량 표. 판 번호를 올리지 않는다(이전 판 서버도 이 DB 를 그대로 연다).
     ensureUsageTables(db);
+    // Y: 서버가 만든 글의 코드·값. 판 번호를 올리지 않는다(이전 판 서버도 이 DB 를 그대로 연다).
+    ensureServerTextColumns(db);
     // 이주가 끝났으면 최근 사본 몇 개만 남긴다. 하루 안에 만든 것은 개수와 상관없이 둔다.
     if (backup) removePreMigrationBackups(path, all => all.slice(PRE_MIGRATION_KEEP).filter(entry => Date.now() - entry.at > PRE_MIGRATION_KEEP_MS));
     // Source parsing/index failures cannot roll back the schema or delay server startup.

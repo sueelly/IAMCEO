@@ -4,6 +4,7 @@ import type { PushProviderStatus, PushTestResult } from "../../shared/push.ts";
 import { ApiError } from "../store.ts";
 import { providerUsable } from "./store.ts";
 import type { PushStore } from "./store.ts";
+import type { TextLang } from "../../shared/server-text.ts";
 
 export interface PushRoutesContext {
   store: PushStore;
@@ -13,6 +14,17 @@ export interface PushRoutesContext {
 }
 
 const MAX_BODY_BYTES = 8 * 1024;
+
+/**
+ * 0.2.6 Y: 이 iPhone 이 알림을 받을 언어. 그 iPhone 이 보내는 등록(PUT)의 Accept-Language 첫 언어로 정한다
+ * (출시된 0.2.4·0.2.5 는 앱 화면 언어, 0.2.6 부터는 앱이 화면 언어를 직접 적는다). 머리글이 없거나 `*` 면 모른다(null: 저장된 값을 두고, 없으면 한국어).
+ * 등록 본문에 새 칸을 더하지 않는다: 본문 검사가 엄격해 새 앱이 옛 서버에 보내면 400 이 난다.
+ */
+export function requestLanguage(req: Request): TextLang | null {
+  const first = req.headers.get("accept-language")?.split(",")[0]?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!first || first === "*") return null;
+  return first.split(/[-_]/)[0] === "ko" ? "ko" : "en";
+}
 const uuid = z.string().refine((value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)).transform((value) => value.toLowerCase());
 const revision = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const authorization = z.enum(["authorized", "provisional", "ephemeral", "denied", "notDetermined"]);
@@ -114,9 +126,10 @@ export function createPushHandler(ctx: PushRoutesContext): (req: Request, url: U
       if (req.method === "GET") return response(push.requireDevice(id));
       if (req.method === "PUT") {
         const request = json(text, register);
-        const saved = push.registerDevice(id, request);
+        const saved = push.registerDevice(id, request, requestLanguage(req));
         return response(saved, request.expectedRevision === null ? 201 : 200);
       }
+      // 언어는 PUT 에서만 정한다(PATCH 는 다른 앱이 남의 기기 줄을 바꿀 때도 온다).
       if (req.method === "PATCH") return response(push.patchDevice(id, json(text, patch)));
       if (req.method === "DELETE") {
         push.revokeDevice(id, deleteRevision(req));

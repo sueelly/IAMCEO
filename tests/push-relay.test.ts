@@ -273,7 +273,8 @@ describe("installation and sending", () => {
       const body = JSON.parse(relay.pushes().at(-1)!.body);
       const payload = buildAPNsPayload(n);
       expect(body).toEqual({ token: TOKEN.toLowerCase(), kind, id: n.deliveryId, eventId: n.eventId, serverId: n.serverId,
-        target: payload.iamceo.target, expiresAt: n.expiresAt, ...(kind === "report_complete" ? { summary: true } : {}) });
+        // 0.2.6 Y: 문구의 언어(lang)를 싣는다. 옛 중계는 모르는 칸이라 버리고 한국어로 만든다(relay/functions 시험).
+        target: payload.iamceo.target, expiresAt: n.expiresAt, ...(kind === "report_complete" ? { summary: true } : {}), lang: "ko" });
       expect(relay.pushes().at(-1)!.body).not.toMatch(/aps|alert|title|도착|확인/);
     }
     // 허용 목록 밖의 값은 실리지 않는다(target 은 다시 만든 것).

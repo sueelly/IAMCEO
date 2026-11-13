@@ -87,6 +87,18 @@ You can choose the language the lead and staff write to you in — reports, deci
 - The source labels the server puts on what agents receive (`[대표]`, `[총괄]` and the like) stay as they are in either language. With English, a line explaining what each label means goes into the role instructions.
 - The row appears only on a server that has this setting; connected to an older server, it is hidden.
 
+## Language of what the server writes
+
+Some text is written by the server itself rather than by the lead or staff: system lines in the chat (for example "The lead handed Checkout a task", or a notice that a run was cut off), the decision cards the server posts (tool approvals, usage limits) and their choices, staff activity lines, the delivery notes under your messages, a staff member's error line, and iPhone notification text (from 0.2.6).
+
+- The server records this text in the report language at the time it is written. When that differs from the app language, the app shows it again in the app language. So with Report language set to Korean and the app in English, this text shows in English.
+- What staff write, conversation content, project and staff names, and the original error text a CLI reported are shown as they are.
+- iPhone notification text follows that iPhone's app language. After you change the app language and open the app again, the server learns the new one when the app registers the device for notifications again.
+- Older apps (0.2.5 and earlier) show the text as the server recorded it.
+- A few rare lines (for example error notes that mix in a name or the CLI's own words) still show as the server recorded them.
+
+On a newly installed server, the names it creates first — the HQ project (**본사** / **HQ**) and its lead — and the starting Report language follow the app language when you press **이 Mac에서 시작** (Start on this Mac) in the Mac app (or the terminal's language if you start it from the command line first). Names and settings of a server you already use do not change. A new project's lead is named in the report language at that time ('Checkout 총괄' in Korean, 'Checkout Lead' in English).
+
 ## Usage
 
 See how much the lead and staff have used in **설정 → AI 모델 → 사용량** (Settings → AI models → Usage).

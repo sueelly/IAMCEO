@@ -21,6 +21,7 @@ import { readTranscriptTail, transcriptPath } from "./transcript.ts";
 import { HookShadow } from "./hook-compare.ts";
 import { hookEventsDir } from "./hooks.ts";
 import type { FullRunner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, DeliveryProbe, DeliveryInspection, DeliveryRepair, DeliveryLogBaseline, RunnerTerminalIdentity, RunnerReattachResult, RunnerObservation } from "./types.ts";
+import { ERROR_CODES } from "../../shared/error-codes.ts";
 
 /** claudeHome: Claude session transcripts (default CLAUDE_CONFIG_DIR or ~/.claude), read for context usage only. */
 export interface CoreRunnerOptions extends ProviderBins { coreBin?: string; socketPath?: string; session?: string; stateDir?: string; configDir?: string; claudeHome?: string; codexHome?: string; contextHome?: string }
@@ -509,9 +510,10 @@ export class CoreRunner implements FullRunner {
     const unreported = status === "blocked" && !usage && !setup && !reported;
     const trustLike = unreported && screen !== null && trustDialogLike(screen, providerFor(track.member));
     const notReady = unreported && !trustLike && (terminal.turn ?? 0) === 0 && Date.now() - Date.parse(track.bindingSince) >= (this.deps.startNotReadyMs ?? 60_000);
-    track.setupError = usage ? { code: "usage_limit", note: usage.raw } : retry ? { code: "network_retry", note: "API 연결 복구를 기다리며 CLI가 재시도하고 있습니다" } : setup ? { code: "folder_trust", note: `폴더 신뢰 확인 창에서 멈췄습니다: ${track.member.cwd}` }
-      : trustLike ? { code: "trust_dialog_unrecognized", note: `폴더 신뢰 확인 창으로 보이지만 정확히 읽지 못했습니다. 터미널을 열어 직접 답해 주세요: ${track.member.cwd}` }
-      : notReady ? { code: "start_not_ready", note: "띄운 뒤 60초 넘게 준비를 알리지 않았습니다. 터미널을 열어 화면을 확인해 주세요" } : null;
+    // 0.2.6 Y: 정해진 메모는 오류 표의 대표 문장(observation_<code>). 앱은 영어 화면에서 코드로 영어 문장을 고른다(폴더는 ': ' 뒤 그대로).
+    track.setupError = usage ? { code: "usage_limit", note: usage.raw } : retry ? { code: "network_retry", note: ERROR_CODES.observation_network_retry.ko } : setup ? { code: "folder_trust", note: `${ERROR_CODES.observation_folder_trust.ko}: ${track.member.cwd}` }
+      : trustLike ? { code: "trust_dialog_unrecognized", note: `${ERROR_CODES.observation_trust_dialog_unrecognized.ko}: ${track.member.cwd}` }
+      : notReady ? { code: "start_not_ready", note: ERROR_CODES.observation_start_not_ready.ko } : null;
     if (usage) { status = "blocked"; track.pending = false; }
     const blockedReason = usage ? "usage_limit" : setup ? "setup" : state === "blocked" ? BLOCKED_KINDS[terminal.status?.kind || ""] ?? "status_unknown" : status === "blocked" ? "status_unknown" : null;
     if (state === "error") {

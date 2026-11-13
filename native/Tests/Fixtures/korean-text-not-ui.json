@@ -5,6 +5,8 @@
   "를": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",
   "이": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",
   "가": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",
+  "은": "조사: 서버 글 틀의 {이름:은} 등을 한국어로 그릴 때 붙인다(ServerText.swift). 화면 문구가 아니다",
+  "는": "조사: 서버 글 틀의 {이름:은} 등을 한국어로 그릴 때 붙인다(ServerText.swift). 화면 문구가 아니다",
   "(으)로": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",
   "로": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",
   "으로": "조사: 영어 화면에서는 빈 글자(appUsesParticles)",

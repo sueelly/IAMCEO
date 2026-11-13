@@ -15,6 +15,7 @@ import { withRo } from "./api-outage.ts";
 import { ApiError } from "./store.ts";
 import { oneLineProblem } from "./text.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
+import { textRef } from "../shared/server-text.ts";
 
 type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
@@ -313,7 +314,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({ title: oneLine(200), detail: z.string().optional() }),
     (orch, member, a) => {
       const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail });
-      orch.notifyInbox(`${member.name}의 부탁`, a.title);
+      orch.notifyInbox(textRef("notice.request.title", { name: member.name }), a.title);
       return reply(`내 할 일에 올렸습니다 #${todo.id}`);
     },
   ),

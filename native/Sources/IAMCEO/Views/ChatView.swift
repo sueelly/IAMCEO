@@ -304,7 +304,9 @@ struct ChatSystemRow: View {
 
     /// "{이름} 오류: <raw>" keeps the name and maps the raw part; other notices pass through.
     static func plain(_ text: String) -> String {
-        guard let range = text.range(of: "오류: ") ?? text.range(of: "): ") else { return friendlyError(text) }
+        // 0.2.6 Y: 영어 화면의 서버 글은 "{이름} error: …"(server.text.chat.member_error). 한국어 화면의 판정은 예전 그대로다.
+        let english = AppLanguage.current == .en ? text.range(of: " error: ") : nil
+        guard let range = text.range(of: "오류: ") ?? english ?? text.range(of: "): ") else { return friendlyError(text) }
         return String(text[..<range.upperBound]) + friendlyError(String(text[range.upperBound...]))
     }
 
@@ -1585,7 +1587,7 @@ func chatReportCorrections(_ message: Message) -> [(title: String, messageID: St
         if member.status == "error" {
             let error = member.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return ChatNote(tone: .danger, icon: "exclamationmark.triangle.fill",
-                            text: error.isEmpty ? String(localized: "오류 · 일을 시작하거나 이어 가다 실패했습니다") : String(localized: "오류: \(friendlyError(error, code: member.fenceCode))"),
+                            text: error.isEmpty ? String(localized: "오류 · 일을 시작하거나 이어 가다 실패했습니다") : String(localized: "오류: \(friendlyError(error, code: member.errorTextCode))"),
                             actionTitle: wide ? nil : detailTitle, action: wide ? nil : { router.openMember(id) })
         }
         if let backend = member.backend, backend != "core" {

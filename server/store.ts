@@ -60,7 +60,7 @@ import { parseTailnetHttpsRecord, TAILNET_HTTPS_KEY } from "./tailnet-https.ts";
 import { isDeliveryWaitReason, MEMBER_GATE_WAITS, verdictPatience, verdictWait, WATCHED_WAITS, type PumpVerdict, type StoredPumpVerdict } from "./pump-verdict.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
-import { cleanName, cleanText, conductorName } from "./text.ts";
+import { cleanName, cleanText, conductorName, DEFAULT_NAMES, firstRunLang } from "./text.ts";
 import { parseRestartWake, type RestartWake } from "./restart-wake.ts";
 import type { ErrorCode } from "../shared/error-codes.ts";
 import { deliveryNoteCode } from "./hold-codes.ts";
@@ -83,6 +83,8 @@ function supplementFor(text: string, runs: ExecutionJournal[]): boolean {
 function continuesReplyRun(d: { id: string; kind: string; text: string }, own: string[], runs: ExecutionJournal[]): boolean {
   return own.includes(d.id) || (d.kind === "system" && (resumeText(d.text) || supplementFor(d.text, runs)));
 }
+import { mustRender, textLang, textRef, type ServerTextRef, type TextLang } from "../shared/server-text.ts";
+import { activityTextFields, decisionTextFields, lastErrorCodeField, messageTextFields, readDecisionTexts, relocalizeDecisionTexts, renderDecisionText, renderOptions, storedDecisionTexts, storedText, type DecisionTextRefs } from "./text-refs.ts";
 
 /**
  * status 가 그대로 HTTP 응답 코드가 되는 오류. 응답 몸은 `{ error: message, code, reason? }`.
@@ -164,6 +166,8 @@ export interface NewDecision {
   group?: string | null;
   fileId?: string | null;
   images?: Attachment[];
+  /** 0.2.6 Y: 서버가 만든 카드의 글 코드. 주면 제목·본문·선택지 이름을 보고 언어로 그려 넣고(위 칸을 덮는다) 코드를 함께 저장한다. */
+  texts?: DecisionTextRefs;
 }
 
 export interface NewTodo {
@@ -201,6 +205,8 @@ export interface NewMessage {
   attachments?: Attachment[];
   delivery?: DeliveryStatus | null;
   deliveryNote?: string | null;
+  /** 0.2.6 Y: 서버가 만든 글의 코드와 값. 주면 body(와 `<코드>.title` 제목)를 보고 언어로 그려 넣고 코드를 함께 저장한다. */
+  text?: ServerTextRef;
 }
 
 export interface NewFile {
@@ -535,6 +541,7 @@ function toMember(r: Row): Member {
     queuedCount: r.queued_count,
     lastError: r.last_error,
     ...(r.fence_code ? { fenceCode: r.fence_code } : {}),
+    ...lastErrorCodeField(r.last_error),
     lastActiveAt: r.last_active_at ?? null,
     updatedAt: r.updated_at,
     createdAt: r.created_at,
@@ -575,6 +582,12 @@ function toMember(r: Row): Member {
 }
 
 function toDecision(r: Row): Decision {
+  const decision = toDecisionBase(r);
+  // Y: 서버가 만든 카드의 글 코드. 열(text_ref)이 없는 옛 DB 나 맞지 않는 코드는 싣지 않는다.
+  return { ...decision, ...decisionTextFields(r.text_ref, decision) };
+}
+
+function toDecisionBase(r: Row): Decision {
   return {
     ...(r.usage_limit_json ? { kind: "usage_limit" as const, usageLimit: json<NonNullable<Decision["usageLimit"]>>(r.usage_limit_json) } : {}),
     // K(E2): 도구 승인 카드. 열(tool_permission_json)은 db.ts 의 ensureToolPermissionColumn 이 더한다.
@@ -665,6 +678,8 @@ function toMessage(r: Row): Message {
     ...(r.delivery_code ? { deliveryCode: r.delivery_code } : {}),
     deliveryRevision: r.delivery_revision,
     contextFileId: r.context_file_id ?? null,
+    // Y: 서버가 만든 글의 코드. 문장이 코드와 맞을 때만.
+    ...messageTextFields(r.text_ref, r.title, r.body),
   };
 }
 
@@ -733,7 +748,7 @@ function toDelivery(r: Row): Delivery {
 }
 
 function toActivity(r: Row): Activity {
-  return { id: r.id, memberId: r.member_id, at: r.at, kind: r.kind, text: r.text };
+  return { id: r.id, memberId: r.member_id, at: r.at, kind: r.kind, text: r.text, ...activityTextFields(r.text_ref, r.text) };
 }
 
 function buildSet(patch: Record<string, unknown>, columns: Record<string, string>): { set: string[]; values: SQLQueryBindings[] } {
@@ -1124,8 +1139,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         this.transaction(() => {
           this.run(`INSERT INTO delivery_stalls (delivery_id, detected_at) VALUES (?, ?)
             ON CONFLICT(delivery_id) DO UPDATE SET detected_at = excluded.detected_at, resolved_at = NULL`, delivery.id, new Date(now).toISOString());
-          this.appendActivity(delivery.memberId, "error", "전달이 진행되지 않고 있습니다. 다시 확인해 주세요", `delivery-stalled:${delivery.id}`);
-          this.createMessage({ id: `msg_delivery_stalled_${delivery.id}`, projectId: delivery.projectId, who: "시스템", kind: "시스템", title: "전달 확인 필요", body: `${this.requireMember(delivery.memberId).name}에게 전달이 진행되지 않고 있습니다. 전달 정보에서 '다시 확인'을 눌러 주세요. 원래 입력을 중복해서 보내지 않습니다.` });
+          this.appendActivity(delivery.memberId, "error", textRef("activity.delivery_stalled"), `delivery-stalled:${delivery.id}`);
+          this.createMessage({ id: `msg_delivery_stalled_${delivery.id}`, projectId: delivery.projectId, who: "시스템", kind: "시스템", text: textRef("chat.delivery_stalled", { name: this.requireMember(delivery.memberId).name }) });
         });
       }
     }
@@ -1493,10 +1508,19 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    * 카드의 푸시 알림이 그 판(`ask:<id>:<updatedAt>`)에 묶여 있어, 올리면 아직 안 나간 알림이 취소된다. 바뀐 카드는 decision 이벤트로 나가고,
    * 앱은 선택지가 바뀌면 카드를 새로 그리며, 서버는 답을 지금 선택지로 검사한다(없는 선택지는 400).
    */
-  updateUsageDecision(id: string, usage: NonNullable<Decision["usageLimit"]>, title: string, detail: string, open: boolean, options?: DecisionOption[]): Decision {
+  updateUsageDecision(id: string, usage: NonNullable<Decision["usageLimit"]>, title: string, detail: string, open: boolean, options?: DecisionOption[], refs?: DecisionTextRefs): Decision {
     if (!open) usage = { ...usage, stillLimited: false };
     return this.transaction(() => {
       const before = this.requireDecision(id);
+      // Y: 글 코드를 주면 제목·본문·선택지를 보고 언어로 그린다(넘겨받은 문장은 쓰지 않는다).
+      if (refs) {
+        // 리뷰: 카드에 있던 다시 연 까닭·닫힌 이유의 코드는 이어 간다(버리면 그 칸만 코드 없이 남는다). 보고 언어가 바뀌었으면 그 문장도 새 언어로.
+        const kept = this.decisionTextsIn(id, this.reportLang());
+        const notes: DecisionTextRefs = { ...(kept.closeReason ? { closeReason: kept.closeReason } : {}), ...(kept.reopenNote ? { reopenNote: kept.reopenNote } : {}) };
+        const texts = this.decisionTexts({ title, detail, options: options ?? before.options, texts: { ...refs, ...notes } });
+        title = texts.input.title; detail = texts.input.detail ?? ""; options = texts.input.options;
+        if (this.row("SELECT text_ref FROM decisions WHERE id = ?", id)?.text_ref !== texts.stored) this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", texts.stored, id);
+      }
       const status = open ? "open" : "closed";
       const nextOptions = options ?? before.options;
       const optionsChanged = JSON.stringify(nextOptions) !== JSON.stringify(before.options);
@@ -1609,7 +1633,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   private ensureHq(): void {
     if (this.getProject("hq")) return;
-    this.createProject({ id: "hq", name: "본사", cwd: homedir(), runnerEnabled: true });
+    // Y: 새로 설치한 서버의 본사 이름과 보고 언어는 첫 실행의 언어를 따른다(IAMCEO_LANG, 없으면 예전처럼 한국어). 이미 있는 본사는 그대로다.
+    const lang = firstRunLang();
+    this.createProject({ id: "hq", name: DEFAULT_NAMES[lang].hq, cwd: homedir(), runnerEnabled: true });
+    if (lang === "en") this.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('reportLanguage', ?)", JSON.stringify("en"));
   }
 
   private row(sql: string, ...params: SQLQueryBindings[]): Row | null {
@@ -1716,7 +1743,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    */
   releaseHeldBeforeConnection(): { messages: number; decisions: number } {
     const note = "연결 전이라 전달되지 않았습니다";
-    const reopenNote = "연결 전이라 전달되지 않았습니다. 다시 결정해 주세요";
+    const reopenNote = textRef("card.reopen_not_connected");
     const out = { messages: 0, decisions: 0 };
     const held = this.rows("SELECT * FROM deliveries WHERE status = 'held' AND hold_reason = 'runner_disabled' ORDER BY rowid").map(toDelivery);
     const released: string[] = [];
@@ -1813,8 +1840,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  private projectConductorName(name: string): string {
-    return cleanName(conductorName(name), "총괄");
+  /** 총괄의 기본 이름. 언어를 주지 않으면 보고 언어(Y). 이름을 바꿀 때는 지금 이름이 어느 언어의 기본 이름인지 보고 그 언어로 맞춘다. */
+  private projectConductorName(name: string, lang: TextLang = this.reportLang()): string {
+    return cleanName(conductorName(name, lang), DEFAULT_NAMES[lang].lead);
+  }
+  /** 총괄의 지금 이름이 이 프로젝트 이름의 기본 이름(어느 언어든)이면 그 언어. 직접 바꾼 이름이면 null. */
+  private defaultLeadLang(leadName: string, projectName: string): TextLang | null {
+    for (const lang of ["ko", "en"] as const) if (leadName === conductorName(projectName, lang) || leadName === this.projectConductorName(projectName, lang)) return lang;
+    return null;
   }
 
   validateProjectPatch(id: string, patch: ProjectPatch): ProjectPatch {
@@ -1829,8 +1862,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       checkProjectName(patch.name);
       if (!patch.name) throw new ApiError(400, "프로젝트 이름이 필요합니다", "project_name_required");
       const lead = this.getConductor(id);
-      const name = this.projectConductorName(patch.name);
-      if (lead?.kind === "conductor" && (lead.name === conductorName(project.name) || lead.name === this.projectConductorName(project.name)) && this.row("SELECT 1 FROM members WHERE project_id = ? AND id != ? AND name = ?", id, lead.id, name)) {
+      const leadLang = lead?.kind === "conductor" ? this.defaultLeadLang(lead.name, project.name) : null;
+      const name = this.projectConductorName(patch.name, leadLang ?? "ko");
+      if (lead && leadLang && this.row("SELECT 1 FROM members WHERE project_id = ? AND id != ? AND name = ?", id, lead.id, name)) {
         throw new ApiError(409, "새 총괄 이름과 같은 팀장이 있습니다", "lead_name_taken");
       }
     }
@@ -1855,7 +1889,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const project = this.requireProject(id);
       if (patch.name !== undefined && patch.name !== before.name) {
         const lead = this.getConductor(id);
-        if (lead?.kind === "conductor" && (lead.name === conductorName(before.name) || lead.name === this.projectConductorName(before.name))) this.patchMember(lead.id, { name: this.projectConductorName(project.name) });
+        const leadLang = lead?.kind === "conductor" ? this.defaultLeadLang(lead.name, before.name) : null;
+        if (lead && leadLang) this.patchMember(lead.id, { name: this.projectConductorName(project.name, leadLang) });
       }
       this.emit({ type: "project", project });
       this.emitProjects();
@@ -2175,6 +2210,46 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT * FROM decisions WHERE project_id = ? AND status != 'open' ORDER BY COALESCE(answered_at, created_at) DESC, rowid DESC", projectId).map(toDecision);
   }
 
+  // ---- 0.2.6 Y: 서버가 만든 글의 언어 ----
+  /** 서버가 만드는 글을 그릴 언어(보고 언어). 없으면 한국어. */
+  reportLang(): TextLang { return textLang(this.getSettings().reportLanguage); }
+  /** 코드를 보고 언어의 문장으로. 코드 표와 부르는 쪽이 어긋나면 예외다. */
+  renderText(ref: ServerTextRef): string { return mustRender(ref, this.reportLang()); }
+
+  /** 카드 입력의 글 코드로 제목·본문·선택지를 그리고, 저장할 text_ref 를 만든다. */
+  private decisionTexts<T extends Pick<NewDecision, "title" | "detail" | "options" | "texts">>(input: T): { input: T; stored: string } {
+    const lang = this.reportLang();
+    const refs = input.texts ?? {};
+    const rendered = refs.text ? renderDecisionText(refs.text, lang, input.title) : { title: input.title, detail: input.detail ?? "" };
+    return { input: { ...input, title: rendered.title, detail: rendered.detail, options: renderOptions(input.options ?? [], refs.options, lang) }, stored: storedDecisionTexts(refs, lang) };
+  }
+
+  /** 카드의 text_ref 한 칸(닫힌 이유·다시 연 까닭)을 바꾸고 그 문장을 돌려준다. 다른 칸의 코드는 그대로 둔다. */
+  private withDecisionText(id: string, field: "closeReason" | "reopenNote", ref: ServerTextRef): string {
+    const lang = this.reportLang();
+    const base = this.decisionTextsIn(id, lang);
+    this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", storedDecisionTexts({ ...base, [field]: ref }, lang), id);
+    return mustRender(ref, lang);
+  }
+
+  /**
+   * 카드에 저장된 글 코드를 이 언어로. 같은 언어면 그대로, 보고 언어가 바뀐 뒤면 코드가 있는 칸(제목·본문·선택지·닫힌 이유·다시 연 까닭)의
+   * 문장을 새 언어로 다시 써 둔다(0.2.6 Y 리뷰: 한 카드는 한 언어. 앞 칸 코드를 버리면 그 칸만 앞 언어로 남아 두 언어가 섞였다).
+   * 부르는 쪽이 같은 거래 안에서 판(updated_at)을 올리고 알린다.
+   */
+  private decisionTextsIn(id: string, lang: TextLang): DecisionTextRefs {
+    const stored = readDecisionTexts(this.row("SELECT text_ref FROM decisions WHERE id = ?", id)?.text_ref);
+    if (!stored) return {};
+    if (stored.lang === lang) return { text: stored.text, options: stored.options, closeReason: stored.closeReason, reopenNote: stored.reopenNote };
+    const { refs, patch } = relocalizeDecisionTexts(stored, this.requireDecision(id), lang);
+    if (patch.title !== undefined) this.run("UPDATE decisions SET title = ? WHERE id = ?", patch.title, id);
+    if (patch.detail !== undefined) this.run("UPDATE decisions SET detail = ? WHERE id = ?", patch.detail, id);
+    if (patch.options !== undefined) this.run("UPDATE decisions SET options = ? WHERE id = ?", JSON.stringify(patch.options), id);
+    if (patch.closeReason !== undefined) this.run("UPDATE decisions SET close_reason = ? WHERE id = ?", patch.closeReason, id);
+    if (patch.reopenNote !== undefined) this.run("UPDATE decisions SET reopen_note = ? WHERE id = ?", patch.reopenNote, id);
+    return refs;
+  }
+
   /** 앞 판보다 반드시 큰 시각. 같은 ms 안의 전이도 화면이 순서를 가른다. */
   private nextDecisionStamp(id: string): string {
     const before = this.row("SELECT updated_at FROM decisions WHERE id = ?", id)?.updated_at as string | null | undefined;
@@ -2193,6 +2268,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.transaction(() => {
       this.requireProject(input.projectId);
       const id = newId("d_");
+      const texts = input.texts ? this.decisionTexts(input) : null;
+      if (texts) input = texts.input;
       this.run(
         `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
@@ -2210,6 +2287,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         nowIso(),
         nowIso(),
       );
+      if (texts) this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", texts.stored, id);
       const decision = this.requireDecision(id);
       this.recorder?.decision(null, decision);
       this.bumpBoard(decision.projectId);
@@ -2294,16 +2372,18 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    * 열린 결재를 이유와 함께 닫는다. kind 가 있으면 AI 가 ask_close 로 닫은 것이라 대표가 다시 열 수 있다.
    * 열려 있지 않으면 409(대표가 이미 답했거나 닫혔다). 닫힌 카드는 결재된 항목으로 간다.
    */
-  closeDecision(id: string, input: { kind: DecisionCloseKind | null; reason: string; by: string; quote?: string | null }): Decision {
+  closeDecision(id: string, input: { kind: DecisionCloseKind | null; reason: string | ServerTextRef; by: string; quote?: string | null }): Decision {
     return this.transaction(() => {
       const before = this.requireDecision(id);
       if (before.status !== "open") throw new ApiError(409, before.status === "closed" ? "이미 닫힌 결재입니다" : "대표가 이미 답한 결재입니다", "decision_closed");
+      // Y: 서버가 정한 닫힌 이유는 코드로 보고 언어의 문장을 그리고 코드를 카드의 text_ref 에 더한다.
+      const reason = typeof input.reason === "string" ? input.reason : this.withDecisionText(id, "closeReason", input.reason);
       const at = nowIso();
       if (before.usageLimit) this.run("UPDATE decisions SET usage_limit_json = ? WHERE id = ?", JSON.stringify({ ...before.usageLimit, stillLimited: false }), id);
       this.run(
         "UPDATE decisions SET status = 'closed', close_kind = ?, close_reason = ?, close_quote = ?, closed_by = ?, closed_at = ?, updated_at = ? WHERE id = ? AND status = 'open'",
         input.kind,
-        input.reason,
+        reason,
         input.quote ?? null,
         input.by,
         at,
@@ -2324,9 +2404,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 끝내 전달하지 못한 답은 대표가 다시 답할 수 있게 카드를 연다. 메모의 사본은 전달 글뿐이었으니 직전 답을 카드에 남긴다. 닫힌 카드를 다시 열 때도 쓴다(닫은 이유는 지운다). */
-  reopenDecision(id: string, why = "전달하지 못했습니다. 다시 결정해 주세요"): Decision {
+  reopenDecision(id: string, reason: string | ServerTextRef = textRef("card.reopen_undelivered")): Decision {
     return this.transaction(() => {
       const before = this.requireDecision(id);
+      // Y: 서버가 정한 다시 연 까닭은 코드로 그린다. 닫힌 이유의 코드는 닫힌 이유와 함께 지워진다(응답에서 문장과 맞춰 보므로 남아도 나가지 않는다).
+      const why = typeof reason === "string" ? reason : this.withDecisionText(id, "reopenNote", reason);
       this.run(
         "UPDATE decisions SET status = 'open', last_choice = COALESCE(choice, last_choice), last_note = COALESCE(note, last_note), reopen_note = ?, choice = NULL, note = NULL, batch = 0, answered_at = NULL, delivered_at = NULL, close_kind = NULL, close_reason = NULL, close_quote = NULL, closed_by = NULL, closed_at = NULL, updated_at = ? WHERE id = ?",
         why,
@@ -2349,11 +2431,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = newId("d_");
       const at = nowIso();
+      const texts = input.texts ? this.decisionTexts(input) : null;
+      if (texts) input = { ...input, ...texts.input };
       this.run(
         `INSERT INTO decisions (id, project_id, member_id, who, title, detail, options, rec, grp, file_id, images, status, created_at, updated_at, tool_permission_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '[]', 'open', ?, ?, ?)`,
         id, input.projectId, input.memberId, input.who, input.title, input.detail ?? "", JSON.stringify(input.options ?? []), at, at, JSON.stringify(input.toolPermission),
       );
+      if (texts) this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", texts.stored, id);
       const decision = this.requireDecision(id);
       this.recorder?.decision(null, decision);
       this.bumpBoard(decision.projectId);
@@ -2828,6 +2913,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       }
       this.requireProject(input.projectId);
       const id = input.id ?? newId("msg_");
+      // Y: 서버가 만든 글은 코드로 보고 언어의 문장을 그린다(보고 언어 한국어면 예전 문장과 글자까지 같다).
+      const lang = input.text ? this.reportLang() : null;
+      if (input.text && lang) {
+        const rendered = renderDecisionText(input.text, lang, input.title ?? "");
+        input = { ...input, title: rendered.title, body: rendered.detail };
+      }
       this.run(
         `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, delivery_code)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2850,6 +2941,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         deliveryNoteCode(input.deliveryNote),
       );
       if (input.contextFileId) this.run("UPDATE messages SET context_file_id = ? WHERE id = ?", input.contextFileId, id);
+      if (input.text && lang) this.run("UPDATE messages SET text_ref = ? WHERE id = ?", storedText(input.text, lang), id);
       const message = this.messageFrom(this.row("SELECT * FROM messages WHERE id = ?", id)!, false);
       // 보관 중 늦은 manual 보고도 저장한다. 푸시는 활성 프로젝트의 실제 작성자만 대상이다.
       if (this.recorder && !this.requireProject(message.projectId).archived && (!message.memberId || this.getMember(message.memberId)?.projectId === message.projectId)) this.recorder.message(message);
@@ -3184,7 +3276,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           if (!pendingSources.length || texts.some(text => new RegExp(`(?<![\\p{L}\\p{N}_])${assignment.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s\\p{P}]|(?:에게|이|가|은|는|와|과|님|씨)(?=$|[\\s\\p{P}]))`, "u").test(text))) continue;
           const key = createHash("sha256").update(JSON.stringify([memberId, pendingSources, assignment.memberId])).digest("hex").slice(0, 32);
           this.createMessage({ id: `msg_delegation_ack_${key}`, projectId: this.requireMember(memberId).projectId,
-            who: "시스템", kind: "시스템", body: `총괄이 ${assignment.name}에게 맡겼습니다: ${assignment.summary}${assignment.queued ? " (앞 일 끝나면 시작)" : ""}` });
+            who: "시스템", kind: "시스템", text: textRef(assignment.queued ? "chat.assigned_queued" : "chat.assigned", { name: assignment.name, summary: assignment.summary }) });
         }
       }
     });
@@ -3192,8 +3284,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   // ---- 활동 ----
   /** 직원당 최근 MAX_ACTIVITY_PER_MEMBER 개만 남긴다. */
-  appendActivity(memberId: string, kind: ActivityKind, text: string, eventKey?: string): Activity {
+  appendActivity(memberId: string, kind: ActivityKind, line: string | ServerTextRef, eventKey?: string): Activity {
     return this.transaction(() => {
+      // Y: 서버가 만든 줄은 코드로 보고 언어의 문장을 그린다. 코드는 문장 옆(text_ref)에 둔다.
+      const ref = typeof line === "string" ? null : line;
+      const lang = ref ? this.reportLang() : null;
+      const text = ref && lang ? mustRender(ref, lang) : line as string;
       if (eventKey !== undefined) {
         const before = this.row("SELECT * FROM activity WHERE delivery_event_key = ?", eventKey);
         if (before) {
@@ -3203,7 +3299,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       }
       const member = this.requireMember(memberId);
       const clipped = text.length > MAX_ACTIVITY_TEXT ? `${text.slice(0, MAX_ACTIVITY_TEXT)}…` : text;
-      const inserted = this.row("INSERT INTO activity (member_id, at, kind, text, delivery_event_key) VALUES (?, ?, ?, ?, ?) RETURNING *", memberId, nowIso(), kind, clipped, eventKey ?? null)!;
+      let inserted = this.row("INSERT INTO activity (member_id, at, kind, text, delivery_event_key) VALUES (?, ?, ?, ?, ?) RETURNING *", memberId, nowIso(), kind, clipped, eventKey ?? null)!;
+      if (ref && lang) inserted = this.row("UPDATE activity SET text_ref = ? WHERE id = ? RETURNING *", storedText(ref, lang), inserted.id)!;
       if (kind === "turn_start" || kind === "turn_end" || kind === "tool" || kind === "tool_result") {
         // updated_at/직원 알림은 건드리지 않는다. 시계가 뒤로 가도 최신 작업 시각을 보존한다.
         this.run("UPDATE members SET last_active_at = ? WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)", inserted.at, memberId, inserted.at);

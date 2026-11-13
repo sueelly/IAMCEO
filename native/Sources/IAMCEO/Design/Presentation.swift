@@ -276,7 +276,7 @@ struct MemberObservationInfo: Sendable {
     init(_ member: Member) {
         lastObservedAt = member.statusObservation?.observedAt
         lastStatus = MemberStatusInfo(member.status).label
-        error = MemberStatusInfo.progressNote(member) ?? member.statusObservation?.error?.note ?? member.lastError
+        error = MemberStatusInfo.progressNote(member) ?? member.statusObservation?.error?.note ?? member.lastError.map { ServerErrorText.display($0, code: member.errorTextCode) }
         manualActivityAt = member.origin == "manual" ? member.manualActivityAt : nil
     }
 }

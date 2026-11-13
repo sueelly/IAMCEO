@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ApiOutageState, CliProvider, Decision, DecisionOption, Delivery, Member } from "../shared/types.ts";
 import { ApiError, type Store } from "./store.ts";
 import { API_OUTAGE_NOTE, USAGE_WAIT_NOTE } from "./hold-codes.ts";
+import { textRef, type ServerTextRef } from "../shared/server-text.ts";
 
 function usageLimitTitle(text: string): boolean {
   return /(?:you['’]ve hit your (?:weekly limit|5-hour limit|Opus limit|Sonnet limit|Fable limit|usage credit limit|monthly spend limit|team['’]s shared budget|channel['’]s monthly spend limit)\b|you['’]ve reached your .+?\blimit\b|you['’]re out of usage credits\b|your org is out of usage\b)/i.test(text);
@@ -134,8 +135,6 @@ export function limitedModelName(raw: string): string | null {
 export function modelScopedLimit(raw: string): boolean {
   return modelCreditLimit(raw) !== null || limitedModelName(raw) !== null;
 }
-/** 카드 글의 모델 안내 뒤에 붙인다. 출시된 iPhone(0.2.2·0.2.3)에는 모델 버튼이 없어, 앱 판과 상관없이 되는 길도 알린다. */
-const MODEL_ELSEWHERE = "(고를 버튼이 없으면 팀장 설정에서 모델을 바꾸거나 총괄에게 모델을 바꿔 이어 가라고 하세요)";
 /**
  * 사용 한도로 일하던 도중 멈춘 직원의 모델을 바꿔 같은 대화를 이어 열었을 때, 멈춘 실행마다 한 번 넣는 글(재시작 이어가기와 같은 꼴).
  * 원래 지시를 다시 넣지 않는다(세션 기록에 멈춘 턴이 그대로 있다). 이 글로 시작한 턴에도 평소의 보고 의무와 보고 보완이 그대로 적용된다.
@@ -144,11 +143,6 @@ export function usageModelResumeText(model: string): string {
   return `[시스템] 사용 한도로 하던 일이 중간에 멈췄습니다. 모델을 ${withRo(model)} 바꿔 같은 대화를 이어 엽니다. 멈추기 직전까지 한 일을 먼저 확인하고(파일, 명령 결과, 외부 서비스의 상태), 끝나지 않은 부분만 이어서 하세요. 이미 끝낸 일을 다시 하지 마세요. 끝나면 평소처럼 보고하세요.`;
 }
 
-function formatUsageReset(at: string): string {
-  const parts = new Intl.DateTimeFormat("ko-KR", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, month: "long", day: "numeric", hour: "numeric", minute: "numeric", hour12: true }).formatToParts(new Date(at));
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(p => p.type === type)!.value;
-  return `${part("month")} ${part("day")}일 ${part("dayPeriod")} ${part("hour")}시${Number(part("minute")) ? ` ${Number(part("minute"))}분` : ""}`;
-}
 
 /** 이어가기 3회 실패 뒤에도 영영 멈추지는 않는다. 장애가 끝난 채 이만큼 지나면 한 번씩 다시 이어 본다. */
 const EXHAUSTED_RETRY_MS = [15 * 60_000, 30 * 60_000, 60 * 60_000, 120 * 60_000];
@@ -183,7 +177,8 @@ export interface ApiRecoveryOptions {
   now?: () => number;
   urls?: string[];
   intervalMs?: number; probeTimeoutMs?: number;
-  notify: (projectId: string, text: string, alertOwner?: boolean) => void;
+  /** 대화의 시스템 글(+Mac 알림). 0.2.6 Y: 서버가 정한 글은 코드로 넘겨 보고 언어로 그리게 한다. */
+  notify: (projectId: string, text: string | ServerTextRef, alertOwner?: boolean) => void;
   pump: (memberId: string) => void | Promise<void>;
   inspect: (member: Member) => Promise<{ menu: UsageMenu | null; state: string | null }>;
   dismiss: (member: Member, fingerprint: string) => Promise<{ ok: boolean; note?: string }>;
@@ -192,7 +187,7 @@ export interface ApiRecoveryOptions {
    * 없으면 '이어가기'만 둔다. 모델에 한정된 한도가 하나도 없는 카드에는 부르지 않는다(modelScopedLimit).
    * 모델 목록과 팀장의 설정은 총괄이 안다(ModelCatalogReader·desiredConfig).
    */
-  choices?: (cli: CliProvider, limited: { memberId: string; raw: string }[], blocked: string[]) => DecisionOption[];
+  choices?: (cli: CliProvider, limited: { memberId: string; raw: string }[], blocked: string[]) => (DecisionOption & { model?: string })[];
   /** 이 팀장이 이 글로 한도에 걸렸을 때 막힌 모델 값들(쓰던 모델, 글에 이름이 나온 모델). 카드가 blockedModels 로 기억한다. */
   limitedModels?: (member: Member, raw: string) => string[];
 }
@@ -225,7 +220,7 @@ export class ApiRecovery {
     a.exhausted = true;
     a.exhaustedAt = new Date(this.now()).toISOString();
     // 느린 재시도가 또 실패할 때마다 같은 알림을 되풀이하지 않는다.
-    if (!a.exhaustNotified) this.options.notify(member.projectId, `${member.name}의 인터넷 연결 복구 후 이어가기가 3회 실패했습니다. 터미널을 확인해 주세요.`);
+    if (!a.exhaustNotified) this.options.notify(member.projectId, textRef("chat.api_resume_failed", { name: member.name }));
     a.exhaustNotified = true;
   }
   private transaction<T>(action: () => T): T {
@@ -273,7 +268,7 @@ export class ApiRecovery {
       if (this.started) this.start();
       if (notifyProject) {
         const count = o.affected.filter(a => store.getMember(a.memberId)?.projectId === member.projectId).length;
-        this.options.notify(member.projectId, `인터넷 연결이 불안정해 팀원 ${count}명이 멈췄습니다. 연결이 돌아오면 자동으로 이어 갑니다.`, alertOwner);
+        this.options.notify(member.projectId, textRef("chat.api_outage", { count: String(count) }), alertOwner);
       }
     });
   }
@@ -384,7 +379,9 @@ export class ApiRecovery {
       this.state.limits = this.state.limits.filter(g => g.members.length > 0);
       let group = this.state.limits.find(g => g.cli === member.cli);
       if (!group) {
-        const card = store.createDecision({ projectId: member.projectId, who: "시스템", title: "사용 한도 도달", options: [USAGE_RESUME_OPTION] });
+        // Y: 첫 카드는 곧바로 아래 updateCard 가 코드와 함께 다시 그린다. 선택지 이름만 코드로 둔다.
+        const card = store.createDecision({ projectId: member.projectId, who: "시스템", title: store.renderText(textRef("card.usage_limit.title_initial")), options: [USAGE_RESUME_OPTION],
+          texts: { options: { [USAGE_RESUME_OPTION.k]: { label: textRef("card.usage_limit.option_resume") } } } });
         group = { cli: member.cli, decisionId: card.id, stillLimited: false, members: [] };
         this.state.limits.push(group);
       }
@@ -431,26 +428,40 @@ export class ApiRecovery {
     const card = this.options.store.requireDecision(group.decisionId);
     // 선택지: 한도에 걸리지 않은 모델마다 하나(먼저), 그다음 이어가기. 팀장이 빠지거나 모델 목록이 바뀌면 다시 계산한다(틱마다 이 함수가 돈다).
     // 모델에 한정된 한도가 하나도 없으면(5시간·주간·Codex 등 계정 전체의 한도) 모델을 바꿔도 곧바로 다시 걸리므로 모델 선택지를 내지 않는다.
-    const models = !waiting.length ? card.options.filter(o => o.k.startsWith(USAGE_MODEL_PREFIX))
+    const models: (DecisionOption & { model?: string })[] = !waiting.length ? card.options.filter(o => o.k.startsWith(USAGE_MODEL_PREFIX))
       : waiting.some(m => modelScopedLimit(m.raw)) ? this.options.choices?.(group.cli, waiting.map(m => ({ memberId: m.memberId, raw: m.raw })), group.blockedModels ?? []) ?? [] : [];
     const first = this.cardLead(group, waiting, resetsAt, models.length > 0);
     const names = waiting.map(m => `${this.options.store.getMember(m.memberId)?.name ?? m.memberId}${m.failure ? ` — ${m.failure}` : ""}`).join("\n");
     const raw = (group.rawEvidence ?? group.members.filter(m => !m.resetsAt).map(m => m.raw)).join("\n\n");
     const open = waiting.length > 0 && (card.status !== "closed" || card.usageLimit?.memberIds.length === 0);
     if (!open) group.stillLimited = false;
-    this.options.store.updateUsageDecision(card.id, { cli: group.cli, resetsAt, memberIds: waiting.map(m => m.memberId), stillLimited: group.stillLimited }, waiting.length ? `${group.cli === "claude" ? "Claude" : "Codex"} 사용 한도 도달 · 팀원 ${waiting.length}명 멈춤` : card.title, waiting.length ? [first, names, raw].filter(Boolean).join("\n\n") : card.detail, open, [...models, USAGE_RESUME_OPTION]);
+    const usage = { cli: group.cli, resetsAt, memberIds: waiting.map(m => m.memberId), stillLimited: group.stillLimited };
+    if (!waiting.length) {
+      // 기다리는 팀장이 없으면 글은 그대로 두고 선택지만 맞춘다(이어가기는 카드에 있던 것 그대로).
+      this.options.store.updateUsageDecision(card.id, usage, card.title, card.detail, open, [...models, card.options.find(o => o.k === USAGE_RESUME_OPTION.k) ?? USAGE_RESUME_OPTION]);
+      return;
+    }
+    // Y: 제목·본문·선택지 이름을 코드로 넘겨 보고 언어로 그린다(보고 언어 한국어면 예전 글과 글자까지 같다).
+    const options = [...models.map(({ model: _model, ...option }) => option), USAGE_RESUME_OPTION];
+    const optionTexts: Record<string, { label: ServerTextRef }> = { [USAGE_RESUME_OPTION.k]: { label: textRef("card.usage_limit.option_resume") } };
+    for (const option of models) if (option.model) optionTexts[option.k] = { label: textRef("card.usage_limit.option_model", { model: option.model }) };
+    const text = textRef(raw ? "card.usage_limit" : "card.usage_limit.short", { lead: first, names, ...(raw ? { raw } : {}), cli: group.cli === "claude" ? "Claude" : "Codex", count: String(waiting.length) });
+    this.options.store.updateUsageDecision(card.id, usage, card.title, card.detail, open, options, { text, options: optionTexts });
   }
   /**
    * 카드의 첫 문단. 계정이 여러 개라고 가정하지 않는다: 기다리면 저절로 이어 간다는 것, 바로 이어 가려면 다른 모델을 고르면 된다는 것,
    * 다른 계정으로 로그인했거나 한도를 늘렸으면 '이어가기'를 누르면 된다는 것을 차례로 적는다.
    */
-  private cardLead(group: LimitGroup, waiting: Limited[], resetsAt: string | null, hasModels: boolean): string {
-    if (group.stillLimited) return hasModels ? `아직 한도가 남아 있지 않습니다. 기다리거나 다른 모델을 고르세요${MODEL_ELSEWHERE}.` : "아직 한도가 남아 있지 않습니다. 한도가 풀리면 자동으로 이어 갑니다.";
+  private cardLead(group: LimitGroup, waiting: Limited[], resetsAt: string | null, hasModels: boolean): ServerTextRef {
+    // Y: 글은 shared/server-text.ts 의 card.usage_limit.* (예전 문장과 글자까지 같다. tests/server-text.test.ts 대조).
+    if (group.stillLimited) return textRef(hasModels ? "card.usage_limit.still_models" : "card.usage_limit.still_wait");
     const credit = waiting.map(m => modelCreditLimit(m.raw)).find(c => c !== null) ?? null;
-    const when = resetsAt ? `${formatUsageReset(resetsAt)}에 ` : "";
-    const lead = credit ? `${credit.model ? `${credit.model} ` : "이 모델의 "}사용 크레딧이 떨어졌습니다. 다른 모델로 바꾸면 바로 이어 갑니다. 기다리면 ${when}크레딧이 채워질 때 자동으로 이어 갑니다.`
-      : resetsAt ? `${when}한도가 풀리면 자동으로 이어 갑니다. 기다리셔도 됩니다.` : "한도가 풀렸는지 가끔 다시 확인해 자동으로 이어 갑니다. 기다리셔도 됩니다.";
-    return `${lead} ${hasModels ? `바로 이어 가려면 다른 모델을 고르세요${MODEL_ELSEWHERE}. ` : ""}다른 계정으로 로그인했거나 한도를 늘렸다면 '이어가기'를 누르세요.`;
+    const at = resetsAt ? { at: resetsAt } : null;
+    const core = credit
+      ? credit.model ? textRef(at ? "card.usage_limit.credit_named_at" : "card.usage_limit.credit_named", { model: credit.model, ...(at ? { at } : {}) })
+        : textRef(at ? "card.usage_limit.credit_at" : "card.usage_limit.credit", at ? { at } : undefined)
+      : at ? textRef("card.usage_limit.reset_at", { at }) : textRef("card.usage_limit.probe");
+    return textRef(hasModels ? "card.usage_limit.lead_models" : "card.usage_limit.lead", { core });
   }
   /** 이 카드에서 대표가 고른 마지막 모델 선택지. */
   answeredWith(decisionId: string): string | null {
@@ -642,7 +653,7 @@ export class ApiRecovery {
           if (notifications.length && !o.recoveryNotified) { notifications[0]!.alertOwner = true; o.recoveryNotified = true; }
           o.recoveredProjects.push(...notifications.map(n => n.projectId));
           this.save();
-          for (const n of notifications) this.options.notify(n.projectId, `인터넷 연결이 돌아와 팀원 ${n.count}명이 이어서 일합니다.`, n.alertOwner);
+          for (const n of notifications) this.options.notify(n.projectId, textRef("chat.api_recovered", { count: String(n.count) }), n.alertOwner);
         });
         for (const a of o.affected) this.options.pump(a.memberId);
       } else this.save();

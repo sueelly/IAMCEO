@@ -488,6 +488,8 @@ export function relayPushBody(notification: APNsNotification): Record<string, un
     target: payload.iamceo.target,
     expiresAt: notification.expiresAt,
     ...(notification.kind === "report_complete" && notification.reportSummary ? { summary: true } : {}),
+    // 0.2.6 Y: 알림 문구의 언어. 중계는 이 값으로 고정 문구를 고른다(옛 중계는 모르는 칸이라 버리고 한국어로 보낸다).
+    lang: notification.lang === "en" ? "en" : "ko",
   };
 }
 

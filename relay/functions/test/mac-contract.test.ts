@@ -67,6 +67,17 @@ describe("Mac 중계 클라이언트 ↔ 중계", () => {
     expect((await mac.send(notification({ kind: "test", target: { screen: "home" }, reportSummary: false,
       expiresAt: new Date(Date.now() + 4 * 60_000).toISOString() }))).state).toBe("accepted");
   });
+  test("0.2.6 Y: 영어 iPhone 의 알림은 Mac 이 lang en 을 실어 보내고, 중계가 만든 영어 페이로드가 직접 보내기와 바이트까지 같다", async () => {
+    const { apns, mac } = await setup((stream) => reply(stream, 200));
+    const english = notification({ lang: "en" });
+    expect((await mac.send(english)).state).toBe("accepted");
+    expect(apns.received[0]!.body).toBe(serializeAPNsPayload(buildAPNsPayload(english)));
+    expect(JSON.parse(apns.received[0]!.body).aps.alert.body).toBe("More completion reports arrived.");
+    // 언어를 모르는 기기(옛 앱·머리글 없음)는 예전 한국어 그대로.
+    const korean = notification();
+    expect((await mac.send(korean)).state).toBe("accepted");
+    expect(JSON.parse(apns.received[1]!.body).aps.alert.body).toBe("추가 완료 보고가 도착했습니다.");
+  });
   test("APNs 가 토큰을 버리면 Mac 은 invalid(그 기기 등록을 지운다)", async () => {
     const { mac } = await setup((stream) => reply(stream, 410, { reason: "Unregistered", timestamp: 1_790_000_000_000 }));
     expect(await mac.send(notification())).toEqual({ state: "invalid", reason: "Unregistered", status: 410, invalidatedAt: 1_790_000_000_000 });
