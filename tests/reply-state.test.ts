@@ -452,6 +452,40 @@ describe("저장소와 실시간", () => {
     expect((f.seen.get(sent.id) ?? []).some(m => m.reply?.reason === "error")).toBe(false);
   });
 
+  test("답 글·'결과 보고 누락' 글보다 그 글로 바뀐 대표 글의 답 상태가 먼저 나간다(앱이 새 글과 '답 쓰는 중'을 함께 그리지 않게)", async () => {
+    const f = fixture(); const lead = f.member("conductor");
+    /** 실시간 'message' 사건 차례(글 id 와 대표 글의 답 상태). */
+    const order: string[] = [];
+    f.bus.subscribe(event => { if (event.type === "message") order.push(event.message.mine ? `${event.message.id}:${event.message.reply?.state}` : event.message.id); });
+    // 답한 경우: 총괄이 대화에 쓴 글보다 '답함'이 먼저다.
+    const first = await f.orch.sendUserMessage(f.project.id, { text: "상황을 알려 주세요" });
+    await until(() => f.reply(first.id)?.state === "working", "일하는 중");
+    const answer = await f.orch.recordPost(f.store.requireMember(lead.id), { kind: "완료", title: "확인했습니다" });
+    await until(() => order.includes(answer.id), "답 글 사건");
+    expect(order.indexOf(`${first.id}:replied`)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(`${first.id}:replied`)).toBeLessThan(order.indexOf(answer.id));
+    // 답 없이 끝난 경우: 보고 보완 턴도 답 없이 끝나면 서버가 '결과 보고 누락'을 쓴다. 그 글보다 '답 없음'이 먼저다.
+    // 완료 보고로 끝난 턴이라 보고 보완은 붙지 않는다.
+    const runs = (n: number) => f.store.listPendingExecutions().filter(r => r.memberId === lead.id).length === n;
+    f.runner.end(f.store, lead.id, 1);
+    await until(() => !f.runner.busy.has(lead.id) && runs(0), "첫 글 턴 끝");
+    await until(() => !f.store.listDeliveries().some(d => d.memberId === lead.id && d.status !== "delivered" && d.status !== "failed"), "넣을 글 없음");
+    const second = await f.orch.sendUserMessage(f.project.id, { text: "이번에는 답하지 않는 턴" });
+    await until(() => f.reply(second.id)?.state === "working", "두 번째 글 일하는 중");
+    f.runner.end(f.store, lead.id, 2);
+    await until(() => f.runner.sent.filter(s => s.text.includes("보고 보완:")).length >= 1 && f.runner.busy.has(lead.id), "보고 보완 턴");
+    expect(f.reply(second.id)?.state).toBe("working");
+    f.runner.end(f.store, lead.id, 3);
+    await until(() => order.some(id => id.startsWith("msg_missing_report_")), "결과 보고 누락 글");
+    await Bun.sleep(20);
+    const missing = order.findIndex(id => id.startsWith("msg_missing_report_"));
+    expect(order.indexOf(`${second.id}:no_reply`)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(`${second.id}:no_reply`)).toBeLessThan(missing);
+    // 먼저 냈다고 같은 값을 다시 내지 않는다.
+    expect(order.filter(id => id === `${second.id}:no_reply`)).toHaveLength(1);
+    expect(order.filter(id => id === `${first.id}:replied`)).toHaveLength(1);
+  });
+
   test("서버가 만든 알림(대표 전달 지연·시스템 글)은 답이 아니다", async () => {
     const f = fixture(); const lead = f.member("conductor");
     const sent = await f.orch.sendUserMessage(f.project.id, { text: "확인해 주세요" });

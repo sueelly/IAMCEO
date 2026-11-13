@@ -1690,6 +1690,8 @@ struct ActivityList: View {
     /// Bumped per request; only the newest request may clear the spinner.
     @State private var request = 0
     @ScaledMetric(relativeTo: .caption) private var metaWidth: CGFloat = 84
+    /// 이 언어에서 가장 넓은 시각과 목록에 있는 종류의 너비(metaTemplate 가 잰다). 84pt 보다 넓으면(영어 '10:58 PM'·'Notice') 모든 줄이 그 너비를 쓴다.
+    @State private var metaFit: CGFloat = 0
 
     init(memberID: String) { self.memberID = memberID }
 
@@ -1752,21 +1754,44 @@ struct ActivityList: View {
                     row(item)
                 }
             }
+            .background(alignment: .topLeading) { metaTemplate }
+        }
+    }
+
+    /// 첫 칸(시각·종류)이 줄마다 같은 너비이고 꺾이지 않게, 이 언어에서 가장 넓은 시각(두 자리 시)과 목록에 있는 종류 가운데 가장 넓은 것을 잰다.
+    /// 한국어('22:58'·'결과')는 84pt 안이라 배치가 그대로다. 영어는 '7:01 AM'·'Notice' 가 84pt 에서 'A / M'·'Notic / e' 로 꺾였다.
+    /// 더 긴 종류의 줄이 새로 오면 모든 줄이 함께 넓어진다(본문 시작은 늘 맞는다).
+    private var metaTemplate: some View {
+        let time = Calendar.current.date(bySettingHour: 22, minute: 58, second: 0, of: Date()).map { koTime($0) } ?? "22:58"
+        let kinds = Array(Set(items.map(\.kind))).sorted()
+        return ZStack(alignment: .leading) {
+            ForEach(kinds, id: \.self) { kind in metaLabels(time: time, kind: kind) }
+        }
+        .fixedSize()
+        .hidden()
+        .accessibilityHidden(true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { metaFit = $0 }
+    }
+
+    private func metaLabels(time: String, kind: String) -> some View {
+        HStack(spacing: 8) {
+            Text(time).font(CEFont.caption).monospacedDigit().foregroundStyle(CE.ink3)
+                .lineLimit(1).fixedSize()
+            Text(activityKindName(kind)).font(CEFont.caption.weight(.semibold)).foregroundStyle(kindColor(kind))
+                .lineLimit(1).fixedSize()
         }
     }
 
     /// Web .tm-act: time and kind in an 84pt column, then the text (tool output monospaced, long text clamped to 3 lines).
+    /// The column widens to the widest time and kind of the language (English) and never wraps them.
     private func row(_ item: Activity) -> some View {
         let long = item.text.count > 180 || item.text.contains("\n")
         let open = expanded.contains(item.id)
         let mono = item.kind == "tool" || item.kind == "tool_result"
         // Web .tm-act: text 13.5 / 1.5 (tool output 12.5 monospaced), meta 12 in an 84pt column.
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            HStack(spacing: 8) {
-                Text(clockTime(item.at)).font(CEFont.caption).monospacedDigit().foregroundStyle(CE.ink3)
-                Text(activityKindName(item.kind)).font(CEFont.caption.weight(.semibold)).foregroundStyle(kindColor(item.kind))
-            }
-            .frame(width: metaWidth, alignment: .leading)
+            metaLabels(time: clockTime(item.at), kind: item.kind)
+                .frame(minWidth: max(metaWidth, metaFit), alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.text.isEmpty ? "—" : item.text)
                     .font(mono ? CEFont.mono : CEFont.note)

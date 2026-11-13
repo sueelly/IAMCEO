@@ -604,9 +604,10 @@ private struct ChatConversation: View {
     private var replyMessageIDs: Set<String> {
         store.isArchive ? [] : Set(ChatReplyBoard.statuses(displayed, names: replyNames).map(\.messageID))
     }
-    /// The recipient as the reply line names it: the lead by its rank-bearing label ("결제 총괄"), a staff member by name.
+    /// The recipient as the reply line names it: the lead by its rank-bearing label ("결제 총괄"), a staff member by name
+    /// (its rank when the name is empty).
     private var replyNames: [String: String] {
-        Dictionary(store.members.map { ($0.id, $0.kind == "worker" ? $0.name : chatLeadLabel($0)) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(store.members.map { ($0.id, chatReplyName($0)) }, uniquingKeysWith: { first, _ in first })
     }
     private var history: ChatHistory? {
         guard let history = store.history,
@@ -2212,9 +2213,17 @@ private func chatDecisionLink(_ decision: Decision?) -> (title: String, open: Bo
     return !drafts.text(for: key).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !drafts.files(for: key).isEmpty
 }
 
-/// "결제 총괄" stays as is; a lead whose name does not say its rank gets it as a prefix ("총괄 하나").
-private func chatLeadLabel(_ lead: Member) -> String {
+/// Z(0.2.6): who the reply line at the bottom of the thread names (a staff member by name, its rank when the name is empty).
+func chatReplyName(_ member: Member) -> String {
+    member.kind == "worker" ? (member.name.isEmpty ? rankName(member.kind) : member.name) : chatLeadLabel(member)
+}
+
+/// "결제 총괄" stays as is; a lead whose name does not say its rank gets it as a prefix ("총괄 하나"). The server names a lead in the
+/// report language it had then ("X 총괄" / "X Lead", server/text.ts DEFAULT_NAMES), which can differ from the app language: a name
+/// that says the rank in either language stays as is, so English never reads "Lead check 총괄" (nor Korean "총괄 check Lead").
+func chatLeadLabel(_ lead: Member) -> String {
     let rank = rankName(lead.kind)
     if lead.name.isEmpty { return rank }
-    return lead.name.contains(rank) ? lead.name : "\(rank) \(lead.name)"
+    let ranks = [rank] + (lead.kind == "conductor" ? ["총괄", "Lead"] : lead.kind == "root" ? ["본사 AI", "HQ AI"] : [])
+    return ranks.contains { lead.name.contains($0) } ? lead.name : "\(rank) \(lead.name)"
 }

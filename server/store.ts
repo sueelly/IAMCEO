@@ -2948,6 +2948,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.bumpBoard(message.projectId);
       // 원본 생성 반환값은 저장된 Message다. 방송은 outbox까지 commit된 현재 전달 정보를 싣는다.
       this.afterCommit(() => {
+        // Z: 이 쓰기로 바뀐 대표 글의 답 상태(팀장의 답 → 답함, 결과 보고 누락과 같은 쓰기의 턴 끝 → 답 없음)를 이 글보다 먼저 낸다.
+        // 마이크로태스크까지 미루면 같은 처리의 다른 사건 뒤에 나가, 앱이 새 글과 '답 쓰는 중'을 함께 그리는 틈이 생긴다.
+        // 같은 값은 다시 내지 않으므로(replySeen) 뒤의 마이크로태스크는 남은 변화만 낸다.
+        if (!input.mine) this.flushReplies();
         const current = this.getMessage(id);
         if (current) this.bus.emit({ type: "message", message: current });
       });

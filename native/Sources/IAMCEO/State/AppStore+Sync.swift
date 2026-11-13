@@ -262,6 +262,13 @@ extension AppStore {
                 let changedEpoch = appliedSnapshotCursor != nil && appliedSnapshotCursor?.epoch != snapshot.cursor.epoch
                 if appliedSnapshotCursor != snapshot.cursor { appliedSnapshotCursor = snapshot.cursor }
                 if receivedCursor?.epoch == snapshot.cursor.epoch {
+                    // 이 읽기가 소켓에서 아직 처리하지 못한 사건까지 담았다. 그 사건들은 아래에서 순번을 앞당기면 '이미 본 것'으로 버려진다.
+                    // 읽은 상태(state)에는 대화 기록·활동 줄·전달 안내가 없다: 버려진 글 사건(예: 대표 글의 답 상태가 '답함'으로 바뀜)이
+                    // 대화에 영영 반영되지 않게 두지 않고, 그것들을 한 번 다시 읽는다.
+                    // 진행 중인 대화 읽기는 그 사건 전의 값일 수 있어 합류하지 않게 무효화 번호도 올린다(enqueueRefresh 와 같다).
+                    if socketHello, let seen = receivedCursor?.seq, snapshot.cursor.seq > seen {
+                        dirty.formUnion([.history, .activity, .delivery]); historyInvalidationRevision &+= 1
+                    }
                     let cursor = try SyncCursor(epoch: snapshot.cursor.epoch, seq: max(receivedCursor?.seq ?? 0, snapshot.cursor.seq))
                     if receivedCursor != cursor { receivedCursor = cursor }
                 }

@@ -16,7 +16,12 @@ extension Message {
         // 보류 코드는 문장과 같은 판에서 온다(서버는 둘을 함께 쓰고 판 번호를 올린다). 옛 판의 코드를 남기면 문장과 갈라진다.
         merged.deliveryCode = current.deliveryCode
         merged.deliveryRevision = revision
-        if deliveryRevision == nil || deliveryRevision! < revision { merged.deliveryInfo = current.deliveryInfo }
+        if deliveryRevision == nil || deliveryRevision! < revision {
+            merged.deliveryInfo = current.deliveryInfo
+            // Z(0.2.6): 답 상태도 더 새 판(전달 판 번호가 큰 쪽)의 것이다. 늦게 온 옛 응답(보내기 응답 등)이 '답 쓰는 중'을 '보내는 중'으로
+            // 되돌리지 않게. 판 번호가 같으면 지금처럼 나중에 온 쪽이다(같은 판 안에서 답 상태만 바뀐 사건 working → replied 는 그대로 반영).
+            merged.reply = current.reply
+        }
         return merged
     }
 }

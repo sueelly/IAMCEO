@@ -2,6 +2,7 @@ import Foundation
 
 // Z(0.2.6): 채팅의 '답 쓰는 중' 표시. 서버가 대표 글마다 정한 답 상태(`Message.reply`, shared/types.ts MessageReply)를 그리기만 한다.
 // 앱은 전달·팀장 상태로 따로 추측하지 않는다(0.2.4 E3 원칙). 서버가 이 칸을 싣지 않으면(옛 서버) 아무것도 그리지 않는다.
+// 하나만 앞서 지운다: 서버 규칙으로 답인 글이 이미 화면에 있으면 '답 쓰는 중'을 그리지 않는다(answeredOnScreen). 상태를 만들지는 않는다.
 // iPhone·Mac 같은 규칙. 대화 화면에만 쓴다(대화 목록·홈의 팀장 줄에는 넣지 않는다).
 
 /// 대표 글 하나의 답 상태. state: queued 보내는 중 · behind 앞 일을 마치는 중 · waking 깨우는 중 · checking 넣었는지 확인 중 ·
@@ -49,13 +50,14 @@ enum ChatReplyBoard {
         }
     }
 
-    /// 받는 이마다 한 줄. 차례는 그 글을 보낸 차례다. `names`: 팀장 id → 화면 이름(총괄은 '결제 총괄'처럼 직급이 드러나는 이름).
+    /// 받는 이마다 한 줄. 차례는 그 글을 보낸 차례다. `names`: 팀장 id → 화면 이름(ChatView 의 chatReplyName: 그 팀장의 이름, 비었으면 직급).
     static func statuses(_ messages: [Message], names: [String: String], now: Date = Date()) -> [ChatReplyStatus] {
         var pending: [String: [(index: Int, message: Message, reply: MessageReply)]] = [:]
         var order: [String] = []
+        let said = messages.contains { $0.mine && ($0.reply?.state == "working" || $0.reply?.state == "delivered") } ? lastSaid(messages) : [:]
         for (index, message) in messages.enumerated() where message.mine {
             guard let reply = message.reply else { continue }
-            if settled.contains(reply.state) { pending[reply.memberId] = []; continue }
+            if settled.contains(reply.state) || answeredOnScreen(message, reply: reply, lastSaid: said) { pending[reply.memberId] = []; continue }
             guard open.contains(reply.state) else { continue }
             if !order.contains(reply.memberId) { order.append(reply.memberId) }
             pending[reply.memberId, default: []].append((index, message, reply))
@@ -68,6 +70,29 @@ enum ChatReplyBoard {
             rows.append((pick.index, status(pick.message.id, reply: pick.reply, name: who, now: now)))
         }
         return rows.sorted { $0.index < $1.index }.map(\.status)
+    }
+
+    /// 팀장마다 대화에 쓴 마지막 글의 시각. 서버가 만든 글(시스템 글, '대표 전달 지연')은 답이 아니라 세지 않는다(서버 Store.firstReply 와 같은 기준:
+    /// 종류나 보낸 이가 '시스템'. 영어 화면에서는 보낸 이가 'System' 으로 바뀌어 있다).
+    private static func lastSaid(_ messages: [Message]) -> [String: Date] {
+        var out: [String: Date] = [:]
+        // 영어 화면에서 서버 글의 보낸 이 '시스템'은 디코딩 때 이 이름으로 바뀌어 있다(ServerText.systemName 과 같은 열쇠).
+        let system = String(localized: "message.kind.system", defaultValue: "시스템")
+        for message in messages where !message.mine {
+            guard let member = message.memberId, message.kind != "시스템", message.who != "시스템", message.who != system,
+                  let at = parseISODate(message.at) else { continue }
+            if out[member].map({ $0 < at }) ?? true { out[member] = at }
+        }
+        return out
+    }
+
+    /// 서버는 '이 글로 턴이 돈다(working)'·'받음(delivered)'이라고 했는데, 그 뒤(since 이후) 받는 이가 쓴 글이 이미 화면에 있다.
+    /// 서버의 답 규칙(이 글의 답 창 안에서 그 팀장이 쓴 첫 글)으로도 답함이고, 서버의 '답함'은 곧 따로 온다(실시간 사건 둘이 앱에서 따로 그려지는 틈).
+    /// 그 틈에 답 글과 '답 쓰는 중'을 함께 그리지 않는다. 앞 일을 마치는 중(behind)·보내는 중 등에서는 쓰지 않는다: 그때 쓴 글은 서버가 답으로 세지 않는다.
+    private static func answeredOnScreen(_ message: Message, reply: MessageReply, lastSaid: [String: Date]) -> Bool {
+        guard reply.state == "working" || reply.state == "delivered", let said = lastSaid[reply.memberId],
+              let start = parseISODate(reply.since) ?? parseISODate(message.at) else { return false }
+        return said >= start
     }
 
     static func status(_ messageID: String, reply: MessageReply, name: String, now: Date = Date()) -> ChatReplyStatus {
