@@ -18,6 +18,7 @@ import { buildClaudeArgs, childEnv, HeadlessRunner, StreamParser } from "../serv
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "../server/runner/types.ts";
 import { ApiError, Store } from "../server/store.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 const FAKE = resolve(import.meta.dir, "fixtures", "fake-claude.ts");
 
@@ -121,7 +122,7 @@ async function setup(opts: { backend?: Backend | null; runnerEnabled?: boolean }
     const text = await res.text();
     return { status: res.status, body: text ? JSON.parse(text) : null };
   };
-  const call = (member: Member, name: string, args: Record<string, unknown>) => handleAgentTool(orch, store.requireMember(member.id), name, args);
+  const call = (member: Member, name: string, args: Record<string, unknown>) => handleAgentTool(orch, store.requireMember(member.id), name, withDefaultTask(store, member, name, args));
   return { home, work, config, store, orch, herdr, headless, project, api, base, events, call };
 }
 

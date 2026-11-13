@@ -49,6 +49,8 @@ const oneLineOpt = (max: number) =>
   });
 const memberRef = text.describe("핸들 또는 화면 이름");
 const userQuote = z.string().optional().describe("대표가 한 말 중 이 일에 해당하는 부분을 글자 그대로. 서버가 대조해 '서버 확인' 또는 '미확인'을 붙인다");
+/** 첫 지시(first_instruction)의 업무. team_assign 의 task_id 와 같은 규칙이다. 첫 지시가 없으면 쓰지 않는다. */
+const firstTaskId = z.string().trim().min(1).max(64).nullable().optional().describe("첫 지시가 속한 업무 id. 대표 글에 '작업 #' 줄이 있으면 그 업무, 업무가 없는 새 일이면 task 도구로 만든 업무 id. 빼거나 null 이면 인용한 대표 글·결재의 업무이고, 없으면 거절된다(첫 지시가 없으면 쓰지 않는다)");
 
 interface Tool<S extends z.ZodType = z.ZodType> {
   description: string;
@@ -516,8 +518,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       first_instruction: z.string().optional().describe("첫 지시. 끝났다고 볼 기준 포함"),
       user_quote: userQuote,
       parallel: z.boolean().optional().describe("병렬(ultracode)로 시작"),
+      task_id: firstTaskId,
     }),
     async (orch, member, a) => {
+      const taskId = a.first_instruction?.trim() ? orch.instructionTask(member, a.task_id, a.user_quote) : null;
       const { member: added, assigned } = await orch.addMember(member.projectId, {
         name: a.name,
         role: a.role,
@@ -529,6 +533,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         firstInstruction: a.first_instruction,
         userQuote: a.user_quote,
         parallel: a.parallel,
+        taskId,
       }, member);
       return reply(`${added.name}(${added.handle}) 직원을 띄웠습니다${assigned ? `. ${assignNote(assigned)}` : ""}`);
     },
@@ -590,16 +595,17 @@ const TOOLS: Record<ToolName, Tool<any>> = {
 
   team_resume: tool(
     "잠든(asleep)·꺼진(offline) 직원을 대화 기록 그대로 다시 연다. 대화가 한 번도 저장되지 않아 이어 열 수 없는 세션이면 fresh: true 로 새 세션을 연다(역할·지금 일은 인계된다).",
-    z.strictObject({ member: memberRef, first_instruction: z.string().optional(), fresh: z.boolean().optional().describe("대화 기록 없이 새 세션으로 연다. 이어 열기가 실패했거나 기록이 없을 때만") }),
+    z.strictObject({ member: memberRef, first_instruction: z.string().optional(), fresh: z.boolean().optional().describe("대화 기록 없이 새 세션으로 연다. 이어 열기가 실패했거나 기록이 없을 때만"), task_id: firstTaskId }),
     async (orch, member, a) => {
       const id = requireOther(orch, member, a.member).id;
+      const taskId = a.first_instruction?.trim() ? orch.instructionTask(member, a.task_id, null) : null;
       if (a.fresh) {
         const target = await orch.freshMemberSession(id);
-        if (a.first_instruction?.trim()) await orch.assign(member.projectId, target.handle, { text: a.first_instruction }, member);
+        if (a.first_instruction?.trim()) await orch.assign(member.projectId, target.handle, { text: a.first_instruction, taskId }, member);
         return reply(`${josa(target.name, "을")} 새 세션으로 열었습니다(${target.status}${target.cli ? ` · ${target.cli}` : ""})`);
       }
       try {
-        const target = await orch.resumeMember(id, a.first_instruction, member);
+        const target = await orch.resumeMember(id, a.first_instruction, member, taskId);
         return reply(`${josa(target.name, "을")} 다시 열었습니다(${target.status})`);
       } catch (e) {
         if (e instanceof ApiError && e.status === 502) throw new ApiError(502, `${e.message}. 대화 기록이 없어 이어 열 수 없는 세션이면 fresh: true 로 다시 부르세요(같은 실패를 반복하지 않는다)`);

@@ -14,6 +14,7 @@ import type { AgentToolDef, AgentToolResult } from "../server/orchestrator-api.t
 import { Orchestrator } from "../server/orchestrator.ts";
 import type { Runner, RunnerEvent, SendResult } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 class FakeRunner implements Runner {
   readonly kind: Backend = "headless";
@@ -121,7 +122,7 @@ async function setup(opts: { memory: boolean; keyFile?: string } = { memory: tru
   orch.setServerUrl(url);
   cleanups.push(async () => { await orch.shutdown(); await server.stop(); gw.stop(); });
   const call = async (member: Member, name: string, args: Record<string, unknown> = {}): Promise<AgentToolResult> => {
-    const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args }) });
+    const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }) });
     return (await res.json()) as AgentToolResult;
   };
   const tools = async (member: Member) => {
@@ -218,9 +219,10 @@ describe("개발 기억 연결", () => {
   test("직원 기록은 AI 보고로 표시되고, 확인 결과는 근거가 있어야 하며, 같은 내용은 한 건이다", async () => {
     const t = await setup();
     const w = await t.worker(t.project.id, "w1");
-    const noEvidence = await t.call(w, "memory_record", { kind: "outcome", basis: "verified", summary: "시험 통과", content: "통과했다" });
+    // 업무에 속하지 않는 기록은 task_id: null 로 밝힌다(빼면 거절된다).
+    const noEvidence = await t.call(w, "memory_record", { kind: "outcome", basis: "verified", summary: "시험 통과", content: "통과했다", task_id: null });
     expect(noEvidence.isError).toBe(true);
-    const args = { kind: "outcome", basis: "verified", summary: "작업별 대화 시험 통과", content: "서버 시험 12개 통과", evidence: ["bun test tests/task-threads.test.ts → 12 pass 0 fail"], commit_sha: "3807ee9" };
+    const args = { kind: "outcome", basis: "verified", summary: "작업별 대화 시험 통과", content: "서버 시험 12개 통과", evidence: ["bun test tests/task-threads.test.ts → 12 pass 0 fail"], commit_sha: "3807ee9", task_id: null };
     const first = await t.call(w, "memory_record", args);
     expect(first.isError).toBeFalsy();
     const again = await t.call(w, "memory_record", args);
@@ -230,7 +232,7 @@ describe("개발 기억 연결", () => {
     expect(e.evidence[0]).toEqual({ kind: "classification", text: "ai_reported_verified" });
     expect(e.content.startsWith("분류: AI 보고(직원이 확인한 결과) — 대표 결정 아님")).toBe(true);
     expect(e.source).toMatchObject({ task_id: `iamceo-${w.id}-general`, service: "iamceo", commit_sha: "3807ee9" });
-    const guess = await t.call(w, "memory_record", { kind: "lesson", basis: "ai_inference", summary: "아마 캐시 문제", content: "추측" });
+    const guess = await t.call(w, "memory_record", { kind: "lesson", basis: "ai_inference", summary: "아마 캐시 문제", content: "추측", task_id: null });
     expect(t.gw.records[1]!.experience.evidence[0].text).toBe("ai_inference");
     expect(guess.isError).toBeFalsy();
     // 자기 작업 기록에는 피드백할 수 없다(게이트웨이 계약)

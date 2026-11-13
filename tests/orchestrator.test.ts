@@ -23,6 +23,7 @@ import { HeadlessRunner } from "../server/runner/headless.ts";
 import { HerdrError } from "../server/runner/herdr-client.ts";
 import type { ApprovalAnswer, Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, DeliveryProbe, DeliveryInspection } from "../server/runner/types.ts";
 import { ApiError, Store } from "../server/store.ts";
+import { defaultTaskId } from "./fixtures/default-task.ts";
 
 const FAKE = resolve(import.meta.dir, "fixtures", "fake-claude.ts");
 
@@ -30,12 +31,14 @@ const FAKE = resolve(import.meta.dir, "fixtures", "fake-claude.ts");
 const TOOLS: AgentToolsImpl = {
   listAgentTools: () => [],
   async handleAgentTool(orch, member, name, args) {
+    // 실제 도구처럼 task_id 를 업무로 넘긴다(가짜 CLI 는 받은 글의 '작업 #' 줄 업무를 넣는다).
+    const taskId = (args as { task_id?: string | null }).task_id;
     if (name === "post") {
-      const message = await orch.recordPost(member, args as unknown as PostInput);
+      const message = await orch.recordPost(member, { ...(args as unknown as PostInput), taskId });
       return { text: `보고함 ${message.id}` };
     }
     if (name === "ask") {
-      const r = await orch.registerAsk(member, args as { title: string; detail?: string; options?: DecisionOption[] });
+      const r = await orch.registerAsk(member, { ...(args as { title: string; detail?: string; options?: DecisionOption[] }), taskId });
       return { text: r.text };
     }
     return { text: "모르는 도구", isError: true };
@@ -168,7 +171,8 @@ describe("턴 왕복", () => {
     await t.idle(lead.id);
 
     const first = t.starts()[0]!;
-    expect(first.prompt).toMatch(/^\[대표\] "안녕 @fake:text=첫답변"\n#msgclient1\n#iamceo_[A-Za-z0-9_-]{22}\n#iamceo_b_[A-Za-z0-9_-]{22}$/);
+    // 업무를 고르지 않은 대표 글은 첫 줄 이름의 새 업무에 붙어 작업 줄과 함께 간다.
+    expect(first.prompt).toMatch(/^\[대표\] "안녕 @fake:text=첫답변"\n작업 #tk_\S+ '안녕 @fake:text=첫답변'\. [^\n]+\n#msgclient1\n#iamceo_[A-Za-z0-9_-]{22}\n#iamceo_b_[A-Za-z0-9_-]{22}$/);
     expect(first.sessionFlag).toBe(t.member(lead.id).sessionId);
     const answer = t.texts().find((m) => m.kind === "답변")!;
     expect(answer).toMatchObject({ body: "첫답변", memberId: lead.id, who: lead.name, mine: false });
@@ -227,7 +231,7 @@ describe("턴 종료 처리", () => {
     const t = await setup();
     await conductor(t);
     const w = await worker(t);
-    await t.orch.assign(t.project.id, w.handle, { text: "@fake:post=끝냄 @fake:text=턴마지막글" });
+    await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=끝냄 @fake:text=턴마지막글" });
     await waitFor("총괄에게 보고", () => t.starts().some((c) => c.prompt.startsWith("[보고 철수] 완료: 끝냄")));
     const texts = t.texts();
     expect(texts.some((m) => m.title === "끝냄" && m.kind === "완료" && m.memberId === w.id)).toBe(true);
@@ -238,7 +242,7 @@ describe("턴 종료 처리", () => {
     const t = await setup();
     const lead = await conductor(t);
     const w = await worker(t);
-    await t.orch.assign(t.project.id, w.handle, { text: "@fake:post=하는중 @fake:postkind=진행 @fake:text=잠시" });
+    await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=하는중 @fake:postkind=진행 @fake:text=잠시" });
     await t.idle(w.id);
     await waitFor("대기열", () => t.member(lead.id).queuedCount === 1 && t.store.listPending(lead.id)[0]);
     await Bun.sleep(50);
@@ -675,7 +679,7 @@ describe("ask", () => {
     const t = await setup();
     const lead = await conductor(t);
     const w = await worker(t);
-    await t.orch.assign(t.project.id, w.handle, { text: "@fake:ask=배포할까요 @fake:text=기다립니다" });
+    await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:ask=배포할까요 @fake:text=기다립니다" });
     const decision = await waitFor("카드", () => t.store.listOpenDecisionsByMember(w.id)[0]);
     await waitFor("waiting", () => !t.runner.isBusy(w.id) && t.member(w.id).status === "waiting");
     const result = t.store.listActivity(w.id).find((a) => a.kind === "tool_result")!;
@@ -688,7 +692,7 @@ describe("ask", () => {
     const answered = await t.orch.answerDecision(decision.id, { choice: "a", note: "조심해서" });
     expect(answered.status).toBe("delivered");
     const turn = await waitFor("답 전달", () => t.starts().find((c) => c.prompt.includes("[대표 답(원문)")));
-    expect(turn.prompt).toStartWith(`[대표 답(원문) '배포할까요'] "그렇게 하세요"(추천) 메모 "조심해서" #${decision.id}\n#iamceo_`);
+    expect(turn.prompt).toStartWith(`[대표 답(원문) '배포할까요'] "그렇게 하세요"(추천) 메모 "조심해서" #${decision.id} · 작업 #${decision.taskId}\n#iamceo_`);
     // 총괄에게는 wake=false 알림.
     // 총괄의 다른 턴에 묶여 이미 나갔을 수 있어 대기 목록이 아니라 전달 기록 전체를 본다.
     const notices = t.store.db.query<{ text: string; wake: number }, [string]>("SELECT text, wake FROM deliveries WHERE member_id = ?").all(lead.id);
@@ -700,14 +704,14 @@ describe("ask", () => {
   test("직접 CLI: blocking 등록, askWait 롱폴로 답을 받는다", async () => {
     const t = await setup();
     const m = t.store.createMember({ projectId: t.project.id, handle: "me", name: "직접", kind: "worker", origin: "manual" });
-    const { decision, blocking, text } = await t.orch.registerAsk(m, { title: "물음", options: [{ k: "a", label: "네" }] });
+    const { decision, blocking, text } = await t.orch.registerAsk(m, { taskId: defaultTaskId(t.store, t.project.id), title: "물음", options: [{ k: "a", label: "네" }] });
     expect(blocking).toBe(true);
     expect(text).toContain(decision.id);
     expect(await t.orch.askWait(m, decision.id, 30)).toEqual({ done: false });
     const waiting = t.orch.askWait(m, decision.id, 5000);
     await t.orch.answerDecision(decision.id, { choice: "a" });
     const done = await waiting;
-    expect(done).toMatchObject({ done: true, text: `[대표 답(원문) '물음'] "네" #${decision.id}` });
+    expect(done).toMatchObject({ done: true, text: `[대표 답(원문) '물음'] "네" #${decision.id} · 작업 #${decision.taskId}` });
     expect(t.store.requireDecision(decision.id).status).toBe("delivered");
     expect(t.member(m.id).status).toBe("idle");
     expect(t.starts().length).toBe(0);
@@ -723,7 +727,7 @@ describe("ask", () => {
     const sent = await t.orch.sendUserMessage(t.project.id, { text: "할 일", targetMemberId: m.id });
     expect(await waiting).toContain('[대표 직접] "할 일"');
     expect(t.store.requireMessage(sent.id).delivery).toBe("delivered");
-    const { decision } = await t.orch.registerAsk(m, { title: "물음", options: [{ k: "a", label: "네" }] });
+    const { decision } = await t.orch.registerAsk(m, { taskId: defaultTaskId(t.store, t.project.id), title: "물음", options: [{ k: "a", label: "네" }] });
     await t.orch.answerDecision(decision.id, { choice: "a" });
     expect(await t.orch.waitInbox(m, 20)).toContain("[대표 답(원문) '물음']");
     expect(t.store.listPending(m.id).length).toBe(0);
@@ -853,7 +857,7 @@ describe("뒤 작업 기다림과 '내 답 기다림'", () => {
     const w = (await t.orch.addMember(t.project.id, { name: "영희", handle: "yh" })).member;
     t.runner.busy = true;
     t.runner.emit({ type: "status", memberId: w.id, status: "working" });
-    const { decision } = await t.orch.registerAsk(t.store.requireMember(w.id), { title: "술 답을 다시 낼까요?", options: [{ k: "a", label: "네" }] });
+    const { decision } = await t.orch.registerAsk(t.store.requireMember(w.id), { taskId: defaultTaskId(t.store, t.project.id), title: "술 답을 다시 낼까요?", options: [{ k: "a", label: "네" }] });
     expect(t.store.requireMember(w.id).status).toBe("waiting");
 
     // 워크플로를 뒤에 걸고 턴을 마쳤다. herdr 는 여전히 working 이지만 세션은 글을 받는다. 그 팀은 일하는 중이다.
@@ -880,8 +884,8 @@ describe("뒤 작업 기다림과 '내 답 기다림'", () => {
     const w = (await t.orch.addMember(t.project.id, { name: "민수", handle: "ms" })).member;
     t.runner.busy = true;
     t.runner.emit({ type: "status", memberId: w.id, status: "working" });
-    const first = (await t.orch.registerAsk(t.store.requireMember(w.id), { title: "첫 물음", options: [{ k: "a", label: "네" }] })).decision;
-    const second = (await t.orch.registerAsk(t.store.requireMember(w.id), { title: "둘째 물음", options: [{ k: "a", label: "네" }] })).decision;
+    const first = (await t.orch.registerAsk(t.store.requireMember(w.id), { taskId: defaultTaskId(t.store, t.project.id), title: "첫 물음", options: [{ k: "a", label: "네" }] })).decision;
+    const second = (await t.orch.registerAsk(t.store.requireMember(w.id), { taskId: defaultTaskId(t.store, t.project.id), title: "둘째 물음", options: [{ k: "a", label: "네" }] })).decision;
     // 답하지 않은 결재가 있는 동안은 working 신호가 와도 waiting 을 지킨다.
     t.runner.emit({ type: "status", memberId: w.id, status: "working" });
     expect(t.store.requireMember(w.id).status).toBe("waiting");

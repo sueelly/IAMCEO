@@ -12,6 +12,7 @@ import type { Backend, StopResult } from "../shared/types.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterAll(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
@@ -197,7 +198,7 @@ describe("총괄 도구와 화면이 같은 경로", () => {
     const f = fixture();
     const run = await f.startWork("잘못 맡긴 일");
     const lead = f.store.requireMember(f.lead.id);
-    const out = await handleAgentTool(f.orch, lead, "team_stop", { member: "w1", expect_run_id: run.runId, then: "방향을 바꿔 이렇게 해" });
+    const out = await handleAgentTool(f.orch, lead, "team_stop", withDefaultTask(f.store, lead, "team_stop", { member: "w1", expect_run_id: run.runId, then: "방향을 바꿔 이렇게 해" }));
     expect(out.isError).toBeFalsy();
     expect(out.text).toContain(`실행 ${run.runId}을 멈췄습니다`);
     expect(f.fake.interrupts).toBe(1);

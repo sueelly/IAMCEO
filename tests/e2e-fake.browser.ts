@@ -923,11 +923,14 @@ describe("컴파일 실행 파일", () => {
     expect(frameRes.headers.get("content-security-policy")).toContain("sandbox allow-scripts");
     const project = await binPost<{ id: string }>("/api/projects", { name: "아티팩트 확인", cwd: WORK });
     const joined = await binPost<{ token: string }>("/agent/join", { project: project.id, name: "아티팩트 직원", role: "확인" });
-    const upload = await fetch(`${url}/agent/tool`, {
+    const agentTool = async (name: string, args: unknown) => fetch(`${url}/agent/tool`, {
       method: "POST",
       headers: { Authorization: `Bearer ${joined.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "file", args: { title: "키트 확인", html: readFileSync(join(ROOT, "tests", "fixtures", "sample-artifact.html"), "utf8") } }),
+      body: JSON.stringify({ name, args }),
     });
+    // 규칙을 지키는 직원처럼 업무를 먼저 만들고 그 id 를 자료에 넣는다.
+    const task = /#(tk_[A-Za-z0-9_]+)/.exec(((await (await agentTool("task", { title: "키트 확인" })).json()) as { text: string }).text)![1]!;
+    const upload = await agentTool("file", { title: "키트 확인", html: readFileSync(join(ROOT, "tests", "fixtures", "sample-artifact.html"), "utf8"), task_id: task });
     expect(upload.status).toBe(200);
     const state = (await (await fetch(`${url}/api/projects/${project.id}/state`, { headers: binHeaders() })).json()) as ProjectState;
     const file = state.files.find((f) => f.title === "키트 확인")!;

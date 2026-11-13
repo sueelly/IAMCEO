@@ -9,6 +9,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import type { Member, MemberStatus, Project, ProjectState } from "../shared/types.ts";
 import { updateConfigFile } from "../server/config.ts";
 import { auditContrast, auditLayout } from "./fixtures/layout-audit.ts";
+import { httpDefaultTask } from "./fixtures/default-task.ts";
 
 const core = await startBrowserCore();
 afterAll(async () => { await core.stop(); });
@@ -57,7 +58,10 @@ async function newProject(name = `프로젝트 ${++counter}`): Promise<Project> 
   return api<Project>("POST", "/api/projects", { name, cwd: dir });
 }
 const join_ = (projectId: string, name: string) => api<{ member: Member; token: string }>("POST", "/agent/join", { project: projectId, name, handle: `w${++counter}` });
-const tool = (token: string, name: string, args: unknown) => api<{ text: string; wait?: { decisionId: string } }>("POST", "/agent/tool", { name, args }, token);
+const rawTool = (token: string, name: string, args: unknown) => api<{ text: string; isError?: boolean; wait?: { decisionId: string } }>("POST", "/agent/tool", { name, args }, token);
+// 규칙을 지키는 직원처럼 업무 id 를 넣는다(업무 규칙이 주제인 시험이 아니다).
+const withTask = httpDefaultTask(rawTool);
+const tool = async (token: string, name: string, args: unknown) => rawTool(token, name, await withTask(token, name, args));
 const state = (id: string) => api<ProjectState>("GET", `/api/projects/${id}/state`);
 
 function sql(run: (db: Database) => void): void {

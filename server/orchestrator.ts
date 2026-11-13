@@ -373,6 +373,8 @@ export interface NewMemberInput {
   firstInstruction?: string;
   userQuote?: string;
   parallel?: boolean;
+  /** 첫 지시가 속한 업무. 업무를 쓰는 프로젝트에서 첫 지시를 주면 꼭 있어야 한다(instructionTask 로 정한다). */
+  taskId?: string | null;
 }
 
 export interface AssignInput {
@@ -3050,6 +3052,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!name) throw new ApiError(400, "이름이 필요합니다");
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
     const quote = input.userQuote?.trim() ? { text: input.userQuote, verified: source !== null, source } : null;
+    const firstTask = input.firstInstruction ? this.instructionTaskFor(projectId, input.taskId) : null;
     const { value: { member, ready }, deliveries } = this.store.transaction(() => {
       const spawned = this.store.withDeliveryIntents(() => this.beginSpawn(project, {
         kind: input.kind ?? "worker",
@@ -3062,7 +3065,8 @@ export class Orchestrator implements OrchestratorApi {
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
-        return [{ projectId, memberId: member.id, kind: "instruction", text: formatInstruction(member.name, input.firstInstruction, quote) }];
+        const taskLine = this.taskLineFor(projectId, firstTask?.id ?? null);
+        return [{ projectId, memberId: member.id, kind: "instruction", text: [formatInstruction(member.name, input.firstInstruction, quote), ...(taskLine ? [taskLine] : [])].join("\n"), taskId: firstTask?.id ?? null }];
       });
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
       return spawned;
@@ -3179,8 +3183,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!attachment || !this.store.isProjectAttachment(projectId, id)) throw new ApiError(404, `이 프로젝트에서 대표가 보낸 첨부가 아닙니다: ${id}`);
       return attachment;
     });
-    const task = input.taskId ? this.store.requireTask(input.taskId) : null;
-    if (task && task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.taskId}`);
+    const task = this.instructionTaskFor(projectId, input.taskId);
     const delivery = this.store.transaction(() => {
       const taskLine = this.taskLineFor(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
@@ -3412,8 +3415,9 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** --resume 으로 다시 연다. 실패하면 같은 핸들로 새 세션을 띄우고 마지막 일을 첫 지시에 넣는다. */
-  async resumeMember(memberId: string, firstInstruction?: string, assignedBy?: Member): Promise<Member> {
+  async resumeMember(memberId: string, firstInstruction?: string, assignedBy?: Member, taskId?: string | null): Promise<Member> {
     const member = this.store.requireMember(memberId);
+    if (firstInstruction?.trim()) this.instructionTaskFor(member.projectId, taskId); // 없는 업무면 다시 열기 전에 거절한다.
     if (member.origin === "manual") throw new ApiError(400, "직접 띄운 세션은 다시 열 수 없습니다");
     this.requireActive(this.store.requireProject(member.projectId));
     this.requireNotSwitching();
@@ -3429,7 +3433,7 @@ export class Orchestrator implements OrchestratorApi {
       this.checkAwakeLimit(member.projectId);
     }
     if (firstInstruction?.trim()) {
-      await this.assign(member.projectId, member.handle, { text: firstInstruction }, assignedBy);
+      await this.assign(member.projectId, member.handle, { text: firstInstruction, taskId }, assignedBy);
     } else {
       await this.pump(memberId);
     }
@@ -3663,6 +3667,17 @@ export class Orchestrator implements OrchestratorApi {
       }
       this.store.markTaskMerged(from.id, to, member.id);
     });
+  }
+
+  /**
+   * 지시 전달의 업무가 이 프로젝트의 업무인지 본다(합쳐진 업무면 합쳐진 곳). 업무를 정하고 빠진 지시를 거절하는 것은
+   * 도구 입구(team_assign·team_stop then·team_add·team_resume 의 instructionTask)다.
+   */
+  private instructionTaskFor(projectId: string, taskId: string | null | undefined): Task | null {
+    if (!taskId) return null;
+    const task = this.store.getTask(taskId);
+    if (!task || task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${taskId}`);
+    return this.store.resolveTask(task);
   }
 
   /** 턴이 받은 전달의 업무들(업무 없는 전달은 빼고, 받은 차례대로). */

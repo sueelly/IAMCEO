@@ -14,6 +14,7 @@ import type { AgentToolResult, AskWaitResult } from "../server/orchestrator-api.
 import { formatTidy, Orchestrator, TIDY_HEAD } from "../server/orchestrator.ts";
 import type { Runner, RunnerEvent, SendResult } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 /** 세션을 띄우지 않고 받은 글만 기록한다. 턴은 end() 로 끝낸다. */
 class FakeRunner implements Runner {
@@ -99,7 +100,7 @@ async function setup() {
     const res = await fetch(`${url}/agent/tool`, {
       method: "POST",
       headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name, args }),
+      body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }),
     });
     expect(res.status).toBe(200);
     return (await res.json()) as AgentToolResult;

@@ -15,6 +15,7 @@ import { Store } from "../server/store.ts";
 import { FilePublication } from "../server/files.ts";
 import { StorageError } from "../server/storage-errors.ts";
 import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 /** 세션을 띄우지 않고 받은 글만 기록한다. 턴은 end() 로 끝낸다. */
 class FakeRunner implements Runner {
@@ -89,7 +90,7 @@ async function setup() {
     const res = await fetch(`${server.urls[0]}/agent/tool`, {
       method: "POST",
       headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name, args }),
+      body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }),
     });
     expect(res.status).toBe(200);
     return (await res.json()) as AgentToolResult;
@@ -399,7 +400,7 @@ describe("공통 도구", () => {
       if (++count === 1) unlinkSync(images[1]!);
       return saved;
     });
-    try { await expect(handleAgentTool(orch, lead, "file", { title: "실패", images })).rejects.toThrow(); }
+    try { await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow(); }
     finally { stage.mockRestore(); }
     expect(store.listFiles(project.id)).toHaveLength(0);
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
@@ -417,10 +418,11 @@ describe("공통 도구", () => {
     const prior = store.createAttachment({ id: "a_draft", name: "prior.png", path: priorPath, size: 5, mime: "image/png" });
     const images = [join(home, "first.png"), join(home, "second.png")];
     for (const path of images) writeFileSync(path, "image");
+    defaultTaskId(store, project.id); // 시험 업무는 방송을 세기 전에 만든다.
     const events: unknown[] = [];
     const emit = spyOn(bus, "emit").mockImplementation((event) => { events.push(event); });
     store.db.exec("CREATE TRIGGER fail_file BEFORE INSERT ON files BEGIN SELECT RAISE(ABORT, 'publication failure'); END");
-    try { await expect(handleAgentTool(orch, lead, "file", { title: "실패", images })).rejects.toThrow("publication failure"); }
+    try { await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow("publication failure"); }
     finally { emit.mockRestore(); }
     expect(events).toEqual([]);
     expect(store.listFiles(project.id)).toHaveLength(0);
@@ -435,7 +437,7 @@ describe("공통 도구", () => {
     const images = [join(home, "one.png"), join(home, "two.png")];
     for (const path of images) writeFileSync(path, "image");
     store.db.exec("CREATE TRIGGER fail_second_attachment BEFORE INSERT ON attachments WHEN (SELECT COUNT(*) FROM attachments) > 0 BEGIN SELECT RAISE(ABORT, 'second attachment failure'); END");
-    await expect(handleAgentTool(orch, lead, "file", { title: "실패", images })).rejects.toThrow("second attachment failure");
+    await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow("second attachment failure");
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
     expect(readdirSync(join(home, "..", "state", "uploads")).filter((name) => !name.startsWith("."))).toEqual([]);
   });
@@ -446,7 +448,7 @@ describe("공통 도구", () => {
     writeFileSync(path, "image");
     const insert = spyOn(store, "createFile").mockImplementation(() => { throw Object.assign(new Error("full"), { code: "SQLITE_FULL" }); });
     try {
-      await expect(handleAgentTool(orch, lead, "file", { title: "실패", path })).rejects.toBeInstanceOf(StorageError);
+      await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", path }))).rejects.toBeInstanceOf(StorageError);
     } finally { insert.mockRestore(); }
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
     expect(readdirSync(join(home, "..", "state", "uploads")).filter((name) => !name.startsWith("."))).toEqual([]);
@@ -459,7 +461,7 @@ describe("공통 도구", () => {
     const todo = store.listTodos(project.id)[0]!;
     expect(todo).toMatchObject({ title: "로그인", detail: "폰으로", who: "철수", memberId: w.id, done: false });
     await orch.setTodoDone(todo.id, true);
-    expect(deliveryBody(store, runner.sent.at(-1)!)).toBe(`[대표] '로그인' 했음 #${todo.id}`);
+    expect(deliveryBody(store, runner.sent.at(-1)!)).toBe(`[대표] '로그인' 했음 #${todo.id} · 작업 #${todo.taskId}`);
   });
 });
 
@@ -471,11 +473,45 @@ describe("총괄 도구", () => {
     const w = store.findMember(project.id, "cs")!;
     expect(w).toMatchObject({ role: "개발", kind: "worker", origin: "runner", status: "working" });
     expect(runner.sent[0]!.memberId).toBe(w.id);
-    expect(deliveryBody(store, runner.sent[0]!)).toBe("[총괄] 철수에게\n할 일: 로그인 고치기");
+    // 첫 지시도 업무에 붙는다(도우미가 넣은 시험 업무).
+    expect(deliveryBody(store, runner.sent[0]!)).toMatch(/^\[총괄\] 철수에게\n할 일: 로그인 고치기\n작업 #tk_\S+ '시험 업무'\. [^\n]+$/);
     expect(await call(lead, "team_add", { name: "철수", role: "또" })).toMatchObject({ isError: true });
     expect(await call(lead, "team_add", { name: "영희", role: "또", handle: "cs" })).toMatchObject({ isError: true });
     expect(await call(lead, "team_add", { name: "민수", role: "개발", cwd: "없는/폴더" })).toMatchObject({ isError: true });
     expect(await call(lead, "team_add", { name: "민수", role: "개발", handle: "대문자X" })).toMatchObject({ isError: true });
+  });
+
+  test("team_add·team_resume: 첫 지시도 업무에 붙는다. 업무를 밝히지 않으면 직원을 띄우거나 다시 열기 전에 거절한다", async () => {
+    const { store, project, runner, lead, orch } = await setup();
+    // 시험 업무를 넣는 도우미를 거치지 않고 부른다.
+    const raw = (name: string, args: Record<string, unknown>) => handleAgentTool(orch, store.requireMember(lead.id), name, args);
+    const members = store.listMembers(project.id).length;
+    const bad = await raw("team_add", { name: "결제 연동", role: "결제", handle: "pay", first_instruction: "결제 붙이기" });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain("task_id");
+    expect(store.listMembers(project.id)).toHaveLength(members);
+    const task = orch.saveTask(store.requireMember(lead.id), { title: "결제 연동" }).task;
+    expect((await raw("team_add", { name: "결제 연동", role: "결제", handle: "pay", first_instruction: "결제 붙이기", task_id: task.id })).isError).toBeFalsy();
+    const pay = store.findMember(project.id, "pay")!;
+    const first = store.listDeliveries(project.id).find(d => d.memberId === pay.id && d.kind === "instruction")!;
+    expect(store.deliveryTaskId(first.id)).toBe(task.id);
+    expect(first.text).toContain(`작업 #${task.id} '결제 연동'`);
+
+    runner.end(pay.id);
+    await Bun.sleep(20);
+    store.patchMember(pay.id, { status: "asleep" });
+    const sent = store.listDeliveries(project.id).filter(d => d.memberId === pay.id).length;
+    const badResume = await raw("team_resume", { member: "pay", first_instruction: "이어서 하기" });
+    expect(badResume.isError).toBe(true);
+    expect(badResume.text).toContain("task_id");
+    expect(store.requireMember(pay.id).status).toBe("asleep");
+    expect(store.listDeliveries(project.id).filter(d => d.memberId === pay.id)).toHaveLength(sent);
+    expect((await raw("team_resume", { member: "pay", first_instruction: "이어서 하기", task_id: task.id })).isError).toBeFalsy();
+    const next = store.listDeliveries(project.id).filter(d => d.memberId === pay.id && d.kind === "instruction").at(-1)!;
+    expect(next.text).toContain("이어서 하기");
+    expect(store.deliveryTaskId(next.id)).toBe(task.id);
+    // 첫 지시가 없으면 업무가 필요 없다
+    expect((await raw("team_add", { name: "검토", role: "검토", handle: "review" })).isError).toBeFalsy();
   });
 
   test("user_quote 라벨: 대표 글에 있으면 서버 확인, 없으면 미확인", async () => {
@@ -485,7 +521,7 @@ describe("총괄 도구", () => {
 
     const ok = await call(lead, "team_assign", { member: "cs", text: "고치고 배포", user_quote: "로그인 고쳐서 배포까지 진행해 주세요" });
     expect(ok.text).toContain("서버 확인");
-    expect(deliveryBody(store, runner.sent.at(-1)!)).toMatch(/^\[총괄\] 철수에게\n사용자 요청\(원문, 서버 확인\): "로그인 고쳐서 배포까지 진행해 주세요" #msg_\S+ \d{4}-\d{2}-\d{2}T\S+\n할 일: 고치고 배포$/);
+    expect(deliveryBody(store, runner.sent.at(-1)!)).toMatch(/^\[총괄\] 철수에게\n사용자 요청\(원문, 서버 확인\): "로그인 고쳐서 배포까지 진행해 주세요" #msg_\S+ \d{4}-\d{2}-\d{2}T\S+\n할 일: 고치고 배포\n작업 #tk_\S+ '시험 업무'\. [^\n]+$/);
 
     const worker = store.findMember(project.id, "cs")!;
     runner.end(worker.id);
@@ -521,7 +557,7 @@ describe("총괄 도구", () => {
   test("직원 AI의 ask_close 후속 지시도 대표 직접 지시를 다시 인용하면 차단하고 결재는 유지", async () => {
     const { store, project, orch, call } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "메뉴 가격표", handle: "menu" });
-    const { decision } = await orch.registerAsk(w, { title: "메뉴 가격을 바꿀까요?" });
+    const { decision } = await orch.registerAsk(w, { title: "메뉴 가격을 바꿀까요?", taskId: defaultTaskId(store, project.id) });
     const message = await orch.sendUserMessage(project.id, { text: "대표가 가격을 정했으니 메뉴 가격표를 최신 가격으로 수정해 주세요", targetMemberId: w.id });
     const before = store.listDeliveries(project.id).length;
     const result = await call(w, "ask_close", { id: decision.id, kind: "decided", reason: "대표가 직접 결정", user_quote: message.body,
@@ -558,9 +594,11 @@ describe("총괄 도구", () => {
     const { member: w } = await orch.addMember(project.id, { name: "메뉴 가격표", handle: "menu" });
     const message = await orch.sendUserMessage(project.id, { text: "가격을 수정해 주세요", targetMemberId: w.id });
     const notices = () => store.listDeliveries(project.id).filter(d => d.memberId === lead.id && d.kind === "system");
+    // 대표 글은 업무 없이 보내 서버가 첫 줄로 만든 업무에 있다. 알림에도 그 업무가 붙는다.
+    expect(message.taskId).toBeTruthy();
     expect(notices().find(d => d.text.includes(`#${message.id}`))).toMatchObject({ wake: false,
-      text: `[시스템] 대표가 메뉴 가격표에게 직접 지시했습니다 #${message.id}. 이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.` });
-    const { decision } = await orch.registerAsk(w, { title: "가격을 적용할까요?", options: [{ k: "y", label: "적용하세요" }] });
+      text: `[시스템] 대표가 메뉴 가격표에게 직접 지시했습니다 #${message.id}(작업 #${message.taskId} '가격을 수정해 주세요'). 이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.` });
+    const { decision } = await orch.registerAsk(w, { title: "가격을 적용할까요?", options: [{ k: "y", label: "적용하세요" }], taskId: message.taskId });
     await orch.answerDecision(decision.id, { choice: "y" });
     expect(notices().find(d => d.text.includes("결재에 답했습니다"))).toMatchObject({ wake: false });
     expect(notices().find(d => d.text.includes("결재에 답했습니다"))!.text).toContain("이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.");

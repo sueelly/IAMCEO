@@ -10,6 +10,7 @@ import type { FileDoc, Member, Project, ProjectState } from "../shared/types.ts"
 import { updateConfigFile } from "../server/config.ts";
 import { cellNumber, isNumericColumn, parseDelimited, sniffDelimiter, sortRows } from "../web/src/components/viewers/delimited.ts";
 import { decodeText } from "../web/src/components/viewers/source.ts";
+import { httpDefaultTask } from "./fixtures/default-task.ts";
 
 const core = await startBrowserCore();
 afterAll(async () => { await core.stop(); });
@@ -54,9 +55,11 @@ const api = async <T,>(method: string, path: string, body?: unknown, auth = CODE
   return (await res.json()) as T;
 };
 
+// 규칙을 지키는 직원처럼 업무 id 를 넣는다(업무 규칙이 주제인 시험이 아니다).
+const withTask = httpDefaultTask((auth, name, args) => api<{ text: string; isError?: boolean }>("POST", "/agent/tool", { name, args }, auth));
 /** 직원이 file 도구로 올린다. 올린 자료를 돌려준다. */
 async function upload(args: Record<string, unknown>): Promise<FileDoc> {
-  const r = await api<{ text: string }>("POST", "/agent/tool", { name: "file", args }, token);
+  const r = await api<{ text: string }>("POST", "/agent/tool", { name: "file", args: await withTask(token, "file", args) }, token);
   const id = /#(f_[A-Za-z0-9_-]+)/.exec(r.text)![1]!;
   const state = await api<ProjectState>("GET", `/api/projects/${project.id}/state`);
   const file = state.files.find((f) => f.id === id)!;

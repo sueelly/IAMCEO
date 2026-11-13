@@ -9,6 +9,7 @@ import { CoreError } from "../server/runner/core-client.ts";
 import type { Member } from "../shared/types.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 // All execution is in-memory; no HTTP listener, core or herdr connection.
 class AckRunner implements Runner {
@@ -56,7 +57,7 @@ function fixture(kind: "conductor" | "root" = "conductor") {
   const notices = () => store.listMessages(project.id, { limit: 500 }).filter(m => m.id.startsWith("msg_delegation_ack_"));
   const member = () => store.createMember({ projectId: project.id, handle: `w${++seq}`, name: `검토 ${seq}`, kind: "worker", origin: "runner", backend: "core", status: "idle", cwd: project.cwd, paneId: `pane-${seq}`, sessionId: `session-${seq}` });
   const tool = async (name: string, args: Record<string, unknown>) => {
-    const result = await orch.handleAgentTool(store.requireMember(lead.id), name, args);
+    const result = await orch.handleAgentTool(store.requireMember(lead.id), name, withDefaultTask(store, lead, name, args));
     expect(result.isError, result.text).not.toBe(true);
     return result;
   };
@@ -123,7 +124,7 @@ for (const postFirst of [true, false]) {
 
 test("직원 보고로 깨어난 턴에 다음 직원에게 맡기면 시스템 줄을 남기지 않는다", async () => {
   const f = fixture(); const w = f.member(), next = f.member();
-  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료" });
+  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: defaultTaskId(f.store, f.project.id) });
   await until(() => f.runner.busy.has(f.lead.id));
   await f.tool("team_assign", { member: next.handle, text: "확인된 오류 수정" });
   await f.end(); expect(f.notices()).toHaveLength(0);
@@ -134,7 +135,7 @@ test("보고 턴에 묶여 온 wake=false 대표 답은 대표가 깨운 턴으�
   const decision = f.store.createDecision({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "검토" });
   f.store.answerDecision(decision.id, { note: "진행" });
   f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "answer", text: '[대표 답(원문) \'검토\'] "진행"', wake: false, refType: "decision", refId: decision.id });
-  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료" });
+  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: defaultTaskId(f.store, f.project.id) });
   await until(() => f.runner.busy.has(f.lead.id));
   await f.tool("team_assign", { member: next.handle, text: "다음 검토" });
   await f.end(); expect(f.notices()).toHaveLength(0);
@@ -213,7 +214,7 @@ test("신규 직원 기동 실패로 취소된 첫 지시는 배정으로 알리
 
 test("대표 결재 답 턴의 ask_close follow_up도 배정 안내를 남긴다", async () => {
   const f = fixture(); const w = f.member();
-  const pending = await f.orch.registerAsk(f.lead, { title: "결제 검토", detail: "어떻게 할까요" });
+  const pending = await f.orch.registerAsk(f.lead, { title: "결제 검토", detail: "어떻게 할까요", taskId: defaultTaskId(f.store, f.project.id) });
   await f.orch.answerDecision(pending.decision.id, { note: "검토를 시작하도록 승인합니다" });
   await until(() => f.runner.busy.has(f.lead.id));
   // 대화에서 정해진 별도 카드의 후속 지시를 같은 대표 원문에 연결한다.
