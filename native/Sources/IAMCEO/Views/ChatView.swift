@@ -73,9 +73,11 @@ struct ChatMessageRow: View {
     var isLatestProblem = false
     /// "{대상}에게" on my bubbles. Off inside one member's thread, where every bubble goes to that member.
     var showsTarget = true
+    /// Z(0.2.6): the reply line at the bottom of the thread speaks for this message, so its footer drops the wait line.
+    var hidesWaits = false
     var body: some View {
         if message.mine {
-            ChatMineRow(message: message, isLatestProblem: isLatestProblem, showsTarget: showsTarget)
+            ChatMineRow(message: message, isLatestProblem: isLatestProblem, showsTarget: showsTarget, hidesWaits: hidesWaits)
         } else if message.kind == "시스템" {
             ChatSystemRow(message: message)
         } else {
@@ -91,12 +93,15 @@ struct ChatMineRow: View {
     let message: Message
     var isLatestProblem = false
     var showsTarget = true
+    var hidesWaits = false
     @State private var explaining = false
     @State private var resending = false
     @State private var resendError: String?
 
     private var info: DeliveryInfo? { DeliveryInfo(message.delivery) }
-    private var waits: [ChatDeliveryWait] { ChatDeliveryWait.lines(message, target: target) }
+    private var waits: [ChatDeliveryWait] { hidesWaits ? [] : ChatDeliveryWait.lines(message, target: target) }
+    /// Z(0.2.6): "읽었지만 답하지 않았습니다" / "답하기 전에 멈췄습니다" under the bubble (the server's reply state).
+    private var replyNote: String? { store.isArchive ? nil : ChatReplyBoard.footnote(message.reply) }
     private var note: String? {
         let value = message.deliveryNote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? nil : plainDeliveryNote(value, code: message.deliveryCode)
@@ -142,7 +147,7 @@ struct ChatMineRow: View {
             .frame(maxWidth: 620, alignment: .trailing)
         }
         // A footer with a reason line belongs to this bubble: keep clear air below it before the next message.
-        .padding(.bottom, info != nil && (note != nil || !waits.isEmpty) ? 6 : 0)
+        .padding(.bottom, info != nil && (note != nil || !waits.isEmpty) || replyNote != nil ? 6 : 0)
     }
 
     /// Web .th-mine: gap 8, padding 10 15 11.
@@ -203,6 +208,14 @@ struct ChatMineRow: View {
                     .lineSpacing(CELeading.meta)
                     .frame(maxWidth: 360, alignment: .trailing)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if let replyNote {
+                // Quiet: a fact about the past turn, not something to fix.
+                Text(replyNote)
+                    .foregroundStyle(CE.ink3)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(replyNote)
             }
         }
         .font(CEFont.meta)
@@ -452,6 +465,86 @@ struct ChatDaySeparator: View {
     }
 }
 
+// MARK: - Reply lines (Z 0.2.6)
+
+/// Under the last message: who is on my latest words, one line per recipient (the server's `Message.reply`).
+/// While the recipient's turn carries my message, a received-side bubble with three moving dots ("결제 총괄이 답을 쓰는 중…",
+/// after a minute "… 읽고 일하는 중 · 3분째"). While it waits (earlier work, waking, checking) or is stopped (approval, usage
+/// limit, error), the same bubble holds one status dot and the line says why, in the tone that says who can clear it.
+/// The minute count refreshes every 30 seconds; nothing here polls the server.
+private struct ChatReplyIndicators: View {
+    let messages: [Message]
+    let names: [String: String]
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { timeline in
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(ChatReplyBoard.statuses(messages, names: names, now: timeline.date)) { status in
+                    ChatReplyLine(status: status)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct ChatReplyLine: View {
+    let status: ChatReplyStatus
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ChatReplyBubble(typing: status.typing, tone: status.tone)
+            Text(status.label)
+                .font(CEFont.meta)
+                .foregroundStyle(status.tone == .neutral || status.tone == .live ? CE.ink2 : status.tone.color)
+                .ceLineHeight(12.5, 1.4)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.accessibilityLabel)
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
+/// A small received-side bubble (radius 15 15 15 5: the tail points at the speaker, mirroring my bubble's 18 18 5 18) on the
+/// report card's plate. Reduce Transparency: the solid plate.
+private struct ChatReplyBubble: View {
+    let typing: Bool
+    let tone: Tone
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var body: some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 15, bottomLeadingRadius: 5, bottomTrailingRadius: 15, topTrailingRadius: 15, style: .continuous)
+        Group {
+            if typing { ChatTypingDots() } else { StatusDot(tone: tone, size: 7) }
+        }
+        .frame(width: 46, height: 30)
+        .background(reduceTransparency ? CE.plateSolid : ChatPalette.cardFill, in: shape)
+        .overlay { shape.strokeBorder(reduceTransparency ? CE.lineStrong : Color.white.opacity(0.08), lineWidth: 1) }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Three dots that rise and brighten in turn. Reduce Motion (and a tab that is not on screen) keeps them still.
+private struct ChatTypingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.ceTabVisible) private var tabVisible
+    @State private var lifted = false
+    var body: some View {
+        let moving = ChatReplyBoard.dotsMove(reduceMotion: reduceMotion, tabVisible: tabVisible)
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle().fill(CE.ink2).frame(width: 6, height: 6)
+                    .opacity(moving ? (lifted ? 1 : 0.3) : 0.75)
+                    .offset(y: moving && lifted ? -2 : 0)
+                    .animation(moving ? .easeInOut(duration: 0.45).repeatForever(autoreverses: true).delay(Double(index) * 0.15) : nil, value: lifted)
+            }
+        }
+        .onAppear { lifted = moving }
+        .onChange(of: moving) { _, value in lifted = value }
+    }
+}
+
 // MARK: - Thread
 
 private struct ChatThread: View {
@@ -505,6 +598,14 @@ private struct ChatConversation: View {
     }
 
     private var scope: ChatScope { ChatScope(store: store, router: router) }
+    /// Z(0.2.6): my messages the bottom reply lines speak for (one per recipient; none in the archive).
+    private var replyMessageIDs: Set<String> {
+        store.isArchive ? [] : Set(ChatReplyBoard.statuses(displayed, names: replyNames).map(\.messageID))
+    }
+    /// The recipient as the reply line names it: the lead by its rank-bearing label ("결제 총괄"), a staff member by name.
+    private var replyNames: [String: String] {
+        Dictionary(store.members.map { ($0.id, $0.kind == "worker" ? $0.name : chatLeadLabel($0)) }, uniquingKeysWith: { first, _ in first })
+    }
     private var history: ChatHistory? {
         guard let history = store.history,
               history.key.projectID == projectID, history.key.namespace == namespace,
@@ -549,11 +650,13 @@ private struct ChatConversation: View {
                         ChatEmpty(title: String(localized: "아직 대화가 없습니다"), detail: emptyDetail)
                             .padding(.top, 10)
                     }
+                    let replies = replyMessageIDs
                     ForEach(chatThreadRows(displayed)) { row in
                         switch row {
                         case .day(_, let label, let gap): ChatDaySeparator(label: label).padding(.top, gap)
                         case .message(let message, let gap):
-                            ChatMessageRow(message: message, isLatestProblem: scope.unresolvedIDs.contains(message.id), showsTarget: scope.isProjectThread)
+                            ChatMessageRow(message: message, isLatestProblem: scope.unresolvedIDs.contains(message.id), showsTarget: scope.isProjectThread,
+                                           hidesWaits: replies.contains(message.id))
                                 .overlay {
                                     if anchor.highlightedMessageID?.utf8.elementsEqual(message.id.utf8) == true {
                                         RoundedRectangle(cornerRadius: CERadius.card).strokeBorder(CE.accent, lineWidth: 2)
@@ -564,6 +667,10 @@ private struct ChatConversation: View {
                                 .id(row.id)
                                 .padding(.top, gap)
                         }
+                    }
+                    if !replies.isEmpty {
+                        ChatReplyIndicators(messages: displayed, names: replyNames)
+                            .padding(.top, 12)
                     }
                 }
                 .background { ChatScrollHostProbe(anchor: anchor, scope: scopeID).frame(width: 0, height: 0) }
@@ -958,7 +1065,8 @@ struct ChatThreadContent: Equatable {
             guard a.id.utf8.elementsEqual(b.id.utf8) && a.projectId == b.projectId && a.at == b.at && a.mine == b.mine
                 && a.memberId == b.memberId && a.who == b.who && a.kind == b.kind && a.title == b.title
                 && a.body == b.body && a.targetMemberId == b.targetMemberId && a.targetName == b.targetName
-                && a.decisionId == b.decisionId && a.fileId == b.fileId && a.delivery == b.delivery && a.deliveryNote == b.deliveryNote else { return false }
+                && a.decisionId == b.decisionId && a.fileId == b.fileId && a.delivery == b.delivery && a.deliveryNote == b.deliveryNote
+                && a.reply == b.reply else { return false }
             guard a.fileIds.map({ Data($0.utf8) }) == b.fileIds.map({ Data($0.utf8) })
                 && a.supersedes.map({ Data($0.utf8) }) == b.supersedes.map({ Data($0.utf8) })
                 && a.supersededBy.map({ Data($0.utf8) }) == b.supersededBy.map({ Data($0.utf8) })

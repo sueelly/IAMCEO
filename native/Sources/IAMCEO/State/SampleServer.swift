@@ -44,8 +44,11 @@ final class SampleServer: @unchecked Sendable {
     private var activitySeq = 1000
     private var captured: [URLRequest] = []
     /// 보낸 글이 '전달됨'이 되고 팀장이 받았다고 답하기까지의 간격. 시험이 줄인다.
+    /// Z(0.2.6): 그 사이에는 '답 쓰는 중' 말풍선(reply working)이 보인다.
     var deliveryDelay: Duration = .milliseconds(700)
-    var replyDelay: Duration = .milliseconds(2600)
+    var replyDelay: Duration = .milliseconds(3200)
+    /// 아직 나가지 않은 답(글 ID → 낼 일). 간격이 지나거나 시험이 acknowledgeNow 를 부르면 한 번만 나간다.
+    private var pendingAcknowledgements: [String: (SampleServer) -> Void] = [:]
     /// 실시간 연결의 심장 박동 간격(서버와 같다).
     var heartbeat: Duration = .seconds(15)
 
@@ -102,6 +105,10 @@ final class SampleServer: @unchecked Sendable {
         }
         session = URLSession(configuration: Self.configuration(id: id))
         SampleServerRegistry.shared.add(self)
+        #if DEBUG
+        // 화면 견본(Z): `--reply-preview` 는 최근 지시에 '답 쓰는 중' 줄을 띄운다(스크린샷·화면 확인용).
+        if LaunchOptions.arguments.contains("--reply-preview") { previewReplies(now: now) }
+        #endif
     }
     deinit { SampleServerRegistry.shared.remove(id) }
 
@@ -338,30 +345,42 @@ final class SampleServer: @unchecked Sendable {
         let targetID = input["targetMemberId"] as? String
         let target = targetID.flatMap { id in members.first { $0["id"] as? String == id } }
         if targetID != nil, target == nil { return fail("member_not_in_project", status: 400) }
-        let message: Object = [
-            "id": messageID, "projectId": projectID, "at": Self.timestamp(), "mine": true, "memberId": NSNull(), "who": "나", "kind": "나",
+        // 받은 팀장(받는 사람이 없으면 총괄)이 곧 받고, 조금 뒤 받았다고 답한다. 샘플이 살아 있는 팀처럼 보이게.
+        let recipient = target ?? members.first { $0["kind"] as? String == "conductor" }
+        let recipientID = recipient?["id"] as? String, recipientName = recipient?["name"] as? String ?? ""
+        let sentAt = Self.timestamp()
+        var message: Object = [
+            "id": messageID, "projectId": projectID, "at": sentAt, "mine": true, "memberId": NSNull(), "who": "나", "kind": "나",
             "title": "", "body": text, "targetMemberId": targetID ?? NSNull(), "targetName": target?["name"] ?? NSNull(),
             "decisionId": NSNull(), "fileId": NSNull(), "attachments": attachmentIDs.compactMap { uploads[$0] },
             "delivery": "queued", "deliveryNote": NSNull(), "deliveryRevision": 0, "contextFileId": input["contextFileId"] ?? NSNull(),
             "fileIds": [Any](), "supersedes": NSNull(), "supersededBy": NSNull(),
         ]
+        // Z: 실제 서버처럼 보낸 글에 답 상태를 싣는다. 받기 전에는 보내는 중.
+        if let recipientID { message["reply"] = Self.reply("queued", memberID: recipientID, since: sentAt, reason: "unknown") }
         project.messages.append(message)
         projects[projectID] = project
         changed()
-        // 받은 팀장(받는 사람이 없으면 총괄)이 곧 받고, 조금 뒤 받았다고 답한다. 샘플이 살아 있는 팀처럼 보이게.
-        let recipient = target ?? members.first { $0["kind"] as? String == "conductor" }
-        let recipientID = recipient?["id"] as? String, recipientName = recipient?["name"] as? String ?? ""
         later(deliveryDelay) { server in server.deliver(messageID: messageID, projectID: projectID, recipientID: recipientID, text: text) }
         if let recipientID {
-            later(replyDelay) { server in server.acknowledge(projectID: projectID, memberID: recipientID, name: recipientName, text: text) }
+            pendingAcknowledgements[messageID] = { server in server.acknowledge(projectID: projectID, memberID: recipientID, name: recipientName, text: text, messageID: messageID) }
+            later(replyDelay) { server in server.pendingAcknowledgements.removeValue(forKey: messageID)?(server) }
         }
         return Self.json(message)
+    }
+
+    /// 시험용: 그 글의 답(받았다는 팀장 글)을 간격을 기다리지 않고 지금 낸다. 이미 답했으면 아무것도 하지 않는다.
+    /// 시험이 '답 쓰는 중'을 실제 시간의 짧은 틈에서 잡지 않게, 답 간격을 길게 두고 이것으로 답하게 한다.
+    func acknowledgeNow(messageID: String) {
+        lock.withLock { pendingAcknowledgements.removeValue(forKey: messageID)?(self) }
     }
 
     private func deliver(messageID: String, projectID: String, recipientID: String?, text: String) {
         guard var project = projects[projectID], let index = project.messages.firstIndex(where: { $0["id"] as? String == messageID }) else { return }
         project.messages[index]["delivery"] = "delivered"
         project.messages[index]["deliveryRevision"] = (project.messages[index]["deliveryRevision"] as? Int ?? 0) + 1
+        // Z: 받은 팀장이 이 글로 턴을 시작했다. 답이 올 때까지 '답 쓰는 중'.
+        if let recipientID { project.messages[index]["reply"] = Self.reply("working", memberID: recipientID, since: Self.timestamp()) }
         if let recipientID, var members = project.state["members"] as? [Object], let at = members.firstIndex(where: { $0["id"] as? String == recipientID }) {
             let now = Self.timestamp()
             members[at]["status"] = "working"
@@ -385,10 +404,11 @@ final class SampleServer: @unchecked Sendable {
         return "Got it. I'll wrap up what I'm doing and start right away on “\(quote)”, then report back when it's done."
     }
 
-    private func acknowledge(projectID: String, memberID: String, name: String, text: String) {
+    private func acknowledge(projectID: String, memberID: String, name: String, text: String, messageID: String) {
         guard var project = projects[projectID] else { return }
+        let answeredAt = Self.timestamp()
         let reply: Object = [
-            "id": "sample-" + UUID().uuidString.lowercased(), "projectId": projectID, "at": Self.timestamp(), "mine": false,
+            "id": "sample-" + UUID().uuidString.lowercased(), "projectId": projectID, "at": answeredAt, "mine": false,
             "memberId": memberID, "who": name, "kind": "진행", "title": language == .en ? "Instruction received" : "지시를 받았습니다",
             "body": language == .en
                 ? Self.englishAcknowledgement(text)
@@ -398,9 +418,37 @@ final class SampleServer: @unchecked Sendable {
             "supersedes": NSNull(), "supersededBy": NSNull(),
         ]
         project.messages.append(reply)
+        // Z: 답했다. 대화 맨 아래 '답 쓰는 중' 줄이 사라진다.
+        if let index = project.messages.firstIndex(where: { $0["id"] as? String == messageID }) {
+            project.messages[index]["reply"] = Self.reply("replied", memberID: memberID, since: answeredAt)
+        }
         projects[projectID] = project
         changed()
     }
+
+    /// 실제 서버의 Message.reply 와 같은 모양(shared/types.ts MessageReply).
+    static func reply(_ state: String, memberID: String, since: String, reason: String? = nil) -> Object {
+        var value: Object = ["state": state, "memberId": memberID, "since": since]
+        if let reason { value["reason"] = reason }
+        return value
+    }
+
+    #if DEBUG
+    /// 화면 견본: 결제 프로젝트의 마지막 지시 둘(총괄에게, 카드 결제 구현에게)에 '답 쓰는 중', 첫 지시에 '답 없이 끝남'.
+    private func previewReplies(now: Date) {
+        guard var project = projects["sample-pay"] else { return }
+        let chief = (project.state["members"] as? [Object] ?? []).first { $0["kind"] as? String == "conductor" }?["id"] as? String ?? "m-chief"
+        let marks: [String: Object] = [
+            "x2": Self.reply("no_reply", memberID: chief, since: Self.timestamp(now.addingTimeInterval(-36 * 60))),
+            "x9": Self.reply("working", memberID: "m-card", since: Self.timestamp(now.addingTimeInterval(-2 * 60 - 5))),
+            "x10": Self.reply("working", memberID: chief, since: Self.timestamp(now.addingTimeInterval(-20))),
+        ]
+        for index in project.messages.indices {
+            if let id = project.messages[index]["id"] as? String, let mark = marks[id] { project.messages[index]["reply"] = mark }
+        }
+        projects["sample-pay"] = project
+    }
+    #endif
 
     private func answerDecision(id: String, input: Object) -> Reply {
         guard let (pid, index) = decisionIndex(id), var project = projects[pid], var list = project.state["decisions"] as? [Object] else {

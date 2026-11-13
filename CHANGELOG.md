@@ -7,6 +7,10 @@ Only changes that matter to users, by version. The full history is in `git log`.
 
 ## 한국어
 
+### 아직 내지 않은 것
+
+- **대화에서 '답 쓰는 중'이 보입니다.** 총괄이나 팀장에게 글을 보내면 대화 맨 아래(내 마지막 글 아래)에 받은 이의 이름과 함께 지금 어떻게 하고 있는지 한 줄로 보입니다. 그 글을 받아 턴을 돌리는 동안은 움직이는 점 세 개와 '결제 총괄이 답을 쓰는 중…'이, 1분이 넘으면 '읽고 일하는 중 · 3분째'가 보이고, 답이 오면 사라집니다. 이 글과 무관한 앞 일을 하던 중이면 '앞 일을 마치는 중', 잠들어 있으면 '깨우는 중', 넣은 결과를 모르면 '전달됐는지 확인하는 중', 승인 창·사용 한도·인터넷·오류로 멈췄으면 그 까닭을 짧게 보입니다. 답 없이 턴이 끝났으면(서버가 결과 보고를 한 번 더 부탁한 뒤에도) 내 글 아래에 '읽었지만 답하지 않았습니다', 턴이 끊겼으면 '답하기 전에 멈췄습니다'가 남습니다. 여러 팀장에게 보냈으면 팀장마다 한 줄입니다. 판정은 서버가 전달 기록·턴 시작과 끝·대화로 하고 앱은 그대로 그립니다(Claude Code·Codex 같음). '동작 줄이기'를 켜면 점이 움직이지 않습니다. 대화 화면에만 보이고 대화 목록·홈에는 없습니다. 서버와 앱이 모두 이 판이어야 보이며, 출시된 0.2.5 이하 앱은 지금과 같이 보입니다. 샘플에서 지시를 보내도 답이 오기 전 잠깐 보입니다.
+
 ### 0.2.5 — 2026-11-14
 
 - **다른 기기를 끊는 것은 서버가 도는 Mac에서만 합니다.** 기기 열쇠는 가진 사람이면 누구나 쓰는 열쇠라서, 잃어버리거나 빼앗긴 기기 하나가 나머지 기기를 끊어 잠그지 못하게 했습니다. iPhone이나 다른 Mac의 설정 → 연결 → **연결된 기기**는 보기만 되고, 자기 줄(**이 기기**)에만 **끊기**가 있으며 목록 아래에 "다른 기기는 서버가 도는 Mac에서 끊을 수 있습니다."가 보입니다. 자기 줄을 끊으면 이 기기에 저장한 열쇠를 바로 지우고 연결 화면으로 나갑니다(초안은 남습니다). 서버가 도는 Mac의 앱은 지금처럼 어느 기기든 끊습니다. 그 Mac의 터미널에서도 `iamceo auth devices`로 기기와 ID를 보고 `iamceo auth revoke-device <ID>`로 한 대만 끊습니다. HTTPS 주소를 거쳐 온 요청은 그 Mac의 것으로 보지 않습니다. 출시된 iPhone 0.2.4 이하 앱은 남의 줄에도 **끊기**를 보이지만, 누르면 서버가 같은 안내 한 줄로 거절하고 아무것도 끊지 않습니다.
@@ -128,6 +132,10 @@ iPhone 앱은 2026-11-11에 App Store에 나왔습니다.
 - 첫 공개. 내 Mac에서 서버를 켜고 브라우저로 Claude Code 세션 여럿을 총괄과 팀으로 부립니다. 홈·결재함·팀·대화·자료 다섯 화면. Claude Code 전용, AGPL-3.0-only.
 
 ## English
+
+### Unreleased
+
+- **Chat shows when someone is replying.** After you send a message to your lead or a staff member, a line at the bottom of the conversation (under your last message) names who has it and what they are doing. While their turn is running on your message you see three moving dots and "Checkout Lead is replying…", after a minute "… is working on it · 3 min", and the line goes away when the reply arrives. If they are busy with earlier work unrelated to your message it says "is finishing earlier work"; if asleep, "Waking …"; if the delivery result is not known yet, "Checking that … got it"; if stopped at an approval prompt, a usage limit, an internet outage or an error, a short reason. If their turn ended without a reply (even after the server asked once more for the result), "Read, but no reply" stays under your message; if the turn was cut off, "Stopped before replying". One line per staff member when you wrote to several. The server decides this from delivery records, turn start and end, and the conversation, and the app only draws it (the same for Claude Code and Codex). With Reduce Motion the dots stay still. It appears in Chat only, not in the conversation list or on Home. Both the server and the app need this version; released apps (0.2.5 and earlier) look as before. In the sample, sending an instruction shows it briefly before the reply.
 
 ### 0.2.5 — 2026-11-14
 

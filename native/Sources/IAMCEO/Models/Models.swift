@@ -429,6 +429,8 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     /// deliveryNote 가 정해진 보류 문장일 때 서버가 함께 주는 코드(예: held_delivery_unknown). 옛 서버는 싣지 않는다.
     var deliveryCode: String? = nil
     var deliveryRevision: Int? = nil
+    /// Z(0.2.6): 받은 팀장이 이 대표 글에 어떻게 하고 있는가(서버가 정한다). 옛 서버는 싣지 않는다.
+    var reply: MessageReply? = nil
 }
 extension Message {
     init(from decoder: Decoder) throws {
@@ -457,6 +459,8 @@ extension Message {
         deliveryNote = try c.decodeIfPresent(String.self, forKey: ModelKey("deliveryNote"))
         deliveryCode = try? c.decodeIfPresent(String.self, forKey: ModelKey("deliveryCode"))
         deliveryRevision = try c.decodeIfPresent(Int.self, forKey: ModelKey("deliveryRevision"))
+        // 모양이 어긋난 답 상태는 없는 것으로 읽는다(글 자체는 그대로 보인다).
+        reply = try? c.decodeIfPresent(MessageReply.self, forKey: ModelKey("reply"))
     }
 }
 

@@ -64,6 +64,25 @@ import { cleanName, cleanText, conductorName } from "./text.ts";
 import { parseRestartWake, type RestartWake } from "./restart-wake.ts";
 import type { ErrorCode } from "../shared/error-codes.ts";
 import { deliveryNoteCode } from "./hold-codes.ts";
+import type { MessageReply } from "../shared/types.ts";
+import { judgeReply, replySettled, type ReplyFacts } from "./reply-state.ts";
+import { formatSystem } from "./delivery-text.ts";
+import { API_RESUME_TEXT, USAGE_RESUME_TEXT } from "./api-outage.ts";
+import { RESTART_RESUME_TEXT } from "./restart-wake.ts";
+
+// Z(0.2.6): 답 상태가 '이 실행을 잇는 서버 글'을 가려내는 규칙.
+/** 끊긴 턴을 잇는 서버 글(사용 한도·인터넷이 풀림, 재시작 뒤 다시 엶). api-outage.ts 가 이 모듈을 불러오므로 모듈을 읽을 때가 아니라 부를 때 본다. */
+function resumeText(text: string): boolean {
+  return text === USAGE_RESUME_TEXT || text === API_RESUME_TEXT || text === RESTART_RESUME_TEXT;
+}
+/** 그 실행들 가운데 하나에 서버가 요청한 보고 보완이다(orchestrator requestMissingReport 의 글 머리). */
+function supplementFor(text: string, runs: ExecutionJournal[]): boolean {
+  return runs.some(run => text.startsWith(formatSystem(`보고 보완: 실행 ${run.runId}의`)));
+}
+/** 그 실행들을 잇는 글인가: 같은 대표 글을 다시 넣음, 그 실행들의 보고 보완, 바로 앞 실행이 끊긴 뒤의 이어가기. */
+function continuesReplyRun(d: { id: string; kind: string; text: string }, own: string[], runs: ExecutionJournal[]): boolean {
+  return own.includes(d.id) || (d.kind === "system" && (resumeText(d.text) || supplementFor(d.text, runs)));
+}
 
 /**
  * status 가 그대로 HTTP 응답 코드가 되는 오류. 응답 몸은 `{ error: message, code, reason? }`.
@@ -1166,8 +1185,199 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     message.supersedes = refs?.correctsMessageId ?? null;
     message.supersededBy = this.deliveryRead?.projectId === message.projectId ? this.deliveryRead.superseded.get(message.id) ?? null : this.row("SELECT source_message_id FROM report_references WHERE project_id = ? AND corrects_message_id = ? ORDER BY sequence DESC, rowid DESC LIMIT 1", message.projectId, message.id)?.source_message_id ?? null;
     if (!includeDelivery) return message;
+    // Z(0.2.6): 대표 글에만 답 상태를 싣는다.
+    const reply = message.mine ? this.messageReply(message) : null;
+    if (reply) message.reply = reply;
     const deliveries = this.deliveryRead?.projectId === message.projectId ? this.deliveryRead.messageDeliveries.get(message.id) ?? [] : this.rows("SELECT * FROM deliveries WHERE ref_type = 'message' AND ref_id = ? AND status NOT IN ('delivered', 'failed') ORDER BY rowid", message.id).map(toDelivery);
     return deliveries.length ? { ...message, deliveryInfo: deliveries.map(d => ({ deliveryId: d.id, memberId: d.memberId, ...this.deliveryWait(d) })) } : message;
+  }
+
+  // ---- Z(0.2.6): 대표 글의 답 상태. 판정은 server/reply-state.ts, 여기서는 근거를 모으고 바뀌면 실시간으로 낸다 ----
+  /** 더는 바뀌지 않는 답 상태(답함, 답 창이 닫힌 뒤의 답 없음·멈춤). 프로세스 메모리에만 둔다. */
+  private readonly replySettledCache = new Map<string, MessageReply>();
+  /** 대표 글마다 마지막으로 실시간에 실은 답 상태(JSON). 같은 값은 다시 내지 않는다. */
+  private readonly replySeen = new Map<string, string>();
+  /** 팀장마다 지켜볼 최근 대표 글(보낸 순서). 처음 볼 때 DB 에서 채운다. */
+  private readonly replyWatch = new Map<string, string[]>();
+  private readonly replyDirty = new Set<string>();
+
+  /** 기억 칸이 끝없이 크지 않게 오래된 것부터 버린다. */
+  private static remember<T>(map: Map<string, T>, key: string, value: T, limit = 4000): void {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > limit) map.delete(map.keys().next().value!);
+  }
+
+  private messageReply(message: Message): MessageReply | null {
+    const settled = this.replySettledCache.get(message.id);
+    if (settled) return settled;
+    return this.deliveryReadMemo(`reply:${message.id}`, () => {
+      const delivery = this.ownerDelivery(message);
+      const member = delivery ? this.getMember(delivery.memberId) : null;
+      if (!delivery || !member || member.projectId !== message.projectId) return null;
+      const facts: ReplyFacts = { memberId: member.id, delivery,
+        member: { status: member.status, blockedReason: member.blockedReason ?? null, fenceCode: member.fenceCode, observationError: member.statusObservation?.error?.code ?? null } };
+      if (delivery.status === "queued" || delivery.status === "held" || delivery.status === "delivering") return judgeReply({ ...facts, wait: this.deliveryWait(delivery) });
+      if (delivery.status !== "delivered") return null;
+      const run = this.replyRun(delivery.id);
+      const start = run?.createdAt ?? delivery.deliveredAt ?? delivery.createdAt;
+      const own = run?.deliveryIds ?? [delivery.id];
+      let end = this.replyWindowEnd(delivery, own, start);
+      // 이 실행을 잇는 실행들. 이 글과 무관한 실행이 만들어졌으면 답 창이 거기서 닫힌다(그 턴에서 쓴 글은 이 글의 답이 아니다).
+      const chain = run ? this.replyChain(member.id, run, own, end) : null;
+      if (chain?.closedAt && (end === null || chain.closedAt < end)) end = chain.closedAt;
+      const reply = this.firstReply(message.projectId, member.id, start, end);
+      const runs = !reply && run && (run.phase === "ended" || run.phase === "interrupted") ? chain!.runs : [];
+      const tail = runs.at(-1);
+      const tailEnded = !!tail && (tail.phase === "ended" || tail.phase === "interrupted");
+      const result = judgeReply({ ...facts, run, reply,
+        later: runs.length > 1 ? tail : null,
+        delegatedAt: runs.find(r => r.result === "success" && this.runDelegated(r.runId))?.endedAt ?? null,
+        continuing: tailEnded && end === null && this.continuationPending(member.id, runs) });
+      if (!this.db.inTransaction && replySettled(result, end !== null)) Store.remember(this.replySettledCache, message.id, result!);
+      return result;
+    });
+  }
+
+  /** 그 글의 가장 최근 대표 글 전달. 받는 이가 바뀌어(총괄에게 넘김) 여러 번 생겼으면 마지막 것이다. */
+  private ownerDelivery(message: Message): Delivery | null {
+    if (this.deliveryRead?.projectId === message.projectId) {
+      const latest = this.deliveryReadMemo("reply:owner-deliveries", () => {
+        const out = new Map<string, string>();
+        // rows 는 rowid 차례로 넣었다. 같은 글의 뒤 전달이 앞 것을 덮는다.
+        for (const row of this.deliveryRead!.rows.values()) if (row.kind === "user_message" && row.ref_type === "message" && row.ref_id) out.set(row.ref_id, row.id);
+        return out;
+      });
+      const id = latest.get(message.id);
+      return id ? this.getDelivery(id) : null;
+    }
+    const row = this.row("SELECT * FROM deliveries WHERE ref_type = 'message' AND ref_id = ? AND kind = 'user_message' ORDER BY rowid DESC LIMIT 1", message.id);
+    return row ? toDelivery(row) : null;
+  }
+
+  /** 그 전달을 실은 실행(봉투 하나 = 실행 하나). 다시 넣었으면 실제로 받은 실행을 먼저 본다. */
+  private replyRun(deliveryId: string): ExecutionJournal | null {
+    const row = this.row(`SELECT e.run_id FROM delivery_dispatch_items i JOIN execution_journal e ON e.run_id = i.dispatch_id
+      WHERE i.delivery_id = ? ORDER BY (e.input_received_at IS NOT NULL OR e.started_at IS NOT NULL) DESC, e.rowid DESC LIMIT 1`, deliveryId);
+    return row ? this.getExecutionJournal(row.run_id) : null;
+  }
+
+  /**
+   * 답 창의 끝: 그 팀장이 이 글 뒤에 대표의 다음 글이나 결재 답을 받은 때. 같은 봉투로 함께 받은 글은 세지 않는다. 아직 없으면 null(열린 창).
+   * 그 뒤에 쓴 글은 다음 글의 답이다.
+   */
+  private replyWindowEnd(delivery: Delivery, own: string[], start: string): string | null {
+    const row = this.row(`SELECT delivered_at FROM deliveries WHERE member_id = ? AND status = 'delivered'
+        AND rowid > (SELECT rowid FROM deliveries WHERE id = ?) AND kind IN ('user_message', 'answer')
+        AND id NOT IN (SELECT value FROM json_each(?)) AND delivered_at > ?
+      ORDER BY rowid LIMIT 1`, delivery.memberId, delivery.id, JSON.stringify(own), start);
+    return (row?.delivered_at as string | null | undefined) ?? null;
+  }
+
+  /** 답 창 안에서 그 팀장이 대화에 쓴 첫 글. 서버가 만든 알림(시스템 글, '대표 전달 지연')은 답이 아니다. */
+  private firstReply(projectId: string, memberId: string, start: string, end: string | null): { id: string; at: string } | null {
+    const row = this.row(`SELECT id, at FROM messages WHERE project_id = ? AND member_id = ? AND mine = 0 AND at >= ?
+        AND (? IS NULL OR at < ?) AND kind <> '시스템' AND who <> '시스템'
+      ORDER BY at, id LIMIT 1`, projectId, memberId, start, end, end);
+    return row ? { id: row.id, at: row.at } : null;
+  }
+
+  /** 그 실행에서 총괄이 다른 팀장에게 일을 맡겼다(배정 확인 기록). */
+  private runDelegated(runId: string): boolean {
+    const row = this.row("SELECT assignments FROM delegation_ack_turns WHERE run_id = ?", runId);
+    try { return !!row && (JSON.parse(row.assignments) as unknown[]).length > 0; } catch { return false; }
+  }
+
+  /**
+   * 이 글을 실은 실행과 그 실행을 잇는 그 팀장의 뒤 실행들(만든 차례), 그리고 이 글과 무관한 실행이 만들어진 때(답 창이 거기서 닫힌다).
+   * 잇는 실행은 앞 실행을 잇는 서버 글을 실은 것뿐이다(continuesReplyRun). 팀장 보고로 깬 총괄의 턴, 총괄의 다른 지시, 중단 알림·할 일 완료·
+   * 판 정리로 깬 턴, 대표의 다음 글은 잇지 않는다. 판정은 DB 기록만으로 하므로 서버를 다시 띄워도 같다.
+   */
+  private replyChain(memberId: string, first: ExecutionJournal, own: string[], end: string | null): { runs: ExecutionJournal[]; closedAt: string | null } {
+    const runs = [first];
+    let seq = this.row("SELECT rowid AS seq FROM execution_journal WHERE run_id = ?", first.runId)?.seq as number | undefined;
+    // 이어가기가 거듭되는 일(한도에 다시 걸림)은 있어도 끝없이 이어지지는 않는다. 계산이 길어지지 않게 한도를 둔다.
+    for (let i = 0; seq !== undefined && i < 32; i++) {
+      const next = this.row("SELECT rowid AS seq, run_id, created_at FROM execution_journal WHERE member_id = ? AND rowid > ? ORDER BY rowid LIMIT 1", memberId, seq);
+      if (!next || (end !== null && next.created_at >= end)) break;
+      const carried = this.rows("SELECT d.id, d.kind, d.text FROM delivery_dispatch_items i JOIN deliveries d ON d.id = i.delivery_id WHERE i.dispatch_id = ?", next.run_id);
+      if (!carried.some(d => continuesReplyRun({ id: d.id, kind: d.kind, text: d.text }, own, runs))) return { runs, closedAt: next.created_at as string };
+      const entry = this.getExecutionJournal(next.run_id);
+      if (!entry) break;
+      runs.push(entry);
+      seq = next.seq as number;
+    }
+    return { runs, closedAt: null };
+  }
+
+  /**
+   * 이은 실행들(runs)을 잇는 서버 글이 아직 들어가지 않았다: 그 실행들의 보고 보완(orchestrator requestMissingReport), 마지막 실행 뒤에 넣은
+   * 이어가기(사용 한도·인터넷이 풀림, 재시작 뒤 다시 엶), 또는 재시작으로 끊긴 그 실행을 서버가 다시 열어 이어가게 할 차례(재시작 깨우기 표식).
+   */
+  private continuationPending(memberId: string, runs: ExecutionJournal[]): boolean {
+    const tail = runs.at(-1)!;
+    const pending = this.rows(`SELECT text, created_at FROM deliveries WHERE member_id = ? AND kind = 'system' AND status IN ('queued', 'held', 'delivering')`, memberId);
+    if (pending.some(d => supplementFor(d.text, runs) || (resumeText(d.text) && d.created_at >= tail.createdAt))) return true;
+    const wake = this.getRestartWake(memberId);
+    return !!wake && (wake.state === "pending" || wake.state === "opening") && runs.some(r => wake.runIds.includes(r.runId));
+  }
+
+  /**
+   * 이 팀장이 받은 대표 글의 답 상태가 바뀌었을 수 있다. 쓰기가 끝난 뒤(commit 뒤의 다른 알림까지 다 나간 뒤) 바뀐 글만 실시간으로 낸다.
+   * 같은 쓰기가 글 사건을 따로 내면(전달 상태가 바뀐 글) 그 사건이 이미 새 답 상태를 실었으므로 다시 내지 않는다.
+   */
+  private noteReply(memberId: string | null | undefined): void {
+    if (!memberId || this.deliveryRead) return;
+    this.replyDirty.add(memberId);
+    this.afterCommit(() => {
+      if (this.replyFlushQueued) return;
+      this.replyFlushQueued = true;
+      queueMicrotask(() => { this.replyFlushQueued = false; this.flushReplies(); });
+    });
+  }
+  private replyFlushQueued = false;
+
+  private flushReplies(): void {
+    if (!this.replyDirty.size || this.deliveryRead) return;
+    try {
+      // 동기 읽기·쓰기 도중에는 마이크로태스크가 돌지 않는다. 그래도 그런 자리면 남겨 두고 다음 변화 때 낸다(닫힌 DB 는 여기서 던진다).
+      if (this.db.inTransaction) return;
+      const members = [...this.replyDirty];
+      this.replyDirty.clear();
+      for (const memberId of members) {
+        for (const id of this.replyCandidates(memberId)) {
+          const message = this.getMessage(id);
+          if (!message?.mine) continue;
+          // 아직 넣지 못한 글의 답 상태는 대기 사유(펌프 판정)를 따른다. 그 변화는 이미 member 사건으로 나가고, 앱은 전달을 기다리는
+          // 내 글이 보이는 동안 그 사건마다 대화를 다시 읽는다. 바쁜 팀장의 상태가 흔들릴 때 글 사건을 쏟지 않게 여기서는 내지 않는다.
+          if (message.delivery === "queued" || message.delivery === "held" || message.delivery === "delivering") continue;
+          if (this.replySeen.get(id) === JSON.stringify(message.reply ?? null)) continue;
+          // 내보낸 값은 버스 구독(constructor)이 replySeen 에 적는다.
+          this.bus.emit({ type: "message", message });
+        }
+      }
+    } catch (error) {
+      // 저장소를 닫은 뒤 늦게 돈 경우 등. 답 상태 알림은 다음 변화 때 다시 낸다.
+      if (!/closed/i.test(String((error as Error)?.message ?? error))) console.warn("답 상태 알림 실패:", (error as Error).message);
+    }
+  }
+
+  /** 팀장이 받은 최근 대표 글(많아야 5개, 보낸 순서). 그보다 오래된 글은 답 상태가 이미 굳었다. */
+  private replyCandidates(memberId: string): string[] {
+    let list = this.replyWatch.get(memberId);
+    if (!list) {
+      list = this.rows("SELECT ref_id FROM deliveries WHERE member_id = ? AND kind = 'user_message' AND ref_type = 'message' ORDER BY rowid DESC LIMIT 5", memberId)
+        .map(row => row.ref_id as string).reverse();
+      Store.remember(this.replyWatch, memberId, list, 500);
+    }
+    return list;
+  }
+
+  private watchReply(memberId: string, messageId: string): void {
+    const list = this.replyWatch.get(memberId);
+    if (!list) return;
+    const next = [...list.filter(id => id !== messageId), messageId].slice(-5);
+    Store.remember(this.replyWatch, memberId, next, 500);
   }
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
@@ -1193,6 +1403,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
     // L: 판정 표는 openDb 가 만든다. 이주 도중의 DB 를 바로 넘겨받은 경우에도 쓸 수 있게 없으면 여기서 만든다(있으면 쓰지 않는다).
     this.verdictsReady = ensureDeliveryVerdicts(db);
+    // Z(0.2.6): 대표 글을 실시간으로 낼 때마다 그때의 답 상태를 적는다. 같은 값은 flushReplies 가 다시 내지 않는다.
+    (bus as Partial<Bus>).subscribe?.((event) => {
+      if (event.type === "message" && event.message.mine) Store.remember(this.replySeen, event.message.id, JSON.stringify(event.message.reply ?? null));
+    });
     const existing = !!this.getProject("hq");
     this.ensureHq();
     this.initPermissionAcknowledged(existing);
@@ -1869,6 +2083,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (!["network_outage", "network_retry", "usage_limit"].includes(member.statusObservation?.error?.code ?? "")) this.recorder?.member(before, member);
       this.emit({ type: "member", member });
       if (member.status !== before.status || member.blockedReason !== before.blockedReason) this.emitProjects();
+      // Z: 턴 도중 승인 창·한도·오류로 멈추거나 풀리면 그 팀장이 받은 대표 글의 답 상태가 바뀐다.
+      if (member.status !== before.status || member.blockedReason !== before.blockedReason || member.fenceCode !== before.fenceCode
+        || member.statusObservation?.error?.code !== before.statusObservation?.error?.code) this.noteReply(id);
       return member;
     });
   }
@@ -2642,6 +2859,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         const current = this.getMessage(id);
         if (current) this.bus.emit({ type: "message", message: current });
       });
+      // Z: 팀장이 대화에 쓴 글은 그 팀장이 받은 대표 글의 답일 수 있다.
+      if (!input.mine && input.memberId) this.noteReply(input.memberId);
       return message;
     });
   }
@@ -2786,6 +3005,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private emitMember(memberId: string): void {
     const member = this.getMember(memberId);
     if (member) this.emit({ type: "member", member });
+    // Z: 전달 상태·펌프 판정·팀장 상태가 바뀌면 그 팀장이 받은 대표 글의 답 상태도 바뀔 수 있다.
+    this.noteReply(memberId);
   }
 
   enqueue(input: NewDelivery): Delivery {
@@ -2813,6 +3034,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.run(`UPDATE deliveries SET next_turn_after_run = COALESCE((SELECT MAX(rowid) FROM execution_journal
         WHERE member_id = ? AND project_id = ?), 0) WHERE id = ?`, input.memberId, input.projectId, id);
       this.run("INSERT INTO delivery_recovery (delivery_id, updated_at) VALUES (?, ?)", id, nowIso());
+      if (input.kind === "user_message" && input.refType === "message" && input.refId) this.watchReply(input.memberId, input.refId);
       this.emitMember(input.memberId);
       return this.requireDelivery(id);
     });
@@ -3053,6 +3275,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       else return;
       if (Object.keys(saved).length === 0) this.run("DELETE FROM settings WHERE key = ?", RESTART_WAKE_KEY);
       else this.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", RESTART_WAKE_KEY, JSON.stringify(saved));
+      // Z: 재시작으로 끊긴 실행을 다시 열어 이어갈 차례인지가 그 팀장이 받은 대표 글의 답 상태(일하는 중·멈춤)를 가른다.
+      this.noteReply(memberId);
     });
   }
 
@@ -3484,6 +3708,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (before && (before.phase === "ended" || before.phase === "interrupted") && stableJson(before) !== stableJson(entry)) throw new ApiError(409, "이미 끝난 실행입니다", "execution_finished");
       this.run(`INSERT INTO execution_journal (run_id, member_id, project_id, generation, terminal_identity_json, turn, delivery_ids_json, phase, input_received_at, started_at, last_progress_at, ended_at, result, reason, exit_code, interruption_notified_at, report_requested_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id) DO UPDATE SET terminal_identity_json = excluded.terminal_identity_json, turn = excluded.turn, delivery_ids_json = excluded.delivery_ids_json, phase = excluded.phase, input_received_at = excluded.input_received_at, started_at = excluded.started_at, last_progress_at = excluded.last_progress_at, ended_at = excluded.ended_at, result = excluded.result, reason = excluded.reason, exit_code = excluded.exit_code, updated_at = excluded.updated_at`, entry.runId, entry.memberId, entry.projectId, entry.identity.sessionGeneration, JSON.stringify(entry.identity), entry.turn, JSON.stringify(entry.deliveryIds), entry.phase, entry.inputReceivedAt, entry.startedAt, entry.lastProgressAt, entry.endedAt, entry.result, entry.reason, entry.exitCode, entry.interruptionNotifiedAt, entry.reportRequestedAt, entry.createdAt, entry.updatedAt);
+      // Z: 턴이 시작하거나 끝나면 그 팀장이 받은 대표 글의 답 상태가 바뀐다.
+      this.noteReply(entry.memberId);
     });
   }
 

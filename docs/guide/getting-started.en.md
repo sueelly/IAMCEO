@@ -42,6 +42,22 @@ The install script checks the download against the release's SHA-256, then check
 
 To look around before setting up a Mac, press 샘플로 둘러보기 (Explore the sample) on the iPhone app's first screen. In an example company you can send instructions, answer decisions and open files. Changes stay on this iPhone and reset when you leave the sample, and the sample connects to no server. Things that need a real Mac, such as new projects, adding staff and the terminal, are not available in the sample. The sample company appears in English or Korean, following the app's language.
 
+## Chat: who has your message
+
+After you send a message, a line at the bottom of the conversation (under your last message) names who has it and what they are doing. The server decides it from the delivery records, the staff member's turn starting and ending, and the conversation; the app only shows it. It works the same with Claude Code and Codex.
+
+| The line | What it means |
+|---|---|
+| (three dots) **Checkout Lead is replying…** | That staff member received your message and their turn is running on it. After a minute the time is added, as in **is working on it · 3 min**. The line goes away when the reply arrives. |
+| **Checkout Lead is reading…** | The CLI has the message and the turn is about to start. |
+| **is finishing earlier work** | They are busy with earlier work unrelated to your message; yours goes in when that finishes. They have not read it yet. |
+| **Waking …** · **Checking that … got it** | A sleeping staff member is being opened, or the result of putting your message in is not known yet. The same message is never put in twice. |
+| **is waiting at an approval prompt** · **is waiting for the usage limit to reset** · **stopped with an error**, and so on | Stopped. An approval prompt continues once you answer it in the Inbox or the terminal; a usage limit or an internet outage continues by itself when it clears. |
+| **Read, but no reply** under your message | Their turn ran on your message but ended without writing anything in Chat (even after the server asked once more for the result). It stays while they go on to other work, such as reading another staff member's report, and what they write then does not count as the reply. To ask again, send a new message with Reply. |
+| **Stopped before replying** under your message | That turn was cut off by an error or the session ending. Check that staff member on the Team screen. When the server has them pick up the cut-off turn (after a usage limit lifts, the internet comes back, or the Mac restarts), it shows "replying" again. |
+
+If you wrote to several staff members, each gets their own line. When the lead hands your request to another staff member instead of answering and ends its turn, that counts as a reply, and Chat shows "the lead handed it to …". The line appears in Chat only, not in the conversation list or on Home. With Reduce Motion (Accessibility) on, the dots stay still. Servers on 0.2.5 or earlier do not show it.
+
 ## Terms
 
 | Here | Korean label | What it is |

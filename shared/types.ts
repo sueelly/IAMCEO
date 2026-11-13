@@ -331,6 +331,11 @@ export interface Message {
   deliveryCode?: ErrorCode;
   /** Persisted per-message delivery snapshot revision; increases on every setMessageDelivery, including retries. */
   deliveryRevision?: number;
+  /**
+   * Z(0.2.6): 대표 글(mine)에만, 받은 팀장이 이 글에 어떻게 하고 있는지(답 상태). 서버가 판정한다(server/reply-state.ts).
+   * 받을 팀장이 정해지지 않았거나(받는 이 없음·보류만) 전달이 실패로 끝났으면 싣지 않는다. 출시 앱(0.2.5 이하)은 모르는 칸이라 무시한다.
+   */
+  reply?: MessageReply;
   /** 보고에 연결된 자료 전체. fileId는 첫 자료의 호환 필드다. */
   fileIds?: string[];
   supersedes?: string | null;
@@ -384,6 +389,29 @@ export interface DeliveryWaitInfo {
   waitReason: DeliveryWaitReason;
   waitingSince: string;
   runLimit?: { used: number; limit: number };
+}
+
+// ---- Z(0.2.6): 대표 글의 '답 상태'(채팅의 '답 쓰는 중' 표시) ----
+/**
+ * 대표 글 하나를 받은 팀장(총괄 포함)이 그 글에 어떻게 하고 있는가. 서버 한 곳(server/reply-state.ts)이 전달·펌프 판정·실행 기록·대화로 정한다.
+ * 아직 그 팀장에게 넣지 못함: queued 보내는 중 · behind 그 팀장이 이 글과 무관한 앞 일을 마치는 중 · waking 깨우는 중 · checking 넣었는지 확인 중 ·
+ * blocked 막힘(승인 창·사용 한도·인터넷·실행 꺼짐·직접 조작·보관, 또는 이 글을 받은 턴이 그런 까닭이나 오류로 멈춤).
+ * 넣음: delivered CLI 가 받았고 턴 시작은 아직 · working 이 글을 실은 턴이 시작됨(답은 아직).
+ * 끝: replied 이 글을 받은 뒤 그 팀장이 대화에 글을 썼다(질문 카드·다른 팀장에게 맡김 포함) · no_reply 그 턴이 끝났는데 답이 없다 ·
+ * stopped 그 턴이 오류나 세션 종료로 끊겼고 답이 없다.
+ */
+export type ReplyState = "queued" | "behind" | "waking" | "checking" | "blocked" | "delivered" | "working" | "replied" | "no_reply" | "stopped";
+export const REPLY_STATES = ["queued", "behind", "waking", "checking", "blocked", "delivered", "working", "replied", "no_reply", "stopped"] as const satisfies readonly ReplyState[];
+/** 기다리거나 막힌 까닭: 아직 넣지 못한 글은 그 전달의 waitReason 그대로, 턴 도중에 막혔으면 approval·usage_limit·api_outage, 오류로 멈췄으면 error. */
+export type ReplyReason = DeliveryWaitReason | "error";
+export interface MessageReply {
+  state: ReplyState;
+  /** 이 글을 받는(받은) 팀장. */
+  memberId: string;
+  /** 이 상태의 기준 시각(ISO). 넣기 전은 보낸 시각, working 은 턴 시작, blocked 는 마지막 진전, 끝난 상태는 답·턴 끝 시각. */
+  since: string;
+  /** queued·behind·waking·checking·blocked 일 때만. */
+  reason?: ReplyReason;
 }
 
 export type DeliveryKind = "user_message" | "answer" | "todo_done" | "instruction" | "report" | "system" | "compact";
