@@ -12,6 +12,8 @@ import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from ".
 import { Store } from "../server/store.ts";
 import { REPLY_STATES, type DeliveryWaitReason, type Member, type Message, type MessageReply } from "../shared/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { USAGE_RESUME_TEXT } from "../server/api-outage.ts";
+import { RESTART_RESUME_TEXT } from "../server/restart-wake.ts";
 
 // ---- 판정표(저장소 없이) ----
 const AT = "2026-11-14T01:00:00.000Z", LATER = "2026-11-14T01:03:00.000Z";
@@ -47,19 +49,32 @@ describe("판정표", () => {
     expect(blocked({ status: "blocked", blockedReason: "usage_limit" })).toMatchObject({ reason: "usage_limit" });
     expect(blocked({ status: "working", fenceCode: "usage_wait" })).toMatchObject({ reason: "usage_limit" });
     expect(blocked({ status: "working", observationError: "network_outage" })).toMatchObject({ reason: "api_outage" });
-    expect(blocked({ status: "error" })).toMatchObject({ reason: "error" });
+  });
+
+  test("오류 상태는 이 글의 실행이 오류로 끝났을 때만 막힘이다. 앞 턴의 오류가 남은 채 새 글을 받거나 턴이 돌면 막힘이 아니다", () => {
+    const stale: ReplyFacts["member"] = { ...idle, status: "error" };
+    expect(judgeReply(delivered({ run: run({ phase: "received", startedAt: null }), member: stale }))).toEqual({ state: "delivered", memberId: "m1", since: AT });
+    expect(judgeReply(delivered({ run: run(), member: stale }))).toEqual({ state: "working", memberId: "m1", since: AT });
+    // 이어지는 실행이 도는 동안에도 같다.
+    expect(judgeReply(delivered({ run: run({ phase: "ended", result: "error", endedAt: LATER }), later: run({ runId: "run-2", createdAt: LATER, startedAt: LATER }), member: stale })))
+      .toEqual({ state: "working", memberId: "m1", since: AT });
+    // 이 글의 실행이 오류로 끝났으면 오류로 막힘, 끊김(오류 아님)이면 멈춤이다.
+    expect(judgeReply(delivered({ run: run({ phase: "ended", result: "error", endedAt: LATER }), member: stale }))).toEqual({ state: "blocked", memberId: "m1", since: LATER, reason: "error" });
+    expect(judgeReply(delivered({ run: run({ phase: "interrupted", result: "interrupted", endedAt: LATER }), member: stale }))).toMatchObject({ state: "stopped" });
   });
 
   test("답이 있으면 언제나 답함(답 시각). 턴이 아직 돌아도 같다", () => {
     expect(judgeReply(delivered({ run: run(), reply: { id: "r1", at: LATER } }))).toEqual({ state: "replied", memberId: "m1", since: LATER });
   });
 
-  test("답 없이 끝난 턴: 답 없음. 맡겼으면 답함, 보고 보완을 넣는 중이면 일하는 중, 다음 실행이 돌면 그 실행", () => {
+  test("답 없이 끝난 턴: 답 없음. 맡겼으면 답함, 보고 보완을 넣는 중이면 일하는 중, 잇는 실행이 돌면 그 실행", () => {
     const ended = run({ phase: "ended", result: "success", endedAt: LATER });
     expect(judgeReply(delivered({ run: ended }))).toEqual({ state: "no_reply", memberId: "m1", since: LATER });
-    expect(judgeReply(delivered({ run: ended, delegated: true }))).toMatchObject({ state: "replied" });
+    expect(judgeReply(delivered({ run: ended, delegatedAt: LATER }))).toEqual({ state: "replied", memberId: "m1", since: LATER });
+    // 맡긴 것은 굳은 답함이다. 뒤에 실행이 돌아도(보고 보완, 팀장 보고로 깬 턴) 일하는 중으로 돌아가지 않는다(서버를 다시 띄워도 같은 값).
+    expect(judgeReply(delivered({ run: ended, delegatedAt: LATER, later: run({ runId: "run-2", createdAt: LATER, startedAt: LATER }), continuing: true }))).toEqual({ state: "replied", memberId: "m1", since: LATER });
     // 이어지는 '일하는 중'은 그 글의 턴이 시작한 때부터 센다(화면의 'N분'이 끊기지 않는다). 막 넣는 중인 다음 실행도 일하는 중이다.
-    expect(judgeReply(delivered({ run: ended, awaitingReport: true }))).toEqual({ state: "working", memberId: "m1", since: AT });
+    expect(judgeReply(delivered({ run: ended, continuing: true }))).toEqual({ state: "working", memberId: "m1", since: AT });
     expect(judgeReply(delivered({ run: ended, later: run({ runId: "run-2", createdAt: LATER, startedAt: LATER }) }))).toEqual({ state: "working", memberId: "m1", since: AT });
     expect(judgeReply(delivered({ run: ended, later: run({ runId: "run-2", phase: "starting", createdAt: LATER, inputReceivedAt: null, startedAt: null }) }))).toMatchObject({ state: "working", since: AT });
     expect(judgeReply(delivered({ run: ended, later: run({ runId: "run-2", phase: "ended", result: "success" }) }))).toMatchObject({ state: "no_reply" });
@@ -71,6 +86,16 @@ describe("판정표", () => {
     expect(judgeReply(delivered({ run: broken, member: { ...idle, status: "error" } }))).toMatchObject({ state: "blocked", reason: "error" });
     expect(judgeReply(delivered({ run: broken, later: run({ runId: "run-2", createdAt: LATER, startedAt: LATER }) }))).toMatchObject({ state: "working" });
     expect(judgeReply(delivered({ run: run({ phase: "interrupted", result: "interrupted", endedAt: LATER }) }))).toEqual({ state: "stopped", memberId: "m1", since: LATER });
+  });
+
+  test("끊긴 턴을 잇는 서버 글(한도·인터넷이 풀린 뒤·재시작 뒤 이어가기)이 아직 들어가기 전에도 멈춤이 아니라 일하는 중이다. 한도에 붙잡힌 동안은 막힘", () => {
+    const broken = run({ phase: "ended", result: "error", endedAt: LATER });
+    expect(judgeReply(delivered({ run: broken, continuing: true }))).toEqual({ state: "working", memberId: "m1", since: AT });
+    expect(judgeReply(delivered({ run: broken, continuing: true, member: { ...idle, status: "blocked", blockedReason: "usage_limit" } }))).toMatchObject({ state: "blocked", reason: "usage_limit" });
+    expect(judgeReply(delivered({ run: run({ phase: "interrupted", result: "interrupted", endedAt: LATER }), continuing: true }))).toMatchObject({ state: "working", since: AT });
+    // 잇는 실행이 끝났으면 그 실행의 결과를 본다(이어가기 턴이 답 없이 끝남 → 답 없음).
+    const resumed = run({ runId: "run-2", phase: "ended", result: "success", createdAt: LATER, startedAt: LATER, endedAt: "2026-11-14T01:09:00.000Z" });
+    expect(judgeReply(delivered({ run: broken, later: resumed }))).toEqual({ state: "no_reply", memberId: "m1", since: "2026-11-14T01:09:00.000Z" });
   });
 
   test("굳은 값: 답함은 늘, 답 없음·멈춤은 답 창이 닫힌 뒤에만", () => {
@@ -111,6 +136,14 @@ class ReplyRunner implements Runner {
     const member = store.requireMember(id); this.busy.delete(id);
     this.callback({ type: "turn_end", memberId: id, terminalId: member.paneId, sessionGeneration: store.memberRevisions(id).sessionGeneration, turn, finalText: "", isError: false });
   }
+  /** 그 팀장의 턴이 오류로 끝났다(사용 한도 등). */
+  fail(store: Store, id: string, turn: number, errorText: string) {
+    const member = store.requireMember(id); this.busy.delete(id);
+    this.callback({ type: "turn_end", memberId: id, terminalId: member.paneId, sessionGeneration: store.memberRevisions(id).sessionGeneration, turn, finalText: "", isError: true, errorText });
+  }
+  /** 한도 화면: 메뉴 없이 오류로 멈춘 CLI(한도 카드의 '이어가기'가 바로 이어가기 글을 넣는다). */
+  async usageLimitSnapshot() { return { menu: null, state: "error" }; }
+  async dismissUsageLimit() { return { ok: true }; }
 }
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -257,19 +290,165 @@ describe("저장소와 실시간", () => {
     noRepeats(f.seen.get(sent.id)!);
   });
 
-  test("총괄이 답 대신 팀장에게 맡기고 턴을 끝내면 답함", async () => {
+  test("총괄이 답 대신 팀장에게 맡기고(team_assign) 턴을 끝내면 답함. 그 팀장의 보고로 총괄이 깨어 도는 동안에도, 서버를 다시 띄워도 답함", async () => {
     const f = fixture(); const lead = f.member("conductor"); const worker = f.member();
     const sent = await f.orch.sendUserMessage(f.project.id, { text: "결제 화면을 맡겨 주세요" });
     await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
-    f.store.noteDelegation(lead.id, f.store.enqueue({ projectId: f.project.id, memberId: worker.id, kind: "instruction", text: "할 일: 결제 화면" }), false);
+    const turn = f.store.listPendingExecutions().find(r => r.memberId === lead.id)!;
+    // 실제 위임 길: 도구가 지시를 넣고 이 턴에 맡겼다고 적는다(보고 보완을 넣지 않는다).
+    const assigned = await f.orch.handleAgentTool(f.store.requireMember(lead.id), "team_assign", { member: worker.handle, text: "결제 화면 만들기" });
+    expect(assigned.isError, assigned.text).not.toBe(true);
     f.runner.end(f.store, lead.id, 1);
+    await until(() => f.store.getExecutionJournal(turn.runId)?.phase === "ended", "맡긴 턴 끝");
     await until(() => f.store.listMessages(f.project.id).some(m => m.id.startsWith("msg_delegation_ack_")), "배정 확인 글");
-    await until(() => f.reply(sent.id)?.state === "replied" || f.reply(sent.id)?.state === "working", "답함 또는 보고 보완");
-    // 보고 보완 턴이 돌아도(일하는 중) 그 턴이 끝나면 맡긴 것으로 답함이다.
-    if (f.reply(sent.id)?.state === "working") {
-      f.runner.end(f.store, lead.id, 2);
-      await until(() => f.reply(sent.id)?.state === "replied", "답함");
-    }
+    const ended = f.store.getExecutionJournal(turn.runId)!;
+    expect(f.reply(sent.id)).toEqual({ state: "replied", memberId: lead.id, since: ended.endedAt! });
+    expect(f.runner.sent.some(s => s.id === lead.id && s.text.includes("보고 보완:"))).toBe(false);
+    // 맡은 팀장이 끝내고 보고하면 총괄이 그 보고로 깬다. 그 턴은 이 글을 잇지 않는다.
+    await until(() => f.runner.busy.has(worker.id), "맡은 일 시작");
+    await f.orch.recordPost(f.store.requireMember(worker.id), { kind: "완료", title: "결제 화면을 만들었습니다" });
+    f.runner.end(f.store, worker.id, 1);
+    await until(() => f.store.listPendingExecutions().some(r => r.memberId === lead.id && r.runId !== turn.runId), "보고로 깬 총괄 턴");
+    await Bun.sleep(20);
+    expect(f.reply(sent.id)?.state).toBe("replied");
+    expect(new Store(f.db, new Bus()).requireMessage(sent.id).reply).toEqual(f.reply(sent.id));
+    expect(f.states(sent.id).at(-1)).toBe("replied");
+    expect(f.states(sent.id).slice(f.states(sent.id).indexOf("replied"))).toEqual(["replied"]);
+  });
+
+  test("답 없이 끝난 대표 글은 그 뒤 팀장 보고로 깬 총괄 턴 동안에도 답 없음 그대로다. 그 턴에서 쓴 글은 이 글의 답이 아니다", async () => {
+    const f = fixture(); const lead = f.member("conductor"); const worker = f.member();
+    const first = await f.orch.sendUserMessage(f.project.id, { text: "첫 지시" });
+    await until(() => f.reply(first.id)?.state === "working", "첫 턴");
+    f.runner.end(f.store, lead.id, 1);
+    await until(() => f.runner.sent.some(s => s.text.includes("보고 보완:")), "보고 보완");
+    f.runner.end(f.store, lead.id, 2);
+    await until(() => f.reply(first.id)?.state === "no_reply", "답 없음");
+    const settled = f.reply(first.id)!;
+    // 이 글과 무관한 팀장 보고로 총괄이 깬다.
+    await f.orch.recordPost(f.store.requireMember(worker.id), { kind: "완료", title: "다른 일 끝" });
+    await until(() => f.store.listPendingExecutions().some(r => r.memberId === lead.id), "보고로 깬 총괄 턴");
+    await Bun.sleep(20);
+    expect(f.reply(first.id)).toEqual(settled);
+    await f.orch.recordPost(f.store.requireMember(lead.id), { kind: "진행", title: "담당 2의 보고를 확인했습니다" });
+    await Bun.sleep(20);
+    expect(f.reply(first.id)).toEqual(settled);
+    expect(new Store(f.db, new Bus()).requireMessage(first.id).reply).toEqual(settled);
+    expect(f.states(first.id)).toEqual(["queued", "delivered", "working", "no_reply"]);
+  });
+
+  test("답하기 전에 끊긴 대표 글은 총괄의 다른 지시로 그 팀장이 도는 동안에도 멈춤 그대로다. 그 지시의 보고는 이 글의 답이 아니다", async () => {
+    const f = fixture(); const lead = f.member("conductor"); const worker = f.member();
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "로그인 화면 고쳐 주세요", targetMemberId: worker.id });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    await f.orch.sleepMember(worker.id, { force: true });
+    await until(() => f.reply(sent.id)?.state === "stopped", "멈춤");
+    const settled = f.reply(sent.id)!;
+    await f.orch.assign(f.project.id, worker.handle, { text: "문서 오타 고치기" }, f.store.requireMember(lead.id));
+    await until(() => f.store.listPendingExecutions().some(r => r.memberId === worker.id), "다른 지시 턴");
+    await Bun.sleep(20);
+    expect(f.reply(sent.id)).toEqual(settled);
+    await f.orch.recordPost(f.store.requireMember(worker.id), { kind: "완료", title: "문서 오타를 고쳤습니다" });
+    await Bun.sleep(20);
+    expect(f.reply(sent.id)).toEqual(settled);
+    expect(new Store(f.db, new Bus()).requireMessage(sent.id).reply).toEqual(settled);
+    expect(f.states(sent.id).slice(f.states(sent.id).indexOf("stopped"))).toEqual(["stopped"]);
+  });
+
+  test("재시작으로 끊긴 턴: 서버가 다시 열 차례인 동안과 이어가기 글이 들어가기 전에도 일하는 중, 이어가기 턴에서 쓴 글이 답이다", async () => {
+    const f = fixture(); f.member("conductor"); const worker = f.member();
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "배포 스크립트를 고쳐 주세요", targetMemberId: worker.id });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    const began = f.reply(sent.id)!.since;
+    const turn = f.store.listPendingExecutions().find(r => r.memberId === worker.id)!;
+    await f.orch.sleepMember(worker.id, { force: true });
+    await until(() => f.reply(sent.id)?.state === "stopped", "끊김");
+    // 재시작 깨우기 표식이 이 실행을 다시 열어 이어가게 할 차례다(실시간으로도 나간다).
+    const wake = { generation: f.store.memberRevisions(worker.id).sessionGeneration, reason: "terminal_absent" as const, lostAt: new Date().toISOString(), state: "pending" as const, attempts: 0, runIds: [turn.runId], resumeId: null };
+    f.store.setRestartWake(worker.id, wake);
+    await until(() => f.states(sent.id).at(-1) === "working", "다시 열 차례: 일하는 중 사건");
+    expect(f.reply(sent.id)).toEqual({ state: "working", memberId: worker.id, since: began });
+    // 다시 열었다(settleRestartWake 'resumed'): 이어가기 글을 넣고 표식의 실행 목록을 비운다. 그 글이 들어가기 전에도 일하는 중이다.
+    f.store.transaction(() => {
+      const resume = f.store.enqueue({ projectId: f.project.id, memberId: worker.id, kind: "system", text: RESTART_RESUME_TEXT, wake: true });
+      f.store.setRestartWake(worker.id, { ...wake, state: "resumed", runIds: [], resumeId: resume.id });
+    });
+    expect(f.reply(sent.id)).toEqual({ state: "working", memberId: worker.id, since: began });
+    await f.orch.pump(worker.id);
+    await until(() => f.runner.sent.some(s => s.id === worker.id && s.text.includes("다시 시작되어 하던 일이 중간에 끊겼습니다")), "이어가기 턴");
+    expect(f.reply(sent.id)).toEqual({ state: "working", memberId: worker.id, since: began });
+    await f.orch.recordPost(f.store.requireMember(worker.id), { kind: "완료", title: "배포 스크립트를 고쳤습니다" });
+    await until(() => f.reply(sent.id)?.state === "replied", "이어가기 턴의 답");
+    expect(f.states(sent.id).slice(f.states(sent.id).indexOf("stopped") + 1)).not.toContain("stopped");
+    expect(new Store(f.db, new Bus()).requireMessage(sent.id).reply).toEqual(f.reply(sent.id));
+  });
+
+  test("재시작 깨우기를 못 하면(표식이 실패로 닫힘) 다시 멈춤이다", async () => {
+    const f = fixture(); f.member("conductor"); const worker = f.member();
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "로그를 봐 주세요", targetMemberId: worker.id });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    const turn = f.store.listPendingExecutions().find(r => r.memberId === worker.id)!;
+    await f.orch.sleepMember(worker.id, { force: true });
+    await until(() => f.reply(sent.id)?.state === "stopped", "끊김");
+    const wake = { generation: f.store.memberRevisions(worker.id).sessionGeneration, reason: "terminal_absent" as const, lostAt: new Date().toISOString(), state: "opening" as const, attempts: 1, runIds: [turn.runId], resumeId: null };
+    f.store.setRestartWake(worker.id, wake);
+    await until(() => f.states(sent.id).at(-1) === "working", "여는 중");
+    f.store.setRestartWake(worker.id, { ...wake, state: "failed", runIds: [] });
+    await until(() => f.states(sent.id).at(-1) === "stopped", "실패: 멈춤 사건");
+    expect(f.reply(sent.id)?.state).toBe("stopped");
+  });
+
+  test("사용 한도로 끊긴 턴: 한도 동안 막힘, '이어가기'로 풀리면 이어가기 실행이 만들어지기 전에도 멈춤을 내지 않고 일하는 중, 이어가기 턴의 글이 답", async () => {
+    const f = fixture(); const lead = f.member("conductor");
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "배포해 주세요" });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    const began = f.reply(sent.id)!.since;
+    f.runner.fail(f.store, lead.id, 1, "usage limit reached: try again in 2h 30m");
+    await until(() => f.reply(sent.id)?.state === "blocked", "한도 막힘");
+    expect(f.reply(sent.id)).toMatchObject({ reason: "usage_limit" });
+    const card = f.store.listDecisions(f.project.id).find(d => d.kind === "usage_limit")!;
+    await f.orch.apiRecovery.resumeUsage(card.id);
+    await until(() => f.runner.sent.some(s => s.id === lead.id && s.text.includes("사용 한도로 하던 턴이 멈췄습니다")), "이어가기 턴");
+    expect(f.reply(sent.id)).toEqual({ state: "working", memberId: lead.id, since: began });
+    expect(f.states(sent.id)).not.toContain("stopped");
+    await f.orch.recordPost(f.store.requireMember(lead.id), { kind: "완료", title: "배포했습니다" });
+    await until(() => f.reply(sent.id)?.state === "replied", "답함");
+    expect(f.states(sent.id)).not.toContain("stopped");
+    noRepeats(f.seen.get(sent.id)!);
+  });
+
+  test("한도가 풀린 쓰기(한도 표시를 지우고 이어가기 글을 넣음)가 끝난 바로 그때도 멈춤이 아니다(펌프가 넣기 전)", async () => {
+    const f = fixture(); const lead = f.member("conductor");
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "배포해 주세요" });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    const turn = f.store.listPendingExecutions().find(r => r.memberId === lead.id)!;
+    const at = new Date().toISOString();
+    f.store.transaction(() => {
+      f.store.saveExecutionJournal({ ...turn, phase: "ended", result: "error", reason: "usage limit", endedAt: at, updatedAt: at });
+      f.store.patchMember(lead.id, { status: "idle", blockedReason: "usage_limit", lastError: "한도" });
+    });
+    expect(f.reply(sent.id)).toMatchObject({ state: "blocked", reason: "usage_limit" });
+    await until(() => f.states(sent.id).at(-1) === "blocked", "막힘 사건");
+    // api-outage.ts resumeUsage 와 같은 한 쓰기: 한도 표시를 지우고 이어가기 글을 넣는다. 펌프는 그 뒤에 돈다.
+    f.store.transaction(() => {
+      f.store.enqueue({ projectId: f.project.id, memberId: lead.id, kind: "system", text: USAGE_RESUME_TEXT, wake: true });
+      f.store.patchMember(lead.id, { status: "idle", blockedReason: null, lastError: null });
+    });
+    expect(f.reply(sent.id)).toEqual({ state: "working", memberId: lead.id, since: turn.startedAt! });
+    await Bun.sleep(5);
+    expect(f.states(sent.id).slice(-2)).toEqual(["blocked", "working"]);
+    expect(f.states(sent.id)).not.toContain("stopped");
+    expect(new Store(f.db, new Bus()).requireMessage(sent.id).reply).toEqual(f.reply(sent.id));
+  });
+
+  test("앞 턴 오류가 남은 팀장에게 새 글을 보내도 오류로 멈춤을 띄우지 않는다", async () => {
+    const f = fixture(); const lead = f.member("conductor");
+    f.store.patchMember(lead.id, { status: "error", lastError: "앞 턴 오류" });
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "다시 해 주세요" });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    // 받은 뒤 CLI 가 '일하는 중'을 알리기 전까지 오류 상태가 남는다(예전에는 그사이 '오류로 멈춤'이 두 번 나갔다).
+    expect(f.states(sent.id)).toEqual(["queued", "delivered", "working"]);
+    expect((f.seen.get(sent.id) ?? []).some(m => m.reply?.reason === "error")).toBe(false);
   });
 
   test("서버가 만든 알림(대표 전달 지연·시스템 글)은 답이 아니다", async () => {

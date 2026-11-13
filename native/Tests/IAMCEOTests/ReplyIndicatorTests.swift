@@ -151,8 +151,8 @@ final class SampleReplyIndicatorTests: XCTestCase {
         let store = AppStore(demo: true)
         defer { store.prepareForReplacement() }
         let server = try XCTUnwrap(store.sampleServer)
-        // 받기까지 짧게, 답은 시험이 볼 수 있게 조금 길게.
-        server.deliveryDelay = .milliseconds(30); server.replyDelay = .milliseconds(1500)
+        // 받기까지 짧게. 답은 저절로 나가지 않게 길게 두고, '답 쓰는 중'을 본 뒤 시험이 직접 낸다(실제 시간의 짧은 틈에 기대지 않는다).
+        server.deliveryDelay = .milliseconds(30); server.replyDelay = .seconds(600)
         try await waitWhile({ !(store.connectionStatus == .connected && store.state != nil && store.canWrite) }, timeout: .seconds(15))
         let sent = await store.sendMessage(text: "결제 버튼 색을 바꿔 주세요", targetMemberID: "m-card")
         XCTAssertTrue(sent)
@@ -162,6 +162,8 @@ final class SampleReplyIndicatorTests: XCTestCase {
         let rows = ChatReplyBoard.statuses(store.messages, names: Dictionary(uniqueKeysWithValues: store.members.map { ($0.id, $0.name) }))
         XCTAssertEqual(rows.map(\.label), ["카드 결제 구현이 답을 쓰는 중…"])
         XCTAssertEqual(rows.first?.typing, true)
+        XCTAssertFalse(store.messages.contains { $0.memberId == "m-card" && $0.title == "지시를 받았습니다" })
+        server.acknowledgeNow(messageID: mineNow.id)
         await pollUntil("답함") { store.messages.first { $0.mine && $0.body == "결제 버튼 색을 바꿔 주세요" }?.reply?.state == "replied" }
         XCTAssertTrue(store.messages.contains { $0.memberId == "m-card" && $0.title == "지시를 받았습니다" })
         XCTAssertEqual(ChatReplyBoard.statuses(store.messages, names: [:]), [])

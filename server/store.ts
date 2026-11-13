@@ -67,6 +67,22 @@ import { deliveryNoteCode } from "./hold-codes.ts";
 import type { MessageReply } from "../shared/types.ts";
 import { judgeReply, replySettled, type ReplyFacts } from "./reply-state.ts";
 import { formatSystem } from "./delivery-text.ts";
+import { API_RESUME_TEXT, USAGE_RESUME_TEXT } from "./api-outage.ts";
+import { RESTART_RESUME_TEXT } from "./restart-wake.ts";
+
+// Z(0.2.6): 답 상태가 '이 실행을 잇는 서버 글'을 가려내는 규칙.
+/** 끊긴 턴을 잇는 서버 글(사용 한도·인터넷이 풀림, 재시작 뒤 다시 엶). api-outage.ts 가 이 모듈을 불러오므로 모듈을 읽을 때가 아니라 부를 때 본다. */
+function resumeText(text: string): boolean {
+  return text === USAGE_RESUME_TEXT || text === API_RESUME_TEXT || text === RESTART_RESUME_TEXT;
+}
+/** 그 실행들 가운데 하나에 서버가 요청한 보고 보완이다(orchestrator requestMissingReport 의 글 머리). */
+function supplementFor(text: string, runs: ExecutionJournal[]): boolean {
+  return runs.some(run => text.startsWith(formatSystem(`보고 보완: 실행 ${run.runId}의`)));
+}
+/** 그 실행들을 잇는 글인가: 같은 대표 글을 다시 넣음, 그 실행들의 보고 보완, 바로 앞 실행이 끊긴 뒤의 이어가기. */
+function continuesReplyRun(d: { id: string; kind: string; text: string }, own: string[], runs: ExecutionJournal[]): boolean {
+  return own.includes(d.id) || (d.kind === "system" && (resumeText(d.text) || supplementFor(d.text, runs)));
+}
 
 /**
  * status 가 그대로 HTTP 응답 코드가 되는 오류. 응답 몸은 `{ error: message, code, reason? }`.
@@ -1205,14 +1221,19 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (delivery.status !== "delivered") return null;
       const run = this.replyRun(delivery.id);
       const start = run?.createdAt ?? delivery.deliveredAt ?? delivery.createdAt;
-      const end = this.replyWindowEnd(delivery, run?.deliveryIds ?? [delivery.id], start);
+      const own = run?.deliveryIds ?? [delivery.id];
+      let end = this.replyWindowEnd(delivery, own, start);
+      // 이 실행을 잇는 실행들. 이 글과 무관한 실행이 만들어졌으면 답 창이 거기서 닫힌다(그 턴에서 쓴 글은 이 글의 답이 아니다).
+      const chain = run ? this.replyChain(member.id, run, own, end) : null;
+      if (chain?.closedAt && (end === null || chain.closedAt < end)) end = chain.closedAt;
       const reply = this.firstReply(message.projectId, member.id, start, end);
-      const ended = !reply && run && (run.phase === "ended" || run.phase === "interrupted") ? run : null;
-      const success = ended?.result === "success";
+      const runs = !reply && run && (run.phase === "ended" || run.phase === "interrupted") ? chain!.runs : [];
+      const tail = runs.at(-1);
+      const tailEnded = !!tail && (tail.phase === "ended" || tail.phase === "interrupted");
       const result = judgeReply({ ...facts, run, reply,
-        later: ended ? this.laterRun(member.id, ended.runId, end) : null,
-        delegated: success && this.runDelegated(ended!.runId),
-        awaitingReport: success && !!ended!.reportRequestedAt && this.reportRequested(member.id, ended!.runId) });
+        later: runs.length > 1 ? tail : null,
+        delegatedAt: runs.find(r => r.result === "success" && this.runDelegated(r.runId))?.endedAt ?? null,
+        continuing: tailEnded && end === null && this.continuationPending(member.id, runs) });
       if (!this.db.inTransaction && replySettled(result, end !== null)) Store.remember(this.replySettledCache, message.id, result!);
       return result;
     });
@@ -1268,23 +1289,37 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /**
-   * 끝난 실행 뒤 같은 답 창 안에서 도는 그 팀장의 실행(보고 보완, 한도가 풀린 뒤·재시작 뒤 이어가기, 팀장 보고로 깬 총괄의 턴).
-   * 대표의 글이나 결재 답을 실은 실행은 그 글의 턴이라 넣지 않는다.
+   * 이 글을 실은 실행과 그 실행을 잇는 그 팀장의 뒤 실행들(만든 차례), 그리고 이 글과 무관한 실행이 만들어진 때(답 창이 거기서 닫힌다).
+   * 잇는 실행은 앞 실행을 잇는 서버 글을 실은 것뿐이다(continuesReplyRun). 팀장 보고로 깬 총괄의 턴, 총괄의 다른 지시, 중단 알림·할 일 완료·
+   * 판 정리로 깬 턴, 대표의 다음 글은 잇지 않는다. 판정은 DB 기록만으로 하므로 서버를 다시 띄워도 같다.
    */
-  private laterRun(memberId: string, runId: string, end: string | null): ExecutionJournal | null {
-    const row = this.row(`SELECT e.run_id, e.created_at FROM execution_journal e WHERE e.member_id = ? AND e.phase NOT IN ('ended', 'interrupted')
-        AND e.rowid > (SELECT rowid FROM execution_journal WHERE run_id = ?)
-        AND NOT EXISTS (SELECT 1 FROM delivery_dispatch_items i JOIN deliveries x ON x.id = i.delivery_id
-          WHERE i.dispatch_id = e.run_id AND x.kind IN ('user_message', 'answer'))
-      ORDER BY e.rowid DESC LIMIT 1`, memberId, runId);
-    if (!row || (end !== null && row.created_at >= end)) return null;
-    return this.getExecutionJournal(row.run_id);
+  private replyChain(memberId: string, first: ExecutionJournal, own: string[], end: string | null): { runs: ExecutionJournal[]; closedAt: string | null } {
+    const runs = [first];
+    let seq = this.row("SELECT rowid AS seq FROM execution_journal WHERE run_id = ?", first.runId)?.seq as number | undefined;
+    // 이어가기가 거듭되는 일(한도에 다시 걸림)은 있어도 끝없이 이어지지는 않는다. 계산이 길어지지 않게 한도를 둔다.
+    for (let i = 0; seq !== undefined && i < 32; i++) {
+      const next = this.row("SELECT rowid AS seq, run_id, created_at FROM execution_journal WHERE member_id = ? AND rowid > ? ORDER BY rowid LIMIT 1", memberId, seq);
+      if (!next || (end !== null && next.created_at >= end)) break;
+      const carried = this.rows("SELECT d.id, d.kind, d.text FROM delivery_dispatch_items i JOIN deliveries d ON d.id = i.delivery_id WHERE i.dispatch_id = ?", next.run_id);
+      if (!carried.some(d => continuesReplyRun({ id: d.id, kind: d.kind, text: d.text }, own, runs))) return { runs, closedAt: next.created_at as string };
+      const entry = this.getExecutionJournal(next.run_id);
+      if (!entry) break;
+      runs.push(entry);
+      seq = next.seq as number;
+    }
+    return { runs, closedAt: null };
   }
 
-  /** 서버가 그 실행의 결과를 post 로 알려 달라고 넣을 보고 보완이 아직 들어가지 않았다(orchestrator requestMissingReport). */
-  private reportRequested(memberId: string, runId: string): boolean {
-    return !!this.row(`SELECT 1 FROM deliveries WHERE member_id = ? AND kind = 'system' AND status IN ('queued', 'held', 'delivering')
-      AND instr(text, ?) = 1 LIMIT 1`, memberId, formatSystem(`보고 보완: 실행 ${runId}의`));
+  /**
+   * 이은 실행들(runs)을 잇는 서버 글이 아직 들어가지 않았다: 그 실행들의 보고 보완(orchestrator requestMissingReport), 마지막 실행 뒤에 넣은
+   * 이어가기(사용 한도·인터넷이 풀림, 재시작 뒤 다시 엶), 또는 재시작으로 끊긴 그 실행을 서버가 다시 열어 이어가게 할 차례(재시작 깨우기 표식).
+   */
+  private continuationPending(memberId: string, runs: ExecutionJournal[]): boolean {
+    const tail = runs.at(-1)!;
+    const pending = this.rows(`SELECT text, created_at FROM deliveries WHERE member_id = ? AND kind = 'system' AND status IN ('queued', 'held', 'delivering')`, memberId);
+    if (pending.some(d => supplementFor(d.text, runs) || (resumeText(d.text) && d.created_at >= tail.createdAt))) return true;
+    const wake = this.getRestartWake(memberId);
+    return !!wake && (wake.state === "pending" || wake.state === "opening") && runs.some(r => wake.runIds.includes(r.runId));
   }
 
   /**
@@ -3240,6 +3275,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       else return;
       if (Object.keys(saved).length === 0) this.run("DELETE FROM settings WHERE key = ?", RESTART_WAKE_KEY);
       else this.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", RESTART_WAKE_KEY, JSON.stringify(saved));
+      // Z: 재시작으로 끊긴 실행을 다시 열어 이어갈 차례인지가 그 팀장이 받은 대표 글의 답 상태(일하는 중·멈춤)를 가른다.
+      this.noteReply(memberId);
     });
   }
 

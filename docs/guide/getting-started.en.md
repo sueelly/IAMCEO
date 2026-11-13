@@ -53,8 +53,8 @@ After you send a message, a line at the bottom of the conversation (under your l
 | **is finishing earlier work** | They are busy with earlier work unrelated to your message; yours goes in when that finishes. They have not read it yet. |
 | **Waking …** · **Checking that … got it** | A sleeping staff member is being opened, or the result of putting your message in is not known yet. The same message is never put in twice. |
 | **is waiting at an approval prompt** · **is waiting for the usage limit to reset** · **stopped with an error**, and so on | Stopped. An approval prompt continues once you answer it in the Inbox or the terminal; a usage limit or an internet outage continues by itself when it clears. |
-| **Read, but no reply** under your message | Their turn ran on your message but ended without writing anything in Chat (even after the server asked once more for the result). To ask again, send a new message with Reply. |
-| **Stopped before replying** under your message | That turn was cut off by an error or the session ending. Check that staff member on the Team screen. |
+| **Read, but no reply** under your message | Their turn ran on your message but ended without writing anything in Chat (even after the server asked once more for the result). It stays while they go on to other work, such as reading another staff member's report, and what they write then does not count as the reply. To ask again, send a new message with Reply. |
+| **Stopped before replying** under your message | That turn was cut off by an error or the session ending. Check that staff member on the Team screen. When the server has them pick up the cut-off turn (after a usage limit lifts, the internet comes back, or the Mac restarts), it shows "replying" again. |
 
 If you wrote to several staff members, each gets their own line. When the lead hands your request to another staff member instead of answering and ends its turn, that counts as a reply, and Chat shows "the lead handed it to …". The line appears in Chat only, not in the conversation list or on Home. With Reduce Motion (Accessibility) on, the dots stay still. Servers on 0.2.5 or earlier do not show it.
 

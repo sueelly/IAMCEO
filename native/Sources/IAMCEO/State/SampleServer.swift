@@ -47,6 +47,8 @@ final class SampleServer: @unchecked Sendable {
     /// Z(0.2.6): 그 사이에는 '답 쓰는 중' 말풍선(reply working)이 보인다.
     var deliveryDelay: Duration = .milliseconds(700)
     var replyDelay: Duration = .milliseconds(3200)
+    /// 아직 나가지 않은 답(글 ID → 낼 일). 간격이 지나거나 시험이 acknowledgeNow 를 부르면 한 번만 나간다.
+    private var pendingAcknowledgements: [String: (SampleServer) -> Void] = [:]
     /// 실시간 연결의 심장 박동 간격(서버와 같다).
     var heartbeat: Duration = .seconds(15)
 
@@ -361,9 +363,16 @@ final class SampleServer: @unchecked Sendable {
         changed()
         later(deliveryDelay) { server in server.deliver(messageID: messageID, projectID: projectID, recipientID: recipientID, text: text) }
         if let recipientID {
-            later(replyDelay) { server in server.acknowledge(projectID: projectID, memberID: recipientID, name: recipientName, text: text, messageID: messageID) }
+            pendingAcknowledgements[messageID] = { server in server.acknowledge(projectID: projectID, memberID: recipientID, name: recipientName, text: text, messageID: messageID) }
+            later(replyDelay) { server in server.pendingAcknowledgements.removeValue(forKey: messageID)?(server) }
         }
         return Self.json(message)
+    }
+
+    /// 시험용: 그 글의 답(받았다는 팀장 글)을 간격을 기다리지 않고 지금 낸다. 이미 답했으면 아무것도 하지 않는다.
+    /// 시험이 '답 쓰는 중'을 실제 시간의 짧은 틈에서 잡지 않게, 답 간격을 길게 두고 이것으로 답하게 한다.
+    func acknowledgeNow(messageID: String) {
+        lock.withLock { pendingAcknowledgements.removeValue(forKey: messageID)?(self) }
     }
 
     private func deliver(messageID: String, projectID: String, recipientID: String?, text: String) {
