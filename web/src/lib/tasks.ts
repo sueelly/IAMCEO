@@ -36,3 +36,19 @@ export function chipTasks(tasks: readonly Task[], messages: readonly Pick<Messag
 export function withTask<D extends { taskId?: string | null }>(draft: D, taskId: string | null): D {
   return (draft.taskId ?? null) === taskId ? draft : { ...draft, taskId };
 }
+
+/**
+ * 입력칸의 '/업무' 부르기(대표 2026-11-14): 글 맨 앞이나 빈칸 뒤의 '/'부터 커서까지. 주소(a/b)처럼 글자 뒤의 '/'는 부르지 않는다.
+ * start 는 '/'의 자리, query 는 '/' 뒤에 친 글(소문자).
+ */
+export function findSlash(text: string, caret: number): { start: number; query: string } | null {
+  const m = /(^|\s)\/([^\s/]*)$/.exec(text.slice(0, caret));
+  return m ? { start: caret - m[2]!.length - 1, query: m[2]!.toLowerCase() } : null;
+}
+
+/** 업무 이름·브랜치에 친 글이 들어간 업무만. 빈 글이면 그대로. 순서는 받은 그대로(최근 글 순). */
+export function filterTasks<T extends Pick<Task, "title" | "branch">>(tasks: readonly T[], query: string): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...tasks];
+  return tasks.filter((t) => t.title.toLowerCase().includes(q) || (t.branch ?? "").toLowerCase().includes(q));
+}

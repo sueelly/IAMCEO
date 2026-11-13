@@ -9,12 +9,17 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
-import { chipTasks } from "../lib/tasks";
+import { chipTasks, filterTasks, findSlash, taskActivity } from "../lib/tasks";
+import { formatRelative } from "../lib/time";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const NOTICE_MS = 4000;
+/** 마우스를 올려 두면 목록이 뜨기까지(대표 2026-11-14: 1초). */
+const HOVER_OPEN_MS = 1000;
+/** 칩에서 목록으로 마우스를 옮기는 사이에 닫히지 않게 둔 틈. */
+const HOVER_CLOSE_MS = 300;
 const STOP_NOTICE_MS = 15000;
 
 const patchDraft = (projectId: string, patch: (draft: Draft) => Draft) => submissions.patchDraft(projectId, patch);
@@ -131,7 +136,32 @@ export default function Composer() {
   const fileRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState(0);
-  const [chipMenu, setChipMenu] = useState(false);
+  /** 칩으로 연 목록: 받는 사람(target) 또는 업무(task). hover 로 열었으면 마우스가 떠나면 닫는다. */
+  const [opened, setOpened] = useState<{ kind: "target" | "task"; via: "hover" | "click" } | null>(null);
+  const chipMenu = opened?.kind === "target";
+  const taskMenu = opened?.kind === "task";
+  const setChipMenu = (on: boolean) => setOpened(on ? { kind: "target", via: "click" } : null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearHover = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  };
+  useEffect(() => clearHover, []);
+  /** 마우스만: 1초 올려 두면 연다. 손가락 누름(touch·pen)은 hover 로 치지 않는다. */
+  const hoverEnter = (kind: "target" | "task") => (e: { pointerType: string }) => {
+    if (e.pointerType !== "mouse") return;
+    clearHover();
+    if (opened?.kind === kind) return;
+    hoverTimer.current = setTimeout(() => {
+      setOpened((cur) => cur ?? { kind, via: "hover" });
+      setActive(0);
+    }, HOVER_OPEN_MS);
+  };
+  const hoverLeave = (e: { pointerType: string }) => {
+    if (e.pointerType !== "mouse") return;
+    clearHover();
+    hoverTimer.current = setTimeout(() => setOpened((cur) => (cur?.via === "hover" ? null : cur)), HOVER_CLOSE_MS);
+  };
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
@@ -162,13 +192,13 @@ export default function Composer() {
   }, [projectId]);
 
   useEffect(() => {
-    if (!chipMenu) return;
+    if (!opened) return;
     const outside = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setChipMenu(false);
+      if (!rootRef.current?.contains(e.target as Node)) setOpened(null);
     };
     window.addEventListener("pointerdown", outside);
     return () => window.removeEventListener("pointerdown", outside);
-  }, [chipMenu]);
+  }, [opened]);
 
   const isHq = project?.project.isHq ?? projectId === "hq";
   const members = project?.members ?? [];
@@ -187,11 +217,20 @@ export default function Composer() {
 
   const mention = findMention(draft.text, caret);
   const mentionOpen = mention !== null && mention.start !== dismissedAt;
-  const matches = mentionOpen && !chipMenu
+  const matches = mentionOpen && !opened
     ? entries.filter((e) => e.name.toLowerCase().includes(mention.query) || (e.handle ?? "").includes(mention.query))
     : entries;
-  const menuOpen = chipMenu || (mentionOpen && matches.length > 0);
-  const activeIndex = Math.min(active, Math.max(matches.length - 1, 0));
+  // 입력칸의 '/': 업무 목록을 띄워 거기서 고른다. '@'가 먼저 열려 있으면 그쪽이 앞선다.
+  const slash = findSlash(draft.text, caret);
+  const slashOpen = slash !== null && slash.start !== dismissedAt && !opened && !(mentionOpen && matches.length > 0);
+  type TaskEntry = { task: Task | null };
+  const taskEntries: TaskEntry[] = slashOpen
+    ? [...(slash.query ? [] : [{ task: null }]), ...filterTasks(shownTasks, slash.query).map((t) => ({ task: t }))]
+    : [{ task: null }, ...shownTasks.map((t) => ({ task: t }))];
+  const showTaskMenu = taskMenu || (slashOpen && taskEntries.length > 0);
+  const menuOpen = chipMenu || (!opened && mentionOpen && matches.length > 0);
+  const listLength = showTaskMenu ? taskEntries.length : matches.length;
+  const activeIndex = Math.min(active, Math.max(listLength - 1, 0));
 
   // 받는 사람만 바꾼다. 고른 업무는 그대로 둔다(같은 업무를 다른 직원에게 이어서 보낼 수 있다).
   const pick = (entry: MenuEntry) => {
@@ -211,34 +250,63 @@ export default function Composer() {
 
   // 업무만 바꾼다. '전체'로 돌아와도 받는 사람은 그대로다(대화 글의 업무 이름과 같은 규칙).
   const pickTask = (next: Task | null) => chooseTask(projectId, next);
-  // 작업이 바뀌면(대화 글의 작업 표지로 골랐을 때도) 고른 칩이 가로 목록 밖에 숨지 않게 그 칩까지 민다. '전체'면 처음으로 돌린다.
-  const tasksRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const strip = tasksRef.current;
-    if (!strip) return;
-    const on = task ? strip.querySelector<HTMLElement>('.cmp-task[aria-pressed="true"]') : null;
-    if (!on) {
-      strip.scrollLeft = 0;
-      return;
+  /** 목록에서 업무를 고른다. '/'로 열었으면 친 '/글'을 지운다. */
+  const pickTaskEntry = (entry: TaskEntry) => {
+    setOpened(null);
+    setActive(0);
+    if (slash && slashOpen) {
+      const rest = draft.text.slice(slash.start + slash.query.length + 1).replace(/^ /, "");
+      const text = draft.text.slice(0, slash.start) + rest;
+      patchDraft(projectId, (d) => ({ ...d, text }));
+      setCaret(slash.start);
+      requestAnimationFrame(() => inputRef.current?.setSelectionRange(slash.start, slash.start));
     }
-    const box = strip.getBoundingClientRect();
-    const chip = on.getBoundingClientRect();
-    if (chip.left < box.left) strip.scrollLeft -= box.left - chip.left + 8;
-    else if (chip.right > box.right) strip.scrollLeft += chip.right - box.right + 8;
-  }, [task?.id]);
+    pickTask(entry.task);
+    inputRef.current?.focus();
+  };
 
-  /** 메뉴가 받아 간 키면 true. 초점이 입력칸에 있든 대상 칩에 있든 같은 키로 움직인다. */
+  // 업무 칩은 한 줄에 들어가는 만큼만 이름 전체로 보인다. 넘치는 칩은 둘째 줄로 밀려 가려지고, 그 수를 '+N'으로 보인다.
+  // 고른 업무가 가려지면 '전체' 바로 뒤로 당겨 늘 보이게 한다.
+  const tasksRef = useRef<HTMLDivElement>(null);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const pinnedId = task && pinned === task.id ? pinned : null;
+  const lineTasks = pinnedId ? [shownTasks.find((t) => t.id === pinnedId)!, ...shownTasks.filter((t) => t.id !== pinnedId)].filter(Boolean) : shownTasks;
+  const lineKey = lineTasks.map((t) => `${t.id}:${t.title}`).join("|");
+  useLayoutEffect(() => {
+    const row = tasksRef.current;
+    if (!row) return;
+    const measure = () => {
+      const chips = [...row.querySelectorAll<HTMLElement>(".cmp-task[data-id]")];
+      const top = row.querySelector<HTMLElement>(".cmp-task")?.offsetTop ?? 0;
+      const hidden = chips.filter((c) => c.offsetTop > top + 2).map((c) => c.dataset.id!);
+      setHiddenIds((cur) => (cur.join() === hidden.join() ? cur : hidden));
+      if (task && hidden.includes(task.id)) setPinned(task.id);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(row);
+    return () => ro.disconnect();
+  }, [lineKey, task?.id]);
+
+  /** 메뉴가 받아 간 키면 true. 초점이 입력칸에 있든 칩에 있든 같은 키로 움직인다. */
   const menuKey = (e: KeyboardEvent): boolean => {
-    if (!menuOpen) return false;
+    if (!menuOpen && !showTaskMenu) return false;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       const step = e.key === "ArrowDown" ? 1 : -1;
-      setActive((activeIndex + step + matches.length) % matches.length);
+      setActive((activeIndex + step + listLength) % listLength);
     } else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
-      const entry = matches[activeIndex];
-      if (entry) pick(entry);
+      if (showTaskMenu) {
+        const entry = taskEntries[activeIndex];
+        if (entry) pickTaskEntry(entry);
+      } else {
+        const entry = matches[activeIndex];
+        if (entry) pick(entry);
+      }
     } else if (e.key === "Escape") {
-      setChipMenu(false);
-      if (mention) setDismissedAt(mention.start);
+      setOpened(null);
+      if (showTaskMenu && slash && slashOpen) setDismissedAt(slash.start);
+      else if (mention) setDismissedAt(mention.start);
     } else {
       return false;
     }
@@ -320,7 +388,7 @@ export default function Composer() {
     attachFiles(projectId, files);
   };
 
-  const placeholder = task ? `'${task.title}' 작업으로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
+  const placeholder = task ? `'${task.title}' 업무로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
   const showThreadLink = notice !== null && route.tab !== "thread";
 
   if (!gate.ok) {
@@ -335,8 +403,48 @@ export default function Composer() {
 
   return (
     <div ref={rootRef} className="cmp">
-      {menuOpen && matches.length > 0 ? (
-        <ul className="cmp-menu" role="listbox" id="cmp-menu" aria-label="보낼 대상">
+      {showTaskMenu ? (
+        <ul
+          className="cmp-menu cmp-menu--tasks"
+          role="listbox"
+          id="cmp-menu"
+          aria-label="업무 고르기"
+          onPointerEnter={(e) => e.pointerType === "mouse" && clearHover()}
+          onPointerLeave={hoverLeave}
+        >
+          {taskEntries.map((entry, i) => {
+            const t = entry.task;
+            const last = t ? taskActivity(t, project?.messages ?? []) : null;
+            return (
+              <li
+                key={t?.id ?? "all"}
+                id={`cmp-opt-${i}`}
+                role="option"
+                aria-selected={i === activeIndex}
+                aria-current={(t ? task?.id === t.id : !task) ? "true" : undefined}
+                className="cmp-menu__item cmp-menu__item--task"
+                onMouseEnter={() => setActive(i)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickTaskEntry(entry)}
+              >
+                <span className="cmp-menu__main">
+                  <span className="cmp-menu__name">{t ? t.title : "전체"}</span>
+                  <span className="cmp-menu__sub">{t ? [last ? `최근 글 ${formatRelative(last)}` : "글 없음", t.branch].filter(Boolean).join(" · ") : "업무를 고르지 않고 모든 글"}</span>
+                </span>
+                {(t ? task?.id === t.id : !task) ? <span className="cmp-menu__on">고름</span> : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : menuOpen && matches.length > 0 ? (
+        <ul
+          className="cmp-menu"
+          role="listbox"
+          id="cmp-menu"
+          aria-label="보낼 대상"
+          onPointerEnter={(e) => e.pointerType === "mouse" && clearHover()}
+          onPointerLeave={hoverLeave}
+        >
           {matches.map((entry, i) => (
             <li
               key={entry.id ?? "lead"}
@@ -370,9 +478,13 @@ export default function Composer() {
             aria-controls={chipMenu ? "cmp-menu" : undefined}
             aria-activedescendant={chipMenu ? `cmp-opt-${activeIndex}` : undefined}
             onClick={() => {
-              setChipMenu((v) => !v);
+              clearHover();
+              // 마우스를 올려 열린 목록은 눌러도 닫지 않고 그대로 둔다(누른 뒤 손을 떼도 남게)
+              setOpened((cur) => (cur?.kind === "target" ? (cur.via === "hover" ? { kind: "target", via: "click" } : null) : { kind: "target", via: "click" }));
               setActive(0);
             }}
+            onPointerEnter={hoverEnter("target")}
+            onPointerLeave={hoverLeave}
             onKeyDown={(e) => void menuKey(e)}
           >
             <span className="cmp-chip__label">{target ? `@${target.name}` : isHq ? "본사 AI" : "총괄"}</span>
@@ -381,22 +493,47 @@ export default function Composer() {
             </svg>
           </button>
           {shownTasks.length > 0 || task ? (
-            <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="업무 고르기">
-              <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
-                전체
-              </button>
-              {shownTasks.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="cmp-task"
-                  aria-pressed={task?.id === t.id}
-                  title={[t.title, t.branch].filter(Boolean).join(" · ")}
-                  onClick={() => pickTask(task?.id === t.id ? null : t)}
-                >
-                  <span className="cmp-task__title">{t.title}</span>
+            <div className="cmp-taskbar" onPointerEnter={hoverEnter("task")} onPointerLeave={hoverLeave}>
+              <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="업무 고르기">
+                <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
+                  전체
                 </button>
-              ))}
+                {lineTasks.map((t) => {
+                  const off = hiddenIds.includes(t.id);
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="cmp-task"
+                      data-id={t.id}
+                      aria-pressed={task?.id === t.id}
+                      aria-hidden={off ? "true" : undefined}
+                      tabIndex={off ? -1 : undefined}
+                      title={[t.title, t.branch].filter(Boolean).join(" · ")}
+                      onClick={() => pickTask(task?.id === t.id ? null : t)}
+                    >
+                      <span className="cmp-task__title">{t.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {hiddenIds.length > 0 ? (
+                <button
+                  type="button"
+                  className="cmp-task cmp-task--more"
+                  aria-label={`업무 ${hiddenIds.length}개 더 보기`}
+                  aria-haspopup="listbox"
+                  aria-expanded={taskMenu}
+                  onClick={() => {
+                    clearHover();
+                    setOpened((cur) => (cur?.kind === "task" && cur.via === "click" ? null : { kind: "task", via: "click" }));
+                    setActive(0);
+                  }}
+                  onKeyDown={(e) => void menuKey(e)}
+                >
+                  +{hiddenIds.length}
+                </button>
+              ) : null}
             </div>
           ) : null}
           {draft.uploads.map((u) => (
@@ -503,8 +640,8 @@ export default function Composer() {
             placeholder={placeholder}
             aria-label="입력칸"
             aria-autocomplete="list"
-            aria-controls={menuOpen ? "cmp-menu" : undefined}
-            aria-activedescendant={!chipMenu && menuOpen ? `cmp-opt-${activeIndex}` : undefined}
+            aria-controls={menuOpen || showTaskMenu ? "cmp-menu" : undefined}
+            aria-activedescendant={!opened && (menuOpen || showTaskMenu) ? `cmp-opt-${activeIndex}` : undefined}
             enterKeyHint={touchInput() ? "enter" : "send"}
             onChange={(e) => {
               const next = e.target.value;
@@ -512,12 +649,13 @@ export default function Composer() {
               patchDraft(projectId, (d) => ({ ...d, text: next, error: null }));
               setCaret(at);
               setActive(0);
-              setChipMenu(false);
-              if (!findMention(next, at)) setDismissedAt(null);
+              setOpened(null);
+              if (!findMention(next, at) && !findSlash(next, at)) setDismissedAt(null);
             }}
             onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
             onBlur={() => {
               if (mention) setDismissedAt(mention.start);
+              else if (slash) setDismissedAt(slash.start);
             }}
             onFocus={() => setDismissedAt(null)}
             onKeyDown={onKeyDown}
