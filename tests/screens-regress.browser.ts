@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Decision, Member, Message, Project, ProjectState } from "../shared/types.ts";
 import { updateConfigFile } from "../server/config.ts";
+import { httpDefaultTask } from "./fixtures/default-task.ts";
 
 const core = await startBrowserCore();
 afterAll(async () => { await core.stop(); });
@@ -70,7 +71,10 @@ async function joinWorker(projectId: string, name: string): Promise<{ member: Me
   return api("POST", "/agent/join", { project: projectId, name, handle: `w${++counter}` });
 }
 
-const tool = (token: string, name: string, args: unknown) => api<{ text: string; wait?: { decisionId: string } }>("POST", "/agent/tool", { name, args }, token);
+const rawTool = (token: string, name: string, args: unknown) => api<{ text: string; isError?: boolean; wait?: { decisionId: string } }>("POST", "/agent/tool", { name, args }, token);
+// 규칙을 지키는 직원처럼 업무 id 를 넣는다(업무 규칙이 주제인 시험이 아니다).
+const withTask = httpDefaultTask(rawTool);
+const tool = async (token: string, name: string, args: unknown) => rawTool(token, name, await withTask(token, name, args));
 
 async function ask(token: string, title: string, options: { k: string; label: string }[], extra: Record<string, unknown> = {}): Promise<string> {
   const r = await tool(token, "ask", { title, detail: `${title} 설명`, options, ...extra });

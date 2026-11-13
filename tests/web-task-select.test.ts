@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Message, Task } from "../shared/types";
 import { SubmissionManager, type MessageAttempt } from "../web/src/lib/submissions";
-import { taskTarget, visibleTasks } from "../web/src/lib/tasks";
+import { visibleTasks, withTask } from "../web/src/lib/tasks";
 
 class MemoryStorage implements Storage {
   values = new Map<string, string>();
@@ -52,14 +52,27 @@ describe("작업 고르기", () => {
     expect(m.snapshot("p1").attempts[0]!.payload.taskId).toBeNull();
   });
 
-  test("작업 칩은 최신순이고, 직원을 고르면 그 직원의 작업만, 작업을 고르면 받는 사람은 등록한 직원이다", () => {
+  test("업무 칩 목록은 최신순이고, 직원별 목록 함수는 그 직원이 등록한 업무만 고른다", () => {
     const tasks = [task("old", "w1", "2026-11-01T00:00:00Z"), task("new", "w2", "2026-11-03T00:00:00Z"), task("mid", "w1", "2026-11-02T00:00:00Z"), task("lead", "c1", "2026-11-04T00:00:00Z")];
     expect(visibleTasks(tasks, null).map((t) => t.id)).toEqual(["lead", "new", "mid", "old"]);
     expect(visibleTasks(tasks, "w1").map((t) => t.id)).toEqual(["mid", "old"]);
-    const workers = [{ id: "w1", name: "가" }, { id: "w2", name: "나" }];
-    expect(taskTarget(tasks[0]!, workers)).toBe("w1");
-    // 총괄이 등록했거나 닫힌 직원의 작업이면 기본 대상(총괄)
-    expect(taskTarget(tasks[3]!, workers)).toBeNull();
-    expect(taskTarget(task("gone", "w9", "2026-11-05T00:00:00Z"), workers)).toBeNull();
+  });
+
+  // 대표 2026-11-13: "업무 선택할 때, 직원까지 함께 선택될 필요는 없는 것 같아" — 업무를 고르거나 '전체'로 돌아와도 받는 사람은 그대로다.
+  test("업무를 고르고 바꾸고 '전체'로 돌아와도 받는 사람은 바뀌지 않는다", () => {
+    const m = manager(new MemoryStorage(), async () => null);
+    m.patchDraft("p1", (d) => ({ ...d, targetId: "w2" }));
+    m.patchDraft("p1", (d) => withTask(d, "tk_a"));
+    expect(m.snapshot("p1").draft).toMatchObject({ taskId: "tk_a", targetId: "w2" });
+    m.patchDraft("p1", (d) => withTask(d, "tk_b"));
+    expect(m.snapshot("p1").draft).toMatchObject({ taskId: "tk_b", targetId: "w2" });
+    m.patchDraft("p1", (d) => withTask(d, null));
+    expect(m.snapshot("p1").draft).toMatchObject({ taskId: null, targetId: "w2" });
+    // 총괄(기본)에게 보내던 중이면 업무를 골라도 총괄 그대로. 같은 업무를 다시 골라도 초안은 그대로다
+    const lead = manager(new MemoryStorage(), async () => null);
+    lead.patchDraft("p1", (d) => withTask(d, "tk_a"));
+    expect(lead.snapshot("p1").draft).toMatchObject({ taskId: "tk_a", targetId: null });
+    const before = lead.snapshot("p1").draft;
+    expect(withTask(before, "tk_a")).toBe(before);
   });
 });

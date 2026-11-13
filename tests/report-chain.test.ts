@@ -9,6 +9,7 @@ import { Store } from "../server/store.ts";
 import type { Backend, Member } from "../shared/types.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { defaultTaskId } from "./fixtures/default-task.ts";
 
 class FakeRunner implements Runner {
   readonly kind: Backend = "core";
@@ -55,6 +56,8 @@ function fixture() {
   const store = new Store(db, new Bus());
   store.patchSettings({ maxConcurrentTurns: 3, boardTidyHours: 0 });
   const project = store.createProject({ name: "보완", cwd: isolated.paths.work });
+  // 업무를 주제로 하지 않는 시험이라, 규칙을 지키는 직원처럼 모든 글에 같은 시험 업무를 넣는다.
+  const taskId = defaultTaskId(store, project.id);
   const runner = new FakeRunner();
   const orchestrators: Orchestrator[] = [];
   function orchestrator() {
@@ -69,18 +72,18 @@ function fixture() {
   const pendingRun = (member: Member) => store.listPendingExecutions().find(r => r.memberId === member.id);
   /** 직원 보고 하나로 총괄의 실행을 깨운다. */
   const wakeLeadWithReport = async (title = "구현 완료") => {
-    const report = await orch.recordPost(worker, { kind: "완료", title });
+    const report = await orch.recordPost(worker, { kind: "완료", title, taskId });
     await until("총괄 실행", () => !!pendingRun(lead) && runner.to(lead).some(t => t.includes(report.id)));
     return { report, run: pendingRun(lead)! };
   };
   cleanups.push(async () => { for (const current of orchestrators) await current.shutdown(); db.close(); await isolated.stop(); });
-  return { isolated, store, project, runner, orch, orchestrator, lead, worker, supplements, pendingRun, wakeLeadWithReport };
+  return { isolated, store, project, taskId, runner, orch, orchestrator, lead, worker, supplements, pendingRun, wakeLeadWithReport };
 }
 
 test("재현 조건: 보고 보완과 조용한 안내가 한 실행에 섞여도 보완을 다시 만들지 않는다", async () => {
   const f = fixture();
   const { run: first } = await f.wakeLeadWithReport();
-  await f.orch.recordPost(f.lead, { kind: "알림", title: "판에 적었습니다" });
+  await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다" });
   // 실행 중에 쌓인 조용한 안내(대표가 직원에게 직접 지시했다는 사실 등)는 다음 깨움에 묶여 간다.
   f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "system", text: "[시스템] 대표가 철수에게 직접 지시했습니다", wake: false });
   f.runner.end(f.lead);
@@ -88,7 +91,7 @@ test("재현 조건: 보고 보완과 조용한 안내가 한 실행에 섞여�
   const second = await (async () => { await until("보완 실행", () => !!f.pendingRun(f.lead) && f.pendingRun(f.lead)!.runId !== first.runId); return f.pendingRun(f.lead)!; })();
   // 보완 실행은 보완과 조용한 안내를 함께 받았다(옛 판정은 '모두 보완'이 아니어서 여기서 보완을 또 만들었다).
   expect(second.deliveryIds.map(id => f.store.getDelivery(id)!.wake).sort()).toEqual([false, true]);
-  await f.orch.recordPost(f.lead, { kind: "알림", title: "위임 결과를 기다립니다" });
+  await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "위임 결과를 기다립니다" });
   f.runner.end(f.lead);
   await Bun.sleep(30);
   expect(f.supplements(f.lead)).toHaveLength(1);
@@ -100,7 +103,7 @@ test("재현 조건: 보고 보완과 조용한 안내가 한 실행에 섞여�
 
 test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 의무는 남는다(원인은 새 실행)", async () => {
   const f = fixture();
-  await f.orch.assign(f.project.id, f.worker.handle, { text: "첫 일" });
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: f.taskId, text: "첫 일" });
   await until("첫 실행", () => !!f.pendingRun(f.worker));
   const first = f.pendingRun(f.worker)!;
   f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "[총괄] 철수에게\n할 일: 두 번째 일" });
@@ -118,7 +121,7 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
   expect(notices[0]!.wake).toBe(false);
   // 두 번째 보완 실행이 완료를 올리면 두 원인 모두 더 깨우지 않는다.
   await until("두 번째 보완 실행", () => !!f.pendingRun(f.worker) && f.pendingRun(f.worker)!.runId !== second.runId);
-  await f.orch.recordPost(f.worker, { kind: "완료", title: "두 일 모두 끝" });
+  await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "두 일 모두 끝" });
   f.runner.end(f.worker);
   await Bun.sleep(30);
   expect(f.supplements(f.worker)).toHaveLength(2);
@@ -128,12 +131,12 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
 test("원보고를 밝힌 알림은 그 보고 확인을 마감한다. 다른 보고를 밝히거나 진행이면 마감하지 않는다", async () => {
   for (const variant of ["about", "other", "progress", "none"] as const) {
     const f = fixture();
-    const earlier = await f.orch.recordPost(f.worker, { kind: "알림", title: "예전 보고" });
+    const earlier = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "알림", title: "예전 보고" });
     const { report } = await f.wakeLeadWithReport();
-    if (variant === "about") await f.orch.recordPost(f.lead, { kind: "알림", title: "판에 적었습니다", aboutReportId: report.id });
-    if (variant === "other") await f.orch.recordPost(f.lead, { kind: "알림", title: "판에 적었습니다", aboutReportId: earlier.id });
-    if (variant === "progress") await f.orch.recordPost(f.lead, { kind: "진행", title: "확인하는 중", aboutReportId: report.id });
-    if (variant === "none") await f.orch.recordPost(f.lead, { kind: "알림", title: "판에 적었습니다" });
+    if (variant === "about") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다", aboutReportId: report.id });
+    if (variant === "other") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다", aboutReportId: earlier.id });
+    if (variant === "progress") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "진행", title: "확인하는 중", aboutReportId: report.id });
+    if (variant === "none") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다" });
     f.runner.end(f.lead);
     await Bun.sleep(30);
     expect([variant, f.supplements(f.lead).length]).toEqual([variant, variant === "about" ? 0 : 1]);
@@ -144,15 +147,15 @@ test("원보고를 밝힌 알림은 그 보고 확인을 마감한다. 다른 �
 test("about_report_id 는 이 프로젝트 다른 직원 보고만 받는다", async () => {
   const f = fixture();
   f.store.patchProject(f.project.id, { runnerEnabled: false });
-  const own = await f.orch.recordPost(f.lead, { kind: "알림", title: "내 글" });
+  const own = await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "내 글" });
   const owner = f.store.createMessage({ projectId: f.project.id, mine: true, kind: "나", body: "대표 글" });
   for (const id of [own.id, owner.id, "msg_none"]) {
-    await expect(f.orch.recordPost(f.lead, { kind: "알림", title: "확인", aboutReportId: id })).rejects.toThrow("about_report_id");
+    await expect(f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "확인", aboutReportId: id })).rejects.toThrow("about_report_id");
   }
-  const tool = await f.orch.handleAgentTool(f.lead, "post", { kind: "알림", title: "확인", about_report_id: own.id });
+  const tool = await f.orch.handleAgentTool(f.lead, "post", { task_id: f.taskId, kind: "알림", title: "확인", about_report_id: own.id });
   expect(tool.isError).toBe(true);
-  const report = await f.orch.recordPost(f.worker, { kind: "완료", title: "직원 보고" });
-  const ok = await f.orch.handleAgentTool(f.lead, "post", { kind: "알림", title: "확인", about_report_id: report.id });
+  const report = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "직원 보고" });
+  const ok = await f.orch.handleAgentTool(f.lead, "post", { task_id: f.taskId, kind: "알림", title: "확인", about_report_id: report.id });
   expect(ok.isError).toBeUndefined();
   const confirmation = f.store.getMessage(/#(msg_[A-Za-z0-9_]+)/.exec(ok.text)![1]!)!;
   expect(confirmation.aboutMessageId).toBe(report.id);
@@ -165,11 +168,11 @@ test("기다리는 자기 결재를 밝힌 알림은 마감하고, 남의 결재
   for (const variant of ["own-open", "other", "closed"] as const) {
     const f = fixture();
     const owner = variant === "other" ? f.worker : f.lead;
-    const decision = f.store.createDecision({ projectId: f.project.id, memberId: owner.id, who: owner.name, title: "합칠까요" });
+    const decision = f.store.createDecision({ projectId: f.project.id, taskId: f.taskId, memberId: owner.id, who: owner.name, title: "합칠까요" });
     if (variant === "closed") f.store.closeDecision(decision.id, { kind: "obsolete", reason: "필요 없어짐", by: f.lead.name, quote: null });
     await f.orch.sendUserMessage(f.project.id, { text: "합치는 일은 어떻게 됐나요" });
     await until("총괄 실행", () => !!f.pendingRun(f.lead));
-    await f.orch.recordPost(f.lead, { kind: "알림", title: "대표님 결재를 기다립니다", decisionId: decision.id });
+    await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "대표님 결재를 기다립니다", decisionId: decision.id });
     f.runner.end(f.lead);
     await Bun.sleep(30);
     expect([variant, f.supplements(f.lead).length]).toEqual([variant, variant === "own-open" ? 0 : 1]);
@@ -179,13 +182,13 @@ test("기다리는 자기 결재를 밝힌 알림은 마감하고, 남의 결재
 test("실행이 끝날 때 결과가 안 돌아온 보고 도구가 있으면 그 결과를 본 뒤 판정한다", async () => {
   for (const kind of ["완료", "진행"] as const) {
     const f = fixture();
-    await f.orch.assign(f.project.id, f.worker.handle, { text: "일" });
+    await f.orch.assign(f.project.id, f.worker.handle, { taskId: f.taskId, text: "일" });
     await until("실행", () => !!f.pendingRun(f.worker));
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const original = f.orch.recordPost.bind(f.orch);
     (f.orch as unknown as { recordPost: typeof original }).recordPost = async (member, input) => { await gate; return original(member, input); };
-    const pending = f.orch.handleAgentTool(f.worker, "post", { kind, title: "늦게 도착한 보고" });
+    const pending = f.orch.handleAgentTool(f.worker, "post", { task_id: f.taskId, kind, title: "늦게 도착한 보고" });
     f.runner.end(f.worker);
     await Bun.sleep(30);
     expect(f.supplements(f.worker)).toHaveLength(0);
@@ -198,7 +201,7 @@ test("실행이 끝날 때 결과가 안 돌아온 보고 도구가 있으면 �
 
 test("재시작해도 같은 원인 실행의 보완·보고 미확인은 한 번이다", async () => {
   const f = fixture();
-  await f.orch.assign(f.project.id, f.worker.handle, { text: "일" });
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: f.taskId, text: "일" });
   await until("실행", () => !!f.pendingRun(f.worker));
   const first = f.pendingRun(f.worker)!;
   f.runner.end(f.worker);
@@ -221,7 +224,7 @@ test("질문·위임은 마감 근거로 남고, 결재가 바로 닫혀도 보�
   const f = fixture();
   await f.orch.sendUserMessage(f.project.id, { text: "정해 주세요" });
   await until("총괄 실행", () => !!f.pendingRun(f.lead));
-  const ask = await f.orch.registerAsk(f.lead, { title: "A안으로 할까요", options: [{ k: "a", label: "A안" }, { k: "b", label: "B안" }] });
+  const ask = await f.orch.registerAsk(f.lead, { taskId: f.taskId, title: "A안으로 할까요", options: [{ k: "a", label: "A안" }, { k: "b", label: "B안" }] });
   f.store.closeDecision(ask.decision.id, { kind: "obsolete", reason: "스스로 풀었음", by: f.lead.name, quote: null });
   f.runner.end(f.lead);
   await Bun.sleep(30);

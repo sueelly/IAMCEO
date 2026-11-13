@@ -14,6 +14,7 @@ import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/ru
 import { transcriptPath } from "../server/runner/transcript.ts";
 import { Store } from "../server/store.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { defaultTaskId } from "./fixtures/default-task.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterAll(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
@@ -279,7 +280,7 @@ describe("실제 Orchestrator MCP receipt", () => {
     const server = await startServer({ config: f.config, store: f.store, bus: new Bus(), orch: f.orch });
     cleanups.push(() => server.stop());
     expect(server.port).not.toBe(7878);
-    const body = { operationId: crypto.randomUUID(), name: "post", args: { kind: "완료", title: "HTTP 보고" } };
+    const body = { operationId: crypto.randomUUID(), name: "post", args: { kind: "완료", title: "HTTP 보고", task_id: defaultTaskId(f.store, f.project.id) } };
     const call = () => fetch(`${server.urls[0]}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${f.store.getMemberToken(member.id)}`, "Content-Type": "application/json", "X-IAMCEO-Contract": "2" }, body: JSON.stringify(body) });
     const first = await call(), second = await call();
     expect(first.status).toBe(200); expect(second.status).toBe(200);
@@ -290,7 +291,7 @@ describe("실제 Orchestrator MCP receipt", () => {
   test("동일 ID 동시 호출/재시작은 효과 1회, 새 ID 같은 본문은 독립, 다른 요청은 409", async () => {
     const f = fixture();
     const member = f.store.createMember({ projectId: f.project.id, handle: "manual", name: "직접", kind: "worker", origin: "manual" });
-    const args = { kind: "완료", title: "보고" }, context = { operationId: crypto.randomUUID() };
+    const args = { kind: "완료", title: "보고", task_id: defaultTaskId(f.store, f.project.id) }, context = { operationId: crypto.randomUUID() };
     const [first, second] = await Promise.all([f.orch.handleAgentOperation(member, "post", args, context), f.orch.handleAgentOperation(member, "post", args, context)]);
     expect(first).toEqual(second); expect(f.store.listMessages(f.project.id)).toHaveLength(1);
     await f.orch.shutdown(); const orch = f.makeOrch(); cleanups.push(() => orch.shutdown());

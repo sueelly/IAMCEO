@@ -15,6 +15,7 @@ const { openDb } = await import("../../server/db.ts");
 const { readLocalFile, checkLocalImportPath } = await import("../../server/local-files.ts");
 const { Orchestrator } = await import("../../server/orchestrator.ts");
 const { Store } = await import("../../server/store.ts");
+const { withDefaultTask } = await import("./default-task.ts");
 const env = { IAMCEO_HOME: join(home, "state"), IAMCEO_PORT: "0" };
 updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
 const config = loadConfig(env), store = new Store(openDb(config.dbPath), new Bus());
@@ -24,7 +25,7 @@ const project = store.createProject({ name: "policy", cwd: work });
 const member = store.createMember({ projectId: project.id, handle: "worker", name: "직원", kind: "worker", cwd: work });
 let allowed = 0, blocked = 0;
 async function check(path: string, deny: boolean, projectId = project.id, employee = member) {
-  const result = await handleAgentTool(orch, store.requireMember(employee.id), "file", { title: "fixture", path });
+  const result = await handleAgentTool(orch, store.requireMember(employee.id), "file", withDefaultTask(store, employee, "file", { title: "fixture", path }));
   assert.equal(!!result.isError, deny, `employee: ${path}: ${result.text}`);
   if (deny) {
     assert.match(result.text, /비밀이 있는 곳/);
@@ -56,7 +57,7 @@ for (const name of homeSecretPaths) {
 }
 // An unlisted dot directory exercises homeDot, independently of SECRET_DIRS.
 const homeDot = join(home, ".mystery", "token"); mkdirSync(dirname(homeDot)); writeFileSync(homeDot, "fixture-only secret");
-const homeDotResult = await handleAgentTool(orch, homeMember, "file", { title: "fixture", path: homeDot });
+const homeDotResult = await handleAgentTool(orch, homeMember, "file", withDefaultTask(store, homeMember, "file", { title: "fixture", path: homeDot }));
 assert.equal(homeDotResult.isError, true); assert.match(homeDotResult.text, /비밀이 있는 곳/);
 const nestedArtifact = join(home, "check/.claude/mocks/a.png");
 mkdirSync(dirname(nestedArtifact), { recursive: true }); writeFileSync(nestedArtifact, fixturePNG);

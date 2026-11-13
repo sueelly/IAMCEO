@@ -15,6 +15,7 @@ import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, Delivery
 import { Store } from "../server/store.ts";
 import { cleanName, workerNameProblem } from "../server/text.ts";
 import { sanitizeName } from "../server/files.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 const SID = "11111111-1111-4111-8111-111111111111";
 
@@ -143,7 +144,7 @@ async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabl
     const s = server;
     closers.push(() => s.stop());
   }
-  const call = (member: Member, name: string, args: Record<string, unknown>) => handleAgentTool(orch, store.requireMember(member.id), name, args);
+  const call = (member: Member, name: string, args: Record<string, unknown>) => handleAgentTool(orch, store.requireMember(member.id), name, withDefaultTask(store, member, name, args));
   return { home, work, config, store, bus, orch, runner, project, call, server, base: server?.urls[0] ?? "" };
 }
 
@@ -647,7 +648,7 @@ describe("직접 띄운 CLI", () => {
     return (await res.json()) as { member: Member; token: string };
   }
   const tool = (t: Awaited<ReturnType<typeof setup>>, token: string, name: string, args: unknown, signal?: AbortSignal) =>
-    fetch(`${t.base}/agent/tool`, { method: "POST", signal, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args }) });
+    fetch(`${t.base}/agent/tool`, { method: "POST", signal, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args: withDefaultTask(t.store, t.store.getMemberByToken(token)!, name, args) }) });
 
   test("끊긴 wait 는 지시를 가져가지 않는다. 다음 wait 가 받고, 새 wait 를 가로채지도 않는다", async () => {
     const t = await setup({ serve: true });
@@ -1014,8 +1015,9 @@ describe("2차 검수 회귀: 전달", () => {
     const t = await setup();
     const lead = await t.orch.ensureConductor(t.project.id);
     const w = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
-    await t.orch.recordPost(w, { kind: "완료", title: "로그인 고침" });
-    await t.orch.recordPost(w, { kind: "완료", title: "나중 보고" });
+    const taskId = defaultTaskId(t.store, t.project.id);
+    await t.orch.recordPost(w, { kind: "완료", title: "로그인 고침", taskId });
+    await t.orch.recordPost(w, { kind: "완료", title: "나중 보고", taskId });
     t.runner.end(lead.id, { isError: true, noOutput: true, errorText: "사용량 한도" });
     await until(() => t.runner.sent.filter(s => s.memberId === lead.id).length === 2);
     const sent = t.runner.sent.filter(s => s.memberId === lead.id);
@@ -1453,6 +1455,7 @@ describe("W5 전달 통합", () => {
     const lead = await t.orch.ensureConductor(t.project.id);
     const worker = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
     const decision = t.store.createDecision({ projectId: t.project.id, memberId: worker.id, who: worker.name, title: "검토", options: [{ k: "a", label: "승인" }] });
+    const taskId = defaultTaskId(t.store, t.project.id);
     const before = t.store.listMessages(t.project.id).length;
     const decisions = t.store.listDecisions(t.project.id).length;
     const enqueue = t.store.enqueue.bind(t.store);
@@ -1461,8 +1464,8 @@ describe("W5 전달 통합", () => {
     t.store.enqueue = () => { throw new Error("주입 outbox 실패"); };
     const action = kind === "message" ? () => t.orch.sendUserMessage(t.project.id, { id: "atomic-message", text: "원자 지시", targetMemberId: worker.id }) :
       kind === "answer" ? () => t.orch.answerDecision(decision.id, { choice: "a" }) :
-      kind === "report" ? () => t.orch.recordPost(worker, { kind: "완료", title: "원자 보고" }) :
-      () => t.orch.registerAsk(worker, { title: "원자 질문" });
+      kind === "report" ? () => t.orch.recordPost(worker, { kind: "완료", title: "원자 보고", taskId }) :
+      () => t.orch.registerAsk(worker, { title: "원자 질문", taskId });
     try { await expect(action()).rejects.toThrow("주입 outbox 실패"); }
     finally { t.store.enqueue = enqueue; }
     expect(t.store.listMessages(t.project.id)).toHaveLength(before);
