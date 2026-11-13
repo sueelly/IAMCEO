@@ -37,6 +37,19 @@ test("검토 반례: 옵션 순서·경로·앞말·하위 셸·git 전역 옵�
   ]) expect([command, bash(command).decision]).toEqual([command, "ask"]);
 });
 
+test("재검토 작은 지적: watch·gh 쓰기 하위 명령·git alias·$(which rm)·graphql mutation 은 묻고, 읽기는 받는다", () => {
+  for (const command of [
+    "watch -n 1 git push", "gh workflow run ci.yml", "gh workflow disable ci", "gh run rerun 1", "gh run cancel 2", "gh run delete 3",
+    "gh secret set X", "gh variable set X --body 1", "gh label delete x", "gh cache delete --all",
+    "git -c alias.p=push p", "git -c alias.p='!rm -rf x' p", "$(which rm) -rf x", "$(command -v rm) -rf x",
+    "gh api graphql -f query='mutation { addStar(input:{}) { clientMutationId } }'", "gh api graphql --input q.json", "gh api graphql -F query=@q.graphql",
+  ]) expect([command, bash(command).decision]).toEqual([command, "ask"]);
+  for (const command of [
+    "gh api graphql -f query='query { viewer { login } }'", "gh workflow list", "gh run list", "gh run view 1", "gh secret list", "gh label list",
+    "watch -n 1 git status", "git -c alias.s=status s",
+  ]) expect([command, bash(command).decision]).toEqual([command, "allow"]);
+});
+
 test("검토 반례: 따옴표 안의 설명문·읽기 명령은 막지 않는다", () => {
   for (const command of [
     "git commit -m \"docs: avoid rm -rf in guide\"", "echo 'next: git push after approval'", "git log --oneline | grep 'git push'", "printf '%s' \"gh pr create 는 승인 뒤\"",

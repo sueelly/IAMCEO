@@ -9,6 +9,7 @@ import { MIGRATIONS } from "../server/db.ts";
 import { execProves, parseClaudeLog, parseCodexLog } from "../server/harness-evidence.ts";
 import { claudeSandboxSettings, codexGuardDecision, codexHookArgs, codexSandboxArgs, patchPaths } from "../server/harness-providers.ts";
 import { CODING, fixture, pass, until, writeExec } from "./fixtures/harness-fixture.ts";
+import type { Member } from "../shared/types.ts";
 
 const id = (text: string, prefix = "tk") => text.match(new RegExp(`#(${prefix}_[A-Za-z0-9_-]+)`))![1]!;
 const ONE = { ...CODING, checks: ["behavior"], acceptance: ["동작한다"] };
@@ -286,4 +287,12 @@ test("제공자 설정(준비만): Claude 샌드박스는 밖 재실행·허용 
   const value = hook[3]!.slice("hooks.PreToolUse=".length);
   const parsed = Bun.TOML.parse(`v = ${value}`) as { v: { matcher: string; hooks: { type: string; command: string; timeout: number }[] }[] };
   expect(parsed.v[0]).toEqual({ matcher: "^(Bash|apply_patch)$", hooks: [{ type: "command", command: "/x/bun /x/iamceo-guard.ts --home '/h' --codex", timeout: 10 }] });
+});
+
+test("첨부를 잇지 못하면 데이터 폴더 원본 경로(훅이 막는 곳) 대신 직원 받을 자리 경로를 넘긴다", () => {
+  const f = fixture();
+  const gone = join(f.config.home, "uploads", "f_gone-a.txt");
+  const [out] = (f.orch as unknown as { attachmentsFor(m: Member, a: { id: string; name: string; path: string }[]): { path: string }[] }).attachmentsFor(f.worker, [{ id: "f_gone", name: "a.txt", path: gone }]);
+  expect(out!.path).toBe(join(f.config.home, "inbox", f.worker.id, "f_gone-a.txt"));
+  expect(out!.path).not.toContain(`${join(f.config.home, "uploads")}`);
 });
