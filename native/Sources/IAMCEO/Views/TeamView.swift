@@ -843,7 +843,8 @@ struct MemberDetailView: View {
         if let error = m.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             stateBox(tone: .danger, icon: "exclamationmark.triangle.fill", title: String(localized: "마지막 오류")) {
                 // Web .tm-error: the error itself in the danger colour, 13.5 / 1.45.
-                Text(error)
+                // 0.2.6 Y: 서버가 정한 문장(코드가 있는 것)만 영어 화면에서 영어로. 한국어 화면은 받은 그대로.
+                Text(ServerErrorText.display(error, code: m.errorTextCode))
                     .font(CEFont.note).foregroundStyle(CE.danger.opacity(0.92)).lineSpacing(CELeading.note)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)

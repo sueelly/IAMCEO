@@ -11,7 +11,7 @@
 App Store 에서 받은 IAMCEO iPhone 앱으로 알림을 보내려면 IAMCEO 앱의 Apple 알림 키(APNs 키)가 있어야 합니다. 그 키는 개발자만 가집니다.
 그래서 자기 키가 없는 Mac 의 IAMCEO 서버는 알림 한 건마다 이 중계에 아래 값만 넘기고, 중계가 정해진 문구로 알림을 만들어 Apple(APNs)에 보냅니다.
 
-- 넘기는 값: iPhone 푸시 토큰, 알림 종류, 무작위 식별자(전달·사건·서버 ID와 이동할 화면의 ID), 유효 시각
+- 넘기는 값: iPhone 푸시 토큰, 알림 종류, 무작위 식별자(전달·사건·서버 ID와 이동할 화면의 ID), 유효 시각, 문구의 언어(`lang`: `ko`·`en`, 0.2.6 서버부터)
 - 넘기지 않는 값: 대화, 결재·보고 내용, 프로젝트·팀장 이름, 접속 코드, 계정·메일
 
 중계는 Firebase Cloud Functions(2세대, Node 22) 함수 하나(`relay`)입니다. 디스크·DB 에 아무것도 저장하지 않습니다.
@@ -43,7 +43,7 @@ Mac 서버는 이 주소를 상수 하나(`server/push/relay-url.ts`)로 갖고,
 | 요청 | 응답 |
 |---|---|
 | `POST /v1/installations` | `201 {installationId, secret}` (계정·메일 없음, 본문은 보지 않음) · 그 IP 의 하루 몫을 넘으면 `429` · 전체 시간 한도면 `503 relay_busy` |
-| `POST /v1/push` `Authorization: Bearer <installationId>.<secret>` 본문 `{token, kind, id, eventId, serverId, target, expiresAt?, summary?}` | `200` 보냄 · `400` 틀린 요청(`expired` 포함) · `401` 자격 없음 · `403` 막힘/허용 목록 밖 · `410` 토큰이 더는 유효하지 않음(Mac 이 지움) · `413` 너무 큼 · `429` 한도(`scope: installation`=이 Mac, `token`=그 iPhone) · `503` 보내지 않음/잠시 못 받음(다시 시도) · `504` 보냈는지 모름(다시 보내지 않음) |
+| `POST /v1/push` `Authorization: Bearer <installationId>.<secret>` 본문 `{token, kind, id, eventId, serverId, target, expiresAt?, summary?, lang?}`(`lang` 이 `en` 이면 영어 문구, 없거나 그 밖이면 한국어. 옛 중계는 이 칸을 버리고 한국어로 보낸다) | `200` 보냄 · `400` 틀린 요청(`expired` 포함) · `401` 자격 없음 · `403` 막힘/허용 목록 밖 · `410` 토큰이 더는 유효하지 않음(Mac 이 지움) · `413` 너무 큼 · `429` 한도(`scope: installation`=이 Mac, `token`=그 iPhone) · `503` 보내지 않음/잠시 못 받음(다시 시도) · `504` 보냈는지 모름(다시 보내지 않음) |
 | `GET /v1/health` (= `/healthz`) | `200`/`503` `{ok, mode, apns:{suspended, reason, last, lastAt}}` — 사용자 정보 없음 |
 
 > Cloud Run 주소(`*.run.app`)는 `z` 로 끝나는 경로(`/healthz`)를 앞단에서 막습니다. 상태 확인은 `/v1/health` 로 합니다(같은 응답). / The Cloud Run address blocks paths ending in `z`; use `/v1/health`.
@@ -177,7 +177,7 @@ Blaze 의 무료 사용량(달마다): 호출 200만 번, 400,000 GB-초, 200,00
 Sending a notification to the App Store build of the IAMCEO iPhone app needs the app's Apple push key, which only the developer has.
 A Mac running IAMCEO without its own key hands each notification to this relay, which builds the fixed-text notification and sends it to Apple (APNs).
 
-- Sent per notification: the iPhone push token, the notification kind, random identifiers (delivery, event and server IDs, and the IDs of the screen to open), an expiry time.
+- Sent per notification: the iPhone push token, the notification kind, random identifiers (delivery, event and server IDs, and the IDs of the screen to open), an expiry time, and the language of the fixed sentence (`lang`: `ko` or `en`, from 0.2.6 servers).
 - Never sent: conversations, decision or report text, project or team names, access codes, accounts or email.
 
 The relay is one Cloud Functions for Firebase function (2nd gen, Node 22) named `relay`. It stores nothing on disk or in a database.

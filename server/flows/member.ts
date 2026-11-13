@@ -9,6 +9,7 @@ import type { AgentToolsImpl, Orchestrator } from "../orchestrator.ts";
 import { josa } from "../roles.ts";
 import type { ReportReferences } from "../service-contracts.ts";
 import { ApiError, type NewDelivery, type Store } from "../store.ts";
+import { textRef, type ServerTextRef } from "../../shared/server-text.ts";
 
 export interface AssignInput {
   text: string;
@@ -116,7 +117,7 @@ export interface MemberFlowPort {
   /** waiting 인데 답하지 않은 결재가 남지 않았으면 지금 하는 대로 고친다. */
   refreshWaiting(memberId: string): void;
   /** 대표에게 Mac 알림(설정에서 켠 때만). */
-  notifyInbox(title: string, body: string): void;
+  notifyInbox(title: string | ServerTextRef, body: string | ServerTextRef): void;
   /** 대표가 체크를 푼 할 일의 '아직 안 했음' 정정을 맞춘다(flows/owner.ts). */
   reconcileTodoCorrections(): void;
   /** 첨부를 그 직원의 폴더로 잇는다(flows/owner.ts). */
@@ -428,7 +429,7 @@ export class MemberFlows {
     const rt = this.port.turnContext(member.id);
     rt.posted = true;
     if (rt.turn) (rt.turn.askedDecisionIds ??= new Set()).add(decision.id);
-    this.port.notifyInbox(`${member.name}의 결재`, input.title);
+    this.port.notifyInbox(textRef("notice.decision.title", { name: member.name }), input.title);
     await Promise.all(deliveries.map(d => this.port.pump(d.memberId)));
     if (member.origin === "manual") return { decision, blocking: true, text: `질문 #${decision.id} 등록됨. 답을 기다립니다` };
     return { decision, blocking: false, text: `질문 #${decision.id} 등록됨. 턴을 끝내세요. 답은 다음 입력으로 옵니다` };

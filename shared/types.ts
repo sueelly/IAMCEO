@@ -1,5 +1,6 @@
 // IAMCEO 공유 계약: 서버·웹·MCP가 함께 쓰는 타입. 바꾸려면 docs/spec.md 와 같이 바꾼다.
 import type { ErrorCode } from "./error-codes.ts";
+import type { ServerTextParam, ServerTextRef, TextLang } from "./server-text.ts";
 
 /**
  * 실행기 종류. 지금 쓰는 것은 "core" 하나다. "herdr"·"headless" 는 지워진 옛 실행기의 값으로,
@@ -182,6 +183,8 @@ export interface Member {
    * 서버는 이 코드로만 가르고, lastError 문장은 표시와 이전 판 서버를 위해 그대로 둔다.
    */
   fenceCode?: ErrorCode;
+  /** 0.2.6 Y: lastError 가 정해진 문장일 때 그 코드(shared/error-codes.ts, 예: last_error_api_outage). 문장은 그대로 한국어다. 앱은 영어 화면에서 이 코드의 영어 문장을 쓴다. */
+  lastErrorCode?: ErrorCode;
   /** CLI가 마지막으로 일한 시각(활동 turn_start/turn_end/tool/tool_result의 최신 ISO 시각). 기록이 없으면 null. */
   lastActiveAt: string | null;
   updatedAt: string;
@@ -265,6 +268,18 @@ export interface Decision {
   /** 닫은 이(화면 이름) 또는 '시스템'. */
   closedBy: string | null;
   closedAt: string | null;
+  /**
+   * 0.2.6 Y: 서버가 만든 카드(도구 승인·사용 한도 등)의 글 코드(shared/server-text.ts). detail 의 코드이고, 제목은 `<코드>.title` 이 있으면 그것이다.
+   * textLang 은 문장(title·detail·선택지·closeReason·reopenNote)을 그린 언어. 서버는 다시 그린 문장이 저장된 문장과 같을 때만 싣는다.
+   * 새 앱은 화면 언어가 textLang 과 다르면 코드로 다시 그린다. 출시된 앱은 모르는 칸이라 문장을 그대로 보인다.
+   */
+  textCode?: string;
+  textParams?: Record<string, ServerTextParam>;
+  textLang?: TextLang;
+  /** 선택지 키별 이름(label)·설명(desc)의 코드. */
+  optionTexts?: Record<string, { label: ServerTextRef; desc?: ServerTextRef }>;
+  closeReasonText?: ServerTextRef;
+  reopenNoteText?: ServerTextRef;
 }
 /** decided 대표가 대화 등으로 이미 정함(서버가 대표 글로 확인) · obsolete 상황이 바뀌어 필요 없어짐 */
 export type DecisionCloseKind = "decided" | "obsolete";
@@ -317,6 +332,14 @@ export interface Message {
   kind: MessageKind;
   title: string;
   body: string; // 마크다운
+  /**
+   * 0.2.6 Y: 서버가 만든 글(시스템 글 등)의 코드와 값(shared/server-text.ts). body 의 코드이고, 제목은 `<코드>.title` 이 있으면 그것이다.
+   * textLang 은 title·body 를 그린 언어(만들 때의 보고 언어). 서버는 다시 그린 문장이 저장된 문장과 같을 때만 싣는다.
+   * 새 앱은 화면 언어가 textLang 과 다르면 코드로 다시 그린다. Z 의 reply 와는 다른 칸이다.
+   */
+  textCode?: string;
+  textParams?: Record<string, ServerTextParam>;
+  textLang?: TextLang;
   targetMemberId: string | null; // @직원 지정
   targetName: string | null;
   decisionId: string | null;
@@ -512,7 +535,11 @@ export interface DeliveryRecoveryResult {
 }
 
 export type ActivityKind = "text" | "tool" | "tool_result" | "turn_start" | "turn_end" | "compact" | "error" | "system";
-export interface Activity { id: number; memberId: string; at: string; kind: ActivityKind; text: string }
+export interface Activity {
+  id: number; memberId: string; at: string; kind: ActivityKind; text: string;
+  /** 0.2.6 Y: 서버가 만든 줄의 코드·값·그린 언어(Message 와 같은 규칙). 터미널·CLI 에서 온 줄에는 없다. */
+  textCode?: string; textParams?: Record<string, ServerTextParam>; textLang?: TextLang;
+}
 
 /**
  * 실행기가 확인한 CLI 승인·설정 창. 선택지는 화면 원문 순서 그대로다.

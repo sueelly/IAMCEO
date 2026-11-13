@@ -10,7 +10,7 @@ import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { EFFORTS, type Bootstrap, type Effort, type Member, type Project, type ProjectState } from "../shared/types.ts";
 import { DEFAULT_PORT, homeDir, detectTailscaleIp, isTailscaleV4, loadConfig, updateConfigFile, type Config } from "../server/config.ts";
-import { say } from "../server/cli-text.ts";
+import { cliLang, say } from "../server/cli-text.ts";
 
 const USAGE = `쓰는 법: iamceo <명령>
   serve                  서버를 켠다
@@ -987,8 +987,11 @@ export async function service(args: string[], dependencies?: ServiceDependencies
   const logDir = join(config.home, "logs");
   const serviceEnv = { ...inherited, ...process.env };
   const env = Object.fromEntries(
-    (["IAMCEO_HOME", "IAMCEO_PORT", "IAMCEO_CLAUDE_BIN", "IAMCEO_CODEX_BIN", "IAMCEO_CORE_BIN", "IAMCEO_CORE_SOCKET"] as const).flatMap((k) => (serviceEnv[k] ? [[k, serviceEnv[k]!]] : [])),
+    (["IAMCEO_HOME", "IAMCEO_PORT", "IAMCEO_CLAUDE_BIN", "IAMCEO_CODEX_BIN", "IAMCEO_CORE_BIN", "IAMCEO_CORE_SOCKET", "IAMCEO_LANG"] as const).flatMap((k) => (serviceEnv[k] ? [[k, serviceEnv[k]!]] : [])),
   );
+  // 0.2.6 Y: 새로 설치하는 서버(데이터가 아직 없음)의 첫 실행 언어. 앱은 IAMCEO_LANG 에 화면 언어를 넣어 부른다.
+  // 명령줄로 처음 켤 때는 그 터미널의 언어(say 와 같은 규칙)를 적는다. 데이터가 이미 있으면 적지 않는다(쓰던 서버의 설정이 바뀌지 않게).
+  if (!env.IAMCEO_LANG && !existsSync(config.dbPath)) env.IAMCEO_LANG = cliLang();
   const claude = config.claudeBin.includes("/") ? config.claudeBin : Bun.which(config.claudeBin);
   const codex = config.codexBin?.includes("/") ? config.codexBin : Bun.which(config.codexBin ?? "codex");
   const core = config.coreBin?.includes("/") ? config.coreBin : Bun.which(config.coreBin ?? "herdr-core");

@@ -7,7 +7,7 @@ import { DeliveryRecovery, type RecoveryRunner } from "./delivery-recovery.ts";
 import { verdictRejudged, type PumpVerdictCode } from "./pump-verdict.ts";
 import { writeStatuslineWrapper } from "./runner/statusline.ts";
 import { emptyBunfig } from "./runner/bun-script.ts";
-import { endedByRestart, RESTART_EXIT_NOTE, RESTART_REOPENED_NOTE, RESTART_RESUME_TEXT, RESTART_WAKE_MAX_ATTEMPTS, RESTART_WAKE_PACING, restartNoteIn, type RestartWake, type RestartWakePacing } from "./restart-wake.ts";
+import { endedByRestart, RESTART_EXIT_NOTE, RESTART_RESUME_TEXT, RESTART_WAKE_MAX_ATTEMPTS, RESTART_WAKE_PACING, restartNoteIn, type RestartWake, type RestartWakePacing } from "./restart-wake.ts";
 // Orchestrator: 전달 펌프, 턴 종료 처리, 압축 판단, 띄우기·잠재우기·다시 열기, 승인 근거 확인(spec §4·§6·§7).
 // 다음은 떼어 낸 모듈이 맡고, 이 클래스는 같은 이름의 공개 메서드로 넘겨준다:
 //   전달 글 delivery-text.ts · 판 정리 board-hygiene.ts · 대표 쪽 흐름 flows/owner.ts · 직원 쪽 흐름 flows/member.ts · 터미널 조작 terminal-control.ts
@@ -81,7 +81,8 @@ import { OwnerFlows } from "./flows/owner.ts";
 import { MemberFlows, type AskInput, type AssignInput, type AssignResult, type PostInput } from "./flows/member.ts";
 // 지시·보고·ask 의 입력 모양은 flows/member.ts 에 있다. 예전처럼 이 파일에서 가져가는 곳(agent-tools.ts·시험)을 위해 내보낸다.
 export type { AskInput, AssignInput, AssignResult, PostInput } from "./flows/member.ts";
-import { conductorHandle, conductorName } from "./text.ts";
+import { conductorHandle, conductorName, DEFAULT_NAMES } from "./text.ts";
+import { mustRender, textRef, type ServerTextRef } from "../shared/server-text.ts";
 
 // 전달 글(§4)은 delivery-text.ts 가 만든다. 예전처럼 이 파일에서 가져가는 곳(시험)을 위해 같은 이름으로 내보낸다.
 import { formatAnswer, formatInstruction, formatReport, formatSystem, formatTodoUndone, formatUserMessage, guardLines, isTidy, normalizeSpace, quoteNeedsContext, type QuoteSource } from "./delivery-text.ts";
@@ -569,10 +570,10 @@ export class Orchestrator implements OrchestratorApi {
     // K(E2): 허용하며 남긴 메모는 훅의 답에 실을 수 없어 팀장의 다음 입력으로 보낸다(결재와 묶지 않는다: 전달 실패가 카드를 다시 열지 않게).
     this.toolPermissions = new ToolPermissions({ store: this.store, notify: (title, body) => this.notifyInbox(title, body),
       deliverNote: (member, decision) => { this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "answer", text: formatAnswer(decision) }); void this.pump(member.id); },
-      stillBlocked: member => this.notifyInbox(`${member.name} 승인 대기`, "도구 승인 요청에 답이 없어 카드를 닫았습니다. 터미널의 승인 창에서 답해 주세요") });
+      stillBlocked: member => this.notifyInbox(textRef("notice.approval_wait.title", { name: member.name }), textRef("notice.tool_card_unanswered")) });
     this.store.repairRejectedLimit();
     this.apiRecovery = new ApiRecovery({ ...deps.apiRecovery, store: this.store,
-      notify: (projectId, text, alertOwner = true) => { this.systemMessage(projectId, text); if (alertOwner) this.store.afterCommit(() => this.notifyInbox("API 연결·사용 한도", text)); },
+      notify: (projectId, text, alertOwner = true) => { this.systemMessage(projectId, text); if (alertOwner) this.store.afterCommit(() => this.notifyInbox(textRef("notice.api_usage.title"), text)); },
       pump: id => this.recheckMemberDelivery(id),
       inspect: async member => {
         if (member.status === "asleep" || member.status === "offline") throw new NoTerminalError();
@@ -783,7 +784,7 @@ export class Orchestrator implements OrchestratorApi {
     if (runner instanceof CoreRunner) runner.forgetUnknownStart(member.id);
     const current = this.store.requireMember(member.id);
     if (current.fenceCode === "starting_unknown") this.store.patchMember(member.id, { lastError: null });
-    this.store.appendActivity(member.id, "system", "세션 기동 결과를 확인하지 못했고 터미널이 생기지 않아 기동을 취소했습니다. 필요하면 다시 깨웁니다");
+    this.store.appendActivity(member.id, "system", textRef("activity.start_cancelled"));
     return true;
   }
 
@@ -920,7 +921,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     if (probe.state !== "live" || Date.now() - Math.max(Date.parse(journal.updatedAt), this.startedAt) < this.timings.writeSettleMs) return;
     this.finishLifecycle(journal, "refused", "터미널이 그대로 살아 있습니다");
-    this.store.appendActivity(member.id, "system", "세션을 다시 열려던 작업이 끊겨 있었습니다. 터미널이 그대로 살아 있어 그 작업을 닫았습니다. 바꾸려던 설정이나 새 세션은 적용되지 않았으니 다시 해 주세요", `${journal.operationId}:live_stop`);
+    this.store.appendActivity(member.id, "system", textRef("activity.reopen_live_stop"), `${journal.operationId}:live_stop`);
     if (!this.recovering) void this.pump(member.id);
   }
 
@@ -1007,7 +1008,7 @@ export class Orchestrator implements OrchestratorApi {
       return;
     }
     this.finishLifecycle(journal, "confirmed", "터미널이 끝난 것을 확인했습니다");
-    this.store.appendActivity(member.id, "system", "세션을 다시 열려던 작업이 끊겨 있었습니다. 터미널이 끝난 것을 확인해 그 작업을 닫았습니다. 바꾸려던 설정이나 새 세션이 적용되지 않았으면 다시 해 주세요", `${journal.operationId}:gone_stop`);
+    this.store.appendActivity(member.id, "system", textRef("activity.reopen_gone_stop"), `${journal.operationId}:gone_stop`);
   }
 
   private settleGoneDeliveries(member: Member, terminalId: string): void {
@@ -1027,14 +1028,14 @@ export class Orchestrator implements OrchestratorApi {
     this.store.transaction(() => {
       if (parallel) this.store.clearDeferredMemberConfig(member.id);
       if (noted) this.store.patchMember(member.id, { lastError: null });
-      this.store.appendActivity(member.id, "system", "병렬 설정을 받은 터미널이 끝나 그 설정의 확인 대기를 풀었습니다. 밀린 전달을 이어 갑니다");
+      this.store.appendActivity(member.id, "system", textRef("activity.parallel_released"));
     });
   }
 
   private releaseGoneLease(member: Member, terminalId: string): void {
     const leaseId = this.store.removeLeaseOfTerminal(member.id, terminalId);
     if (!leaseId) return;
-    this.store.appendActivity(member.id, "system", "직접 조작하던 터미널이 끝나 그 조작권을 거뒀습니다. 밀린 전달을 이어 갑니다", `${leaseId}:gone_lease`);
+    this.store.appendActivity(member.id, "system", textRef("activity.lease_released"), `${leaseId}:gone_lease`);
     // 그 조작권으로 붙어 있던 화면 연결을 닫게 한다. 터미널이 이미 없으니 결과를 기다리지 않는다.
     for (const ended of this.terminal.terminalLeaseListeners) void ended(member.id, leaseId).catch(() => {});
   }
@@ -1155,14 +1156,14 @@ export class Orchestrator implements OrchestratorApi {
           continue;
         }
         this.store.claimExecutionNotice(run.runId, "interruption", () => this.noticeInterrupted(member, run,
-          endedByRestart(reason) ? "Mac이나 실행 엔진이 다시 시작되어 세션이 꺼졌습니다" : reason ?? "종료 근거 없이 세션이 사라졌습니다"));
+          endedByRestart(reason) ? textRef("why.restart_session_off") : reason ?? textRef("why.session_vanished")));
       }
     });
   }
 
   /** 끊긴 실행을 대화에 남기고 총괄을 깨워 알린다. 실행마다 한 번이다(claimExecutionNotice 안에서만 부른다). */
-  private noticeInterrupted(member: Member, run: ExecutionJournal, why: string): void {
-    this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} 중단 — ${why}`);
+  private noticeInterrupted(member: Member, run: ExecutionJournal, why: string | ServerTextRef): void {
+    this.systemMessage(member.projectId, textRef("chat.run_interrupted", { name: member.name, run: run.runId, why }));
     const conductor = this.store.getConductor(member.projectId);
     if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
   }
@@ -1252,18 +1253,18 @@ export class Orchestrator implements OrchestratorApi {
         if (!run || run.memberId !== member.id) continue;
         this.store.claimExecutionNotice(runId, "interruption", () => {
           if (outcome !== "resumed") {
-            this.noticeInterrupted(member, run, `Mac이나 실행 엔진이 다시 시작되어 끊겼습니다${outcome === "failed" ? ". 세션을 다시 열지 못했습니다" : ""}`);
+            this.noticeInterrupted(member, run, textRef(outcome === "failed" ? "why.restart_cut_reopen_failed" : "why.restart_cut"));
             wakeConductor = lead?.id ?? null;
             return;
           }
           resumeId ??= this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", text: RESTART_RESUME_TEXT, wake: true }).id;
-          this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} — 재시작으로 끊겨 이어서 하게 했습니다`);
+          this.systemMessage(member.projectId, textRef("chat.run_restart_resumed", { name: member.name, run: run.runId }));
           // 총괄이 같은 일을 또 맡겨 두 번 하게 되지 않도록, 깨우지 않는 소식으로만 알린다.
           if (lead) this.store.enqueue({ projectId: member.projectId, memberId: lead.id, kind: "system", wake: false,
             text: formatSystem(`${member.name}의 일(실행 ${run.runId})이 Mac이나 실행 엔진의 재시작으로 끊겼습니다. 세션을 다시 열어 끊긴 곳부터 이어서 하게 했으니 같은 일을 다시 지시하지 마세요. 결과는 ${member.name}의 보고로 옵니다. 전달 ${run.deliveryIds.join(", ")}.`) });
         });
       }
-      if (outcome === "resumed" && wake.state !== "resumed") this.store.appendActivity(member.id, "system", RESTART_REOPENED_NOTE);
+      if (outcome === "resumed" && wake.state !== "resumed") this.store.appendActivity(member.id, "system", textRef("activity.restart_reopened"));
       this.store.setRestartWake(memberId, outcome === "failed" ? { ...wake, state: "failed", runIds: [] }
         : outcome === "resumed" && resumeId ? { ...wake, state: "resumed", runIds: [], resumeId } : null);
       // 총괄의 전달은 트랜잭션이 끝난 뒤에 민다(재시작 복구 중이면 복구 끝의 펌프가 민다).
@@ -1389,8 +1390,8 @@ export class Orchestrator implements OrchestratorApi {
     if (this.store.hasExecutionReport(run)) return;
     this.store.claimExecutionNotice(run.runId, "report", () => {
       if (supplementOnly) {
-        this.store.createMessage({ id: `msg_missing_report_${run.runId}`, projectId: member.projectId, who: "시스템", kind: "시스템", title: "결과 보고 누락", body: `${member.name}의 결과 보고가 보완 요청 뒤에도 남지 않았습니다. 기존 업무를 다시 실행하지 않고 결과를 확인해 주세요.` });
-        this.store.appendActivity(member.id, "error", "결과 보고 누락: 보완 요청 뒤에도 결과가 남지 않았습니다", `${run.runId}:missing_report_final`);
+        this.store.createMessage({ id: `msg_missing_report_${run.runId}`, projectId: member.projectId, who: "시스템", kind: "시스템", text: textRef("chat.missing_report", { name: member.name }) });
+        this.store.appendActivity(member.id, "error", textRef("activity.missing_report_final"), `${run.runId}:missing_report_final`);
         // 일을 맡긴 총괄은 보고가 와야 깨어난다. 끝내 보고가 없으면 프로젝트가 조용히 멈추므로, 중단 알림과 같은 길로 총괄에게 한 번 알린다.
         // 시스템 글로 깬 총괄의 턴에는 보고 보완이 붙지 않고(위 조건), 이 자리는 실행마다 한 번만 돈다(claimExecutionNotice).
         const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
@@ -1402,7 +1403,7 @@ export class Orchestrator implements OrchestratorApi {
         }
         return;
       }
-      this.store.appendActivity(member.id, "system", "필수 보고가 없어 보고 보완을 요청했습니다", `${run.runId}:missing_report`);
+      this.store.appendActivity(member.id, "system", textRef("activity.missing_report_requested"), `${run.runId}:missing_report`);
       this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.`) });
     });
   }
@@ -1606,7 +1607,7 @@ export class Orchestrator implements OrchestratorApi {
       if (run && run.phase === "unknown") this.store.saveExecutionJournal({ ...run, ...(late.ok
         ? { phase: late.started ? "running" as const : "received" as const, inputReceivedAt: at, startedAt: late.started ? at : null, turn: late.turn ?? run.turn }
         : { phase: "ended" as const, result: "error" as const, reason: late.detail ?? late.reason, endedAt: at }), updatedAt: at });
-      this.store.appendActivity(memberId, "system", late.ok ? "늦게 도착한 수신 확인으로 전달을 확정했습니다" : "늦게 도착한 결과로 넣지 못한 것을 확인했습니다. 다시 보냅니다", `late-result:${dispatch.dispatchId}`);
+      this.store.appendActivity(memberId, "system", textRef(late.ok ? "activity.late_receipt" : "activity.late_not_written"), `late-result:${dispatch.dispatchId}`);
     } catch (e) { console.warn("늦은 전송 결과 처리 실패:", memberId, (e as Error).message); return; }
     void this.pump(memberId);
   }
@@ -1706,8 +1707,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!member) continue;
       rt.pumpReported = true;
       const seconds = Math.round((now - rt.pumpSince) / 1000);
-      const text = `전달 처리가 ${seconds}초째 끝나지 않았습니다(대기 단계: ${rt.pumpStage ?? "알 수 없음"}). 자동으로 다시 넣거나 중단하지 않습니다`;
-      this.store.appendActivity(memberId, "error", text, `pump-stuck:${rt.pumpSince}`);
+      this.store.appendActivity(memberId, "error", textRef("activity.pump_stuck", { seconds: String(seconds), stage: rt.pumpStage ?? textRef("word.unknown") }), `pump-stuck:${rt.pumpSince}`);
       console.warn("전달 펌프 정체:", memberId, rt.pumpStage, `${seconds}s`);
     }
   }
@@ -2148,7 +2148,7 @@ export class Orchestrator implements OrchestratorApi {
       // 예전에는 보류를 그대로 두어, 새 Codex 세션에 대표의 말이 '사용 한도 해제를 기다립니다'로 붙잡혔다.
       const updated = await this.switchProvider(member, patch, false, false, this.usageStop(member), outcome);
       if (normalized.resetOverrides.length) {
-        this.store.appendActivity(memberId, "system", `CLI 변경으로 지원하지 않는 ${normalized.resetOverrides.join(", ")} 지정을 비우고 직급 기본값으로 되돌렸습니다`);
+        this.store.appendActivity(memberId, "system", textRef("activity.overrides_reset", { fields: normalized.resetOverrides.join(", ") }));
         return { ...updated, resetOverrides: normalized.resetOverrides };
       }
       return updated;
@@ -2163,7 +2163,7 @@ export class Orchestrator implements OrchestratorApi {
         if (!member.sessionId && member.paneId && !["asleep", "offline"].includes(member.status)) {
           this.runtime(memberId).configGaveUp = JSON.stringify(this.desiredConfig(saved));
           this.store.deferMemberConfig(memberId, JSON.stringify(this.desiredConfig(saved)));
-          this.store.appendActivity(memberId, "system", "설정 적용 보류: 같은 대화의 세션 ID를 확인하지 못했습니다. 다음 자연 기동 때 적용합니다");
+          this.store.appendActivity(memberId, "system", textRef("activity.settings_held_session"));
         }
         if (!usage) return saved;
         // 터미널 없이(잠듦·꺼짐) 보류된 팀장: 보류를 풀고, 하던 일이 있었으면 이어가기 글을 넣는다. 그 글이 다음 펌프에서 새 모델로 같은 세션을 연다.
@@ -2260,9 +2260,10 @@ export class Orchestrator implements OrchestratorApi {
    */
   private resumeAfterUsageStop(member: Member, stop: UsageStop, continued: boolean, change: { kind: "model" | "cli"; label: string }): boolean {
     const model = change.label;
-    const what = `${change.kind === "model" ? "모델을" : "CLI를"} ${withRo(model)}`;
     this.apiRecovery.releaseMember(member.id);
-    this.store.appendActivity(member.id, "system", `사용 한도로 멈춘 세션의 ${what} 바꿔 ${continued ? "같은 대화를 이어 엽니다" : "새 세션으로 엽니다"}`);
+    this.store.appendActivity(member.id, "system", change.kind === "model"
+      ? textRef(continued ? "activity.usage_reopen_model_continue" : "activity.usage_reopen_model_new", { model })
+      : textRef(continued ? "activity.usage_reopen_cli_continue" : "activity.usage_reopen_cli_new", { cli: model }));
     const run = stop.runId ? this.store.getExecutionJournal(stop.runId) : null;
     if (!run || run.memberId !== member.id) return false;
     let wakeConductor: string | null = null;
@@ -2271,14 +2272,14 @@ export class Orchestrator implements OrchestratorApi {
       const conductor = this.store.getConductor(member.projectId);
       const lead = conductor && conductor.id !== member.id ? conductor : null;
       if (!continued || change.kind !== "model") {
-        this.noticeInterrupted(member, run, change.kind === "model" ? `사용 한도로 멈췄습니다. ${what} 바꿨지만 이어 열 세션 기록이 없어 새 세션으로 엽니다`
-          : `사용 한도로 멈췄습니다. ${what} 바꿔 새 세션으로 엽니다(이전 CLI의 대화는 이어지지 않습니다)`);
+        this.noticeInterrupted(member, run, change.kind === "model" ? textRef("why.usage_model_new_session", { model })
+          : textRef("why.usage_cli_new_session", { cli: model }));
         wakeConductor = lead?.id ?? null;
         return;
       }
       resumed = true;
       this.apiRecovery.continueAfter(member, usageModelResumeText(model));
-      this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} — 사용 한도로 멈춰 모델을 ${withRo(model)} 바꿔 이어서 하게 했습니다`);
+      this.systemMessage(member.projectId, textRef("chat.usage_model_resumed", { name: member.name, run: run.runId, model }));
       // 총괄이 같은 일을 또 맡기거나 새 직원에게 넘겨 두 번 하게 되지 않도록, 깨우지 않는 소식으로만 알린다.
       if (lead) this.store.enqueue({ projectId: member.projectId, memberId: lead.id, kind: "system", wake: false,
         text: formatSystem(`${member.name}의 일(실행 ${run.runId})이 사용 한도로 멈춰, 모델을 ${withRo(model)} 바꿔 같은 대화를 이어 열고 멈춘 곳부터 이어서 하게 했습니다. 같은 일을 다시 지시하거나 다른 직원을 새로 띄워 넘기지 마세요. 결과는 ${member.name}의 보고로 옵니다. 전달 ${run.deliveryIds.join(", ")}.`) });
@@ -2301,7 +2302,7 @@ export class Orchestrator implements OrchestratorApi {
    * 팀장마다 모델이 달라도 교집합이 아니라 카드 전체에서 걸린 모델들을 뺀다.
    * 모델에 한정된 한도(모델 크레딧 소진, 목록의 모델 이름이 붙은 한도)가 하나도 없으면 [] 다: 계정 전체의 한도는 모델을 바꿔도 곧바로 다시 걸린다.
    */
-  private usageModelChoices(cli: CliProvider, limited: { memberId: string; raw: string }[], blocked: string[] = []): DecisionOption[] {
+  private usageModelChoices(cli: CliProvider, limited: { memberId: string; raw: string }[], blocked: string[] = []): (DecisionOption & { model: string })[] {
     const catalog = this.models.read()[cli].models;
     const scoped = limited.some(entry => modelCreditLimit(entry.raw) !== null || this.catalogValuesNamed(cli, limitedModelName(entry.raw)).length > 0);
     if (!scoped) return [];
@@ -2310,7 +2311,8 @@ export class Orchestrator implements OrchestratorApi {
       const member = this.store.getMember(entry.memberId);
       for (const model of member ? this.usageBlockedModels(member, entry.raw) : this.catalogValuesNamed(cli, limitedModelName(entry.raw))) excluded.add(model);
     }
-    return catalog.filter(option => !excluded.has(option.value.toLowerCase())).map(option => ({ k: `${USAGE_MODEL_PREFIX}${option.value}`, label: `${withRo(option.label)} 바꿔 이어가기` }));
+    // Y: 이름은 보고 언어로 그린다(카드가 코드로 다시 그린다). model 은 카드가 선택지 코드의 값으로 쓰고 응답에는 싣지 않는다.
+    return catalog.filter(option => !excluded.has(option.value.toLowerCase())).map(option => ({ k: `${USAGE_MODEL_PREFIX}${option.value}`, label: this.store.renderText(textRef("card.usage_limit.option_model", { model: option.label })), model: option.label }));
   }
 
   /** 이 팀장이 이 글로 한도에 걸렸을 때 막힌 모델 값(소문자): 쓰던 모델(설정)과 글에 이름이 나온 모델. 카드가 blockedModels 로 기억한다. */
@@ -2607,11 +2609,13 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.store.findMember(project.id, base)) return base;
       for (let n = 2; ; n++) if (!this.store.findMember(project.id, `${base}${sep}${n}`)) return `${base}${sep}${n}`;
     };
+    // Y: 서버가 정하는 기본 이름·역할은 만들 때의 보고 언어를 따른다(한국어면 예전 그대로).
+    const names = DEFAULT_NAMES[this.store.reportLang()];
     const spawn = this.beginSpawn(project, {
       kind: project.isHq ? "root" : "conductor",
       handle: free(project.isHq ? "root" : conductorHandle(project.name), "-"),
-      name: free(project.isHq ? "본사 AI" : conductorName(project.name), " "),
-      role: project.isHq ? "프로젝트 만들기와 잡다한 일" : "총괄",
+      name: free(project.isHq ? names.hqAgent : conductorName(project.name, this.store.reportLang()), " "),
+      role: project.isHq ? names.hqRole : names.leadRole,
       cli: this.store.chiefCli(project.id),
     }, retainOnFailure);
     if (project.now) {
@@ -2874,7 +2878,7 @@ export class Orchestrator implements OrchestratorApi {
     const rt = this.runtime(member.id);
     rt.compactRequest = null;
     rt.skipCompact = true; // 밀린 일이 먼저다. 압축은 다음 측정에서 다시 판단한다.
-    this.store.appendActivity(member.id, "system", own ? "압축을 받은 터미널이 끝나 그 압축을 닫았습니다. 밀린 전달을 이어 갑니다" : "넣지 못한 압축이 확인 대기로 남아 있어 닫았습니다. 밀린 전달을 이어 갑니다", `${compact.id}:orphan_compact`);
+    this.store.appendActivity(member.id, "system", textRef(own ? "activity.orphan_compact_own" : "activity.orphan_compact_left"), `${compact.id}:orphan_compact`);
   }
 
   private coreCompactFenced(member: Member): boolean {
@@ -3039,10 +3043,10 @@ export class Orchestrator implements OrchestratorApi {
     this.scheduleRetry(member.id, rt, until);
     if (!rt.quickExitNotified) {
       rt.quickExitNotified = true;
-      const text = `${member.name}의 세션이 시작하자마자 끝나기를 되풀이해 자동으로 다시 깨우지 않습니다. 터미널에서 원인을 확인한 뒤 팀원을 깨워 주세요.${member.lastError ? ` (${member.lastError})` : ""}`;
+      const text = member.lastError ? textRef("chat.quick_exit_error", { name: member.name, error: member.lastError }) : textRef("chat.quick_exit", { name: member.name });
       this.store.appendActivity(member.id, "error", text);
       this.systemMessage(member.projectId, text);
-      this.notifyInbox(`${member.name} 세션 시작 실패`, text);
+      this.notifyInbox(textRef("notice.start_failed.title", { name: member.name }), text);
     }
     return true;
   }
@@ -3168,7 +3172,7 @@ export class Orchestrator implements OrchestratorApi {
         } else if (d.kind === "instruction") dropped.push(normalizeSpace(d.text.replace(/^\[총괄\][^\n]*\n/, "")).slice(0, 120));
       }
       for (const d of this.store.listOpenDecisionsByMember(memberId)) {
-        this.store.closeDecision(d.id, { kind: null, reason: `${josa(member.name, "이")} 명부에서 빠져 함께 닫혔습니다`, by: "시스템" });
+        this.store.closeDecision(d.id, { kind: null, reason: textRef("card.closed_member_removed", { name: member.name }), by: "시스템" });
         this.memberFlows.wakeAsk(d.id);
       }
       this.settleRestartWake(memberId, "dropped");
@@ -3299,9 +3303,11 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 대표가 다른 창에 있어도 결정할 일을 알게 한다. 설정에서 켠 때만. */
-  notifyInbox(title: string, body: string): void {
+  notifyInbox(title: string | ServerTextRef, body: string | ServerTextRef): void {
     if (!this.notifier || (!this.store.getSettings().notifyMac || this.store.getSettings().macScriptNotifications === false)) return;
-    this.notifier(`IAMCEO · ${normalizeSpace(title).slice(0, 60)}`, normalizeSpace(body).slice(0, 200));
+    // Y: 서버가 정한 알림 글은 보고 언어로 그린다.
+    const text = (value: string | ServerTextRef) => typeof value === "string" ? value : this.store.renderText(value);
+    this.notifier(`IAMCEO · ${normalizeSpace(text(title)).slice(0, 60)}`, normalizeSpace(text(body)).slice(0, 200));
   }
 
   /**
@@ -3361,7 +3367,7 @@ export class Orchestrator implements OrchestratorApi {
     if (rt.turn?.kind === "work" && !rt.pumping && !rt.starting && !rt.reopening && !this.eventQueues.has(memberId) && observed?.failures === 0 && ["idle", "done"].includes(observed.state ?? "") &&
       !runner!.isBusy(memberId) && !this.store.listPendingExecutions().some(run => run.memberId === memberId)) {
       rt.turn = null;
-      this.store.appendActivity(memberId, "system", "끝난 턴의 표시가 남아 전달이 멈춰 있었습니다. 표시를 지우고 다시 보냅니다");
+      this.store.appendActivity(memberId, "system", textRef("activity.stale_turn_cleared"));
       if (member.status === "working") this.settle(member);
       this.releaseSlots();
     }
@@ -3419,12 +3425,13 @@ export class Orchestrator implements OrchestratorApi {
     this.store.transaction(() => {
       for (const d of this.store.claimDelayedDeliveries(now)) {
         const member = this.store.requireMember(d.memberId);
-        const text = `${member.name}에게 보낸 대표 ${josa(d.kind === "answer" ? "결재 답" : "메시지", "이")} 30분 넘게 전달되지 않았습니다. 전달 #${d.id}를 확인해 주세요.`;
+        const ref = textRef(d.kind === "answer" ? "chat.owner_answer_late" : "chat.owner_message_late", { name: member.name, id: d.id });
         // Existing report_blocked path persists one APNs event with the domain message.
-        this.store.createMessage({ projectId: d.projectId, memberId: member.id, who: "시스템", kind: "막힘", title: "대표 전달 지연", body: text });
+        const message = this.store.createMessage({ projectId: d.projectId, memberId: member.id, who: "시스템", kind: "막힘", text: ref });
         const conductor = this.store.getConductor(d.projectId);
-        if (conductor) this.store.enqueue({ projectId: d.projectId, memberId: conductor.id, kind: "system", text: formatSystem(text), wake: false });
-        this.store.afterCommit(() => { if (conductor) void this.pump(conductor.id); this.notifyInbox("대표 전달 지연", text); });
+        // 총괄에게 주는 글은 AI 에게 주는 글이라 한국어 그대로다(Y: 바꾸지 않는다).
+        if (conductor) this.store.enqueue({ projectId: d.projectId, memberId: conductor.id, kind: "system", text: formatSystem(mustRender(ref, "ko")), wake: false });
+        this.store.afterCommit(() => { if (conductor) void this.pump(conductor.id); this.notifyInbox(message.title, message.body); });
       }
     });
   }
@@ -3736,7 +3743,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!member.sessionId) {
       rt.configGaveUp = JSON.stringify(want);
       this.store.deferMemberConfig(member.id, JSON.stringify(want));
-      this.store.appendActivity(member.id, "system", "설정 적용 보류: 같은 대화의 세션 ID를 확인하지 못했습니다. 다음 자연 기동 때 적용합니다");
+      this.store.appendActivity(member.id, "system", textRef("activity.settings_held_session"));
       return true;
     }
     try {
@@ -3769,7 +3776,7 @@ export class Orchestrator implements OrchestratorApi {
         this.store.patchDeliveryRetry(d.id, { nextAttemptAt: null, retryReason: null });
         this.store.markFailed(d.id, "원본이 바뀌어 보내지 않았습니다");
         if (d.refType === "message" && d.refId && this.store.getMessage(d.refId)) this.store.setMessageDelivery(d.refId, "failed", "원본이 바뀌어 보내지 않았습니다");
-        this.store.appendActivity(d.memberId, "system", `원본이 바뀐 전달을 보내지 않고 거뒀습니다 (${d.id})`, `source-changed:${d.id}`);
+        this.store.appendActivity(d.memberId, "system", textRef("activity.source_changed", { id: d.id }), `source-changed:${d.id}`);
       });
       return false;
     });
@@ -3926,7 +3933,7 @@ export class Orchestrator implements OrchestratorApi {
     if (result.ok) {
       rt.parallelFails = 0;
       this.store.patchMember(member.id, { parallel: want });
-      this.store.appendActivity(member.id, "system", `병렬 ${want ? "켬" : "끔"}`);
+      this.store.appendActivity(member.id, "system", textRef(want ? "activity.parallel_on" : "activity.parallel_off"));
       return true;
     }
     if (!["not_written", "rejected"].includes(result.deliveryEffect ?? "unknown")) {
@@ -3938,7 +3945,7 @@ export class Orchestrator implements OrchestratorApi {
       return false;
     }
     const detail = result.detail ?? result.reason;
-    this.store.appendActivity(member.id, "error", `병렬 설정 실패: ${detail}`);
+    this.store.appendActivity(member.id, "error", textRef("activity.parallel_failed", { detail }));
     // 세션을 못 찾았다면 이어지는 턴이 새 세션을 만든다. 그때 다시 켠다.
     if (isMissingSessionError(result.detail)) {
       rt.wantParallel = want;
@@ -4036,7 +4043,7 @@ export class Orchestrator implements OrchestratorApi {
         }
         this.store.patchMember(memberId, { status: "error", lastError: detail });
         this.holdHeld(memberId, rt, this.timings.retryMs);
-        if (first) this.systemMessage(member.projectId, `${member.name}에게 전달하지 못했습니다: ${detail}`);
+        if (first) this.systemMessage(member.projectId, textRef("chat.delivery_failed", { name: member.name, detail }));
         return "retry_wait";
       }
     }
@@ -4151,7 +4158,7 @@ export class Orchestrator implements OrchestratorApi {
     if (latest.compaction?.phase === "succeeded") { this.endCompact(member.id, rt, null); return; }
     if (result.ok) {
       rt.compactBusySince = null;
-      this.store.appendActivity(member.id, "compact", `압축 시작 (문맥 ${member.contextPct ?? "?"}%)`);
+      this.store.appendActivity(member.id, "compact", textRef("activity.compact_start", { pct: `${member.contextPct ?? "?"}%` }));
       this.store.patchMember(member.id, { status: "working" });
       const id = latest.compaction?.id;
       rt.compactTimer = setTimeout(() => {
@@ -4160,7 +4167,7 @@ export class Orchestrator implements OrchestratorApi {
           const current = this.store.getContextState(member.id);
           if (!current?.compaction || current.compaction.id !== id || !["sending", "running"].includes(current.compaction.phase)) return;
           this.store.saveContextState({ ...current, compaction: { ...current.compaction, phase: "uncertain", reason: "completion_timeout" } });
-          this.store.appendActivity(member.id, "error", "압축 완료를 확인할 수 없어 후속 자동 입력을 보류합니다");
+          this.store.appendActivity(member.id, "error", textRef("activity.compact_unconfirmed"));
         } catch (e) { console.error("압축 시간 초과 처리 실패:", member.id, e); }
       }, this.timings.compactTimeoutMs);
       return;
@@ -4181,15 +4188,15 @@ export class Orchestrator implements OrchestratorApi {
         reason: uncertain ? "send_uncertain" : neverWritten ? "backend_down" : result.reason === "input_busy" ? "draft" : result.reason === "blocked" ? "blocked" : result.reason === "down" ? "backend_down" : retryable ? "working" : "provider_error",
         finishedAt: !uncertain && !retry ? new Date().toISOString() : null } });
     if (uncertain) {
-      this.store.appendActivity(member.id, "error", "압축 응답을 확인할 수 없어 자동 재전송을 중지했습니다");
+      this.store.appendActivity(member.id, "error", textRef("activity.compact_uncertain"));
       return;
     }
     rt.turn = null;
     if (retry) { rt.compactRequest = focus; this.retryLater(member.id, rt, this.timings.retryMs); }
     else {
       rt.skipCompact = true; rt.again = true;
-      this.store.appendActivity(member.id, "error", neverWritten ? "압축 실패: 실행 엔진이 제때 답하지 않아 압축을 시작하지 못했습니다. 기다리던 전달을 먼저 보냅니다"
-        : retryable ? "압축 실패: 입력칸의 글이나 CLI 화면 때문에 압축을 시작하지 못했습니다. 기다리던 전달을 먼저 보냅니다" : `압축 실패: ${result.detail ?? result.reason}`);
+      this.store.appendActivity(member.id, "error", neverWritten ? textRef("activity.compact_failed_engine")
+        : retryable ? textRef("activity.compact_failed_busy") : textRef("activity.compact_failed", { detail: result.detail ?? result.reason }));
     }
     this.settle(this.store.requireMember(member.id));
     this.releaseSlots();
@@ -4204,7 +4211,7 @@ export class Orchestrator implements OrchestratorApi {
     const member = this.store.getMember(memberId);
     if (member) {
       if (error) {
-        this.store.appendActivity(memberId, "error", `압축 실패: ${error}`);
+        this.store.appendActivity(memberId, "error", textRef("activity.compact_failed", { detail: error }));
       } else {
         this.afterCompacted(member);
       }
@@ -4216,7 +4223,7 @@ export class Orchestrator implements OrchestratorApi {
 
   private afterCompacted(member: Member): void {
     if (this.backendOf(member) !== "core") this.store.patchMember(member.id, { contextPct: null });
-    this.store.appendActivity(member.id, "compact", "압축 완료");
+    this.store.appendActivity(member.id, "compact", textRef("activity.compact_done"));
     if (member.origin !== "adopted") return;
     // 넘겨받은 세션은 규칙이 시스템 프롬프트에 없어 요약에서 흐려진다(스킬 §4).
     const project = this.store.requireProject(member.projectId);
@@ -4452,23 +4459,23 @@ export class Orchestrator implements OrchestratorApi {
       result = await runner.answerApproval(target, prompt.fingerprint, trust.n);
     }
     if (!result.ok) return false;
-    this.store.appendActivity(member.id, "system", `프로젝트를 만들 때 대표가 이 폴더를 신뢰한다고 답해, 폴더 신뢰 확인 창에서 '${trust.label}' 을 골랐습니다 · ${member.cwd}`);
+    this.store.appendActivity(member.id, "system", textRef("activity.trust_auto", { label: trust.label, cwd: member.cwd }));
     return true;
   }
 
   /** 무엇을 승인할지 알림에 같이 싣는다. 창을 못 읽으면 예전 문구다. */
   private async notifyBlocked(member: Member): Promise<void> {
     // 승인 창이 아닌 막힘은 승인 대기라고 알리지 않는다.
-    if (member.blockedCode === "start_not_ready") return this.notifyInbox(`${member.name} 시작 지연`, "시작이 늦어지고 있습니다. 터미널을 열어 화면을 확인해 주세요");
-    if (member.blockedCode === "trust_dialog_unrecognized") return this.notifyInbox(`${member.name} 확인 필요`, "폴더 신뢰 확인 창을 읽지 못했습니다. 터미널을 열어 직접 답해 주세요");
+    if (member.blockedCode === "start_not_ready") return this.notifyInbox(textRef("notice.start_slow.title", { name: member.name }), textRef("notice.start_slow"));
+    if (member.blockedCode === "trust_dialog_unrecognized") return this.notifyInbox(textRef("notice.check_needed.title", { name: member.name }), textRef("notice.trust_unreadable"));
     // K(E2): 이 승인 창은 도구 승인 카드로 이미 알렸다(또는 방금 답했다). 같은 일을 두 번 알리지 않는다.
     if (this.toolPermissions.covers(member.id)) return;
-    let body = "승인 창 앞에서 멈췄습니다";
+    let body: ServerTextRef = textRef("notice.approval_prompt");
     try {
       const a = await this.memberApproval(member.id);
-      if (a) body = `${approvalSummary(a)} · 결재함에서 승인·거절할 수 있습니다`;
+      if (a) body = textRef("notice.approval_summary", { summary: approvalSummary(a) });
     } catch { /* 알림은 그대로 보낸다 */ }
-    this.notifyInbox(`${member.name} 승인 대기`, body);
+    this.notifyInbox(textRef("notice.approval_wait.title", { name: member.name }), body);
   }
 
   private onStatus(member: Member, status: "working" | "idle" | "blocked" | "gone"): void {
@@ -4538,7 +4545,7 @@ export class Orchestrator implements OrchestratorApi {
       this.store.saveContextState({ ...state, baseline: { ...state.baseline, completedTurn: e.turn ?? null } });
     }
     this.store.finishDelegationAck(member.id);
-    this.store.appendActivity(member.id, e.isError ? "error" : "turn_end", e.isError ? (e.errorText ?? "오류") : "턴 끝");
+    this.store.appendActivity(member.id, e.isError ? "error" : "turn_end", e.isError ? (e.errorText ?? "오류") : textRef("activity.turn_end"));
     if (member.subagents !== 0) this.store.patchMember(member.id, { subagents: 0 });
 
     if (member.status === "asleep") {
@@ -4560,7 +4567,7 @@ export class Orchestrator implements OrchestratorApi {
       // 판 정리만 받은 턴은 바뀐 게 없으면 아무것도 올리지 않기로 했다. 마지막 글은 활동에만 남긴다.
       const tidyOnly = tidied && !!turn?.deliveries?.every((d) => d.kind === "system");
       if (!posted && e.finalText.trim()) {
-        if (tidyOnly) this.store.appendActivity(member.id, "system", `판 정리: ${normalizeSpace(e.finalText).slice(0, 300)}`);
+        if (tidyOnly) this.store.appendActivity(member.id, "system", textRef("activity.tidy", { text: normalizeSpace(e.finalText).slice(0, 300) }));
         else await this.fallbackReport(member, e.finalText, direct);
       }
     }
@@ -4574,7 +4581,7 @@ export class Orchestrator implements OrchestratorApi {
     this.apiRecovery.finishNetwork(member.id);
     if (kind === "usage_limit") { this.apiRecovery.usageFailure(member, errorText, null, errorKey); return; }
     this.store.patchMember(member.id, { status: "error", lastError: errorText });
-    this.systemMessage(member.projectId, `${member.name} 오류: ${errorText}`);
+    this.systemMessage(member.projectId, textRef("chat.member_error", { name: member.name, error: errorText }));
     if (member.kind === "worker") await this.reportToConductor(member, "막힘", "(자동) 턴 오류", errorText, true);
   }
 
@@ -4700,8 +4707,9 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   // ---- 도움 ----
-  private systemMessage(projectId: string, body: string): void {
-    this.store.createMessage({ projectId, who: "시스템", kind: "시스템", body });
+  /** 대화의 시스템 글. 코드를 주면 보고 언어로 그리고 코드를 함께 남긴다(Y). */
+  private systemMessage(projectId: string, body: string | ServerTextRef): void {
+    this.store.createMessage({ projectId, who: "시스템", kind: "시스템", ...(typeof body === "string" ? { body } : { text: body }) });
   }
 
   private runtime(memberId: string): Runtime {

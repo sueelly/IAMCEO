@@ -4,6 +4,7 @@ import type { ClientHttp2Session, ClientHttp2Stream, IncomingHttpHeaders, Outgoi
 import type { PushEnvironment, PushProviderStatus } from "../../shared/push.ts";
 import type { PushEventTarget, PushKind, PushPayload } from "./contracts.ts";
 import type { APNsConfig, APNsCredential } from "./config.ts";
+import type { TextLang } from "../../shared/server-text.ts";
 
 export const APNS_ORIGINS = Object.freeze({ sandbox: "https://api.sandbox.push.apple.com:443", production: "https://api.push.apple.com:443" });
 export const APNS_TTL_MS = Object.freeze({ decision: 3_600_000, approval_wait: 900_000, error: 900_000, report_complete: 3_600_000, todo_created: 3_600_000, report_blocked: 900_000, test: 300_000 });
@@ -19,6 +20,8 @@ export interface APNsNotification {
   occurredAt: string;
   expiresAt: string;
   reportSummary?: boolean;
+  /** 0.2.6 Y: 알림 문구의 언어(그 iPhone 의 등록 언어). 없으면 한국어(예전 문구). 중계에는 본문의 lang 으로 간다. */
+  lang?: TextLang;
 }
 export type APNsTransportResult =
   | { type: "response"; status: number; headers: IncomingHttpHeaders; body: string }
@@ -88,6 +91,20 @@ export class APNsTokenCache {
 function uuid(value: string): boolean { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value); }
 function id(value: string): boolean { return /^[A-Za-z0-9_-]{1,200}$/.test(value); }
 
+/**
+ * 종류별 고정 문구(제목은 늘 IAMCEO). 0.2.6 Y: 영어를 더했다. 한국어는 예전 문구와 글자까지 같다.
+ * 중계(relay/functions)도 이 표로 만든다: Mac 이 직접 보낼 때와 중계가 만들 때 같은 언어면 바이트까지 같다.
+ * 내용(이름·제목·본문)은 싣지 않는다. 앱이 서버에서 읽어 보여 준다.
+ */
+export const PUSH_BODIES: Record<TextLang, Record<PushKind | "test" | "report_more", string>> = {
+  ko: { decision: "새 결재가 도착했습니다.", approval_wait: "진행을 위해 직접 확인이 필요합니다.", error: "실행 문제를 확인해 주세요.",
+    report_complete: "완료 보고가 도착했습니다.", todo_created: "대표 할 일이 생겼습니다.", report_blocked: "막힘 보고를 확인해 주세요.",
+    test: "iPhone 알림 연결을 확인합니다.", report_more: "추가 완료 보고가 도착했습니다." },
+  en: { decision: "There is a new decision.", approval_wait: "Your confirmation is needed to continue.", error: "Please check a problem with a run.",
+    report_complete: "A completion report arrived.", todo_created: "There is a new to-do for you.", report_blocked: "Please check a blocked report.",
+    test: "Checking iPhone notifications.", report_more: "More completion reports arrived." },
+};
+
 /** Reconstruct allowlisted fields; extra properties from persisted objects never escape. */
 export function buildAPNsPayload(notification: APNsNotification): PushPayload {
   if (!uuid(notification.serverId) || !uuid(notification.eventId)) throw new Error("invalid_payload");
@@ -118,9 +135,8 @@ export function buildAPNsPayload(notification: APNsNotification): PushPayload {
       break;
     default: throw new Error("invalid_payload");
   }
-  const bodies = { decision: "새 결재가 도착했습니다.", approval_wait: "진행을 위해 직접 확인이 필요합니다.",
-    error: "실행 문제를 확인해 주세요.", report_complete: "완료 보고가 도착했습니다.", todo_created: "대표 할 일이 생겼습니다.", report_blocked: "막힘 보고를 확인해 주세요.", test: "iPhone 알림 연결을 확인합니다." };
-  return { aps: { alert: { title: "IAMCEO", body: notification.kind === "report_complete" && notification.reportSummary ? "추가 완료 보고가 도착했습니다." : bodies[notification.kind] }, sound: "default", "thread-id": `iamceo:${notification.serverId}` },
+  const bodies = PUSH_BODIES[notification.lang === "en" ? "en" : "ko"];
+  return { aps: { alert: { title: "IAMCEO", body: notification.kind === "report_complete" && notification.reportSummary ? bodies.report_more : bodies[notification.kind] }, sound: "default", "thread-id": `iamceo:${notification.serverId}` },
     iamceo: { v: 1, serverId: notification.serverId, eventId: notification.eventId, kind: notification.kind, target } };
 }
 

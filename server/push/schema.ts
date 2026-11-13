@@ -23,6 +23,9 @@ export function extendPushSchema(db: Database): void {
     db.exec("DROP TABLE push_delivery_backup");
     db.exec("DROP TABLE push_group_event_backup");
   }
+  // 0.2.6 Y: 그 iPhone 이 알림을 받을 언어(ko|en). 등록·설정 바꾸기 요청의 Accept-Language 로 정한다. 없으면(NULL, 옛 앱·옛 행) 한국어.
+  // 열만 더한다(판 번호 없음). 이전 판 서버는 이 열을 모른 채 지나간다.
+  if (!db.query<{ name: string }, []>("PRAGMA table_info(push_devices)").all().some(c => c.name === "language")) db.exec("ALTER TABLE push_devices ADD COLUMN language TEXT");
   if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='push_todo_observations'").get()) {
     db.exec("CREATE TABLE push_todo_observations (todo_id TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE)");
     // One-time installation baseline: existing work must not produce old alerts.

@@ -15,6 +15,7 @@ import type { AnswerReq, Decision, DecisionOption, Member, ToolPermissionInfo } 
 import { ApiError, type Store } from "./store.ts";
 import { josa } from "./roles.ts";
 import { TOOL_PERMISSION_POLL_MS, TOOL_PERMISSION_TTL_MS } from "./runner/permission-hook.ts";
+import { mustRender, textRef, type ServerTextCode, type ServerTextRef } from "../shared/server-text.ts";
 
 export { TOOL_PERMISSION_POLL_MS, TOOL_PERMISSION_TTL_MS };
 /** 기다리는 요청이 없는 채로 이만큼 지나면 훅이 끊긴 것으로 보고 닫는다. */
@@ -44,7 +45,7 @@ export interface ToolPermissionPoll { id: string | null; state: "pending" | "all
 export interface ToolPermissionDeps {
   store: Store;
   /** 이 Mac 의 알림(결재 알림 설정을 따른다). */
-  notify(title: string, body: string): void;
+  notify(title: string | ServerTextRef, body: string | ServerTextRef): void;
   /** 허용하며 남긴 메모. 훅의 허용 답에는 글을 실을 수 없어, 팀장의 다음 입력으로 보낸다. */
   deliverNote(member: Member, decision: Decision): void;
   /** 답 없이 시간이 지나 닫았는데 팀장이 아직 승인 창 앞이다. */
@@ -120,6 +121,10 @@ function clipLines(text: string, maxLines: number): string {
   return lines.length <= maxLines ? text : `${lines.slice(0, maxLines).join("\n")}\n…(${lines.length - maxLines}줄 더 있음)`;
 }
 function oneLine(text: string): string { return text.replace(/\s+/g, " ").trim(); }
+/** 활동 줄(300자)의 끝 값. 예전처럼 한국어 줄 전체를 300자에서 자른 것과 같게, 한국어 머리의 길이를 뺀 만큼 값을 자른다. */
+function clipAfter(code: ServerTextCode, action: ServerTextRef, target: string): string {
+  return clip(target, Math.max(1, 300 - Array.from(mustRender(textRef(code, { action, target: "" }), "ko")).length));
+}
 function str(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 function homeShort(path: string): string {
   const home = process.env.HOME;
@@ -189,6 +194,38 @@ function fence(text: string): string {
 /** 카드 본문의 마지막 줄. 선택 없이 메모만 보낸 답은 거절이다(answer). */
 export const TOOL_PERMISSION_NOTE_ONLY = "허용·거절 가운데 하나를 고르세요. 메모만 보내면 거절로 처리합니다.";
 
+/** 0.2.6 Y: 도구 이름의 '무엇을' 코드(shared/server-text.ts tool.action.*). 한국어로 그리면 ACTIONS 와 같다. */
+const ACTION_CODES: Record<string, ServerTextCode> = {
+  Bash: "tool.action.bash", BashOutput: "tool.action.bash_output", KillShell: "tool.action.kill_shell", KillBash: "tool.action.kill_shell",
+  Edit: "tool.action.edit", MultiEdit: "tool.action.edit", Write: "tool.action.write", NotebookEdit: "tool.action.notebook_edit",
+  Read: "tool.action.read", Glob: "tool.action.glob", Grep: "tool.action.grep", LS: "tool.action.ls", WebFetch: "tool.action.web_fetch",
+  WebSearch: "tool.action.web_search", Task: "tool.action.task", Agent: "tool.action.task", Skill: "tool.action.skill", SlashCommand: "tool.action.slash_command",
+};
+export function toolActionRef(toolName: string): ServerTextRef {
+  const known = ACTION_CODES[toolName];
+  if (known) return textRef(known);
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  return mcp ? textRef("tool.action.mcp", { server: mcp[1]! }) : textRef("tool.action.other", { tool: toolName });
+}
+
+/**
+ * 0.2.6 Y: 카드의 글 코드. 보고 언어 한국어로 그리면 toolPermissionCard 와 글자까지 같다(tests/server-text.test.ts 대조).
+ * 제목은 card.tool_permission.title(=`<무엇을>: <대상 한 줄>`), 선택지는 허용·거절의 이름과 설명.
+ */
+export function toolPermissionCardTexts(member: Pick<Member, "name">, info: ToolPermissionInfo, ttlMs: number) {
+  const minutes = Math.max(1, Math.round(ttlMs / 60_000));
+  const bar = fence(info.target);
+  const action = toolActionRef(info.tool);
+  return {
+    text: textRef("card.tool_permission", { name: member.name, action, bar, target: info.target, titleTarget: clip(oneLine(info.target), MAX_TITLE_TARGET),
+      folderLine: info.cwd ? textRef("card.tool_permission.folder", { folder: homeShort(info.cwd) }) : "", minutes: String(minutes) }),
+    options: {
+      allow: { label: textRef("card.tool_permission.allow"), desc: textRef("card.tool_permission.allow_desc") },
+      deny: { label: textRef("card.tool_permission.deny"), desc: textRef("card.tool_permission.deny_desc") },
+    },
+  };
+}
+
 export function toolPermissionCard(member: Pick<Member, "name">, info: ToolPermissionInfo, ttlMs: number): { title: string; detail: string } {
   const minutes = Math.max(1, Math.round(ttlMs / 60_000));
   const bar = fence(info.target);
@@ -234,7 +271,7 @@ export class ToolPermissions {
     let closed = 0;
     for (const decision of this.deps.store.listOpenToolPermissions()) {
       if (this.entries.has(decision.id)) continue;
-      if (this.closeRow(decision.id, "서버가 다시 시작되어 승인 요청이 끊겼습니다. 터미널의 승인 창에서 답해 주세요")) closed++;
+      if (this.closeRow(decision.id, textRef("card.tool_permission.closed_restart"))) closed++;
     }
     return closed;
   }
@@ -262,17 +299,21 @@ export class ToolPermissions {
     if (!project || project.archived) return { id: null, state: "closed" };
     // 사람이 터미널에서 직접 골라야 하는 도구(질문 창·계획 확정)는 CLI 가 훅의 허용을 받지 않는다. 카드를 띄우지 않는다.
     if (PERSON_ONLY_TOOLS.has(input.toolName)) return { id: null, state: "closed" };
-    const { action, target } = describeToolRequest(input.toolName, input.toolInput);
+    const { target } = describeToolRequest(input.toolName, input.toolInput);
     const cwd = str(input.cwd) ?? member.cwd ?? null;
     const expiresAt = this.now() + this.ttl;
+    // Y: '무엇을'은 보고 언어로 적는다(한국어면 예전과 같다). 카드의 글은 코드로 넘겨 저장소가 보고 언어로 그린다.
+    const actionRef = toolActionRef(input.toolName);
+    const action = clip(oneLine(store.renderText(actionRef)), 60);
     const info: ToolPermissionInfo = { tool: clip(input.toolName, 200), action, target, cwd, expiresAt: new Date(expiresAt).toISOString() };
     const { title, detail } = toolPermissionCard(member, info, this.ttl);
-    const decision = store.createToolPermissionDecision({ projectId: member.projectId, memberId: member.id, who: member.name, title, detail, options: TOOL_PERMISSION_OPTIONS, toolPermission: info });
+    const decision = store.createToolPermissionDecision({ projectId: member.projectId, memberId: member.id, who: member.name, title, detail, options: TOOL_PERMISSION_OPTIONS, toolPermission: info,
+      texts: toolPermissionCardTexts(member, info, this.ttl) });
     const entry: Entry = { id: decision.id, memberId: member.id, expiresAt, inflight: 0, lastSeen: this.now(), answer: null, closed: false,
       sawBlocked: member.status === "blocked", grace: null, wake: new Set() };
     this.entries.set(decision.id, entry);
-    store.appendActivity(member.id, "system", clip(`도구 승인 요청을 결재함에 올렸습니다 · ${action}: ${oneLine(target)}`, 300));
-    this.deps.notify(`${member.name} 도구 승인`, `${action}: ${oneLine(target)}`);
+    store.appendActivity(member.id, "system", textRef("activity.tool_requested", { action: actionRef, target: clipAfter("activity.tool_requested", actionRef, oneLine(target)) }));
+    this.deps.notify(textRef("notice.tool_permission.title", { name: member.name }), textRef("card.tool_permission.title", { action: actionRef, titleTarget: oneLine(target) }));
     return this.waitOn(entry, signal);
   }
 
@@ -281,7 +322,7 @@ export class ToolPermissions {
     const entry = this.entries.get(id);
     if (!entry) {
       const decision = this.deps.store.getDecision(id);
-      if (decision?.kind === "tool_permission" && decision.memberId === member.id && decision.status === "open") this.closeRow(id, "승인 요청이 끊겼습니다. 터미널의 승인 창에서 답해 주세요");
+      if (decision?.kind === "tool_permission" && decision.memberId === member.id && decision.status === "open") this.closeRow(id, textRef("card.tool_permission.closed_cut"));
       return { id, state: "closed" };
     }
     if (entry.memberId !== member.id) throw new ApiError(403, "다른 팀장의 승인 요청입니다", "decision_not_own");
@@ -323,7 +364,7 @@ export class ToolPermissions {
     }
     // 훅이 끊겼다(CLI 가 훅을 거두었거나 턴이 멈췄다). 받을 이가 없으니 답을 건네지 않고 닫는다.
     if (signal?.aborted && !entry.answer) {
-      this.close(entry, "터미널 쪽 요청이 끝나 닫았습니다. 터미널에서 답했거나 일이 멈췄습니다");
+      this.close(entry, textRef("card.tool_permission.closed_terminal_side_ended"));
       return { id: entry.id, state: "closed" };
     }
     const done = this.result(entry);
@@ -352,7 +393,7 @@ export class ToolPermissions {
     const entry = this.entries.get(decisionId);
     if (!entry || entry.closed) {
       // 기다리던 훅이 없다(서버 재시작 등). 답해도 CLI 에 닿지 않으니 카드를 닫고 알린다.
-      this.closeRow(decisionId, "승인 요청이 이미 끝났습니다. 터미널의 승인 창에서 답해 주세요");
+      this.closeRow(decisionId, textRef("card.tool_permission.closed_already_over"));
       throw new ApiError(409, "승인 요청이 이미 끝났습니다. 터미널의 승인 창에서 답해 주세요", "tool_permission_gone");
     }
     const state = choice === "allow" ? "allow" : "deny";
@@ -364,7 +405,11 @@ export class ToolPermissions {
     const member = store.getMember(entry.memberId);
     if (member) {
       const info = decision.toolPermission;
-      store.appendActivity(member.id, "system", clip(`대표가 결재함에서 도구 승인 요청을 ${state === "allow" ? "허용" : "거절"}했습니다${info ? ` · ${info.action}: ${oneLine(info.target)}` : ""}`, 300));
+      if (info) {
+        const code = state === "allow" ? "activity.tool_allowed" : "activity.tool_denied";
+        const actionRef = toolActionRef(info.tool);
+        store.appendActivity(member.id, "system", textRef(code, { action: actionRef, target: clipAfter(code, actionRef, oneLine(info.target)) }));
+      } else store.appendActivity(member.id, "system", textRef(state === "allow" ? "activity.tool_allowed_plain" : "activity.tool_denied_plain"));
       if (state === "allow" && note) this.deps.deliverNote(member, answered);
     }
     return answered;
@@ -381,14 +426,14 @@ export class ToolPermissions {
         entry.sawBlocked = true;
         if (entry.grace) { clearTimeout(entry.grace); entry.grace = null; }
       } else if (status === "gone") {
-        this.close(entry, "팀장의 터미널이 끝나 닫았습니다");
+        this.close(entry, textRef("card.tool_permission.closed_terminal_ended"));
       } else if (entry.sawBlocked && !entry.grace) {
         entry.grace = setTimeout(() => {
           entry.grace = null;
           if (entry.closed || entry.answer) return;
           const current = this.deps.store.getMember(memberId);
           if (current?.status === "blocked") return;
-          this.close(entry, "터미널에서 먼저 답해 승인 창이 닫혔습니다");
+          this.close(entry, textRef("card.tool_permission.closed_answered_in_terminal"));
         }, this.graceMs);
         entry.grace.unref?.();
       }
@@ -406,19 +451,19 @@ export class ToolPermissions {
         continue;
       }
       if (now >= entry.expiresAt) this.expire(entry);
-      else if (now - entry.lastSeen > this.goneMs) this.close(entry, "터미널 쪽 요청이 끊겨 닫았습니다. 터미널의 승인 창에서 답해 주세요");
+      else if (now - entry.lastSeen > this.goneMs) this.close(entry, textRef("card.tool_permission.closed_terminal_side_cut"));
     }
   }
 
   private expire(entry: Entry): void {
     if (entry.closed) return;
     const minutes = Math.max(1, Math.round(this.ttl / 60_000));
-    this.close(entry, `${minutes}분 동안 답이 없어 터미널의 승인 창으로 넘겼습니다`);
+    this.close(entry, textRef("card.tool_permission.closed_timeout", { minutes: String(minutes) }));
     const member = this.deps.store.getMember(entry.memberId);
     if (member?.status === "blocked") this.deps.stillBlocked?.(member);
   }
 
-  private close(entry: Entry, reason: string): void {
+  private close(entry: Entry, reason: ServerTextRef): void {
     if (entry.closed) return;
     entry.closed = true;
     if (entry.grace) { clearTimeout(entry.grace); entry.grace = null; }
@@ -428,13 +473,13 @@ export class ToolPermissions {
   }
 
   /** 열린 카드만 닫는다(이미 답했거나 닫혔으면 그대로). 닫았으면 true. */
-  private closeRow(id: string, reason: string): boolean {
+  private closeRow(id: string, reason: ServerTextRef): boolean {
     const { store } = this.deps;
     try {
       const decision = store.getDecision(id);
       if (!decision || decision.status !== "open") return false;
       store.closeDecision(id, { kind: null, reason, by: "시스템" });
-      if (decision.memberId && store.getMember(decision.memberId)) store.appendActivity(decision.memberId, "system", clip(`도구 승인 카드를 닫았습니다 · ${reason}`, 300));
+      if (decision.memberId && store.getMember(decision.memberId)) store.appendActivity(decision.memberId, "system", textRef("activity.tool_card_closed", { reason }));
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) return false;
@@ -454,7 +499,7 @@ export class ToolPermissions {
     clearInterval(this.sweeper);
     for (const entry of [...this.entries.values()]) {
       if (entry.grace) { clearTimeout(entry.grace); entry.grace = null; }
-      if (!entry.answer && !entry.closed) this.close(entry, "서버가 멈춰 승인 요청이 끊겼습니다. 터미널의 승인 창에서 답해 주세요");
+      if (!entry.answer && !entry.closed) this.close(entry, textRef("card.tool_permission.closed_server_stopped"));
       else for (const wake of [...entry.wake]) wake();
     }
   }

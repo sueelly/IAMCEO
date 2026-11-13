@@ -91,7 +91,7 @@ private struct DeliveryNoticeRow: View {
                     // location/code may contain host paths or raw diagnostics; never render them.
                 }
                 if let recommendation = item.recommendation {
-                    Text("추천 · \(recommendation.text)").font(CEFont.secondary).foregroundStyle(CE.ink2)
+                    Text("추천 · \(ServerErrorText.displayNote(recommendation.text))").font(CEFont.secondary).foregroundStyle(CE.ink2)
                         .ceLineHeight(13, 1.5)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -51,7 +51,7 @@ By default Tailscale encrypts the link between the iPhone and the Mac, and the a
 - **If turning notifications on failed before**, update the server and then turn the notification switch on again in the iPhone app's settings (the first prompt does not come back).
 - If notification settings say "The notification service is temporarily unavailable", the relay cannot be reached for now. The server sends again on its own; just wait.
 
-A notification carries a fixed sentence and identifiers only, never conversation content. Tapping it never answers, approves or types anything for you.
+A notification carries a fixed sentence and identifiers only, never conversation content. Tapping it never answers, approves or types anything for you. The fixed sentence is in that iPhone's app language, Korean or English (from 0.2.6). The server learns the language from the app's requests, and when it uses the notification relay it passes along that one language value (`ko` or `en`).
 
 ## When it does not connect
 

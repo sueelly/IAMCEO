@@ -81,6 +81,8 @@ final class LocalHostService {
         var launchEnvironment = environment
         launchEnvironment["IAMCEO_HOME"] = dataHome.path
         launchEnvironment["IAMCEO_CORE_BIN"] = resources.core.path
+        // 0.2.6 Y: 새로 설치한 서버의 첫 실행 언어(본사·총괄의 기본 이름과 보고 언어)는 이 앱의 화면 언어를 따른다. 이미 있는 데이터는 바꾸지 않는다.
+        launchEnvironment["IAMCEO_LANG"] = environment["IAMCEO_LANG"] ?? AppLanguage.current.rawValue
         statusText = String(localized: "이 Mac의 실행 서비스를 준비하는 중")
         // service install 은 서버 준비를 30초까지 기다린 뒤 끝난다.
         let status = try await Self.run(resources.daemon, arguments: ["service", "install"], environment: launchEnvironment, timeout: 90)

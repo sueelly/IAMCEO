@@ -126,6 +126,8 @@ struct Member: Codable, Sendable, Identifiable, Equatable {
     var lastError: String? = nil
     /// lastError 와 짝인 보류 코드(서버 members.fence_code, 예: starting_unknown). 옛 서버는 싣지 않는다. 보일 문장을 고를 때만 쓴다.
     var fenceCode: String? = nil
+    /// 0.2.6 Y: lastError 가 서버가 정한 문장일 때 그 코드(예: last_error_api_outage). 문장은 한국어 그대로 오고, 영어 화면은 이 코드의 문장을 쓴다.
+    var lastErrorCode: String? = nil
     var updatedAt: String = ""
     var createdAt: String = ""
     var contextWindow: Int? = nil
@@ -143,6 +145,10 @@ struct Member: Codable, Sendable, Identifiable, Equatable {
     /// Why the server thinks a blocked member is stuck ("trust_dialog_unrecognized", "start_not_ready"); nil from older
     /// servers. An unknown code is shown like no code at all.
     var blockedCode: String? = nil
+}
+extension Member {
+    /// 오류 줄을 화면 언어로 고를 때 쓰는 코드: 보류 코드(fenceCode)가 먼저, 없으면 정해진 문장의 코드(lastErrorCode, 0.2.6 Y).
+    var errorTextCode: String? { fenceCode ?? lastErrorCode }
 }
 extension Member {
     init(from decoder: Decoder) throws {
@@ -173,6 +179,7 @@ extension Member {
         queuedCount = try c.decodeIfPresent(Int.self, forKey: ModelKey("queuedCount")) ?? 0
         lastError = try c.decodeIfPresent(String.self, forKey: ModelKey("lastError"))
         fenceCode = try? c.decodeIfPresent(String.self, forKey: ModelKey("fenceCode"))
+        lastErrorCode = c.lenient(String.self, forKey: ModelKey("lastErrorCode"))
         updatedAt = try c.decodeIfPresent(String.self, forKey: ModelKey("updatedAt")) ?? ""
         createdAt = try c.decodeIfPresent(String.self, forKey: ModelKey("createdAt")) ?? ""
         contextWindow = try c.decodeIfPresent(Int.self, forKey: ModelKey("contextWindow"))
@@ -276,6 +283,13 @@ struct Decision: Codable, Sendable, Identifiable, Equatable {
     var closeQuote: String? = nil
     var closedBy: String? = nil
     var closedAt: String? = nil
+    /// 0.2.6 Y: 서버가 만든 카드의 글 코드·값·그린 언어(ServerText.swift). 디코딩 때 화면 언어로 바꿔 둔다.
+    var textCode: String? = nil
+    var textParams: [String: ServerTextParam]? = nil
+    var textLang: String? = nil
+    var optionTexts: [String: ServerOptionTexts]? = nil
+    var closeReasonText: ServerTextRef? = nil
+    var reopenNoteText: ServerTextRef? = nil
 }
 extension Decision {
     init(from decoder: Decoder) throws {
@@ -310,6 +324,13 @@ extension Decision {
         closeQuote = try c.decodeIfPresent(String.self, forKey: ModelKey("closeQuote"))
         closedBy = try c.decodeIfPresent(String.self, forKey: ModelKey("closedBy"))
         closedAt = try c.decodeIfPresent(String.self, forKey: ModelKey("closedAt"))
+        textCode = c.lenient(String.self, forKey: ModelKey("textCode"))
+        textParams = c.lenient([String: ServerTextParam].self, forKey: ModelKey("textParams"))
+        textLang = c.lenient(String.self, forKey: ModelKey("textLang"))
+        optionTexts = c.lenient([String: ServerOptionTexts].self, forKey: ModelKey("optionTexts"))
+        closeReasonText = c.lenient(ServerTextRef.self, forKey: ModelKey("closeReasonText"))
+        reopenNoteText = c.lenient(ServerTextRef.self, forKey: ModelKey("reopenNoteText"))
+        localizeServerText()
     }
 }
 
@@ -414,6 +435,10 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     var kind: String = ""
     var title: String = ""
     var body: String = ""
+    /// 0.2.6 Y: 서버가 만든 글의 코드·값·그린 언어(ServerText.swift). 디코딩 때 화면 언어로 바꿔 둔다. 옛 서버는 싣지 않는다.
+    var textCode: String? = nil
+    var textParams: [String: ServerTextParam]? = nil
+    var textLang: String? = nil
     var targetMemberId: String? = nil
     var targetName: String? = nil
     var decisionId: String? = nil
@@ -442,6 +467,10 @@ extension Message {
         kind = try c.decodeIfPresent(String.self, forKey: ModelKey("kind")) ?? ""
         title = try c.decodeIfPresent(String.self, forKey: ModelKey("title")) ?? ""
         body = try c.decodeIfPresent(String.self, forKey: ModelKey("body")) ?? ""
+        textCode = c.lenient(String.self, forKey: ModelKey("textCode"))
+        textParams = c.lenient([String: ServerTextParam].self, forKey: ModelKey("textParams"))
+        textLang = c.lenient(String.self, forKey: ModelKey("textLang"))
+        localizeServerText()
         targetMemberId = try c.decodeIfPresent(String.self, forKey: ModelKey("targetMemberId"))
         targetName = try c.decodeIfPresent(String.self, forKey: ModelKey("targetName"))
         decisionId = try c.decodeIfPresent(String.self, forKey: ModelKey("decisionId"))
@@ -500,6 +529,10 @@ struct Activity: Codable, Sendable, Identifiable {
     var at: String = ""
     var kind: String = ""
     var text: String = ""
+    /// 0.2.6 Y: 서버가 만든 줄의 코드·값·그린 언어. 디코딩 때 화면 언어로 바꿔 둔다.
+    var textCode: String? = nil
+    var textParams: [String: ServerTextParam]? = nil
+    var textLang: String? = nil
 }
 extension Activity {
     init(from decoder: Decoder) throws {
@@ -509,6 +542,10 @@ extension Activity {
         at = try c.decodeIfPresent(String.self, forKey: ModelKey("at")) ?? ""
         kind = try c.decodeIfPresent(String.self, forKey: ModelKey("kind")) ?? ""
         text = try c.decodeIfPresent(String.self, forKey: ModelKey("text")) ?? ""
+        textCode = c.lenient(String.self, forKey: ModelKey("textCode"))
+        textParams = c.lenient([String: ServerTextParam].self, forKey: ModelKey("textParams"))
+        textLang = c.lenient(String.self, forKey: ModelKey("textLang"))
+        localizeServerText()
     }
 }
 
@@ -1078,7 +1115,8 @@ struct DeliveryNoticeItem: Codable, Sendable, Identifiable {
     }
     var reasonDescription: String {
         guard let reason, Self.knownReasons.contains(reason) else { return String(localized: "상세 내용을 확인해 주세요") }
-        return note ?? recommendation?.text ?? String(localized: "상세 내용을 확인해 주세요")
+        // 0.2.6 Y: 서버가 정한 안내 문장은 영어 화면에서 영어로(ServerErrorText.displayNote). 한국어 화면은 그대로.
+        return (note ?? recommendation?.text).map { ServerErrorText.displayNote($0) } ?? String(localized: "상세 내용을 확인해 주세요")
     }
     private static let knownReasons: Set<String> = [
         "blocked", "input_busy", "asleep", "offline", "backend_down", "runner_disabled",
@@ -1167,7 +1205,8 @@ extension ObservationError {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: ModelKey.self)
         code = try c.decode(String.self, forKey: ModelKey("code"))
-        note = try c.decodeIfPresent(String.self, forKey: ModelKey("note")) ?? ""
+        // 0.2.6 Y: 서버가 정한 메모는 영어 화면에서 영어로(ServerErrorText.displayObservation). 한국어 화면은 받은 그대로.
+        note = ServerErrorText.displayObservation(try c.decodeIfPresent(String.self, forKey: ModelKey("note")) ?? "", code: code)
     }
 }
 struct SubagentState: Codable, Sendable, Equatable {

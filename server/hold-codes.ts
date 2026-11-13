@@ -7,7 +7,7 @@
 // 두 열은 DB 판 번호를 올리지 않고 더한다(server/db.ts). 이전 판 서버는 이 열을 모른 채 문장만 고친다.
 // 그래서 DB 를 열 때마다 문장에서 코드를 다시 맞춘다(reconcileHoldCodes). 문장에서 코드를 읽는 곳은 이 파일의 이주뿐이다.
 import type { Database } from "bun:sqlite";
-import type { ErrorCode } from "../shared/error-codes.ts";
+import { ERROR_CODES, type ErrorCode } from "../shared/error-codes.ts";
 
 /** lastError 에 붙는 보류 코드. 하나의 lastError 는 많아야 하나의 보류를 뜻한다. */
 export type FenceCode = Extract<ErrorCode, "control_unknown" | "starting_unknown" | "core_reconnect_held" | "stop_check_held" | "usage_wait">;
@@ -52,6 +52,14 @@ export const IMPORT_HOLD_NOTE = "총괄을 시작하면 전달됩니다";
 export const API_OUTAGE_NOTE = "인터넷 연결 복구를 기다립니다";
 export const REOPEN_RETRY_NOTE = "새 설정으로 다시 여는 데 실패해 잠시 뒤 다시 엽니다";
 
+/** 0.2.6 Y: 문장이 곧 ERROR_CODES 의 대표 문장(ko)인 전달 메모. */
+export const NOTE_CODES = [
+  "note_source_changed_unsent", "note_not_connected", "note_stopped", "note_checking", "note_retry_busy", "note_retry_blocked", "note_retry_unreachable",
+  "note_input_busy", "note_manual_control", "note_stale_instruction", "note_busy", "note_blocked", "note_duplicate_draft", "note_source_changed",
+  "note_session_lost", "note_session_unbound", "note_unsupported_schema", "note_log_missing", "note_log_incomplete", "note_identity_changed",
+  "note_not_written_draft", "note_not_written_unsafe", "note_legacy_unknown", "note_inflight_unsettled", "note_unsettled",
+] as const satisfies readonly ErrorCode[];
+
 /** 정해진 deliveryNote 문장 → 코드. 이 표에 없는 문장(이름·까닭이 끼어든 글)은 코드가 없다. */
 const DELIVERY_NOTE_CODES: ReadonlyMap<string, ErrorCode> = new Map<string, ErrorCode>([
   [HOLD_NOTES.delivery_unknown!, "held_delivery_unknown"],
@@ -67,6 +75,9 @@ const DELIVERY_NOTE_CODES: ReadonlyMap<string, ErrorCode> = new Map<string, Erro
   [API_OUTAGE_NOTE, "held_api_outage"],
   [USAGE_WAIT_NOTE, "held_usage_limit"],
   [REOPEN_RETRY_NOTE, "held_reopen_retry"],
+  // 0.2.6 Y: 전달 복구·실패 메모(server/delivery-recovery.ts, orchestrator.ts, store.ts 의 정해진 문장). 앱은 영어 화면에서 코드의 영어 문장을 쓴다.
+  // 자동 재전송 상한·미전달 확인·입력 제출 확인 메모는 넣지 않는다: 앱이 문장 머리로 알아보고 자기 문장(번역 포함)으로 바꿔 보인다.
+  ...NOTE_CODES.map(code => [ERROR_CODES[code].ko, code] as [string, ErrorCode]),
 ]);
 
 /** setMessageDelivery 가 note 와 함께 쓰는 코드. 문장과 코드를 한곳(위 표)에서 짝지어 둘이 어긋나지 않게 한다. */

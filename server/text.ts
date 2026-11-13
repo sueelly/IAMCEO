@@ -1,3 +1,5 @@
+import type { TextLang } from "../shared/server-text.ts";
+
 // 사람이 쓰지 않는 글자를 다룬다. 직원·외부 자료가 넣은 제어문자가 줄 경계나 출처 접두어를 속이지 못하게 한다.
 const LINE_BREAKS = /\r\n?|[\u000b\u000c\u0085\u2028\u2029]/g;
 // C0·C1 제어문자(탭·줄바꿈 제외), 제로폭, 양방향 제어, 화면에 안 보이는 한글 채움 글자, 태그 문자.
@@ -52,9 +54,28 @@ export function cleanRole(raw: string): string {
 
 export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** 총괄은 프로젝트마다 하나라 프로젝트 이름을 붙여야 세션 이름이 겹치지 않는다. */
-export function conductorName(projectName: string): string {
-  return `${projectName} 총괄`.slice(0, MAX_NAME);
+/**
+ * 총괄은 프로젝트마다 하나라 프로젝트 이름을 붙여야 세션 이름이 겹치지 않는다.
+ * 0.2.6 Y: 서버가 정하는 기본 이름이라 만들 때의 보고 언어를 따른다(한국어 'X 총괄', 영어 'X Lead'). 이미 있는 이름은 바꾸지 않는다.
+ */
+export function conductorName(projectName: string, lang: TextLang = "ko"): string {
+  return `${projectName} ${DEFAULT_NAMES[lang].lead}`.slice(0, MAX_NAME);
+}
+
+/** 0.2.6 Y: 서버가 처음 만드는 이름. 본사 프로젝트(hq)·본사 AI 와 그 역할, 프로젝트 총괄의 이름 꼬리와 역할. */
+export const DEFAULT_NAMES = {
+  ko: { hq: "본사", hqAgent: "본사 AI", hqRole: "프로젝트 만들기와 잡다한 일", lead: "총괄", leadRole: "총괄" },
+  en: { hq: "HQ", hqAgent: "HQ AI", hqRole: "Creating projects and odd jobs", lead: "Lead", leadRole: "Lead" },
+} as const satisfies Record<TextLang, Record<string, string>>;
+
+/**
+ * 0.2.6 Y: 새로 설치한 서버의 첫 실행 언어. IAMCEO_LANG 만 본다(앱이 '이 Mac에서 시작'으로 서비스를 등록할 때 앱 화면 언어를,
+ * 명령줄 iamceo service install 은 새 데이터 폴더일 때 그 터미널의 언어를 서비스 환경에 적는다). 없으면 예전처럼 한국어다.
+ * LANG 은 보지 않는다: launchd 로 뜬 서버에는 보통 없고, 한국어 사용자의 Mac 에도 en_US 인 경우가 흔하다.
+ */
+export function firstRunLang(env: NodeJS.ProcessEnv = process.env): TextLang {
+  const value = (env.IAMCEO_LANG ?? "").trim().toLowerCase();
+  return value && !value.startsWith("ko") ? "en" : "ko";
 }
 
 export function conductorHandle(projectName: string): string {

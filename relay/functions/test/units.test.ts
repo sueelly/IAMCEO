@@ -6,6 +6,7 @@ import type { APNsNotification } from "../../../server/push/apns.ts";
 import { createInstallation, installationSecret, validMaster, verifyAuthorization } from "../src/credentials.ts";
 import { RelayLimits, clientIp, forwardedFor, ipBucket } from "../src/limits.ts";
 import { parsePushRequest } from "../src/push-request.ts";
+import { parsePushRequest as parsePushRequestV025 } from "./fixtures/push-request-0.2.5.ts";
 import { MASTER, SERVER_ID, TOKEN, pushBody } from "./helpers.ts";
 
 describe("설치 자격(무상태 HMAC)", () => {
@@ -145,7 +146,7 @@ function direct(body: Record<string, unknown>, now: number): string {
   const notification: APNsNotification = { environment: "production", deviceToken: String(body.token), deliveryId: String(body.id),
     eventId: String(body.eventId), serverId: String(body.serverId), kind: body.kind as APNsNotification["kind"],
     target: body.target as APNsNotification["target"], occurredAt: new Date(now).toISOString(), expiresAt: String(body.expiresAt),
-    reportSummary: body.summary === true };
+    reportSummary: body.summary === true, ...(body.lang === "en" ? { lang: "en" as const } : {}) };
   return serializeAPNsPayload(buildAPNsPayload(notification));
 }
 
@@ -212,5 +213,69 @@ describe("요청 검사와 페이로드", () => {
   test("토큰은 소문자로, environment 는 production 만", () => {
     const parsed = parsePushRequest(JSON.stringify(pushBody({ expiresAt, token: "AB".repeat(32), environment: "production" })), now);
     expect(parsed.ok && parsed.value.token).toBe("ab".repeat(32));
+  });
+});
+
+// 0.2.6 Y: 본문의 선택 칸 lang 으로 고정 문구의 언어를 고른다. 옛 Mac(칸 없음)·옛 중계(칸 모름) 어느 쪽과도 맞는다.
+describe("알림 문구의 언어(lang)", () => {
+  const now = Date.UTC(2026, 10, 13, 12, 0, 0);
+  const expiresAt = new Date(now + 4 * 60_000).toISOString();
+  const body = (overrides: Record<string, unknown> = {}) => pushBody({ expiresAt, ...overrides });
+  const alert = (raw: Record<string, unknown>, parse = parsePushRequest) => {
+    const parsed = parse(JSON.stringify(raw), now);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    return JSON.parse(parsed.value.payload).aps.alert.body as string;
+  };
+  // 0.2.5 까지 중계와 Mac 이 보내던 한국어 문구(글자 하나 바뀌지 않는다).
+  const KOREAN = {
+    test: "iPhone 알림 연결을 확인합니다.", decision: "새 결재가 도착했습니다.", approval_wait: "진행을 위해 직접 확인이 필요합니다.", error: "실행 문제를 확인해 주세요.",
+    report_complete: "완료 보고가 도착했습니다.", report_more: "추가 완료 보고가 도착했습니다.", report_blocked: "막힘 보고를 확인해 주세요.", todo_created: "대표 할 일이 생겼습니다.",
+  };
+  const kinds: [keyof typeof KOREAN, Record<string, unknown>][] = [
+    ["test", { kind: "test", target: { screen: "home" } }],
+    ["decision", { kind: "decision", target: { screen: "inbox", projectId: "hq", decisionId: "d_1" } }],
+    ["approval_wait", { kind: "approval_wait", target: { screen: "team", projectId: "p_1", memberId: "m_1" } }],
+    ["error", { kind: "error", target: { screen: "team", projectId: "p_1", memberId: "m_1" } }],
+    ["report_complete", { kind: "report_complete", target: { screen: "chat", projectId: "p_1", memberId: "m_1", messageId: "msg_1" } }],
+    ["report_more", { kind: "report_complete", summary: true, target: { screen: "chat", projectId: "p_1", memberId: "m_1", messageId: "msg_1", groupId: randomUUID() } }],
+    ["report_blocked", { kind: "report_blocked", target: { screen: "chat", projectId: "p_1", memberId: "m_1", messageId: "msg_2" } }],
+    ["todo_created", { kind: "todo_created", target: { screen: "home", projectId: "p_1" } }],
+  ];
+
+  test("옛 Mac(lang 없음) → 새 중계: 0.2.5 와 같은 한국어 문구, 같은 바이트", () => {
+    for (const [name, item] of kinds) {
+      const raw = body(item);
+      expect(alert(raw)).toBe(KOREAN[name]);
+      const parsed = parsePushRequest(JSON.stringify(raw), now);
+      const old = parsePushRequestV025(JSON.stringify(raw), now);
+      if (!parsed.ok || !old.ok) throw new Error("rejected");
+      expect(parsed.value.payload).toBe(old.value.payload);
+    }
+  });
+
+  test("새 Mac(lang en) → 새 중계: 영어 문구, 한글 없음. 나머지 모양은 한국어 알림과 같다", () => {
+    for (const [name, item] of kinds) {
+      const english = alert(body({ ...item, lang: "en" }));
+      expect(english).not.toBe(KOREAN[name]);
+      expect(english).not.toMatch(/[가-힣]/);
+      const raw = body({ ...item, lang: "en" });
+      const parsed = parsePushRequest(JSON.stringify(raw), now);
+      if (!parsed.ok) throw new Error(parsed.reason);
+      expect(parsed.value.payload).toBe(direct(raw, now)); // Mac 이 직접 보낼 때(같은 언어)와 바이트까지 같다
+      const payload = JSON.parse(parsed.value.payload);
+      expect(Object.keys(payload.iamceo).sort()).toEqual(["eventId", "kind", "serverId", "target", "v"]);
+      expect(payload.aps.alert.title).toBe("IAMCEO");
+    }
+  });
+
+  test("lang ko·모르는 값·틀린 형은 거절하지 않고 한국어", () => {
+    for (const lang of ["ko", "ja", "EN", "", 1, null, { x: 1 }]) expect(alert(body({ lang }))).toBe(KOREAN.decision);
+  });
+
+  test("새 Mac(lang 있음) → 옛 중계(0.2.5): 모르는 칸이라 버리고 예전 한국어 알림을 보낸다", () => {
+    for (const [name, item] of kinds) {
+      expect(alert(body({ ...item, lang: "en" }), parsePushRequestV025)).toBe(KOREAN[name]);
+      expect(alert(body({ ...item, lang: "ko" }), parsePushRequestV025)).toBe(KOREAN[name]);
+    }
   });
 });

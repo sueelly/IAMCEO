@@ -7,6 +7,12 @@ Only changes that matter to users, by version. The full history is in `git log`.
 
 ## 한국어
 
+### 아직 내지 않은 것
+
+- **서버가 보내는 글도 앱 언어로 보입니다.** 총괄·팀장이 아니라 서버가 직접 만드는 글 — 대화의 시스템 글("총괄이 결제 연동에게 맡겼습니다", 실행이 끊겼다는 알림, 전달이 늦어진다는 알림), 서버가 올리는 결재 카드(도구 승인, 사용 한도)와 그 선택지·닫힌 이유, 팀장의 활동 줄, 내 글 아래의 전달 메모, 팀장의 오류 줄, 전달 안내 — 가 앱이 English면 영어로 보입니다. 서버는 이 글을 만들 때의 보고 언어로 적어 두고 글마다 코드를 함께 남기며, 앱은 그 글이 앱 언어와 다르면 코드로 다시 그립니다. 팀장이 쓴 글, 대화, 이름, CLI가 보낸 원래 오류 문장은 그대로입니다. 보고 언어를 English로 두면 서버도 이 글을 처음부터 영어로 적습니다. 한국어(보고 언어 한국어, 앱 한국어)에서는 글자 하나 바뀌지 않습니다. 옛 앱(0.2.5 이하)은 서버가 적어 둔 글을 그대로 보입니다.
+- **iPhone 알림 문구가 그 iPhone의 앱 언어를 따릅니다.** 앱이 서버에 알림 기기를 등록할 때의 앱 언어로 서버가 알림 문구(한국어·English)를 고릅니다. 알림 중계를 쓰면 언어 값(`ko`·`en`) 하나를 함께 넘기고, 중계가 그 언어의 정해진 문구로 알림을 만듭니다. 옛 서버나 옛 중계와 섞여도 알림은 그대로 가고, 그때는 예전처럼 한국어 문구입니다.
+- **새로 설치하면 처음 이름이 앱 언어를 따릅니다.** Mac 앱에서 **이 Mac에서 시작**을 눌러 처음 켠 서버는 본사 프로젝트·총괄의 이름과 보고 언어의 처음 값을 앱 언어로 정합니다(영어면 **HQ**, **HQ AI**, 보고 언어 English). 명령줄로 처음 켜면 그 터미널의 언어를 따릅니다. 이미 쓰던 서버의 이름과 설정은 바뀌지 않습니다. 새 프로젝트의 총괄 이름은 그때의 보고 언어로 붙습니다('OO 총괄' / 'OO Lead').
+
 ### 0.2.5 — 2026-11-14
 
 - **다른 기기를 끊는 것은 서버가 도는 Mac에서만 합니다.** 기기 열쇠는 가진 사람이면 누구나 쓰는 열쇠라서, 잃어버리거나 빼앗긴 기기 하나가 나머지 기기를 끊어 잠그지 못하게 했습니다. iPhone이나 다른 Mac의 설정 → 연결 → **연결된 기기**는 보기만 되고, 자기 줄(**이 기기**)에만 **끊기**가 있으며 목록 아래에 "다른 기기는 서버가 도는 Mac에서 끊을 수 있습니다."가 보입니다. 자기 줄을 끊으면 이 기기에 저장한 열쇠를 바로 지우고 연결 화면으로 나갑니다(초안은 남습니다). 서버가 도는 Mac의 앱은 지금처럼 어느 기기든 끊습니다. 그 Mac의 터미널에서도 `iamceo auth devices`로 기기와 ID를 보고 `iamceo auth revoke-device <ID>`로 한 대만 끊습니다. HTTPS 주소를 거쳐 온 요청은 그 Mac의 것으로 보지 않습니다. 출시된 iPhone 0.2.4 이하 앱은 남의 줄에도 **끊기**를 보이지만, 누르면 서버가 같은 안내 한 줄로 거절하고 아무것도 끊지 않습니다.
@@ -128,6 +134,12 @@ iPhone 앱은 2026-11-11에 App Store에 나왔습니다.
 - 첫 공개. 내 Mac에서 서버를 켜고 브라우저로 Claude Code 세션 여럿을 총괄과 팀으로 부립니다. 홈·결재함·팀·대화·자료 다섯 화면. Claude Code 전용, AGPL-3.0-only.
 
 ## English
+
+### Unreleased
+
+- **What the server writes now shows in the app language too.** Text the server writes itself rather than the lead or staff — system lines in the chat ("The lead handed Checkout a task", a run that was cut off, a delayed delivery), the decision cards the server posts (tool approvals, usage limits) with their choices and close reasons, staff activity lines, delivery notes under your messages, a staff member's error line, and delivery notices — shows in English when the app is in English. The server records this text in the report language at the time and keeps a code with each one; when that differs from the app language, the app draws it again from the code. What staff write, the conversation, names and the original error text a CLI reported stay as they are. With Report language set to English the server writes this text in English from the start. In Korean (Korean report language, Korean app) not a single character changes. Older apps (0.2.5 and earlier) show the text as the server recorded it.
+- **iPhone notification text follows that iPhone's app language.** The server picks the notification text (Korean or English) by the app language the app had when it registered the device. With the notification relay, the server passes that one language value (`ko` or `en`) and the relay builds the notification with that language's fixed sentence. Mixed with an older server or relay, notifications still go out, in Korean as before.
+- **A new install names things in the app language.** A server first started with **Start on this Mac** in the Mac app sets the names of the HQ project and its lead, and the starting Report language, from the app language (in English: **HQ**, **HQ AI**, Report language English). Started first from the command line, it follows the terminal's language. Names and settings of a server you already use do not change. A new project's lead is named in the report language at that time ('Checkout 총괄' / 'Checkout Lead').
 
 ### 0.2.5 — 2026-11-14
 

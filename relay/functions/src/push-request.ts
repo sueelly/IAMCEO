@@ -1,6 +1,7 @@
 // 알림 한 건 요청을 검사하고 APNs 페이로드를 만든다.
 // 페이로드는 Mac 서버가 직접 보낼 때와 같은 함수(server/push/apns.ts 의 buildAPNsPayload)로 만든다.
-// 그래서 문구(종류별 고정 한국어)와 출시 앱이 읽는 iamceo:{v,serverId,eventId,kind,target} 모양이 바이트까지 같다.
+// 그래서 문구(종류별 고정 문구)와 출시 앱이 읽는 iamceo:{v,serverId,eventId,kind,target} 모양이 바이트까지 같다.
+// 0.2.6: 본문의 선택 칸 lang("ko"|"en", 없거나 다른 값이면 "ko")으로 문구의 언어를 고른다. 옛 Mac(칸 없음)은 예전처럼 한국어다.
 // 요청에 문구·제목·소리 같은 필드가 있어도 쓰지 않는다(허용 목록으로 다시 만든다). 모르는 필드는 버린다.
 import { PUSH_KINDS } from "../../../shared/push.ts";
 import type { PushEventTarget, PushKind } from "../../../shared/push.ts";
@@ -47,14 +48,15 @@ function target(value: unknown): PushEventTarget | null {
 
 /**
  * 본문(프로토콜 1, Mac 의 relayPushBody 와 같은 이름):
- * { token, kind, id, eventId, serverId, target, expiresAt?, summary?, environment? }
+ * { token, kind, id, eventId, serverId, target, expiresAt?, summary?, environment?, lang? }
  * environment 는 없거나 "production" 이어야 한다(중계는 production 만 보낸다).
+ * lang 은 "en" 이면 영어 문구, 그 밖(없음·"ko"·모르는 값)은 한국어 문구. 거절하지 않는다: 나중의 Mac 이 다른 언어를 보내도 알림은 간다.
  */
 export function parsePushRequest(raw: string, now: number): PushRequestResult {
   let body: unknown;
   try { body = JSON.parse(raw); } catch { return { ok: false, reason: "invalid_request" }; }
   if (!object(body)) return { ok: false, reason: "invalid_request" };
-  const { token, kind, id, eventId, serverId, expiresAt, summary, environment } = body;
+  const { token, kind, id, eventId, serverId, expiresAt, summary, environment, lang } = body;
   if (typeof token !== "string" || !TOKEN.test(token) || typeof kind !== "string" || !KINDS.includes(kind) ||
       typeof id !== "string" || !UUID.test(id) || typeof eventId !== "string" || !UUID.test(eventId) ||
       typeof serverId !== "string" || !UUID.test(serverId) ||
@@ -77,7 +79,7 @@ export function parsePushRequest(raw: string, now: number): PushRequestResult {
   try {
     payload = serializeAPNsPayload(buildAPNsPayload({
       environment: "production", deviceToken: token, deliveryId: id, eventId, serverId, kind: relayKind, target: hint,
-      occurredAt: new Date(now).toISOString(), expiresAt: new Date(expiry).toISOString(), reportSummary: summary === true,
+      occurredAt: new Date(now).toISOString(), expiresAt: new Date(expiry).toISOString(), reportSummary: summary === true, lang: lang === "en" ? "en" : "ko",
     }));
   } catch { return { ok: false, reason: "invalid_request" }; }
   return { ok: true, value: { token: token.toLowerCase(), id: id.toLowerCase(), eventId: eventId.toLowerCase(), kind: relayKind, expiresAt: expiry, payload } };

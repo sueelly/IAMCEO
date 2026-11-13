@@ -12,6 +12,7 @@ import { HOLD_NOTES } from "../hold-codes.ts";
 import { josa } from "../roles.ts";
 import { ApiError, type NewDelivery, type Store } from "../store.ts";
 import { WAKE_POST_KINDS } from "./member.ts";
+import { textRef } from "../../shared/server-text.ts";
 
 /** 대표 쪽 흐름이 Orchestrator 에서 받는 것: 원본 저장(store), 전달 의도와 펌프, 그리고 총괄 띄우기 같은 세션 수명의 입구. */
 export interface OwnerFlowPort {
@@ -297,7 +298,9 @@ export class OwnerFlows {
     const decision = this.store.requireDecision(decisionId);
     this.port.requireActive(this.store.requireProject(decision.projectId));
     if (decision.status !== "closed" || !decision.closeKind) throw new ApiError(409, "AI가 닫은 결재만 다시 열 수 있습니다", "decision_reopen_refused");
-    const reopened = this.store.reopenDecision(decisionId, `${josa(decision.closedBy ?? "AI", "이")} 닫았던 결재를 대표가 다시 열었습니다${decision.closeReason ? `(닫은 이유: ${normalizeSpace(decision.closeReason)})` : ""}`);
+    // Y: 다시 연 까닭은 코드로 남겨 보고 언어로 그린다(한국어면 예전 문장 그대로).
+    const who = decision.closedBy ?? "AI";
+    const reopened = this.store.reopenDecision(decisionId, decision.closeReason ? textRef("card.reopen_by_owner_reason", { who, reason: normalizeSpace(decision.closeReason) }) : textRef("card.reopen_by_owner", { who }));
     const asker = decision.memberId ? this.store.getMember(decision.memberId) : null;
     const note = `대표가 결재 #${decision.id} 를 다시 열었습니다(질문 '${quotedInline(decision.title)}'). 닫은 것은 취소이며 답이 오면 전달됩니다`;
     if (asker && asker.origin !== "manual") {

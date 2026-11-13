@@ -5,7 +5,7 @@
 //                                        (+ X-Relay-Forwarded-Count: 앞단이 넘긴 X-Forwarded-For 값의 개수. 배포 확인용)
 //                                        한도: 429 { reason, scope:"installation" }(그 IP 의 하루 몫) · 503 { reason:"relay_busy" }(전체 시간 한도)
 //   POST /v1/push  Authorization: Bearer <installationId>.<secret>
-//        { token, kind, id, eventId, serverId, target, expiresAt?, summary? }
+//        { token, kind, id, eventId, serverId, target, expiresAt?, summary?, lang? }   lang: "en" 이면 영어 문구, 그 밖은 한국어(0.2.6)
 //     200 { state:"accepted" }                     APNs 가 받았다
 //     400 { state:"failed", reason }               요청이 틀렸다(다시 보내도 같다). reason: invalid_request·expired·permanent_rejection
 //     401 { reason:"unauthorized" }                설치 자격이 없다(Mac 은 한 번 다시 등록한다)

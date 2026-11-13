@@ -9,6 +9,7 @@ import { APNS_TTL_MS, buildAPNsPayload } from "./apns.ts";
 import { DEFAULT_PUSH_PREFERENCES, PUSH_KINDS, storedPushPreferences } from "./contracts.ts";
 import type { PatchPushDeviceRequest, PushDevice, PushEventTarget, PushEventTargetResult, PushKind } from "./contracts.ts";
 import { extendPushSchema } from "./schema.ts";
+import { textLang, type TextLang } from "../../shared/server-text.ts";
 
 const DAY = 86_400_000;
 /** A network error is cleared only by the next response, so new deliveries must still be queued: the next
@@ -31,7 +32,8 @@ export interface PushDelivery {
   lastReason: string | null; acceptedAt: string | null; expiresAt: string; finishedAt: string | null;
 }
 /** Internal only: never return this record from an API. */
-export interface PushRegistration { device: PushDevice; deviceToken: string | null; registrationGeneration: number }
+/** language: 0.2.6 Y 그 iPhone 이 알림을 받을 언어(등록 때의 Accept-Language). 모르면 한국어(예전 문구). 응답 DTO(PushDevice)에는 싣지 않는다. */
+export interface PushRegistration { device: PushDevice; deviceToken: string | null; registrationGeneration: number; language: TextLang }
 export interface PushEpisode {
   memberId: string; blockedGeneration: number; blockedActive: boolean;
   errorGeneration: number; errorActive: boolean; errorDigest: string | null;
@@ -41,6 +43,7 @@ interface DeviceRow {
   authorization: PushAuthorization; enabled: number; preferences: string; state: PushDevice["state"]; revision: number;
   registration_generation: number; registered_at: string; last_seen_at: string; expires_at: string;
   revoked_at: string | null; invalidated_at: string | null; last_accepted_at: string | null; last_failure: PushDevice["lastFailure"];
+  language?: string | null;
 }
 interface EventRow { id: string; source_key: string; kind: PushEvent["kind"]; project_id: string | null; member_id: string | null; target: string; occurred_at: string; expires_at: string }
 interface GroupRow { id: string; project_id: string; member_id: string; opened_at: string; closes_at: string; last_message_id: string; state: PushReportGroup["state"]; event_id: string | null; closed_at: string | null }
@@ -104,7 +107,7 @@ export class PushStore implements PushReportGroupStore {
   listDevices(): PushDevice[] { return this.all<DeviceRow>("SELECT * FROM push_devices ORDER BY last_seen_at DESC,id LIMIT 100").map(device); }
   getRegistration(id: string): PushRegistration | null {
     const row = this.row(id);
-    return row ? { device: device(row), deviceToken: row.token, registrationGeneration: row.registration_generation } : null;
+    return row ? { device: device(row), deviceToken: row.token, registrationGeneration: row.registration_generation, language: textLang(row.language) } : null;
   }
   private checkRevision(row: DeviceRow | null, expected: number | null): void {
     if (expected !== null) revision(expected);
@@ -119,7 +122,7 @@ export class PushStore implements PushReportGroupStore {
     return row.state === "active" && !!row.token && !!row.enabled && authorized(row.authorization) && row.expires_at > at &&
       this.ready(row) && (kind === "test" || storedPushPreferences(row.preferences)[kind]);
   }
-  registerDevice(id: string, request: RegisterPushDeviceRequest): PushDevice {
+  registerDevice(id: string, request: RegisterPushDeviceRequest, language: TextLang | null = null): PushDevice {
     uuid(id);
     if (request.label !== undefined) label(request.label);
     if (request.platform !== "ios" || !["sandbox", "production"].includes(request.environment) || !authorized(request.authorization) ||
@@ -151,10 +154,12 @@ export class PushStore implements PushReportGroupStore {
         this.run(`UPDATE push_report_group_recipients SET registration_generation=? WHERE device_id=? AND cancelled_at IS NULL
           AND group_id IN (SELECT id FROM push_report_groups WHERE state='open')`, generation, id);
       }
+      // Y: 알림 언어. 모르면(머리글 없음) 저장된 값을 그대로 둔다. 판(revision)은 올리지 않는다(앱이 보는 칸이 아니다).
+      if (language) this.run("UPDATE push_devices SET language=? WHERE id=?", language, id);
       return this.requireDevice(id);
     });
   }
-  patchDevice(id: string, patch: PatchPushDeviceRequest): PushDevice {
+  patchDevice(id: string, patch: PatchPushDeviceRequest, language: TextLang | null = null): PushDevice {
     uuid(id); revision(patch.expectedRevision);
     if (patch.label !== undefined) label(patch.label);
     if (patch.authorization !== undefined && !["authorized", "provisional", "ephemeral", "denied", "notDetermined"].includes(patch.authorization)) throw new ApiError(400, "알림 권한이 올바르지 않습니다", "push_authorization_invalid");
@@ -173,6 +178,7 @@ export class PushStore implements PushReportGroupStore {
         enabled ? 1 : 0, JSON.stringify(preferences), patch.label ?? row.label, permission, id);
       if (!enabled) this.cancelDevice(id, this.timestamp());
       else for (const kind of PUSH_KINDS) if (!preferences[kind]) this.cancelDevice(id, this.timestamp(), kind);
+      if (language) this.run("UPDATE push_devices SET language=? WHERE id=?", language, id);
       return this.requireDevice(id);
     });
   }

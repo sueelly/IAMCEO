@@ -611,7 +611,7 @@ struct HomeView: View {
     private func attentionRow(_ member: Member, delivery: MemberDeliverySummary?) -> some View {
         let info = MemberStatusInfo(member)
         let approval = info.tone == .approval
-        let error = member.status == "error" ? member.lastError.map { friendlyError($0, code: member.fenceCode) } : nil
+        let error = member.status == "error" ? member.lastError.map { friendlyError($0, code: member.errorTextCode) } : nil
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 HomeRowButton(bleedTrailing: !approval, action: { router.openMember(member.id) }) {
@@ -991,7 +991,7 @@ struct HomeView: View {
     /// HQ's single AI with its state label.
     private func memberRow(_ member: Member, showsState: Bool = false) -> some View {
         let info = MemberStatusInfo(member)
-        let error = member.lastError.flatMap { $0.isEmpty ? nil : friendlyError($0, code: member.fenceCode) }
+        let error = member.lastError.flatMap { $0.isEmpty ? nil : friendlyError($0, code: member.errorTextCode) }
         let sub = member.status == "error" ? (error ?? info.label) : member.now.isEmpty ? "" : String(localized: "마지막 보고 · \(member.now)")
         return HomeRowButton(action: { router.openMember(member.id) }) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {

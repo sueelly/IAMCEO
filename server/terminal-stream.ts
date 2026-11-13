@@ -5,6 +5,7 @@ import type { OrchestratorApi } from "./orchestrator-api.ts";
 import { childEnv } from "./runner/env.ts";
 import { ApiError, type Store } from "./store.ts";
 import type { ErrorCode } from "../shared/error-codes.ts";
+import { textRef, type ServerTextRef } from "../shared/server-text.ts";
 
 export type TerminalMode = "observe" | "control";
 export type TerminalSizePolicy = "core" | "fit";
@@ -63,7 +64,7 @@ export class TerminalStreams {
       await Bun.sleep(25);
     } while (performance.now() < deadline);
     this.restores.delete(memberId);
-    try { this.store.appendActivity(memberId, "system", "경고: 2초 안에 터미널 크기 복원을 확인하지 못해 계속 진행합니다"); }
+    try { this.store.appendActivity(memberId, "system", textRef("activity.resize_unconfirmed")); }
     catch { /* member may have been removed */ }
   }
   detached(stream: TerminalStream, reason?: string): void {
@@ -104,7 +105,7 @@ export class TerminalStreams {
     if (!this.orch.terminalControl) return "kept";
     try { await this.orch.terminalControl(memberId, { action: "release", leaseId }); }
     catch { return "retry"; }
-    try { this.store.appendActivity(memberId, "system", "터미널 연결이 끊겨 직접 조작을 자동으로 끝냈습니다"); } catch { /* member may have been removed */ }
+    try { this.store.appendActivity(memberId, "system", textRef("activity.control_dropped")); } catch { /* member may have been removed */ }
     return "released";
   }
   constructor(readonly config: Config, readonly store: Store, readonly orch: OrchestratorApi, options: TerminalStreamsOptions = {}) {
@@ -235,7 +236,7 @@ export class TerminalStream {
         this.proc = Bun.spawn([binary, "attach", "--observe", "--history", "300", this.paneId], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
       }
       this.started = true;
-      if (this.mode === "control") this.activity("대표가 터미널에서 직접 입력을 시작했습니다");
+      if (this.mode === "control") this.activity(textRef("activity.control_started"));
       const early = this.earlyOutput; this.earlyOutput = [];
       early.forEach(bytes => this.output(bytes));
       const output = this.mode === "observe" ? this.read(this.proc.stdout, true) : Promise.resolve();
@@ -396,7 +397,7 @@ export class TerminalStream {
     catch (error) { this.fail(error); return this.close(); }
     return this.close("replaced");
   }
-  private activity(text: string): void {
+  private activity(text: ServerTextRef): void {
     try { this.owner.store.appendActivity(this.memberId, "system", text); } catch { /* member may have been removed */ }
   }
   close(reason?: string, message?: string, code?: ErrorCode): Promise<void> {
@@ -405,7 +406,7 @@ export class TerminalStream {
     this.ended = true;
     if (reason) this.sendText({ type: "closed", reason, ...(message ? { message } : {}), ...(code ? { code } : {}) });
     this.ws?.close(1000);
-    if (this.started && this.mode === "control") this.activity("대표가 터미널에서 직접 입력을 마쳤습니다");
+    if (this.started && this.mode === "control") this.activity(textRef("activity.control_ended"));
     return this.closing = (async () => {
       const proc = this.proc;
       if (proc) {
