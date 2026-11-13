@@ -723,6 +723,12 @@ async function main(argv: string[]): Promise<void> {
       return setup(rest);
     case "mcp":
       return (await import("./mcp-bridge.ts")).runBridge();
+    case "guard": {
+      // 컴파일 실행에서 Claude 직원의 PreToolUse 훅. 개발 실행은 bin/iamceo-guard.ts 를 바로 띄운다.
+      const out = await (await import("./iamceo-guard.ts")).runGuard(rest, await new Response(Bun.stdin.stream()).text());
+      if (out) process.stdout.write(`${out}\n`);
+      return;
+    }
     case "join":
       return join_(rest);
     case "attach":

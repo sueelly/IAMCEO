@@ -54,6 +54,7 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
+import { requiredChecks, type ContractInput, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
@@ -3088,6 +3089,50 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT * FROM messages WHERE project_id = ? AND about_message_id = ? ORDER BY at COLLATE BINARY, id COLLATE BINARY", projectId, messageId).map(toMessage);
   }
 
+  // ---- 공통 하네스: 업무 계약·검사 기록 ----
+  /** 업무의 지금 계약(가장 높은 판). 없으면 null. */
+  getTaskContract(taskId: string): TaskContract | null {
+    const r = this.row("SELECT * FROM task_contracts WHERE task_id = ? ORDER BY rev DESC LIMIT 1", taskId);
+    return r ? toContract(r) : null;
+  }
+
+  /** 계약을 새 판으로 남긴다. 옛 판은 지우지 않는다(어느 판으로 일했는지 검사 기록이 가리킨다). */
+  saveTaskContract(taskId: string, input: ContractInput, by: { author: string; sourceMessageId?: string | null }): TaskContract {
+    this.requireTask(taskId);
+    return this.transaction(() => {
+      const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
+      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, source_message_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.sourceMessageId ?? null, nowIso());
+      return this.getTaskContract(taskId)!;
+    });
+  }
+
+  /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판을 함께 남긴다. */
+  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractRev: number | null; reviewNeeded?: string | null }): void {
+    const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
+    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_rev, review_needed, at) VALUES (?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractRev, extra.reviewNeeded ?? null, message.at);
+    checks.forEach((c, i) => this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, criterion) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", message.id, i, c.name, c.kind, c.result, c.evidence, c.command ?? null, c.criterion ?? null));
+  }
+
+  /** 보고 글의 하네스 기록(실행·계약 판·검토 요청)과 검사. 기록이 없으면 null. */
+  getReportHarness(messageId: string): { runId: string | null; contractRev: number | null; reviewNeeded: string | null; memberId: string; checks: ReportCheck[] } | null {
+    const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.message_id = ?", messageId);
+    if (!h) return null;
+    const checks = this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", messageId).map(r => toCheck(r, h));
+    return { runId: (h.run_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: (h.review_needed as string | null) ?? null, memberId: h.member_id as string, checks };
+  }
+
+  /** 이 계약 판으로 완료 판정을 받은 보고가 있는지(완료 글은 판정을 통과해야만 남는다). */
+  hasPassedCompletion(taskId: string, rev: number): boolean {
+    return !!this.row("SELECT 1 FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.task_id = ? AND h.contract_rev = ? AND m.kind = '완료' LIMIT 1", taskId, rev);
+  }
+
+  /** 그 업무의 가장 최근 검사 보고(누가 올렸든). 재개·다음 직원의 지시에 '지난 검사'로 싣는다. */
+  latestTaskChecks(taskId: string): ReportCheck[] {
+    const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.task_id = ? AND EXISTS (SELECT 1 FROM report_checks c WHERE c.message_id = h.message_id) ORDER BY h.at DESC, h.rowid DESC LIMIT 1", taskId);
+    return h ? this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", h.message_id as string).map(r => toCheck(r, h)) : [];
+  }
+
   // ---- 보고 마감·보고 보완 ----
   recordReportClosure(input: { memberId: string; kind: ReportClosureKind; refType: ReportClosure["refType"]; refId: string; causeId?: string | null }): void {
     const member = this.requireMember(input.memberId);
@@ -3265,4 +3310,22 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       return { batchId, acknowledged: true };
     });
   }
+}
+
+function toContract(r: Row): TaskContract {
+  return {
+    taskId: r.task_id as string, rev: r.rev as number, kind: r.kind as TaskContract["kind"], goal: r.goal as string,
+    acceptance: JSON.parse(r.acceptance as string), scope: (r.scope as string | null) ?? null, forbidden: JSON.parse(r.forbidden as string),
+    evidence: JSON.parse(r.evidence as string), checks: JSON.parse(r.checks as string), author: r.author as string,
+    sourceMessageId: (r.source_message_id as string | null) ?? null, at: r.at as string,
+  };
+}
+
+function toCheck(r: Row, h: Row): ReportCheck {
+  return {
+    messageId: r.message_id as string, name: r.name as string, kind: r.kind as ReportCheck["kind"], result: r.result as ReportCheck["result"],
+    evidence: r.evidence as string, command: (r.command as string | null) ?? null, criterion: (r.criterion as number | null) ?? null,
+    taskId: (h.task_id as string | null) ?? null, memberId: h.member_id as string, who: h.who as string, runId: (h.run_id as string | null) ?? null,
+    contractRev: (h.contract_rev as number | null) ?? null, at: h.at as string,
+  };
 }

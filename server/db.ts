@@ -761,6 +761,44 @@ export const MIGRATIONS: string[] = [
      settled_at TEXT
    );
    ALTER TABLE messages ADD COLUMN about_message_id TEXT;`,
+  // v31: 공통 하네스. 업무 시작 계약(판마다 한 줄, 고치면 판이 오른다)과 완료 보고의 검사 기록.
+  // 검사는 글·직원·실행·계약 판을 함께 남겨, 같은 업무를 여러 직원이 다뤄도 누가 무엇을 확인했는지 섞이지 않는다.
+  `CREATE TABLE task_contracts (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     rev INTEGER NOT NULL,
+     kind TEXT NOT NULL,
+     goal TEXT NOT NULL,
+     acceptance TEXT NOT NULL,
+     scope TEXT,
+     forbidden TEXT NOT NULL DEFAULT '[]',
+     evidence TEXT NOT NULL DEFAULT '[]',
+     checks TEXT NOT NULL DEFAULT '[]',
+     author TEXT NOT NULL,
+     source_message_id TEXT,
+     at TEXT NOT NULL,
+     PRIMARY KEY (task_id, rev)
+   );
+   CREATE TABLE report_harness (
+     message_id TEXT PRIMARY KEY,
+     task_id TEXT,
+     member_id TEXT NOT NULL,
+     run_id TEXT,
+     contract_rev INTEGER,
+     review_needed TEXT,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE report_checks (
+     message_id TEXT NOT NULL,
+     idx INTEGER NOT NULL,
+     name TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     result TEXT NOT NULL,
+     evidence TEXT NOT NULL,
+     command TEXT,
+     criterion INTEGER,
+     PRIMARY KEY (message_id, idx)
+   );
+   CREATE INDEX report_harness_task ON report_harness(task_id, at);`,
 ];
 
 export function openDb(path: string): Database {

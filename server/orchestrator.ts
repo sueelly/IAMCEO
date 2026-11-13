@@ -19,6 +19,7 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { completionGate, formatChecksLine, formatContract, type ContractInput, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type {
   AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
   AdoptPreview,
@@ -164,6 +165,24 @@ export function formatTaskLine(task: Task | null): string {
   const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
   const naming = provisionalTaskTitle(task) ? ` 이 이름은 서버가 글에서 지은 임시 이름이다. 목적이 드러나는 이름(40자 안)으로 task 도구(task_id "${task.id}", title)로 바꾸고, 대화 중 목적이 정해지거나 바뀌면 다시 바꾼다` : "";
   return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다${naming ? `.${naming}` : ""}`;
+}
+
+/** 보고의 검사 목록. 미확인 목록은 'unverified' 검사 한 줄로 붙인다(없다고 적은 것도 기록이다). */
+function harnessChecks(input: PostInput): ReportCheckInput[] {
+  const clean = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
+  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: clean(c.evidence), command: c.command ? clean(c.command) || null : null, criterion: c.criterion ?? null }));
+  const unverified = (input.unverified ?? []).map(clean).filter(Boolean);
+  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, criterion: null });
+  return checks;
+}
+
+/** 계약 글의 제어 문자·빈 줄을 걷는다. 빈 합격 기준은 계약이 아니다. */
+function cleanContract(input: ContractInput): ContractInput {
+  const one = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
+  const list = (v: string[] | undefined) => (v ?? []).map(one).filter(Boolean);
+  const contract = { kind: input.kind, goal: one(input.goal), acceptance: list(input.acceptance), scope: input.scope ? one(input.scope) || null : null, forbidden: list(input.forbidden), evidence: list(input.evidence), ...(input.checks ? { checks: input.checks } : {}) };
+  if (!contract.goal || !contract.acceptance.length) throw new ApiError(400, "계약에는 goal(원하는 결과)과 acceptance(합격 기준) 1개 이상이 필요합니다");
+  return contract;
 }
 
 /** 결재 답·할 일 알림 끝에 붙는 작업 표지. 옛 카드(작업 없음)는 붙이지 않는다. */
@@ -387,6 +406,8 @@ export interface AssignInput {
   attachmentIds?: string[];
   /** 이 지시가 속한 작업. 없으면 받는 직원의 지금 작업을 비운다. */
   taskId?: string | null;
+  /** 업무 시작 계약. 주면 그 업무의 새 판으로 남기고 지시에 싣는다. */
+  contract?: ContractInput;
 }
 
 export interface AssignResult {
@@ -411,6 +432,12 @@ export interface PostInput {
   ownerAction?: string | null;
   /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
   taskId?: string | null;
+  /** 실제로 돌린 검사. 계약이 있는 업무의 완료는 이것으로 판정한다. */
+  checks?: ReportCheckInput[];
+  /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
+  unverified?: string[];
+  /** 독립 검토가 필요하면 확인할 변경과 수용 기준. 총괄이 기존 다른 직원에게 검토를 맡길 근거다. */
+  reviewNeeded?: string | null;
 }
 
 export interface AskInput {
@@ -3158,7 +3185,7 @@ export class Orchestrator implements OrchestratorApi {
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
-        const taskLine = this.taskLineFor(projectId, firstTask?.id ?? null);
+        const taskLine = this.instructionTaskLines(projectId, firstTask?.id ?? null);
         return [{ projectId, memberId: member.id, kind: "instruction", text: [formatInstruction(member.name, input.firstInstruction, quote), ...(taskLine ? [taskLine] : [])].join("\n"), taskId: firstTask?.id ?? null }];
       });
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
@@ -3277,8 +3304,10 @@ export class Orchestrator implements OrchestratorApi {
       return attachment;
     });
     const task = this.instructionTaskFor(projectId, input.taskId);
+    if (input.contract && !task) throw new ApiError(400, "계약은 업무에 붙습니다. task_id 를 함께 넣으세요");
     const delivery = this.store.transaction(() => {
-      const taskLine = this.taskLineFor(projectId, task?.id ?? null);
+      if (input.contract && task) this.store.saveTaskContract(task.id, cleanContract(input.contract), { author: assignedBy?.name ?? "대표 화면", sourceMessageId: quote?.verified ? quote.source?.id ?? null : null });
+      const taskLine = this.instructionTaskLines(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
         projectId,
         memberId: target.id,
@@ -3678,11 +3707,16 @@ export class Orchestrator implements OrchestratorApi {
 
   // ---- 작업 ----
   /** 직원이 작업을 등록하거나 고친다. 이후 그 직원의 출력은 task_id 를 밝혀야 한다. */
-  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null; parentTaskId?: string | null }): { task: Task; created: boolean } {
+  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null; parentTaskId?: string | null; contract?: ContractInput }): { task: Task; created: boolean; contract: TaskContract | null } {
+    const contract = input.contract ? cleanContract(input.contract) : null;
     return this.store.transaction(() => {
       if (input.taskId) this.requireTaskInProject(member, input.taskId);
       const parent = input.parentTaskId ? this.store.resolveTask(this.requireTaskInProject(member, input.parentTaskId)).id : null;
-      return this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
+      const current = contract && input.taskId ? this.store.getTaskContract(input.taskId) : null;
+      // 직원은 총괄·다른 직원이 정한 계약을 고쳐 기준을 낮추지 못한다(자기 규칙 수정으로 범위를 넓히지 않게).
+      if (current && member.kind === "worker" && current.author !== member.name) throw new ApiError(409, `업무 #${current.taskId} 계약 r${current.rev} 은 ${current.author}이(가) 정했습니다. 직원은 바꾸지 않습니다. 바꿔야 하면 총괄에게 보고하세요`);
+      const saved = this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
+      return { ...saved, contract: contract ? this.store.saveTaskContract(saved.task.id, contract, { author: member.name }) : this.store.getTaskContract(saved.task.id) };
     });
   }
 
@@ -3784,6 +3818,15 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
+  /** 지시 글의 업무 줄. 계약이 있는 업무면 계약 판·원문 참조·최근 검사·열린 결재를 덧붙인다(대화 전량은 넘기지 않는다). */
+  private instructionTaskLines(projectId: string, taskId: string | null | undefined): string | null {
+    const line = this.taskLineFor(projectId, taskId);
+    const contract = taskId ? this.store.getTaskContract(taskId) : null;
+    if (!contract || !taskId) return line;
+    const openDecisions = this.store.listOpenDecisions(projectId).filter(d => d.taskId === taskId).map(d => ({ id: d.id, title: d.title }));
+    return [line, formatContract(contract, { latest: this.store.latestTaskChecks(taskId), openDecisions })].filter(Boolean).join("\n");
+  }
+
   private taskLineFor(projectId: string, taskId: string | null | undefined): string | null {
     const task = taskId ? this.store.getTask(taskId) : null;
     if (task) return formatTaskLine(task);
@@ -3823,6 +3866,9 @@ export class Orchestrator implements OrchestratorApi {
       ...files.map((f) => f.taskId),
       input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
     ]);
+    const checks = harnessChecks(input);
+    const contract = taskId ? this.store.getTaskContract(taskId) : null;
+    if (contract && input.kind === "완료") this.gateCompletion(member, contract, checks);
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
@@ -3831,11 +3877,30 @@ export class Orchestrator implements OrchestratorApi {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
+      if (checks.length || input.reviewNeeded || contract) this.store.recordReportChecks(message, member, checks, { contractRev: contract?.rev ?? null, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null });
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind), refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
     return message;
+  }
+
+  /**
+   * 계약이 있는 업무의 완료 판정. 직원은 자기 검사로, 총괄·본사는 자기 검사가 없으면 이 계약 판으로 통과한 직원 완료 보고가 있어야 한다.
+   * 거절된 완료는 글이 아니므로 보고 의무가 남는다(막힘으로 올리면 마감된다).
+   */
+  private gateCompletion(member: Member, contract: TaskContract, checks: ReportCheckInput[]): void {
+    if (member.kind !== "worker" && !checks.length) {
+      if (this.store.hasPassedCompletion(contract.taskId, contract.rev)) return;
+      const reason = `업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`;
+      this.store.appendActivity(member.id, "system", `완료 차단: ${reason}`);
+      throw new ApiError(400, reason);
+    }
+    const reasons = completionGate(contract, checks);
+    if (!reasons.length) return;
+    const reason = `완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}). ${reasons.join(" / ")}. 고쳐서 다시 검사한 뒤 완료로 올리거나, 막힘으로 올리고 unverified 에 확인하지 못한 것을 적으세요`;
+    this.store.appendActivity(member.id, "system", `완료 차단: ${reasons.join(" / ")}`);
+    throw new ApiError(400, reason);
   }
 
   /**
@@ -3860,7 +3925,9 @@ export class Orchestrator implements OrchestratorApi {
   private reportText(message: Message): string {
     const refs = this.reportReferences(message.projectId, message.id);
     const direct = message.title.startsWith("(직접) ");
-    return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
+    const harness = this.store.getReportHarness(message.id);
+    const checksLine = harness ? formatChecksLine(harness.checks, harness.contractRev, harness.reviewNeeded) : "";
+    return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}${checksLine ? `\n${checksLine}` : ""}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
   }
 
   private async reportToConductor(member: Member, kind: string, title: string, body: string, wake: boolean): Promise<void> {
@@ -3968,7 +4035,7 @@ export class Orchestrator implements OrchestratorApi {
           const source = this.store.requireMessage(followUp.sourceMessageId);
           // 후속 지시는 닫은 결재 카드의 작업을 잇는다(카드가 전체면 대표 원문 글의 작업). 칩에서 시작한 일이 전체로 새지 않게 한다.
           const taskId = decision.taskId ?? source.taskId ?? null;
-          const taskLine = this.taskLineFor(member.projectId, taskId);
+          const taskLine = this.instructionTaskLines(member.projectId, taskId);
           const delivery = this.store.enqueue({ projectId: member.projectId, memberId: followUp.memberId, kind: "instruction", text: [formatInstruction(member.name, `${followUp.text}\n결재 #${decision.id} 닫기의 후속 지시`, { text: input.userQuote ?? source.body, verified: true, source: { id: source.id, text: source.body, at: source.at } }), ...(taskLine ? [taskLine] : [])].join("\n"), taskId });
           this.store.noteDelegation(member.id, delivery, this.isBusy(this.store.requireMember(followUp.memberId)));
           this.store.afterCommit(() => { void this.pump(followUp.memberId); });
@@ -5421,7 +5488,7 @@ export class Orchestrator implements OrchestratorApi {
     // Claude only (also legacy rows without a cli): Codex and Antigravity take their settings as launch arguments.
     if (member.cli !== "codex" && member.cli !== "antigravity") {
       settingsFile = join(dir, `${member.id}.settings.json`);
-      const settings = { statusLine: writeStatuslineWrapper(this.config.home),
+      const settings = { statusLine: writeStatuslineWrapper(this.config.home), hooks: guardHooks(this.config.home),
         ...(this.store.getSettings().permissionMode === "bypassPermissions" ? { skipDangerousModePermissionPrompt: true } : {}) };
       writeFileSync(settingsFile, `${JSON.stringify(settings)}\n`, { mode: 0o600 });
     }
@@ -5549,6 +5616,17 @@ export function cliCommand(): string {
   if (Bun.which("iamceo")) return "iamceo";
   const { command, args } = mcpCommand();
   return [command, ...args.slice(0, -1)].map(shellQuote).join(" ");
+}
+
+/** Claude 직원의 PreToolUse 훅 명령(셸 한 줄). 개발 실행은 서버 없이 판정 모듈만 읽는 진입 파일을 쓴다. */
+export function guardCommand(home: string): string {
+  const base = import.meta.path.startsWith("/$bunfs/") ? [process.execPath, "guard"] : [process.execPath, resolve(import.meta.dir, "..", "bin", "iamceo-guard.ts")];
+  return [...base, "--home", home].map(shellQuote).join(" ");
+}
+
+/** IAMCEO 가 띄우는 Claude 세션에만 넘기는 훅 설정. 지우기·게시는 묻고 비밀 파일은 거절한다(server/harness-guard.ts). */
+export function guardHooks(home: string): Record<string, unknown> {
+  return { PreToolUse: [{ matcher: "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob", hooks: [{ type: "command", command: guardCommand(home), timeout: 10 }] }] };
 }
 
 /** 컴파일 실행이면 자기 자신, 아니면 bun 으로 CLI 를 띄운다. */
