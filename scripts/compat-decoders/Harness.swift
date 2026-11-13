@@ -9,6 +9,9 @@
 // - 출시 앱의 조건: contractVersion 2, 전달 안내 version 2, hello 의 고정 간격 등. 어긋나면 기능이 조용히 꺼진다.
 // - 0.2.4 부터(COMPAT_SINCE_0_2_4): 버전 머리글을 보낸 앱이 받는 server 칸과 어긋남 안내, 연결된 기기 목록,
 //   다른 기기 끊기 거절(403)이 그 앱 화면에 어떻게 보이는지.
+// - 0.2.5 부터(COMPAT_SINCE_0_2_5): server.id 와 home 으로 읽는 서버 신원이 서버의 실제 신원과 같은 서버인지(연결되면 보낼 글을
+//   쓴 서버에 묶는다. 다르면 이 서버에 쓴 글을 보내지 않고 '다른 서버에 보내려던 글'로 둔다), 연결된 기기의 끊기 단추
+//   (canRevokeOthers: 서버가 도는 Mac 은 모든 줄, 다른 기기는 자기 줄만), 끊기 거절을 코드(device_revoke_local_only)로 알아보는지.
 // 의도한 변경이면 allow.json 에 이유와 함께 적는다.
 import Foundation
 
@@ -36,6 +39,13 @@ enum CompatProbe {
         @unknown default: return "\(decoding)"
         }
     }
+}
+
+/// 덤프가 남긴 서버의 실제 신원(manifest.serverIdentity: 알림 저장소의 서버 ID 와 데이터 폴더). 버전 머리글을 보낸 앱의 덤프에만 있다.
+/// 0.2.5 부터의 검사가 응답의 신원과 견준다(앞서 이 서버에서 받아 글에 남긴 신원과 같은 값).
+enum DumpReference {
+    nonisolated(unsafe) static var serverID: String?
+    nonisolated(unsafe) static var serverHome: String?
 }
 
 /// status 는 그 응답의 HTTP 상태(덤프 목록에 없으면 200). 오류 답(APIError)을 읽을 때만 쓴다.
@@ -94,6 +104,9 @@ func checkServerInfo(_ value: Any) -> String? {
     for onThisMac in [false, true] {
         if let notice = CompatNotice(bootstrap, onThisMac: onThisMac) { return "단계가 맞는데 어긋남 안내가 뜬다: \(notice.text)" }
     }
+    #if COMPAT_SINCE_0_2_5
+    if let problem = checkServerIdentity(bootstrap) { return problem }
+    #endif
     return nil
 }
 
@@ -105,6 +118,9 @@ func checkCompatShown(_ value: Any) -> String? {
     else { return "형이 맞지 않음" }
     guard bootstrap.compat != nil else { return "compat 칸을 읽지 못했다" }
     guard CompatNotice(bootstrap, onThisMac: false) != nil else { return "compat 칸을 읽었지만 안내가 뜨지 않는다(모르는 종류에 문장이 없다)" }
+    #if COMPAT_SINCE_0_2_5
+    if let problem = checkServerIdentity(bootstrap) { return problem }
+    #endif
     return nil
 }
 
@@ -112,8 +128,14 @@ func checkCompatShown(_ value: Any) -> String? {
 /// 빨간 한 줄은 message 가 비지 않았으면 localizedDescription(ServerErrorText.display) 이다. 영어 화면이면 영어 문장이어야 한다.
 func checkRevokeRefused(_ value: Any, language: AppLanguage) -> String? {
     guard let error = value as? APIError else { return "형이 맞지 않음" }
-    guard !(200..<300).contains(error.status) else { return "성공(\(error.status))으로 답해 0.2.4 가 끊은 것으로 안다" }
-    guard error.code != "device_not_found" else { return "code device_not_found: 0.2.4 가 '이미 끊김'으로 읽고 그 줄을 조용히 지운다" }
+    guard !(200..<300).contains(error.status) else { return "성공(\(error.status))으로 답해 0.2.4 부터의 앱이 끊은 것으로 안다" }
+    guard error.code != "device_not_found" else { return "code device_not_found: 0.2.4 부터의 앱이 '이미 끊김'으로 읽고 그 줄을 조용히 지운다" }
+    #if COMPAT_SINCE_0_2_5
+    // 0.2.5 DevicesPanel.revoke: 이 코드면 까닭('서버가 도는 Mac 에서만')을 보이고 목록을 다시 읽어 단추를 맞춘다. 다른 코드면 실패 한 줄만 남고 단추는 그대로다.
+    guard error.code == "device_revoke_local_only" else {
+        return "code \(error.code ?? "없음"): 0.2.5 가 '서버가 도는 Mac 에서만' 거절로 알아보지 못해 목록을 다시 읽지 않는다"
+    }
+    #endif
     guard !error.message.isEmpty, error.message != "Request failed (\(error.status))." else { return "거절 문장(error)을 읽지 못했다" }
     let shown = AppLanguage.withOverride(language) { error.localizedDescription }
     let korean = shown.range(of: #"\p{Hangul}"#, options: .regularExpression) != nil
@@ -130,6 +152,51 @@ func checkDevices(_ value: Any) -> String? {
 }
 #endif
 
+#if COMPAT_SINCE_0_2_5
+/// 0.2.5 AppStore+Offline 의 currentServerID·currentServerHome 두 줄을 그대로 옮겼다(원문은 AppStore 의 확장이라 따로 빌드할 수 없다.
+/// releases.json 의 mirrorOnly 가 이 두 줄과 ServerIdentity 를 부르는 두 줄이 태그 원문에 그대로 있는지 본다).
+/// ServerVersionInfo(id 를 비교할 모양으로 읽는다)와 ServerIdentity 는 태그에서 꺼낸 원문이다.
+func currentServer(_ bootstrap: Bootstrap?) -> (id: String?, home: String?) {
+    let currentServerID: String? = ServerVersionInfo.normalizedID(bootstrap?.server?.id)
+    let currentServerHome: String? = bootstrap.flatMap { $0.home.isEmpty ? nil : $0.home }
+    return (currentServerID, currentServerHome)
+}
+
+/// 0.2.5 는 연결되면 보낼 글과 결과를 모르는 보낸 글을 쓴 서버의 신원(server.id + home)에 묶는다(AppStore.splitOutbox·sentToCurrentServer:
+/// ServerIdentity.same(글의 신원, 지금 응답의 신원)). 글의 신원은 앞서 이 서버에서 받은 응답의 것이라 서버의 실제 신원과 같다.
+/// - id 를 못 읽으면 주소로만 가린다(같은 주소에 다른 서버가 떠도 그 서버로 보낸다).
+/// - home 이 비면 ID 가 같은 사본(다른 폴더에 복원한 서버, DB 를 복사한 시험 서버)을 가리지 못한다.
+/// - 같은 서버로 읽히지 않으면 이 서버에 쓴 글을 '다른 서버에 보내려던 글'로 두고 보내지 않는다.
+func checkServerIdentity(_ bootstrap: Bootstrap) -> String? {
+    let (id, home) = currentServer(bootstrap)
+    guard let id else { return "server.id 를 읽지 못했다(0.2.5 가 연결되면 보낼 글을 주소로만 가린다)" }
+    guard let home else { return "home 이 비었다(0.2.5 가 ID 가 같은 다른 폴더의 서버를 가리지 못한다)" }
+    guard let savedID = ServerVersionInfo.normalizedID(DumpReference.serverID), let savedHome = DumpReference.serverHome, !savedHome.isEmpty else {
+        return "덤프에 서버의 실제 신원(manifest.serverIdentity)이 없다"
+    }
+    guard ServerIdentity.same(id: savedID, home: savedHome, as: id, home: home) == true else {
+        return "응답의 서버 신원(\(id), \(home))이 서버의 실제 신원(\(savedID), \(savedHome))과 같은 서버로 읽히지 않는다: 0.2.5 가 이 서버에 쓴 글을 보내지 않는다"
+    }
+    return nil
+}
+
+/// 0.2.5 연결된 기기의 끊기 단추(DeviceAccessList.canRevoke, 태그 원문): 서버가 도는 Mac 의 앱은 모든 줄, 다른 기기(iPhone)는 자기 줄만.
+/// 다른 기기의 남의 줄에 단추가 있으면 누를 때마다 서버가 거절하고, 서버가 도는 Mac 에 단추가 없으면 어디서도 그 기기를 끊을 수 없다.
+func checkRevokeButtons(_ value: Any, onServerMac: Bool) -> String? {
+    guard let list = value as? DeviceAccessList else { return "형이 맞지 않음" }
+    guard list.devices.contains(where: { !$0.current }) else { return "남의 줄이 없어 끊기 단추를 볼 수 없다" }
+    if !onServerMac, !list.devices.contains(where: \.current) { return "이 기기 줄(current)이 없다(자기 연결을 끊을 수 없다)" }
+    for device in list.devices {
+        let shown = list.canRevoke(device), expected = device.current || onServerMac
+        guard shown != expected else { continue }
+        let flag = list.canRevokeOthers.map { String($0) } ?? "없음"
+        return "'\(device.name)' 줄에 끊기 단추가 \(shown ? "있다" : "없다")(canRevokeOthers \(flag)): "
+            + (onServerMac ? "서버가 도는 Mac 에서 다른 기기를 끊지 못한다" : "다른 기기에서 남의 줄을 누르면 서버가 거절한다")
+    }
+    return nil
+}
+#endif
+
 /// 해석은 되지만 출시 앱이 따로 거는 조건. 어긋나면 그 기능이 조용히 꺼진다(AppStore 의 같은 판정을 옮겨 왔다).
 func check(_ name: String, _ value: Any) -> String? {
     switch name {
@@ -139,6 +206,10 @@ func check(_ name: String, _ value: Any) -> String? {
     case "devices": return checkDevices(value)
     case "revoke-refused-ko": return checkRevokeRefused(value, language: .ko)
     case "revoke-refused-en": return checkRevokeRefused(value, language: .en)
+    #endif
+    #if COMPAT_SINCE_0_2_5
+    case "revoke-buttons-mac": return checkRevokeButtons(value, onServerMac: true)
+    case "revoke-buttons-remote": return checkRevokeButtons(value, onServerMac: false)
     #endif
     case "contract-v2":
         // AppStore: contractVersion == 2 && operations/realtime == true 가 아니면 v1 쓰기와 3초 조회로 내려간다.
@@ -201,6 +272,10 @@ func check(_ name: String, _ value: Any) -> String? {
     let entries = rawEntries.compactMap { raw -> Entry? in
         guard let file = raw["file"] as? String, let type = raw["type"] as? String else { return nil }
         return Entry(file: file, type: type, checks: raw["checks"] as? [String] ?? [], note: raw["note"] as? String ?? "", status: raw["status"] as? Int ?? 200)
+    }
+    if let identity = manifest["serverIdentity"] as? [String: Any] {
+        DumpReference.serverID = identity["id"] as? String
+        DumpReference.serverHome = identity["home"] as? String
     }
     var allows: [Allow] = []
     if let data = try? Data(contentsOf: URL(fileURLWithPath: arguments[2])),

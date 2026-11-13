@@ -185,7 +185,7 @@ bun scripts/release-ios.ts api GET '/v1/apps?fields[apps]=bundleId'
 
 - `bash scripts/check.sh compat`(`bun run test:compat`)은 새 서버의 실제 응답을 출시된 앱(태그마다)의 해석 코드로 풀어 봅니다. `bash scripts/check.sh`(전체)에도 들어 있습니다. 출시 태그를 git에서 읽으므로 태그가 있는 저장소에서 돌립니다(태그가 없으면 건너뛰지 않고 실패합니다).
 - CI는 `ci.yml`의 `native` 작업과 `release.yml`의 `compat` 작업에서 이 검사를 돌립니다. 둘 다 Xcode 27.2(`xcode-27` 이미지)를 쓰고, 태그를 받으려고 `actions/checkout`에 `fetch-depth: 0`을 줍니다. `release.yml`은 이 검사가 실패하면 초안을 만들지 않습니다.
-- 새 앱을 출시하면 그 태그를 `scripts/compat-decoders/releases.json`에 더합니다(그 태그에서 따로 빌드할 해석 코드 파일 목록과 함께).
+- 새 앱을 출시하면 그 태그를 `scripts/compat-decoders/releases.json`에 더합니다(그 태그에서 따로 빌드할 해석 코드 파일 목록과 함께). 지금 v0.2.2·v0.2.3·v0.2.4·v0.2.5가 들어 있습니다. iPhone과 Mac이 같은 태그로 나가면 해석 코드가 같아 한 항목입니다. 버전 머리글을 보내는 앱(0.2.4부터)은 `appHeaders`(그 앱이 보내는 값)를 적고, 그 판에서 새로 읽는 응답 칸이 있으면 `Harness.swift`에 `COMPAT_SINCE_<판>` 조건의 검사를 더해 `defines`에 앞 판의 조건과 함께 켭니다. 화면 코드와 섞인 파일은 해석부만 잘라 쓰고(`from`·`to`), 따로 빌드할 수 없는 판정 몇 줄을 옮겨 쓰면 `mirrored`(또는 빌드하지 않는 `mirrorOnly` 항목)로 그 줄이 태그 원문에 그대로 있는지 확인합니다. 검사는 매번 진짜 응답을 한 군데씩 망가뜨린 사본으로 자기가 실제로 잡는지도 봅니다(`run.ts`의 `MUTATIONS`, 그 판부터만 거는 것은 `since`).
 - 앱은 모든 요청에 `X-IAMCEO-App-Version`, `X-IAMCEO-App-Build`, `X-IAMCEO-App-Platform`(macos|ios), `X-IAMCEO-Api-Level`을 붙입니다. 서버는 머리글을 보낸 앱에만 Bootstrap의 `server`(버전·API 단계)를 싣고, 실제로 맞지 않을 때만 `compat`을 싣습니다. 붙은 앱 목록은 `/api/readiness`의 `apps`에 보입니다.
 - 서버와 앱이 서로 알아야 하는 것이 바뀌어 API 단계를 올릴 때는 `shared/types.ts`의 `API_LEVEL`(필요하면 `MIN_APP_API_LEVEL`)과 앱의 `AppVersion.apiLevel`을 함께 올립니다. `MIN_APP_API_LEVEL`을 올리면 그보다 낮은 앱에 '앱을 업데이트하세요'가 뜨므로, 출시된 앱이 실제로 깨질 때만 올립니다.
 

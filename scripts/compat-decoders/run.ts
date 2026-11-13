@@ -13,13 +13,20 @@
 // 0.2.4 부터의 앱은 모든 요청에 버전 머리글을 싣고, 서버는 그 앱에만 새 칸(Bootstrap.server 등)을 싣는다.
 // 그런 태그는 releases.json 에 appHeaders(그 앱이 보내는 값)를 적는다. 덤프 시험은 그 머리글로 받은 응답을
 // 덤프 폴더의 app-<태그>/ 에 따로 남기고, 이 스크립트는 그 태그의 해석기에 그 폴더를 먹인다(머리글 없는 응답은 그 앱이 받지 않는다).
+// 그 폴더의 manifest 에는 서버의 실제 신원(serverIdentity: 알림 저장소의 서버 ID 와 데이터 폴더)도 남는다. 0.2.5 부터의 해석기는
+// 응답의 server.id·home 이 그 신원과 같은 서버로 읽히는지 본다(대기열의 글을 쓴 서버에 묶는다).
 // files 의 항목이 객체면 그 파일에서 from 줄부터 to 줄 바로 앞까지만 원문 그대로 꺼낸다(화면 코드와 섞인 파일의 해석부만 쓸 때).
-// defines 는 그 태그의 빌드에만 켜는 Swift 조건(Harness.swift 의 #if)이다.
+// mirrorOnly 항목은 빌드하지 않고, Harness.swift 가 옮겨 쓴 줄이 그 태그의 파일에 그대로 있는지만 본다(AppStore 의 확장처럼
+// 따로 빌드할 수 없는 파일에서 해석 뒤의 판정 몇 줄을 옮겨 쓸 때).
+// defines 는 그 태그의 빌드에만 켜는 Swift 조건(Harness.swift 의 #if)이다. 뒤 판은 앞 판의 조건을 함께 켠다(0.2.5 = 0.2.4 + 0.2.5).
+// iPhone 과 Mac 이 같은 태그로 나가면 해석 코드가 같다(플랫폼 조건은 AppVersion.platform 한 줄). 그래서 태그마다 한 항목이고,
+// appHeaders.platform 은 그 판에서 서버가 다른 기기로 보는 쪽(QR 로 붙은 iPhone)을 적는다. 서버가 도는 Mac 의 앱이 받는 응답은
+// tests/compat-dump.test.ts 가 macos 머리글로 따로 받는다(연결된 기기).
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-/** 출시 태그에서 꺼낼 파일. 글자면 파일 전체. */
-export type ReleaseFile = string | {
+/** 태그 파일에서 해석부만 꺼내는 조각. */
+export interface SliceFile {
   path: string;
   /** 이 글자로 시작하는 줄부터(그 줄 포함). 파일에 한 줄만 있어야 한다. */
   from: string;
@@ -29,7 +36,16 @@ export type ReleaseFile = string | {
   imports: string[];
   /** Harness.swift 가 이 파일에서 옮겨 쓴 원문 조각. 태그의 파일에 그대로 있어야 한다(옮긴 뜻이 원문과 같다는 표시). */
   mirrored?: string[];
-};
+}
+/** 빌드하지 않고 Harness.swift 가 옮겨 쓴 원문만 견주는 파일. */
+export interface MirrorOnlyFile {
+  path: string;
+  mirrorOnly: true;
+  /** Harness.swift 가 이 파일에서 옮겨 쓴 원문 조각. 하나 이상. */
+  mirrored: string[];
+}
+/** 출시 태그에서 꺼낼 파일. 글자면 파일 전체. */
+export type ReleaseFile = string | SliceFile | MirrorOnlyFile;
 /** 그 출시 앱이 모든 요청에 싣는 버전 머리글의 값(태그의 AppVersion.swift 와 같아야 한다). */
 export interface AppHeaders { version: string; platform: "ios" | "macos"; apiLevel: number }
 export interface Release { tag: string; files: ReleaseFile[]; defines?: string[]; appHeaders?: AppHeaders }
@@ -86,9 +102,12 @@ let package = Package(
 `;
 }
 
-/** 태그의 파일 하나를 꺼낸다. 조각이면 from 줄부터 to 줄 앞까지를 원문 그대로 두고 위에 출처와 import 만 붙인다. 실패하면 이유. */
+/**
+ * 태그의 파일 하나를 꺼낸다. 조각이면 from 줄부터 to 줄 앞까지를 원문 그대로 두고 위에 출처와 import 만 붙인다. 실패하면 이유.
+ * mirrorOnly 면 옮겨 쓴 원문만 견주고 빌드할 글은 돌려주지 않는다(text 없음).
+ */
 export function releaseSource(tag: string, file: ReleaseFile, show: (path: string) => { ok: boolean; out: string; err: string }):
-  { name: string; text: string } | { error: string } {
+  { name: string; text: string } | { name: string; mirrorOnly: true } | { error: string } {
   const path = typeof file === "string" ? file : file.path;
   const shown = show(path);
   if (!shown.ok) return { error: `${path} 를 꺼내지 못했습니다: ${shown.err}` };
@@ -96,6 +115,11 @@ export function releaseSource(tag: string, file: ReleaseFile, show: (path: strin
   if (typeof file === "string") return { name, text: shown.out };
   for (const piece of file.mirrored ?? []) {
     if (!shown.out.includes(piece)) return { error: `${path} 에 Harness.swift 가 옮겨 쓴 원문이 없습니다: ${piece}` };
+  }
+  if ("mirrorOnly" in file) {
+    // 견줄 줄이 없으면 이 항목은 아무것도 지키지 않는다.
+    if (!file.mirrored?.length) return { error: `${path}: mirrorOnly 항목에 mirrored 가 없습니다` };
+    return { name, mirrorOnly: true };
   }
   const lines = shown.out.split("\n");
   const starts = (marker: string) => lines.flatMap((line, index) => line.startsWith(marker) ? [index] : []);
@@ -147,6 +171,7 @@ function checkRelease(release: Release, dump: string, work: string): boolean {
   for (const file of release.files) {
     const source = releaseSource(release.tag, file, path => git(["show", `${release.tag}:${path}`]));
     if ("error" in source) { console.log(`실패 ${label} ${source.error}`); return false; }
+    if (!("text" in source)) continue; // 원문만 견준 파일(mirrorOnly)은 빌드에 넣지 않는다.
     if (source.name === "main.swift" || sources.has(source.name)) { console.log(`실패 ${label} 파일 이름이 겹칩니다: ${source.name}`); return false; }
     sources.set(source.name, source.text);
   }
@@ -166,7 +191,7 @@ function checkRelease(release: Release, dump: string, work: string): boolean {
   writeFileSync(join(packageDir, "Package.swift"), packageSwift(release.defines ?? []));
   const common = ["--package-path", packageDir, "--scratch-path", join(packageDir, ".build"), "--cache-path", join(work, "swift-cache"),
     "--config-path", join(work, "swift-config"), "--security-path", join(work, "swift-security")];
-  console.log(`${label} 옛 해석기 빌드 중(${release.files.length}개 파일)`);
+  console.log(`${label} 옛 해석기 빌드 중(${sources.size}개 파일)`);
   const built = swift(["build", ...common]);
   if (!built.ok) {
     console.log(built.out.split("\n").filter(line => /error:/.test(line)).slice(0, 20).join("\n") || built.out.slice(-4000));
@@ -188,8 +213,13 @@ function checkRelease(release: Release, dump: string, work: string): boolean {
  * 모두 실패해야 한다. 하나라도 통과하면 게이트가 빈 껍데기라는 뜻이라 게이트 전체를 실패로 친다.
  */
 type Json = Record<string, any>;
-/** appHeaders: 버전 머리글을 보내는 태그(app-<태그>/ 덤프)에만 건다. 그 덤프에만 있는 칸·파일을 망가뜨린다. */
-export const MUTATIONS: { name: string; file: string; appHeaders?: true; mutate: (body: Json) => boolean }[] = [
+/**
+ * appHeaders: 버전 머리글을 보내는 태그(app-<태그>/ 덤프)에만 건다. 그 덤프에만 있는 칸·파일을 망가뜨린다.
+ * since: 그 해석기 조건(defines)을 켠 태그에만 건다. 앞 판이 읽지 않는 칸이라 앞 판에서는 어긋남이 아니다(0.2.4 는 server.id 를 모른다).
+ */
+export interface Mutation { name: string; file: string; appHeaders?: true; since?: string; mutate: (body: Json) => boolean }
+const NOT_THIS_SERVER = "00000000-0000-4000-8000-000000000000";
+export const MUTATIONS: Mutation[] = [
   { name: "필드의 형이 바뀜(bootstrap.cli 가 배열)", file: "bootstrap.json",
     mutate: body => typeof body.cli === "string" && (body.cli = ["iamceo"], true) },
   { name: "계약 버전이 바뀜(contractVersion 3)", file: "capabilities.json",
@@ -210,16 +240,38 @@ export const MUTATIONS: { name: string; file: string; appHeaders?: true; mutate:
     mutate: body => !!body.bootstrap?.server && (delete body.bootstrap.server, true) },
   { name: "필수 칸이 빠짐(연결된 기기 목록)", file: "devices-remote.json", appHeaders: true,
     mutate: body => Array.isArray(body.devices) && (delete body.devices, true) },
+  // 기기 이름이 끼어 대표 문장과 다른 한국어 문장. 대표 문장 그대로면 0.2.5 는 코드의 영어 문장으로 바꿔 보인다(ServerErrorDisplay).
   { name: "영어 화면에 한국어 거절 문장", file: "devices-revoke-refused-en.json", appHeaders: true,
-    mutate: body => typeof body.error === "string" && (body.error = "다른 기기는 서버가 도는 Mac에서 끊을 수 있습니다", true) },
+    mutate: body => typeof body.error === "string" && (body.error = "‘회사 iPad’ 연결은 서버가 도는 Mac에서 끊을 수 있습니다", true) },
   { name: "거절을 device_not_found 로 답함(옛 앱이 줄을 조용히 지운다)", file: "devices-revoke-refused.json", appHeaders: true,
     mutate: body => typeof body.code === "string" && (body.code = "device_not_found", true) },
+  // 0.2.5: 대기열을 서버 신원(server.id + home)에 묶고, 연결된 기기의 끊기 단추를 canRevokeOthers 로 가르고, 거절 코드로 까닭을 안다.
+  { name: "서버 ID 가 빠짐(0.2.5 가 보낼 글을 주소로만 가린다)", file: "sync-project.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => typeof body.bootstrap?.server?.id === "string" && (delete body.bootstrap.server.id, true) },
+  { name: "서버 ID 의 모양이 어긋남(0.2.5 가 없는 것으로 읽는다)", file: "bootstrap.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => typeof body.server?.id === "string" && (body.server.id = "server 1", true) },
+  { name: "응답의 서버 ID 가 서버의 실제 ID 와 다름(0.2.5 가 이 서버에 쓴 글을 다른 서버 몫으로 둔다)", file: "sync-project-full.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => typeof body.bootstrap?.server?.id === "string" && (body.bootstrap.server.id = NOT_THIS_SERVER, true) },
+  { name: "데이터 폴더가 서버의 실제 폴더와 다름(0.2.5 가 다른 서버로 본다)", file: "sync-none.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => typeof body.bootstrap?.home === "string" && (body.bootstrap.home = "/Users/other/.iamceo", true) },
+  { name: "다른 기기 끊기 여부가 빠짐(iPhone 이 남의 줄에도 끊기 단추를 둔다)", file: "devices-remote.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => typeof body.canRevokeOthers === "boolean" && (delete body.canRevokeOthers, true) },
+  { name: "서버가 도는 Mac 에 다른 기기를 못 끊는다고 답함", file: "devices.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => body.canRevokeOthers === true && (body.canRevokeOthers = false, true) },
+  { name: "거절 코드가 바뀜(0.2.5 가 까닭을 알아보지 못해 목록을 다시 읽지 않는다)", file: "devices-revoke-refused.json", appHeaders: true, since: "COMPAT_SINCE_0_2_5",
+    mutate: body => body.code === "device_revoke_local_only" && (body.code = "forbidden", true) },
 ];
+
+/** 그 태그의 해석기에 거는 망가뜨리기. */
+export function mutationsFor(release: Release): Mutation[] {
+  return MUTATIONS.filter(mutation => (!mutation.appHeaders || !!release.appHeaders)
+    && (!mutation.since || (release.defines ?? []).includes(mutation.since)));
+}
 
 function checkTeeth(binary: string, dump: string, folder: string, release: Release): boolean {
   const tag = release.tag;
-  const mutations = MUTATIONS.filter(mutation => !mutation.appHeaders || release.appHeaders);
-  const manifest = JSON.parse(readFileSync(join(dump, "manifest.json"), "utf8")) as { entries: { file: string; type: string; checks: string[]; note: string }[] };
+  const mutations = mutationsFor(release);
+  const manifest = JSON.parse(readFileSync(join(dump, "manifest.json"), "utf8")) as Json & { entries: { file: string; type: string; checks: string[]; note: string }[] };
   let ok = true;
   for (const [index, mutation] of mutations.entries()) {
     const entry = manifest.entries.find(item => item.file === mutation.file);
@@ -231,7 +283,8 @@ function checkTeeth(binary: string, dump: string, folder: string, release: Relea
     const dir = join(folder, String(index));
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, entry.file), JSON.stringify(body));
-    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ entries: [entry] }));
+    // 목록 밖의 기록(서버 신원 serverIdentity 등)은 그대로 넘긴다. 망가뜨린 응답을 그 기준과 견준다.
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...manifest, entries: [entry] }));
     const run = Bun.spawnSync([binary, dir, join(here, "allow.json"), tag], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     if (run.exitCode !== 1) {
       console.log(`실패 [${tag}] 게이트 자체 검사 '${mutation.name}': 망가뜨린 응답을 잡지 못했습니다(종료 코드 ${run.exitCode}).\n${run.stdout.toString()}`);

@@ -2,7 +2,9 @@
 // 화면에 보이는 상태를 고루 만든 서버에서 출시 앱(0.2.2·0.2.3)이 부르는 경로와 실시간 사건을 받아 파일로 남긴다.
 // 버전 머리글을 보내는 출시 앱(0.2.4 부터, releases.json 의 appHeaders)은 그 머리글로 같은 경로를 다시 받아 app-<태그>/ 에 따로 남긴다.
 // 서버는 머리글을 보낸 앱에만 새 칸(Bootstrap.server, 0.2.5 의 server.id)을 싣기 때문이다. 그 앱이 부르는 연결된 기기 목록과
-// 다른 기기 끊기 거절(403 device_revoke_local_only)도 거기에 넣는다.
+// 다른 기기 끊기 거절(403 device_revoke_local_only)도 거기에 넣는다. 연결된 기기 가운데 서버가 도는 Mac 의 앱이 부르는 것은
+// macos 머리글로 받는다(같은 판의 Mac 앱. 해석 코드는 iPhone 과 같다). 그 폴더의 manifest 에는 서버의 실제 신원
+// (serverIdentity: 알림 저장소의 서버 ID 와 데이터 폴더)을 남겨, 0.2.5 부터의 해석기가 응답의 server.id·home 과 견준다.
 // IAMCEO_COMPAT_OUT 이 있으면 그 폴더에(scripts/check.sh compat 이 쓴다), 없으면 임시 폴더에 쓰고 지운다.
 // 해석은 scripts/compat-decoders/run.ts 가 git 태그의 옛 Swift 모델로 한다. 이 시험은 빠짐없이 받았는지만 본다.
 import { afterAll, expect, test } from "bun:test";
@@ -27,9 +29,14 @@ import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 export type CompatType = "ServerCapabilities" | "Bootstrap" | "SyncSnapshot" | "ProjectState" | "[Project]" | "MessagePage" | "Message" | "[Message]"
   | "Decision" | "[Activity]" | "DeliveryNoticePage" | "DeliveryNotices" | "ModelCatalog" | "PushStatus" | "PushDeviceList" | "[FileSearchResult]"
   | "SettingsWriteResult" | "RealtimeEvent" | "DeviceAccessList" | "APIError";
-/** 해석 뒤 출시 앱이 따로 거는 조건(해석은 되지만 조건이 어긋나면 그 기능이 조용히 꺼진다). 뒤의 다섯은 0.2.4 부터의 해석기만 안다. */
+/**
+ * 해석 뒤 출시 앱이 따로 거는 조건(해석은 되지만 조건이 어긋나면 그 기능이 조용히 꺼진다). 둘째 줄의 다섯은 0.2.4 부터의 해석기만,
+ * 셋째 줄의 둘은 0.2.5 부터의 해석기(COMPAT_SINCE_0_2_5)만 안다. server-info·compat-shown·revoke-refused-* 는 0.2.5 해석기에서
+ * 서버 신원과 거절 코드까지 본다(Harness.swift).
+ */
 export type CompatCheck = "contract-v2" | "sync-ok" | "notices-v2" | "hello-v2" | "event-payload"
-  | "server-info" | "compat-shown" | "devices" | "revoke-refused-ko" | "revoke-refused-en";
+  | "server-info" | "compat-shown" | "devices" | "revoke-refused-ko" | "revoke-refused-en"
+  | "revoke-buttons-mac" | "revoke-buttons-remote";
 /** status: 2xx 가 아닌 답(APIError)일 때 그 상태. */
 export interface CompatEntry { file: string; type: CompatType; checks: CompatCheck[]; note: string; status?: number }
 
@@ -37,9 +44,9 @@ export interface CompatEntry { file: string; type: CompatType; checks: CompatChe
 function appHeaderValues(app: AppHeaders): Record<string, string> {
   return { [APP_HEADERS.version]: app.version, [APP_HEADERS.build]: "1", [APP_HEADERS.platform]: app.platform, [APP_HEADERS.apiLevel]: String(app.apiLevel) };
 }
-/** 버전 머리글을 보내는 출시 앱마다 그 앱이 받는 응답을 담을 하위 폴더와 머리글. */
+/** 버전 머리글을 보내는 출시 앱마다 그 앱이 받는 응답을 담을 하위 폴더와 머리글, 그 해석기의 조건(defines). */
 const HEADER_APPS = loadReleases().flatMap(release => release.appHeaders
-  ? [{ tag: release.tag, dir: appHeadersDumpDir(release.tag), headers: appHeaderValues(release.appHeaders) }] : []);
+  ? [{ tag: release.tag, dir: appHeadersDumpDir(release.tag), headers: appHeaderValues(release.appHeaders), defines: release.defines ?? [] }] : []);
 
 /** 출시 앱이 실제로 받는 사건 종류. 이 가운데 하나라도 못 받으면 덤프가 모자란 것이다. */
 const EVENT_TYPES = ["hello", "projects", "project", "member", "member_removed", "decision", "todo", "work", "message", "file", "activity", "settings"] as const;
@@ -78,9 +85,10 @@ test("출시 앱이 읽는 실제 응답과 실시간 사건을 빠짐없이 받
   store.patchSettings({ boardTidyHours: 0 });
   const orch = new Orchestrator({ config, store, runners: new Map([["core", new FakeRunner()]]), providerHomes: isolated.providerHomes,
     timings: { tickMs: 60_000, healthMs: 60_000 } });
+  const pushStore = new PushStore(store.db);
   const context: ServerContext = { config, store, bus, orch, delivery: orch.deliveryRecovery,
     // 알림 중계: 새 서버는 상태에 선택 필드 via 를 싣는다(키 없는 Mac 의 production = 중계). 출시 앱이 그대로 푸는지 본다.
-    push: { store: new PushStore(store.db), providers: () => [
+    push: { store: pushStore, providers: () => [
       { environment: "sandbox", bundleId: "com.yehsung.iamceo", state: "unconfigured", lastError: null },
       { environment: "production", bundleId: "com.yehsung.iamceo", state: "ready", lastError: null, via: "relay" }] },
     daemon: () => ({ ready: true, buildId: "compat-dump-build", version: VERSION }) };
@@ -93,9 +101,9 @@ test("출시 앱이 읽는 실제 응답과 실시간 사건을 빠짐없이 받
     const auth = { Authorization: `Bearer ${config.accessCode}` };
 
     // 받는 쪽: 머리글 없는 출시 앱(0.2.2·0.2.3)과, 버전 머리글을 보내는 출시 앱마다 그 머리글을 모든 요청에 실은 쪽.
-    interface Target { dir: string; tag: string | null; headers: Record<string, string>; frames: Record<string, unknown>[]; entries: CompatEntry[] }
-    const targets: Target[] = [{ dir: out, tag: null, headers: {}, frames: [], entries: [] },
-      ...HEADER_APPS.map(app => ({ dir: join(out, app.dir), tag: app.tag, headers: app.headers, frames: [], entries: [] }))];
+    interface Target { dir: string; tag: string | null; headers: Record<string, string>; defines: string[]; frames: Record<string, unknown>[]; entries: CompatEntry[] }
+    const targets: Target[] = [{ dir: out, tag: null, headers: {}, defines: [], frames: [], entries: [] },
+      ...HEADER_APPS.map(app => ({ dir: join(out, app.dir), tag: app.tag, headers: app.headers, defines: app.defines, frames: [], entries: [] }))];
 
     // 실시간 사건은 상태를 만들기 전에 붙어 받는다. 출시 앱은 v2·lite 로 붙는다(0.2.4 부터는 실시간 연결에도 같은 머리글을 싣는다).
     const Socket = WebSocket as unknown as new (url: string, options: Bun.WebSocketOptions) => WebSocket;
@@ -210,11 +218,15 @@ test("출시 앱이 읽는 실제 응답과 실시간 사건을 빠짐없이 받
         { method: "PATCH", body: { macScriptNotifications: false }, headers: { "X-IAMCEO-Contract": "2", "If-Match": `"${sync.revisions.settings}"` } });
 
       if (headerApp && paired) {
-        // 0.2.4 의 설정 → 연결 → '연결된 기기'. 서버가 도는 Mac 의 앱(공용 코드)과, HTTPS 주소(tailscale serve)로 붙은 iPhone(기기 열쇠).
+        // 0.2.4 의 설정 → 연결 → '연결된 기기'. 서버가 도는 Mac 의 앱(공용 코드, 같은 판의 Mac 앱이라 macos 머리글)과,
+        // HTTPS 주소(tailscale serve)로 붙은 iPhone(기기 열쇠). 0.2.5 부터는 줄마다의 끊기 단추(canRevokeOthers)도 본다.
+        const since025 = target.defines.includes("COMPAT_SINCE_0_2_5");
         const viaServe = { Authorization: `Bearer ${paired.phone.key}`, "X-Forwarded-For": "100.64.0.9" };
-        const onMac = await capture("devices.json", "DeviceAccessList", "/api/devices", "연결된 기기(서버가 도는 Mac 의 앱)", ["devices"]);
+        const onMac = await capture("devices.json", "DeviceAccessList", "/api/devices", "연결된 기기(서버가 도는 Mac 의 앱)",
+          ["devices", ...(since025 ? ["revoke-buttons-mac" as const] : [])], { headers: { [APP_HEADERS.platform]: "macos" } });
         expect(onMac.canRevokeOthers).toBe(true);
-        const fromPhone = await capture("devices-remote.json", "DeviceAccessList", "/api/devices", "연결된 기기(HTTPS 주소로 붙은 iPhone)", ["devices"], { headers: viaServe });
+        const fromPhone = await capture("devices-remote.json", "DeviceAccessList", "/api/devices", "연결된 기기(HTTPS 주소로 붙은 iPhone)",
+          ["devices", ...(since025 ? ["revoke-buttons-remote" as const] : [])], { headers: viaServe });
         expect(fromPhone.canRevokeOthers).toBe(false);
         expect(fromPhone.devices.find((device: Record<string, unknown>) => device.current)?.platform).toBe(HEADER_APPS[0]!.headers[APP_HEADERS.platform]);
         // 0.2.4 iPhone 은 남의 줄에도 '끊기'가 있다. 누르면 서버가 403 으로 거절하고 그 앱은 받은 문장을 빨간 한 줄로 보인다(화면 언어별).
@@ -244,8 +256,10 @@ test("출시 앱이 읽는 실제 응답과 실시간 사건을 빠짐없이 받
         target.entries.push({ file: `ws-${type}.json`, type: "RealtimeEvent", checks: type === "hello" ? ["hello-v2"] : ["event-payload"], note: `실시간 사건 ${type}` });
       }
       const app = HEADER_APPS.find(item => item.tag === target.tag);
+      // serverIdentity: 응답과 따로 읽은 서버의 실제 신원(알림이 쓰는 서버 ID, 데이터 폴더). 0.2.5 해석기가 응답의 server.id·home 과 견준다.
       writeFileSync(join(target.dir, "manifest.json"), JSON.stringify({ serverVersion: VERSION, apiLevel: API_LEVEL, createdAt: new Date().toISOString(),
-        ...(app ? { release: app.tag, appHeaders: { sent: app.headers } } : {}), entries: target.entries }, null, 2));
+        ...(app ? { release: app.tag, appHeaders: { sent: app.headers }, serverIdentity: { id: pushStore.serverId, home: config.home } } : {}),
+        entries: target.entries }, null, 2));
     }
 
     // 만든 상태가 실제로 실렸는지: 비어 있어서 통과하는 덤프가 아니어야 한다.
@@ -269,7 +283,15 @@ test("출시 앱이 읽는 실제 응답과 실시간 사건을 빠짐없이 받
         expect(server?.version).toBe(VERSION);
         expect(typeof server?.id).toBe("string");
       }
+      // 해석기가 견줄 서버 신원이 실제로 남았는지(비어 있으면 0.2.5 검사가 기준 없이 실패한다).
+      const manifest = JSON.parse(readFileSync(join(target.dir, "manifest.json"), "utf8")) as { serverIdentity?: { id?: unknown; home?: unknown } };
+      expect(manifest.serverIdentity).toEqual({ id: pushStore.serverId, home: config.home });
+      expect(pushStore.serverId.length).toBeGreaterThan(0);
+      // 0.2.5 해석기가 있는 쪽에만 0.2.5 검사를 붙였다(앞 판 해석기는 그 검사 이름을 모른다).
+      const since025 = target.defines.includes("COMPAT_SINCE_0_2_5");
+      expect(target.entries.some(entry => entry.checks.includes("revoke-buttons-remote"))).toBe(since025);
     }
+    expect(targets.some(target => target.defines.includes("COMPAT_SINCE_0_2_5"))).toBe(true);
   } finally {
     for (const socket of sockets) socket.close();
     await server?.stop();

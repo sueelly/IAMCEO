@@ -1,5 +1,5 @@
 {
-  "about": "출시한 앱의 해석 코드. 출시 태그마다 하나씩 더한다. files 는 그 태그에서 Harness.swift 와 함께 따로 빌드되는 최소 묶음이다. 객체 항목은 그 파일에서 from 줄부터 to 줄 앞까지(원문 그대로)만 꺼낸다. appHeaders 는 그 앱이 모든 요청에 싣는 버전 머리글(있으면 그 머리글로 받은 응답만 읽는다), defines 는 Harness.swift 의 #if 조건이다.",
+  "about": "출시한 앱의 해석 코드. 출시 태그마다 하나씩 더한다(iPhone·Mac 이 같은 태그면 해석 코드가 같아 한 항목). files 는 그 태그에서 Harness.swift 와 함께 따로 빌드되는 최소 묶음이다. 객체 항목은 그 파일에서 from 줄부터 to 줄 앞까지(원문 그대로)만 꺼낸다. mirrorOnly 항목은 빌드하지 않고, Harness.swift 가 옮겨 쓴 줄(mirrored)이 그 태그의 파일에 그대로 있는지만 본다(AppStore 확장처럼 따로 빌드되지 않는 파일). appHeaders 는 그 앱이 모든 요청에 싣는 버전 머리글(있으면 그 머리글로 받은 응답만 읽는다), defines 는 Harness.swift 의 #if 조건이다(뒤 판은 앞 판의 조건을 함께 켠다).",
   "releases": [
     {
       "tag": "v0.2.2",
@@ -65,6 +65,69 @@
           "mirrored": [
             "} catch let failure as APIError where failure.code == \"device_not_found\" {",
             "if let failure = error as? APIError, !failure.message.isEmpty { return failure.localizedDescription }"
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "v0.2.5",
+      "appHeaders": { "version": "0.2.5", "platform": "ios", "apiLevel": 1 },
+      "defines": ["COMPAT_SINCE_0_2_4", "COMPAT_SINCE_0_2_5"],
+      "files": [
+        "native/Sources/IAMCEO/Models/Models.swift",
+        "native/Sources/IAMCEO/Models/RealtimeModels.swift",
+        "native/Sources/IAMCEO/Models/PushModels.swift",
+        "native/Sources/IAMCEO/Models/CLIApproval.swift",
+        "native/Sources/IAMCEO/Models/FileSearch.swift",
+        "native/Sources/IAMCEO/Models/ModelCatalog.swift",
+        "native/Sources/IAMCEO/State/RankSettings.swift",
+        "native/Sources/IAMCEO/Services/AppVersion.swift",
+        "native/Sources/IAMCEO/Models/ServerErrorText.swift",
+        "native/Sources/IAMCEO/Services/ServerErrorDisplay.swift",
+        {
+          "path": "native/Sources/IAMCEO/Services/AppLanguage.swift",
+          "from": "enum AppLanguage",
+          "to": "// MARK: - 날짜",
+          "imports": ["Foundation", "os"]
+        },
+        {
+          "path": "native/Sources/IAMCEO/Services/APIClient.swift",
+          "from": "struct APIError",
+          "to": "struct ServerEndpoint",
+          "imports": ["Foundation"],
+          "mirrored": [
+            "let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]",
+            "let message = object?[\"error\"] as? String ?? object?[\"message\"] as? String ?? \"Request failed (\\(http.statusCode)).\"",
+            "throw APIError(status: http.statusCode, message: message, code: object?[\"code\"] as? String, reason: object?[\"reason\"] as? String)"
+          ]
+        },
+        {
+          "path": "native/Sources/IAMCEO/Views/ConnectedDevicesView.swift",
+          "from": "/// QR 로 연결한 기기 하나.",
+          "to": "/// 화면 글자.",
+          "imports": ["Foundation"],
+          "mirrored": [
+            "} catch let failure as APIError where failure.code == \"device_not_found\" {",
+            "} catch let failure as APIError where failure.code == \"device_revoke_local_only\" {",
+            "revokeError = Self.message(failure, fallback: ConnectedDevicesText.othersOnServerMac)",
+            "if let failure = error as? APIError, !failure.message.isEmpty { return failure.localizedDescription }",
+            "if list.canRevoke(device) {"
+          ]
+        },
+        {
+          "path": "native/Sources/IAMCEO/State/OfflineState.swift",
+          "from": "enum ServerIdentity",
+          "to": "/// 대기열에서 나가 서버로 간 글.",
+          "imports": ["Foundation"]
+        },
+        {
+          "path": "native/Sources/IAMCEO/State/AppStore+Offline.swift",
+          "mirrorOnly": true,
+          "mirrored": [
+            "var currentServerID: String? { ServerVersionInfo.normalizedID(bootstrap?.server?.id) }",
+            "var currentServerHome: String? { bootstrap.flatMap { $0.home.isEmpty ? nil : $0.home } }",
+            "ServerIdentity.same(id: attempt.serverID, home: attempt.serverHome, as: currentServerID, home: currentServerHome) != false",
+            "if let known = ServerIdentity.same(id: item.serverID, home: item.owner?.home, as: serverID, home: home) { mine = known }"
           ]
         }
       ]

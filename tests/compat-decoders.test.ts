@@ -2,7 +2,7 @@
 // 출시 앱(0.2.4 부터)의 덤프가 그 앱이 실제로 보내는 머리글로 받은 것인지 견주기. git 은 부르지 않는다(가짜 show).
 // 실제 태그로 빌드해 덤프를 읽는 것은 scripts/check.sh compat 이 한다.
 import { describe, expect, test } from "bun:test";
-import { appHeadersDumpDir, checkAppHeaders, loadReleases, MUTATIONS, releaseSource, type ReleaseFile } from "../scripts/compat-decoders/run.ts";
+import { appHeadersDumpDir, checkAppHeaders, loadReleases, MUTATIONS, mutationsFor, releaseSource, type ReleaseFile, type SliceFile } from "../scripts/compat-decoders/run.ts";
 import { APP_HEADERS } from "../shared/types.ts";
 
 const VIEW = [
@@ -20,7 +20,7 @@ const VIEW = [
 ].join("\n");
 const show = (files: Record<string, string>) => (path: string) =>
   path in files ? { ok: true, out: files[path]!, err: "" } : { ok: false, out: "", err: `fatal: path '${path}' does not exist` };
-const slice = (extra: Partial<Exclude<ReleaseFile, string>> = {}): ReleaseFile =>
+const slice = (extra: Partial<SliceFile> = {}): ReleaseFile =>
   ({ path: "Views/DeviceView.swift", from: "/// 해석부.", to: "/// 화면 글자.", imports: ["Foundation"], ...extra });
 
 describe("releaseSource: 태그 파일 꺼내기", () => {
@@ -50,6 +50,21 @@ describe("releaseSource: 태그 파일 꺼내기", () => {
     expect("text" in releaseSource("v9.9.9", slice({ mirrored: ["} catch let failure as APIError where failure.code == \"device_not_found\" {"] }), show(files))).toBe(true);
     const changed = releaseSource("v9.9.9", slice({ mirrored: ["failure.code == \"device_gone\""] }), show(files));
     expect("error" in changed && changed.error).toContain("옮겨 쓴 원문이 없습니다");
+  });
+
+  test("mirrorOnly: 빌드할 글 없이 옮겨 쓴 원문만 견준다(AppStore 확장처럼 따로 빌드할 수 없는 파일)", () => {
+    const store = "extension AppStore {\n    var currentServerID: String? { ServerVersionInfo.normalizedID(bootstrap?.server?.id) }\n}\n";
+    const files = { "State/AppStore+Offline.swift": store };
+    const only = (mirrored: string[]): ReleaseFile => ({ path: "State/AppStore+Offline.swift", mirrorOnly: true, mirrored });
+    const ok = releaseSource("v9.9.9", only(["var currentServerID: String? { ServerVersionInfo.normalizedID(bootstrap?.server?.id) }"]), show(files));
+    expect(ok).toEqual({ name: "AppStore+Offline.swift", mirrorOnly: true });
+    expect("text" in ok).toBe(false);
+    const changed = releaseSource("v9.9.9", only(["var currentServerID: String? { bootstrap?.server?.id }"]), show(files));
+    expect("error" in changed && changed.error).toContain("옮겨 쓴 원문이 없습니다");
+    // 견줄 줄이 없으면 아무것도 지키지 않으므로 실패로 친다.
+    const empty = releaseSource("v9.9.9", only([]), show(files));
+    expect("error" in empty && empty.error).toContain("mirrored 가 없습니다");
+    expect("error" in releaseSource("v9.9.9", only(["x"]), show({}))).toBe(true);
   });
 });
 
@@ -99,6 +114,23 @@ describe("releases.json 과 자체 검사", () => {
     expect(releases.find(release => release.tag === "v0.2.3")?.appHeaders).toBeUndefined();
   });
 
+  test("0.2.5 는 0.2.4 조건을 함께 켜고, 서버 신원(ServerIdentity)과 대기열 판정 원문을 함께 둔다", () => {
+    const releases = loadReleases();
+    const release = releases.find(item => item.tag === "v0.2.5");
+    expect(release?.appHeaders).toEqual({ version: "0.2.5", platform: "ios", apiLevel: 1 });
+    expect(release?.defines).toEqual(["COMPAT_SINCE_0_2_4", "COMPAT_SINCE_0_2_5"]);
+    const objects = release!.files.filter((file): file is Exclude<ReleaseFile, string> => typeof file !== "string");
+    expect(objects.find(file => file.path.endsWith("State/OfflineState.swift") && "from" in file && file.from === "enum ServerIdentity")).toBeDefined();
+    const store = objects.find(file => file.path.endsWith("State/AppStore+Offline.swift"));
+    expect(store && "mirrorOnly" in store && store.mirrored.some(line => line.includes("currentServerID"))).toBe(true);
+    const devices = objects.find(file => file.path.endsWith("Views/ConnectedDevicesView.swift"));
+    expect(devices?.mirrored).toEqual(expect.arrayContaining(["} catch let failure as APIError where failure.code == \"device_revoke_local_only\" {"]));
+    // 0.2.5 조건은 0.2.5 부터의 태그에만(앞 판 해석기에는 server.id·canRevokeOthers 를 읽는 원문이 없다).
+    for (const tag of ["v0.2.2", "v0.2.3", "v0.2.4"]) {
+      expect(releases.find(item => item.tag === tag)?.defines ?? []).not.toContain("COMPAT_SINCE_0_2_5");
+    }
+  });
+
   test("덤프 하위 폴더 이름은 태그에서 바로 나온다", () => {
     expect(appHeadersDumpDir("v0.2.4")).toBe("app-v0.2.4");
     expect(appHeadersDumpDir("v1/x")).toBe("app-v1_x");
@@ -108,5 +140,22 @@ describe("releases.json 과 자체 검사", () => {
     const only = MUTATIONS.filter(mutation => mutation.appHeaders).map(mutation => mutation.file);
     expect(only).toEqual(expect.arrayContaining(["bootstrap.json", "devices-remote.json", "devices-revoke-refused.json", "devices-revoke-refused-en.json"]));
     expect(MUTATIONS.filter(mutation => !mutation.appHeaders).length).toBe(7);
+  });
+
+  test("0.2.5 몫 망가뜨리기는 0.2.5 해석기 조건이 있는 태그에만 건다(0.2.4 는 server.id·canRevokeOthers 를 읽지 않아 어긋남이 아니다)", () => {
+    const releases = new Map(loadReleases().map(release => [release.tag, release]));
+    const names = (tag: string) => mutationsFor(releases.get(tag)!).map(mutation => mutation.name);
+    const since025 = MUTATIONS.filter(mutation => mutation.since === "COMPAT_SINCE_0_2_5");
+    expect(since025.map(mutation => mutation.file)).toEqual(expect.arrayContaining(
+      ["sync-project.json", "bootstrap.json", "sync-project-full.json", "sync-none.json", "devices-remote.json", "devices.json", "devices-revoke-refused.json"]));
+    expect(since025.every(mutation => mutation.appHeaders)).toBe(true);
+    expect(names("v0.2.3").length).toBe(7);
+    expect(names("v0.2.4")).toEqual(MUTATIONS.filter(mutation => !mutation.since).map(mutation => mutation.name));
+    expect(names("v0.2.5")).toEqual(MUTATIONS.map(mutation => mutation.name));
+    // 영어 화면의 한국어 거절 문장은 대표 문장이 아니어야 0.2.5 에서도 잡힌다(대표 문장이면 0.2.5 는 영어로 바꿔 보인다).
+    const body = { error: "Other devices can be disconnected on the Mac that runs the server" };
+    MUTATIONS.find(mutation => mutation.name === "영어 화면에 한국어 거절 문장")!.mutate(body);
+    expect(body.error).not.toBe("다른 기기는 서버가 도는 Mac에서 끊을 수 있습니다");
+    expect(body.error).toMatch(/\p{Script=Hangul}/u);
   });
 });
