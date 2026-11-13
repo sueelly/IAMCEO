@@ -5,13 +5,13 @@
 // 코드 표가 바뀌었으면) 싣지 않는다. 그래서 앱은 받은 코드를 믿고 자기 화면 언어로 다시 그려도 뜻이 어긋나지 않는다.
 import type { Decision, DecisionOption } from "../shared/types.ts";
 import type { ErrorCode } from "../shared/error-codes.ts";
-import { isServerTextRef, mustRender, renderServerText, textLang, titleCodeOf, type ServerTextRef, type TextLang } from "../shared/server-text.ts";
-import { RESTART_EXIT_NOTE } from "./restart-wake.ts";
+import { isServerTextRef, mustRender, renderServerText, textLang, textRef, titleCodeOf, type ServerTextRef, type TextLang } from "../shared/server-text.ts";
+import { endedByRestart, RESTART_EXIT_NOTE } from "./restart-wake.ts";
 
 export interface OptionTextRefs { label: ServerTextRef; desc?: ServerTextRef }
 /** 결재 카드의 글 코드. text 는 detail(제목은 `<코드>.title`), options 는 선택지 키별 이름·설명. */
 export interface DecisionTextRefs { text?: ServerTextRef; options?: Record<string, OptionTextRefs>; closeReason?: ServerTextRef; reopenNote?: ServerTextRef }
-interface StoredDecisionTexts extends DecisionTextRefs { lang: TextLang }
+export interface StoredDecisionTexts extends DecisionTextRefs { lang: TextLang }
 interface StoredText { lang: TextLang; code: string; params?: ServerTextRef["params"] }
 
 function parse(raw: unknown): Record<string, unknown> | null {
@@ -107,6 +107,50 @@ export function decisionTextFields(raw: unknown, d: Pick<Decision, "title" | "de
   return Object.keys(out).length ? { ...out, textLang: lang } : {};
 }
 
+type DecisionTextFields = Pick<Decision, "title" | "detail" | "options" | "closeReason" | "reopenNote">;
+
+/**
+ * 0.2.6 Y 리뷰: 보고 언어가 바뀐 뒤 서버가 카드의 한 칸(닫힌 이유·다시 연 까닭)을 새 언어로 쓸 때, 앞 칸들도 새 언어로 다시 그린다.
+ * 한 카드의 글은 한 언어다(textLang 하나): 앞 칸의 코드를 버리면 그 칸은 앞 언어 문장 그대로 남아, 새 앱에서도 한 카드 안에 두 언어가 섞였다.
+ * 문장이 코드와 맞는 칸만 다시 그린다(이전 판이 문장만 고쳤거나 잘린 칸은 문장을 두고 코드를 뺀다). 돌려주는 patch 는 바뀐 칸만.
+ */
+export function relocalizeDecisionTexts(stored: StoredDecisionTexts, d: DecisionTextFields, lang: TextLang): { refs: DecisionTextRefs; patch: Partial<DecisionTextFields> } {
+  const from = stored.lang;
+  const refs: DecisionTextRefs = {};
+  const patch: Partial<DecisionTextFields> = {};
+  if (stored.text && same(stored.text, from, d.detail)) {
+    const titleCode = titleCodeOf(stored.text.code);
+    if (!titleCode || same({ code: titleCode, params: stored.text.params }, from, d.title)) {
+      const shown = renderDecisionText(stored.text, lang, d.title);
+      refs.text = stored.text;
+      if (shown.title !== d.title) patch.title = shown.title;
+      if (shown.detail !== d.detail) patch.detail = shown.detail;
+    }
+  }
+  if (stored.options) {
+    const kept: Record<string, OptionTextRefs> = {};
+    for (const [k, option] of Object.entries(stored.options)) {
+      const current = d.options.find(o => o.k === k);
+      if (!current || !same(option.label, from, current.label)) continue;
+      if (option.desc ? !same(option.desc, from, current.desc) : current.desc !== undefined) continue;
+      kept[k] = option;
+    }
+    if (Object.keys(kept).length) {
+      refs.options = kept;
+      const options = renderOptions(d.options, kept, lang);
+      if (JSON.stringify(options) !== JSON.stringify(d.options)) patch.options = options;
+    }
+  }
+  for (const field of ["closeReason", "reopenNote"] as const) {
+    const ref = stored[field];
+    if (!ref || !same(ref, from, d[field])) continue;
+    refs[field] = ref;
+    const shown = mustRender(ref, lang);
+    if (shown !== d[field]) patch[field] = shown;
+  }
+  return { refs, patch };
+}
+
 /** 카드의 선택지를 코드로 그린다. 코드가 없는 선택지는 그대로 둔다. */
 export function renderOptions(options: DecisionOption[], refs: Record<string, OptionTextRefs> | undefined, lang: TextLang): DecisionOption[] {
   if (!refs) return options;
@@ -140,6 +184,40 @@ export const LAST_ERROR_CODES: ReadonlyMap<string, ErrorCode> = new Map<string, 
 export function lastErrorCodeField(lastError: string | null | undefined): { lastErrorCode?: ErrorCode } {
   const code = lastError ? LAST_ERROR_CODES.get(lastError) : undefined;
   return code ? { lastErrorCode: code } : {};
+}
+
+// ---- 터미널 종료 글(orchestrator 에서 옮김) ----
+
+/**
+ * 팀장의 lastError·활동에 남는 터미널 종료 글. 터미널을 붙잡던 실행 엔진이나 Mac 이 다시 시작돼 CLI 가 함께 꺼진 것(endedByRestart)은
+ * CLI 의 잘못이 아니다: 서버가 같은 세션을 스스로 다시 연다(restart-wake.ts).
+ */
+export function exitDetail(reason: string | null | undefined, exitCode: number | null | undefined): string {
+  return mustRender(exitDetailRef(reason, exitCode), "ko");
+}
+/**
+ * 0.2.6 Y 리뷰: 같은 종료 글의 코드. 한국어로 그리면 exitDetail 과 글자까지 같다(lastError 는 한국어 문장 그대로 두고 lastErrorCode 를 싣는다).
+ * 활동 줄은 이 코드로 남긴다.
+ */
+export function exitDetailRef(reason: string | null | undefined, exitCode: number | null | undefined): ServerTextRef {
+  if (endedByRestart(reason)) return textRef("activity.restart_exit");
+  return textRef("activity.exit", { reason: reason ?? textRef("word.unknown_cause"), code: String(exitCode ?? "unknown") });
+}
+/** 활동 줄로: 예전처럼 500자에서 자른다. 잘리는 글은 코드 없이 문장으로 남긴다(잘린 줄의 코드는 어차피 응답에 실리지 않는다). */
+export function exitActivity(reason: string | null | undefined, exitCode: number | null | undefined): string | ServerTextRef {
+  const detail = exitDetail(reason, exitCode);
+  return detail.length > 500 ? detail.slice(0, 500) : exitDetailRef(reason, exitCode);
+}
+/**
+ * 팀장의 lastError 를 대화 글의 값으로 넣을 때(빠른 종료 안내). 서버가 만든 정해진 종료 글이면 그 코드로, 아니면 문장 그대로.
+ * 코드는 한국어로 그린 것이 그 문장과 같을 때만 쓴다(글자가 바뀌지 않는다).
+ */
+export function lastErrorParam(lastError: string): string | ServerTextRef {
+  if (lastError === RESTART_EXIT_NOTE) return textRef("activity.restart_exit");
+  const exit = /^초기\/실행 종료: ([\s\S]*) \(exit_code=([^()]*)\)$/.exec(lastError);
+  if (!exit) return lastError;
+  const ref = textRef("activity.exit", { reason: exit[1] === "원인 미확인" ? textRef("word.unknown_cause") : exit[1]!, code: exit[2]! });
+  return mustRender(ref, "ko") === lastError ? ref : lastError;
 }
 
 export { textLang };

@@ -10,14 +10,17 @@
 // - AI 에게 주는 글(역할 지침, [대표]·[총괄]·[시스템] 머리, 전달 글)은 여기 넣지 않는다. 바꾸지 않는다.
 //
 // 틀 문법: {이름} 은 값, 한국어 틀의 {이름:이}·{이름:을}·{이름:은}·{이름:으로} 는 값 뒤에 조사를 붙인다(roles.ts josa, api-outage.ts particleRo 와 같은 규칙).
-// 값 자리에 다른 코드(중첩)나 시각({ at })을 넣을 수 있다. 값 안의 { } 는 다시 풀지 않는다.
+// 값 자리에 다른 코드(중첩)나 시각({ at }), 언어별 글자({ ko, en }: 서버가 자른 글의 '…(N자 더 있음)' 같은 붙임말처럼 서버가 언어마다
+// 따로 만든 값)를 넣을 수 있다. 값 안의 { } 는 다시 풀지 않는다.
 // 코드 이름: 소문자와 밑줄을 점으로 이은 것(숫자 없음). 앱 문구 표 열쇠가 `server.text.<코드>` 다.
 // 대화 글의 제목은 `<코드>.title` 이 있으면 그것이다. 'notice.' 로 시작하는 코드는 서버의 Mac 스크립트 알림 전용이라 앱 표에 넣지 않는다.
 
 export type TextLang = "ko" | "en";
 /** 시각 값. 한국어는 '11월 14일 오후 3시', 영어는 'Nov 14, 3 PM'(서버가 도는 Mac 의 시간대). */
 export interface ServerTextDate { at: string }
-export type ServerTextParam = string | ServerTextRef | ServerTextDate;
+/** 언어별 글자. 서버가 두 언어로 따로 만든 값(도구 승인 카드의 '대상'처럼 붙임말이 든 값). 그 언어 쪽을 쓴다. */
+export interface ServerTextLangs { ko: string; en: string }
+export type ServerTextParam = string | ServerTextRef | ServerTextDate | ServerTextLangs;
 export interface ServerTextRef { code: string; params?: Record<string, ServerTextParam> }
 export interface ServerTextTemplate { ko: string; en: string }
 
@@ -60,6 +63,16 @@ export const SERVER_TEXTS = {
   "why.restart_cut": { ko: "Mac이나 실행 엔진이 다시 시작되어 끊겼습니다", en: "cut off because the Mac or the engine restarted" },
   "why.restart_cut_reopen_failed": { ko: "Mac이나 실행 엔진이 다시 시작되어 끊겼습니다. 세션을 다시 열지 못했습니다", en: "cut off because the Mac or the engine restarted. The session couldn't be reopened" },
   "why.usage_model_new_session": { ko: "사용 한도로 멈췄습니다. 모델을 {model:으로} 바꿨지만 이어 열 세션 기록이 없어 새 세션으로 엽니다", en: "stopped at the usage limit. Switched to {model}, but there is no session record to continue, so it opens a new session" },
+  // 실행 중단의 까닭(endExecution 의 사유). journal 에는 한국어 문장 그대로 남는다.
+  "why.slept": { ko: "팀원을 잠재워 실행을 종료했습니다", en: "the staff member was put to sleep, which ended the run" },
+  "why.closed": { ko: "팀원을 닫아 실행을 종료했습니다", en: "the staff member was closed, which ended the run" },
+  "why.settings_changed": { ko: "세션 설정을 변경했습니다", en: "the session settings changed" },
+  "why.fresh_session": { ko: "명시적 새 세션으로 전환했습니다", en: "switched to a new session on request" },
+  "why.terminal_absent": { ko: "소유 터미널의 부재를 확인했습니다", en: "its terminal was confirmed gone" },
+  "why.terminal_absent_rejoin": { ko: "재결합 조회에서 소유 터미널의 부재를 확인했습니다", en: "a reconnect check confirmed its terminal was gone" },
+  "why.terminal_ended": { ko: "소유 터미널이 종료되었습니다", en: "its terminal ended" },
+  "why.terminal_ended_or_gone": { ko: "소유 터미널이 종료되거나 사라졌습니다", en: "its terminal ended or disappeared" },
+  "why.delivery_failed": { ko: "전달 실패", en: "delivery failed" },
   "why.usage_cli_new_session": { ko: "사용 한도로 멈췄습니다. CLI를 {cli:으로} 바꿔 새 세션으로 엽니다(이전 CLI의 대화는 이어지지 않습니다)", en: "stopped at the usage limit. Switched the CLI to {cli} and opens a new session (the previous CLI's conversation does not carry over)" },
 
   // ---- 팀장 활동 줄 ----
@@ -69,6 +82,10 @@ export const SERVER_TEXTS = {
   "activity.reopen_gone_stop": { ko: "세션을 다시 열려던 작업이 끊겨 있었습니다. 터미널이 끝난 것을 확인해 그 작업을 닫았습니다. 바꾸려던 설정이나 새 세션이 적용되지 않았으면 다시 해 주세요", en: "An attempt to reopen the session had been cut off. The terminal was confirmed closed, so that attempt was closed. If the settings change or new session was not applied, please do it again" },
   "activity.parallel_released": { ko: "병렬 설정을 받은 터미널이 끝나 그 설정의 확인 대기를 풀었습니다. 밀린 전달을 이어 갑니다", en: "The terminal that received the parallel setting closed, so the wait for its confirmation was released. Pending deliveries continue" },
   "activity.lease_released": { ko: "직접 조작하던 터미널이 끝나 그 조작권을 거뒀습니다. 밀린 전달을 이어 갑니다", en: "The terminal under direct control closed, so control was released. Pending deliveries continue" },
+  "activity.restart_exit": { ko: "Mac이나 실행 엔진이 다시 시작되어 세션이 꺼졌습니다. 말을 걸거나 깨우면 하던 대화를 이어서 엽니다", en: "The Mac or the engine restarted and the session closed. Message it or wake it to reopen the same conversation" },
+  "activity.exit": { ko: "초기/실행 종료: {reason} (exit_code={code})", en: "Session ended: {reason} (exit code {code})" },
+  "activity.decision_closed_by_answer": { ko: "결재 #{id}를 대표 답 #{answer}에 따라 닫았습니다: {issue}", en: "Closed decision #{id} based on your answer #{answer}: {issue}" },
+  "activity.decision_closed_by_answer_group": { ko: "결재 #{id}를 대표 답 #{answer}에 따라 닫았습니다 (같은 그룹)", en: "Closed decision #{id} based on your answer #{answer} (same group)" },
   "activity.restart_reopened": { ko: "Mac이나 실행 엔진이 다시 시작되어 꺼졌던 세션을 이어서 열었습니다", en: "The Mac or the engine restarted; the session that closed was reopened to continue" },
   "activity.missing_report_final": { ko: "결과 보고 누락: 보완 요청 뒤에도 결과가 남지 않았습니다", en: "Missing result report: no result even after it was asked for" },
   "activity.missing_report_requested": { ko: "필수 보고가 없어 보고 보완을 요청했습니다", en: "The required report was missing, so it was asked for" },
@@ -150,6 +167,9 @@ export const SERVER_TEXTS = {
   "tool.action.slash_command": { ko: "명령어 쓰기", en: "Use a slash command" },
   "tool.action.mcp": { ko: "연결 도구 쓰기({server})", en: "Use a connected tool ({server})" },
   "tool.action.other": { ko: "도구 쓰기({tool})", en: "Use a tool ({tool})" },
+  // 한국어로 그린 '무엇을'이 60자를 넘을 때(예전 clip(action, 60) 과 같은 글자): 값은 잘린 앞부분, count 는 잘려 나간 글자 수.
+  "tool.action.mcp_clipped": { ko: "연결 도구 쓰기({server}…({count}자 더 있음)", en: "Use a connected tool ({server}… {count} more characters)" },
+  "tool.action.other_clipped": { ko: "도구 쓰기({tool}…({count}자 더 있음)", en: "Use a tool ({tool}… {count} more characters)" },
   // 사용 한도 카드
   "card.usage_limit.title_initial": { ko: "사용 한도 도달", en: "Usage limit reached" },
   "card.usage_limit.title": { ko: "{cli} 사용 한도 도달 · 팀원 {count}명 멈춤", en: "{cli} usage limit reached · {count} staff stopped" },
@@ -177,6 +197,7 @@ export const SERVER_TEXTS = {
 
   // ---- 낱말 ----
   "word.unknown": { ko: "알 수 없음", en: "unknown" },
+  "word.unknown_cause": { ko: "원인 미확인", en: "unknown cause" },
 
   // ---- 서버의 Mac 스크립트 알림(osascript) 전용. 앱 표에는 넣지 않는다 ----
   "notice.api_usage.title": { ko: "API 연결·사용 한도", en: "Internet connection · usage limit" },
@@ -250,12 +271,24 @@ function isRef(value: ServerTextParam): value is ServerTextRef {
   return typeof value === "object" && value !== null && typeof (value as ServerTextRef).code === "string";
 }
 
+function isLangs(value: unknown): value is ServerTextLangs {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2 && typeof (value as ServerTextLangs).ko === "string" && typeof (value as ServerTextLangs).en === "string";
+}
+
 function paramText(value: ServerTextParam | undefined, lang: TextLang, depth: number): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value === "string") return value;
   if (isRef(value)) return depth >= 4 ? null : render(value, lang, depth + 1);
+  if (isLangs(value)) return value[lang];
   if (typeof (value as ServerTextDate).at === "string") return formatTextDate((value as ServerTextDate).at, lang);
   return null;
+}
+
+/** 언어별 글자 값. 두 언어가 같으면 그냥 글자로 둔다(저장이 짧고, 그 앞 판의 앱도 그대로 읽는다). */
+export function langsParam(ko: string, en: string): string | ServerTextLangs {
+  return ko === en ? ko : { ko, en };
 }
 
 function render(ref: ServerTextRef, lang: TextLang, depth: number): string | null {
@@ -289,7 +322,7 @@ export function titleCodeOf(code: string): ServerTextCode | null {
   return isServerTextCode(title) ? title : null;
 }
 
-/** 값 모양 검사(저장된 JSON 을 읽을 때). 문자열·{code,params}·{at} 만 받는다. */
+/** 값 모양 검사(저장된 JSON 을 읽을 때). 문자열·{code,params}·{at}·{ko,en} 만 받는다. */
 export function isServerTextRef(value: unknown, depth = 0): value is ServerTextRef {
   if (!value || typeof value !== "object" || Array.isArray(value) || depth > 4) return false;
   const ref = value as Record<string, unknown>;
@@ -297,6 +330,6 @@ export function isServerTextRef(value: unknown, depth = 0): value is ServerTextR
   if (ref.params === undefined) return true;
   if (!ref.params || typeof ref.params !== "object" || Array.isArray(ref.params)) return false;
   return Object.values(ref.params as Record<string, unknown>).every(param =>
-    typeof param === "string" || isServerTextRef(param, depth + 1) ||
+    typeof param === "string" || isServerTextRef(param, depth + 1) || isLangs(param) ||
     (!!param && typeof param === "object" && !Array.isArray(param) && typeof (param as ServerTextDate).at === "string" && Object.keys(param).length === 1));
 }

@@ -489,7 +489,9 @@ export class MemberFlows {
       const closed = this.store.closeDecision(decision.id, { kind: input.kind, reason, by: member.name, quote });
       if (answered) {
         this.store.auditDecisionClose(decision.id, answered.id, member.id, input.sameIssue?.trim() ?? null, quote!);
-        this.store.appendActivity(member.id, "system", `결재 #${decision.id}를 대표 답 #${answered.id}에 따라 닫았습니다${input.sameIssue ? `: ${input.sameIssue}` : " (같은 그룹)"}`, `decision-close:${decision.id}:${decision.updatedAt}`);
+        this.store.appendActivity(member.id, "system", input.sameIssue
+          ? textRef("activity.decision_closed_by_answer", { id: decision.id, answer: answered.id, issue: input.sameIssue })
+          : textRef("activity.decision_closed_by_answer_group", { id: decision.id, answer: answered.id }), `decision-close:${decision.id}:${decision.updatedAt}`);
         const target = decision.memberId ? this.store.getMember(decision.memberId) : null;
         if (target) this.store.enqueue({ projectId: decision.projectId, memberId: target.id, kind: "system", text: formatSystem(`같은 안건의 결재 #${decision.id}는 대표가 답한 결재 #${answered.id}에 따라 닫혔습니다. 대표 답 원문:\n${quote}`), wake: false });
       }

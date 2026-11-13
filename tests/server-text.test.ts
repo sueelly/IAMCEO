@@ -12,11 +12,11 @@ import { formatTextDate, isServerOnlyText, mustRender, renderServerText, SERVER_
 import { Store } from "../server/store.ts";
 import { josa } from "../server/roles.ts";
 import { ApiRecovery, USAGE_RESUME_OPTION, withRo } from "../server/api-outage.ts";
-import { describeToolRequest, TOOL_PERMISSION_OPTIONS, toolActionRef, toolPermissionCard, toolPermissionCardTexts } from "../server/tool-permission.ts";
-import { RESTART_REOPENED_NOTE } from "../server/restart-wake.ts";
+import { describeToolRequest, describeToolTargets, TOOL_PERMISSION_OPTIONS, toolActionRef, toolPermissionCard, toolPermissionCardTexts } from "../server/tool-permission.ts";
+import { RESTART_EXIT_NOTE, RESTART_REOPENED_NOTE } from "../server/restart-wake.ts";
 import { conductorName, DEFAULT_NAMES, firstRunLang } from "../server/text.ts";
 import { deliveryNoteCode, NOTE_CODES } from "../server/hold-codes.ts";
-import { LAST_ERROR_CODES } from "../server/text-refs.ts";
+import { exitActivity, exitDetail, exitDetailRef, LAST_ERROR_CODES, lastErrorParam } from "../server/text-refs.ts";
 import { APNsClient, buildAPNsPayload, PUSH_BODIES } from "../server/push/apns.ts";
 import type { APNsNotification, APNsTransport, APNsTransportRequest, APNsTransportResult } from "../server/push/apns.ts";
 import type { APNsConfig } from "../server/push/config.ts";
@@ -101,9 +101,16 @@ describe("한국어 대조: 보고 언어 한국어로 그린 글은 바꾸기 �
         [textRef("chat.assigned", { name: who, summary: "결제 화면" }), `총괄이 ${who}에게 맡겼습니다: ${"결제 화면"}${""}`],
         [textRef("chat.assigned_queued", { name: who, summary: "결제 화면" }), `총괄이 ${who}에게 맡겼습니다: ${"결제 화면"}${" (앞 일 끝나면 시작)"}`],
         [textRef("chat.api_resume_failed", { name: who }), `${who}의 인터넷 연결 복구 후 이어가기가 3회 실패했습니다. 터미널을 확인해 주세요.`],
+        [textRef("chat.delivery_failed", { name: who, detail: textRef("why.delivery_failed") }), `${who}에게 전달하지 못했습니다: ${"전달 실패"}`],
       );
-      for (const lastError of [null, "exit 1"]) {
-        const ref = lastError ? textRef("chat.quick_exit_error", { name: who, error: lastError }) : textRef("chat.quick_exit", { name: who });
+      // 리뷰: endExecution 이 넘기던 사유 문장(59f26a9 orchestrator.ts 947·957·964·2050·2963·3161·4283).
+      for (const [code, old] of [["why.terminal_absent_rejoin", "재결합 조회에서 소유 터미널의 부재를 확인했습니다"], ["why.terminal_absent", "소유 터미널의 부재를 확인했습니다"],
+        ["why.terminal_ended", "소유 터미널이 종료되었습니다"], ["why.fresh_session", "명시적 새 세션으로 전환했습니다"], ["why.settings_changed", "세션 설정을 변경했습니다"],
+        ["why.slept", "팀원을 잠재워 실행을 종료했습니다"], ["why.closed", "팀원을 닫아 실행을 종료했습니다"], ["why.terminal_ended_or_gone", "소유 터미널이 종료되거나 사라졌습니다"]] as const) {
+        pairs.push([textRef("chat.run_interrupted", { name: who, run, why: textRef(code) }), `${who}: 실행 ${run} 중단 — ${old}`]);
+      }
+      for (const lastError of [null, "exit 1", RESTART_EXIT_NOTE, "초기/실행 종료: exited (exit_code=1)", "초기/실행 종료: 원인 미확인 (exit_code=unknown)", "초기/실행 종료: a (b) (exit_code=1)"]) {
+        const ref = lastError ? textRef("chat.quick_exit_error", { name: who, error: lastErrorParam(lastError) }) : textRef("chat.quick_exit", { name: who });
         pairs.push([ref, `${who}의 세션이 시작하자마자 끝나기를 되풀이해 자동으로 다시 깨우지 않습니다. 터미널에서 원인을 확인한 뒤 팀원을 깨워 주세요.${lastError ? ` (${lastError})` : ""}`]);
       }
       for (const kind of ["answer", "user_message"]) {
@@ -178,7 +185,28 @@ describe("한국어 대조: 보고 언어 한국어로 그린 글은 바꾸기 �
       [textRef("activity.control_ended"), "대표가 터미널에서 직접 입력을 마쳤습니다"],
       [textRef("activity.tool_allowed_plain"), `대표가 결재함에서 도구 승인 요청을 ${"허용"}했습니다${""}`],
       [textRef("activity.tool_denied_plain"), `대표가 결재함에서 도구 승인 요청을 ${"거절"}했습니다${""}`],
+      // 리뷰: 대표 답으로 결재를 닫은 줄(59f26a9 flows/member.ts 492).
+      [textRef("activity.decision_closed_by_answer", { id: "d_1", answer: "d_2", issue: "같은 결제 범위" }), `결재 #${"d_1"}를 대표 답 #${"d_2"}에 따라 닫았습니다${`: ${"같은 결제 범위"}`}`],
+      [textRef("activity.decision_closed_by_answer_group", { id: "d_1", answer: "d_2" }), `결재 #${"d_1"}를 대표 답 #${"d_2"}에 따라 닫았습니다${" (같은 그룹)"}`],
     ];
+    // 리뷰: 터미널 종료 줄(59f26a9 orchestrator.ts exitDetail).
+    const oldExitDetail = (reason: string | null, exitCode: number | null) => ["holder_lost", "stopped_by_restart"].includes(reason ?? "") ? RESTART_EXIT_NOTE
+      : `초기/실행 종료: ${reason ?? "원인 미확인"} (exit_code=${exitCode ?? "unknown"})`;
+    for (const reason of ["exited", null, "holder_lost", "stopped_by_restart", "not_found", "signal: SIGKILL", "x".repeat(600)]) for (const code of [1, 0, null, 137]) {
+      const old = oldExitDetail(reason, code);
+      expect(exitDetail(reason, code)).toBe(old);
+      // 활동 줄: 예전처럼 500자에서 자른다. 잘리지 않으면 코드, 잘리면 문장.
+      const line = exitActivity(reason, code);
+      expect(typeof line === "string" ? line : ko(line)).toBe(old.slice(0, 500));
+      expect(typeof line === "string").toBe(old.length > 500);
+      if (old.length <= 500) pairs.push([exitDetailRef(reason, code), old]);
+      // lastError(문장 그대로)를 대화 글에 넣을 때도 정해진 글이면 코드가 된다.
+      const param = lastErrorParam(old.slice(0, 500));
+      expect(typeof param === "string").toBe(old.length > 500);
+    }
+    pairs.push([textRef("activity.restart_exit"), RESTART_EXIT_NOTE]);
+    expect(en(exitDetailRef("exited", 1))).toBe("Session ended: exited (exit code 1)");
+    expect(en(exitDetailRef(null, null))).toBe("Session ended: unknown cause (exit code unknown)");
     for (const model of ["Opus", "Sonnet"]) for (const continued of [true, false]) {
       pairs.push([textRef(continued ? "activity.usage_reopen_model_continue" : "activity.usage_reopen_model_new", { model }),
         `사용 한도로 멈춘 세션의 ${`모델을 ${withRo(model)}`} 바꿔 ${continued ? "같은 대화를 이어 엽니다" : "새 세션으로 엽니다"}`]);
@@ -195,6 +223,13 @@ describe("한국어 대조: 보고 언어 한국어로 그린 글은 바꾸기 �
       ["WebSearch", { query: "q" }], ["Task", { description: "d" }], ["Agent", { description: "d" }], ["MultiEdit", { file_path: "/a" }], ["NotebookEdit", { notebook_path: "/n" }],
       ["LS", { path: "/" }], ["BashOutput", {}], ["KillShell", {}], ["KillBash", {}], ["Skill", {}], ["SlashCommand", {}],
       ["mcp__github__create_issue", { title: "t" }], ["SomethingNew", { a: 1 }], ["Bash", { command: "x".repeat(3000) }],
+      // 리뷰: '무엇을'이 60자를 넘는 이름(예전에는 60자에서 잘렸다). 서버 이름 50·51·52자, 이름 없는 도구 53·54·80자, 공백이 든 이름.
+      ["mcp__plugin_acme-enterprise-integrations_acme-enterprise-data-warehouse__run_query", { sql: "select 1" }],
+      [`mcp__${"s".repeat(50)}__t`, {}], [`mcp__${"s".repeat(51)}__t`, {}], [`mcp__${"s".repeat(52)}__t`, {}],
+      ["T".repeat(53), { a: 1 }], ["T".repeat(54), { a: 1 }], ["T".repeat(80), { a: 1 }], [`Odd  Tool\tName ${"n".repeat(60)}`, {}], [`mcp__a  b__c`, {}],
+      // 리뷰: 대상에 서버가 붙이는 말(글자 수·더 있음·경로 없음·내용 없음·가린 개인 키·줄 더 있음).
+      ["Write", { content: "hi" }], ["Bash", undefined], ["Bash", { command: "cat <<EOF\n-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\nEOF" }],
+      ["Bash", { command: Array.from({ length: 40 }, (_, i) => `echo ${i}`).join("\n") }], ["Bash", { command: "echo ```x``` " + "y".repeat(700) }],
     ];
     for (const [tool, input] of tools) {
       const { action, target } = describeToolRequest(tool, input);
@@ -206,8 +241,24 @@ describe("한국어 대조: 보고 언어 한국어로 그린 글은 바꾸기 �
         expect(ko(refs.text)).toBe(old.detail);
         expect(ko({ code: "card.tool_permission.title", params: refs.text.params })).toBe(old.title);
         expect(en(refs.text)).not.toMatch(/명령 실행|폴더:|허용·거절/);
+        // 두 언어의 대상을 실어도 한국어는 그대로, 영어에는 한국어 붙임말이 없다(이름도 영문이면 한글이 하나도 없다).
+        const both = toolPermissionCardTexts({ name: "dev" }, { ...info, target: describeToolTargets(tool, input).ko }, 600_000, describeToolTargets(tool, input));
+        const oldDev = toolPermissionCard({ name: "dev" }, info, 600_000);
+        expect(ko(both.text)).toBe(oldDev.detail);
+        expect(ko({ code: "card.tool_permission.title", params: both.text.params })).toBe(oldDev.title);
+        expect([tool, HANGUL.test(en(both.text)), HANGUL.test(en({ code: "card.tool_permission.title", params: both.text.params }))]).toEqual([tool, false, false]);
       }
+      expect([tool, HANGUL.test(en(toolActionRef(tool)))]).toEqual([tool, false]);
+      expect([tool, HANGUL.test(describeToolRequest(tool, input, "en").target)]).toEqual([tool, false]);
     }
+    expect(ko(toolActionRef("mcp__plugin_acme-enterprise-integrations_acme-enterprise-data-warehouse__run_query"))).toBe("연결 도구 쓰기(plugin_acme-enterprise-integrations_acme-enterprise…(16자 더 있음)");
+    expect(en(toolActionRef("mcp__plugin_acme-enterprise-integrations_acme-enterprise-data-warehouse__run_query"))).toBe("Use a connected tool (plugin_acme-enterprise-integrations_acme-enterprise… 16 more characters)");
+    expect(describeToolTargets("Write", { file_path: "/tmp/x.txt", content: "hello" })).toEqual({ ko: "/tmp/x.txt (5자)", en: "/tmp/x.txt (5 characters)" });
+    expect(describeToolTargets("Write", { content: "hi" })).toEqual({ ko: "(경로 없음) (2자)", en: "(no path) (2 characters)" });
+    expect(describeToolTargets("Bash", undefined)).toEqual({ ko: "(내용 없음)", en: "(no content)" });
+    expect(describeToolTargets("Bash", { command: "x".repeat(700) }).en).toBe(`${"x".repeat(600)}… (100 more characters)`);
+    expect(describeToolTargets("Bash", { command: "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----" }).en).toBe("[private key hidden]");
+    expect(describeToolTargets("Bash", { command: Array.from({ length: 14 }, (_, i) => `echo ${i}`).join("\n") }).en.endsWith("\n… (2 more lines)")).toBe(true);
     for (const option of TOOL_PERMISSION_OPTIONS) {
       const refs = toolPermissionCardTexts({ name: "a" }, { tool: "Bash", action: "명령 실행", target: "x", cwd: null, expiresAt: "" }, 60_000).options[option.k as "allow" | "deny"];
       expect(ko(refs.label)).toBe(option.label);
@@ -346,12 +397,72 @@ describe("저장과 응답: 코드는 문장과 맞을 때만 싣는다", () => 
     const reopened = store.reopenDecision(card.id);
     expect(reopened.reopenNote).toBe("It couldn't be delivered. Please decide again");
     expect(reopened).toMatchObject({ reopenNoteText: { code: "card.reopen_undelivered" }, textLang: "en" });
-    // 한 카드의 코드는 한 언어다: 언어가 바뀌면 앞 칸(한국어 선택지)의 코드는 버린다. 문장은 그대로 남는다.
-    expect(reopened.optionTexts).toBeUndefined();
-    expect(reopened.options[0]!.label).toBe(USAGE_RESUME_OPTION.label);
+    // 리뷰: 한 카드는 한 언어다. 언어가 바뀐 뒤 서버가 한 칸을 쓰면 코드가 있는 앞 칸(선택지)도 새 언어로 다시 써 두고 코드를 이어 간다.
+    // (예전에는 앞 칸 코드를 버려, 그 칸만 한국어로 남고 다시 연 까닭만 영어인 카드가 되었다.)
+    expect(reopened.options[0]!.label).toBe("I switched accounts or raised my limit · Continue");
+    expect(reopened.optionTexts).toEqual({ resume: { label: { code: "card.usage_limit.option_resume" } } });
+    // 한국어 앱은 코드로 그 칸들을 다시 한국어로 그린다.
+    expect(ko(reopened.optionTexts!.resume!.label)).toBe(USAGE_RESUME_OPTION.label);
     // 문자열로 닫으면(AI 의 ask_close) 코드가 없다.
     const plain = store.createDecision({ projectId: project.id, who: "결제 연동", title: "질문" });
     expect(store.closeDecision(plain.id, { kind: "obsolete", reason: "필요 없어짐", by: "결제 연동" }).closeReasonText).toBeUndefined();
+  });
+
+  // 리뷰 지적: 영어 앱·보고 언어 한국어에서 열린 카드가 있을 때 대표가 보고 언어를 English 로 바꾸고, 그 뒤 서버가 카드를 닫거나 다시 열면
+  // 닫힌 이유·다시 연 까닭만 새 언어 코드를 갖고 제목·본문·선택지는 코드를 잃어, 한 카드 안에 두 언어가 섞였다.
+  test("보고 언어가 바뀐 뒤 서버가 카드를 닫으면 제목·본문·선택지·닫힌 이유가 모두 새 언어로, 코드도 모두 실린다", () => {
+    const { store, project, member } = freshStore();
+    const info = { tool: "Bash", action: "명령 실행", target: "bun test", cwd: null, expiresAt: "2026-11-14T01:00:00.000Z" };
+    const card = store.createToolPermissionDecision({ projectId: project.id, memberId: member.id, who: member.name, title: "t", detail: "d", options: TOOL_PERMISSION_OPTIONS,
+      toolPermission: info, texts: toolPermissionCardTexts(member, info, 600_000) });
+    expect(card).toMatchObject({ title: "명령 실행: bun test", textLang: "ko", textCode: "card.tool_permission" });
+    expect(card.options.map(o => o.label)).toEqual(["허용", "거절"]);
+    store.patchSettings({ reportLanguage: "en" });
+    const closed = store.closeDecision(card.id, { kind: null, reason: textRef("card.closed_member_removed", { name: "dev" }), by: "시스템" });
+    expect(closed).toMatchObject({ title: "Run a command: bun test", closeReason: "Closed along with dev, who left the team", textLang: "en", textCode: "card.tool_permission" });
+    expect(HANGUL.test(closed.detail.replace(member.name, ""))).toBe(false);
+    expect(closed.options.map(o => [o.label, o.desc])).toEqual([["Allow", "Runs it this one time only"], ["Deny", "Doesn't run it and tells the staff member"]]);
+    expect(Object.keys(closed.optionTexts ?? {})).toEqual(["allow", "deny"]);
+    expect(closed.closeReasonText).toEqual(textRef("card.closed_member_removed", { name: "dev" }));
+    // 한국어 앱은 모든 칸을 코드로 다시 한국어로 그린다(한 카드가 한 언어).
+    expect(ko({ code: closed.textCode!, params: closed.textParams })).toBe(card.detail);
+    expect(ko({ code: "card.tool_permission.title", params: closed.textParams })).toBe(card.title);
+    // 같은 언어로 다시 열면(대표가 다시 엶) 앞 칸은 그대로, 다시 연 까닭만 더해진다.
+    const again = store.reopenDecision(card.id, textRef("card.reopen_by_owner", { who: "dev" }));
+    expect(again).toMatchObject({ title: closed.title, detail: closed.detail, reopenNote: "You reopened the decision dev had closed", textLang: "en", textCode: "card.tool_permission" });
+    expect(again.optionTexts).toEqual(closed.optionTexts);
+  });
+
+  test("언어가 바뀐 카드에서 문장이 코드와 맞지 않는 칸(이전 판이 고친 칸)은 문장을 두고 코드만 뺀다", () => {
+    const { db, store, project, member } = freshStore();
+    const card = store.createDecision({ projectId: project.id, memberId: member.id, who: "시스템", title: "t", options: [USAGE_RESUME_OPTION, { k: "x", label: "다른 판이 더한 선택지" }],
+      texts: { options: { resume: { label: textRef("card.usage_limit.option_resume") } }, text: textRef("card.usage_limit.short", { lead: textRef("card.usage_limit.still_wait"), names: "a", cli: "Claude", count: "1" }) } });
+    db.query("UPDATE decisions SET detail = ? WHERE id = ?").run("이전 판이 고친 본문", card.id);
+    store.patchSettings({ reportLanguage: "en" });
+    const reopened = store.reopenDecision(card.id);
+    expect(reopened).toMatchObject({ detail: "이전 판이 고친 본문", title: "Claude 사용 한도 도달 · 팀원 1명 멈춤", reopenNote: "It couldn't be delivered. Please decide again", textLang: "en" });
+    expect(reopened.textCode).toBeUndefined();
+    expect(reopened.options.map(o => o.label)).toEqual(["I switched accounts or raised my limit · Continue", "다른 판이 더한 선택지"]);
+    expect(Object.keys(reopened.optionTexts ?? {})).toEqual(["resume"]);
+  });
+
+  test("사용 한도 카드를 다시 열고 고쳐도 다시 연 까닭의 코드가 남는다(언어가 바뀌었으면 그 문장도 새 언어로)", () => {
+    for (const switchTo of ["ko", "en"] as const) {
+      const { store, member } = freshStore();
+      const service = new ApiRecovery({ store, now: () => Date.parse("2026-11-14T00:00:00Z"), urls: [], notify: () => {}, pump: () => {},
+        inspect: async () => ({ menu: null, state: "error" }), dismiss: async () => ({ ok: true }), choices: () => [] });
+      closers.push(() => service.shutdown());
+      service.usageFailure(member, "You've hit your limit · resets 3pm");
+      const card = store.listDecisions(member.projectId).find(d => d.kind === "usage_limit")!;
+      store.reopenDecision(card.id);
+      expect(store.requireDecision(card.id).reopenNoteText).toEqual({ code: "card.reopen_undelivered" });
+      if (switchTo === "en") store.patchSettings({ reportLanguage: "en" });
+      service.usageFailure(member, "You've hit your limit · resets 4pm");
+      const updated = store.requireDecision(card.id);
+      expect(updated.reopenNoteText).toEqual({ code: "card.reopen_undelivered" });
+      expect(updated.reopenNote).toBe(switchTo === "en" ? "It couldn't be delivered. Please decide again" : "전달하지 못했습니다. 다시 결정해 주세요");
+      expect(updated.textLang).toBe(switchTo);
+    }
   });
 
   test("사용 한도 카드: 한국어는 예전 글, 영어 보고 언어는 영어 글, 제목·본문·선택지의 코드가 맞다", () => {
@@ -501,12 +612,37 @@ describe("iPhone 알림의 언어", () => {
     await worker.tick();
     const bodies = transport.requests.map(r => JSON.parse(r.body).aps.alert.body).sort();
     expect(bodies).toEqual([PUSH_BODIES.en.test, PUSH_BODIES.ko.test].sort());
-    // 머리글 없는 설정 바꾸기는 알던 언어를 그대로 둔다. 머리글이 있으면 그 언어로 바꾼다.
-    const current = push.requireDevice(english);
-    push.patchDevice(english, { expectedRevision: current.revision, label: "내 폰" }, null);
-    expect(push.getRegistration(english)!.language).toBe("en");
-    push.patchDevice(english, { expectedRevision: current.revision + 1, label: "내 폰2" }, "ko");
-    expect(push.getRegistration(english)!.language).toBe("ko");
+  });
+
+  // 리뷰 지적: PATCH 는 그 iPhone 만 보내는 요청이 아니다. 한국어 Mac 앱의 설정 → 알림에서 대표가 영어 iPhone 줄의 스위치를 끄면
+  // Accept-Language: ko 인 PATCH 가 나간다. 그것이 그 iPhone 의 알림 언어를 바꾸면 영어 iPhone 에 한국어 알림이 간다.
+  test("다른 앱의 설정 바꾸기(PATCH)는 그 iPhone 의 알림 언어를 바꾸지 않는다. 언어는 그 iPhone 의 등록(PUT)만 정한다", async () => {
+    const { push, worker, transport, handler } = fixture();
+    const iphone = randomUUID();
+    expect((await register(handler, iphone, "aa", { "Accept-Language": "en-US,ko;q=0.8" })).status).toBe(201);
+    expect(push.getRegistration(iphone)!.language).toBe("en");
+    const patch = async (body: Record<string, unknown>, headers: Record<string, string>) => {
+      const url = new URL(`http://127.0.0.1/api/push/devices/${iphone}`);
+      return handler(new Request(url, { method: "PATCH", headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ expectedRevision: push.requireDevice(iphone).revision, ...body }) }), url);
+    };
+    // iPhone 이 스스로 켠다(영어).
+    expect((await patch({ enabled: true }, { "Accept-Language": "en" })).status).toBe(200);
+    // 한국어 Mac 앱(0.2.6 은 화면 언어 ko, 출시된 Mac 0.2.3 도 ko)이 그 줄의 '완료 보고' 스위치를 끄고, 이름도 바꾼다.
+    expect((await patch({ preferences: { report_complete: false } }, { "Accept-Language": "ko" })).status).toBe(200);
+    expect((await patch({ label: "대표 폰" }, { "Accept-Language": "ko-KR" })).status).toBe(200);
+    expect(push.requireDevice(iphone)).toMatchObject({ label: "대표 폰", preferences: { report_complete: false } });
+    expect(push.getRegistration(iphone)!.language).toBe("en");
+    push.recordEvent({ sourceKey: `test:${iphone}:1`, kind: "test", projectId: null, memberId: null, target: { screen: "home" }, occurredAt: push.timestamp() },
+      [{ deviceId: iphone, registrationGeneration: push.getRegistration(iphone)!.registrationGeneration }]);
+    await worker.tick();
+    expect(transport.requests.map(r => JSON.parse(r.body).aps.alert.body)).toEqual([PUSH_BODIES.en.test]);
+    // 그 iPhone 이 언어를 바꿔 다시 등록하면(iOS 는 언어를 바꾸면 앱을 다시 띄워 등록이 다시 나간다) 그 언어가 된다.
+    const url = new URL(`http://127.0.0.1/api/push/devices/${iphone}`);
+    const again = await handler(new Request(url, { method: "PUT", headers: { "Content-Type": "application/json", "Accept-Language": "ko-KR" },
+      body: JSON.stringify({ expectedRevision: push.requireDevice(iphone).revision, platform: "ios", bundleId: DEFAULT_PUSH_BUNDLE_ID, environment: "sandbox", deviceToken: "aa", authorization: "authorized" }) }), url);
+    expect(again.status).toBe(200);
+    expect(push.getRegistration(iphone)!.language).toBe("ko");
   });
 
   test("문구는 언어별 고정 문구. 중계 본문에는 lang 이 실린다(없으면 ko)", () => {
@@ -524,7 +660,7 @@ describe("iPhone 알림의 언어", () => {
 describe("영어 문장의 쓸모", () => {
   test("서버가 만든 글 코드는 모두 어딘가에서 쓴다(죽은 항목이 없다)", () => {
     const sources = ["server/orchestrator.ts", "server/store.ts", "server/api-outage.ts", "server/tool-permission.ts", "server/delivery-recovery.ts",
-      "server/terminal-stream.ts", "server/flows/owner.ts", "server/flows/member.ts", "server/agent-tools.ts"].map(p => readFileSync(new URL(`../${p}`, import.meta.url), "utf8")).join("\n");
+      "server/terminal-stream.ts", "server/flows/owner.ts", "server/flows/member.ts", "server/agent-tools.ts", "server/text-refs.ts"].map(p => readFileSync(new URL(`../${p}`, import.meta.url), "utf8")).join("\n");
     // 대화 글·카드의 제목(`<코드>.title`)은 코드에서 저절로 고른다. 나머지는 textRef("코드") 나 표(ACTION_CODES)로 쓴다.
     const unused = Object.keys(SERVER_TEXTS).filter(code => !code.endsWith(".title") && !sources.includes(`"${code}"`));
     expect(unused).toEqual([]);

@@ -151,6 +151,44 @@ final class ServerTextTests: XCTestCase {
         XCTAssertEqual(korean.closedBy, "시스템")
     }
 
+    /// 0.2.6 Y 리뷰: 서버가 두 언어로 따로 만든 값({"ko","en"})은 화면 언어 쪽을 쓴다(도구 승인 카드의 대상처럼 '(5자)' 같은 붙임말이 든 값).
+    func testLanguageSpecificParamsOnToolPermissionCard() throws {
+        let json = #"""
+        {"id":"d2","kind":"tool_permission","who":"dev","title":"파일 쓰기: /tmp/x.txt (5자)","detail":"(한국어 본문)","status":"open",
+         "options":[{"k":"allow","label":"허용","desc":"이번 한 번만 실행합니다"},{"k":"deny","label":"거절","desc":"실행하지 않고 팀장에게 알립니다"}],
+         "textLang":"ko","textCode":"card.tool_permission",
+         "textParams":{"name":"dev","action":{"code":"tool.action.write"},"bar":"```","target":{"ko":"/tmp/x.txt (5자)","en":"/tmp/x.txt (5 characters)"},
+           "titleTarget":{"ko":"/tmp/x.txt (5자)","en":"/tmp/x.txt (5 characters)"},"folderLine":"","minutes":"10"}}
+        """#
+        let english = try AppLanguage.withOverride(.en) { try JSONDecoder().decode(Decision.self, from: Data(json.utf8)) }
+        XCTAssertEqual(english.title, "Write a file: /tmp/x.txt (5 characters)")
+        XCTAssertTrue(english.detail.contains("```\n/tmp/x.txt (5 characters)\n```"), english.detail)
+        XCTAssertNil(english.detail.range(of: #"\p{Hangul}"#, options: .regularExpression), english.detail)
+        // 저장(오프라인 사본)했다 한국어 화면으로 다시 읽으면 한국어 쪽 값으로 돌아온다.
+        let back = try AppLanguage.withOverride(.ko) { try JSONDecoder().decode(Decision.self, from: JSONEncoder().encode(english)) }
+        XCTAssertEqual(back.title, "파일 쓰기: /tmp/x.txt (5자)")
+        XCTAssertTrue(back.detail.contains("```\n/tmp/x.txt (5자)\n```"), back.detail)
+        let korean = try AppLanguage.withOverride(.ko) { try JSONDecoder().decode(Decision.self, from: Data(json.utf8)) }
+        XCTAssertEqual(korean.title, "파일 쓰기: /tmp/x.txt (5자)")
+        XCTAssertEqual(korean.detail, "(한국어 본문)", "같은 언어면 받은 그대로")
+        // 60자가 넘어 잘린 '무엇을'(tool.action.mcp_clipped).
+        XCTAssertEqual(ServerText.render(ServerTextRef(code: "tool.action.mcp_clipped", params: ["server": .text("plugin_acme"), "count": .text("16")]), language: .en),
+                       "Use a connected tool (plugin_acme… 16 more characters)")
+        XCTAssertEqual(ServerText.render(ServerTextRef(code: "tool.action.mcp_clipped", params: ["server": .text("plugin_acme"), "count": .text("16")]), language: .ko),
+                       "연결 도구 쓰기(plugin_acme…(16자 더 있음)")
+    }
+
+    /// 0.2.6 Y 리뷰: 실행 중단의 까닭(잠재우기 등)이 코드로 오면 영어 화면에 한국어가 섞이지 않는다.
+    func testInterruptedRunReasonCode() throws {
+        let m = try message(#"""
+        {"id":"m9","projectId":"p","who":"시스템","kind":"시스템","title":"","body":"dev: 실행 r3 중단 — 팀원을 잠재워 실행을 종료했습니다",
+         "textCode":"chat.run_interrupted","textParams":{"name":"dev","run":"r3","why":{"code":"why.slept"}},"textLang":"ko"}
+        """#, language: .en)
+        XCTAssertEqual(m.body, "dev: run r3 stopped — the staff member was put to sleep, which ended the run")
+        let exit = #"{"id":8,"memberId":"m","at":"2026-11-14T00:00:00Z","kind":"error","text":"Session ended: exited (exit code 3)","textCode":"activity.exit","textParams":{"reason":"exited","code":"3"},"textLang":"en"}"#
+        XCTAssertEqual(try AppLanguage.withOverride(.ko) { try JSONDecoder().decode(Activity.self, from: Data(exit.utf8)) }.text, "초기/실행 종료: exited (exit_code=3)")
+    }
+
     func testActivityLine() throws {
         let json = #"{"id":7,"memberId":"m","at":"2026-11-14T00:00:00Z","kind":"turn_end","text":"턴 끝","textCode":"activity.turn_end","textLang":"ko"}"#
         XCTAssertEqual(try AppLanguage.withOverride(.en) { try JSONDecoder().decode(Activity.self, from: Data(json.utf8)) }.text, "Turn ended")

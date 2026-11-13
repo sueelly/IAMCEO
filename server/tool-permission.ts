@@ -15,7 +15,7 @@ import type { AnswerReq, Decision, DecisionOption, Member, ToolPermissionInfo } 
 import { ApiError, type Store } from "./store.ts";
 import { josa } from "./roles.ts";
 import { TOOL_PERMISSION_POLL_MS, TOOL_PERMISSION_TTL_MS } from "./runner/permission-hook.ts";
-import { mustRender, textRef, type ServerTextCode, type ServerTextRef } from "../shared/server-text.ts";
+import { langsParam, mustRender, SERVER_TEXTS, textRef, type ServerTextCode, type ServerTextRef, type TextLang } from "../shared/server-text.ts";
 
 export { TOOL_PERMISSION_POLL_MS, TOOL_PERMISSION_TTL_MS };
 /** 기다리는 요청이 없는 채로 이만큼 지나면 훅이 끊긴 것으로 보고 닫는다. */
@@ -65,6 +65,8 @@ interface Entry {
   expiresAt: number;
   /** 지금 기다리는 요청 수. */
   inflight: number;
+  /** 두 언어의 대상(답한 뒤의 활동 줄). */
+  targets: ToolTargets;
   /** 마지막으로 요청이 들어오거나 끝난 때. */
   lastSeen: number;
   answer: { state: "allow" | "deny"; message?: string } | null;
@@ -82,6 +84,16 @@ const MASK = "••••";
 const MAX_TARGET = 600;
 const MAX_TARGET_LINES = 12;
 const MAX_TITLE_TARGET = 70;
+const MAX_ACTION = 60;
+
+/**
+ * 0.2.6 Y 리뷰: 서버가 '대상'(target)에 붙이는 말. 한국어는 예전 글자 그대로다. 영어 카드·활동 줄에 한국어 조각이 섞이지 않게
+ * 대상을 두 언어로 따로 만들어(langsParam) 카드의 값으로 싣는다. 앱은 화면 언어 쪽을 쓴다.
+ */
+const FRAGMENTS: Record<TextLang, { more(count: number): string; moreLines(count: number): string; size(count: number): string; noPath: string; empty: string; privateKey: string }> = {
+  ko: { more: count => `…(${count}자 더 있음)`, moreLines: count => `\n…(${count}줄 더 있음)`, size: count => ` (${count}자)`, noPath: "(경로 없음)", empty: "(내용 없음)", privateKey: "[가린 개인 키]" },
+  en: { more: count => `… (${count} more characters)`, moreLines: count => `\n… (${count} more lines)`, size: count => ` (${count} characters)`, noPath: "(no path)", empty: "(no content)", privateKey: "[private key hidden]" },
+};
 
 /** 이름 뒤의 값만 가린다. 따옴표는 남겨 모양을 알아볼 수 있게 한다. */
 function maskValue(_match: string, name: string, value: string): string {
@@ -90,9 +102,9 @@ function maskValue(_match: string, name: string, value: string): string {
 }
 
 /** 흔히 쓰이는 비밀 모양을 가린다. 지나치게 가리더라도 새는 것보다 낫다. */
-export function redactSecrets(text: string): string {
+export function redactSecrets(text: string, lang: TextLang = "ko"): string {
   return text
-    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, "[가린 개인 키]")
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, FRAGMENTS[lang].privateKey)
     .replace(/\b(Bearer|Basic|Token)(\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1$2${MASK}`)
     .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, MASK)
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, MASK)
@@ -112,18 +124,23 @@ export function redactSecrets(text: string): string {
     .replace(/[A-Za-z0-9+_-]{48,}={0,2}/g, match => /[0-9]/.test(match) && /[A-Za-z]/.test(match) ? MASK : match);
 }
 
-function clip(text: string, max: number): string {
+function clip(text: string, max: number, lang: TextLang = "ko"): string {
   const chars = Array.from(text);
-  return chars.length <= max ? text : `${chars.slice(0, max).join("")}…(${chars.length - max}자 더 있음)`;
+  return chars.length <= max ? text : `${chars.slice(0, max).join("")}${FRAGMENTS[lang].more(chars.length - max)}`;
 }
-function clipLines(text: string, maxLines: number): string {
+function clipLines(text: string, maxLines: number, lang: TextLang = "ko"): string {
   const lines = text.split("\n");
-  return lines.length <= maxLines ? text : `${lines.slice(0, maxLines).join("\n")}\n…(${lines.length - maxLines}줄 더 있음)`;
+  return lines.length <= maxLines ? text : `${lines.slice(0, maxLines).join("\n")}${FRAGMENTS[lang].moreLines(lines.length - maxLines)}`;
 }
 function oneLine(text: string): string { return text.replace(/\s+/g, " ").trim(); }
-/** 활동 줄(300자)의 끝 값. 예전처럼 한국어 줄 전체를 300자에서 자른 것과 같게, 한국어 머리의 길이를 뺀 만큼 값을 자른다. */
-function clipAfter(code: ServerTextCode, action: ServerTextRef, target: string): string {
-  return clip(target, Math.max(1, 300 - Array.from(mustRender(textRef(code, { action, target: "" }), "ko")).length));
+/** 활동 줄(300자)의 끝 값. 예전처럼 그 언어의 줄 전체를 300자에서 자른 것과 같게, 머리의 길이를 뺀 만큼 값을 자른다(한국어는 예전 글자 그대로). */
+function clipAfter(code: ServerTextCode, action: ServerTextRef, target: string, lang: TextLang = "ko"): string {
+  return clip(target, Math.max(1, 300 - Array.from(mustRender(textRef(code, { action, target: "" }), lang)).length), lang);
+}
+/** 두 언어의 대상. ko 는 예전 글자 그대로, en 은 영어 붙임말. */
+export interface ToolTargets { ko: string; en: string }
+function activityTarget(code: ServerTextCode, action: ServerTextRef, targets: ToolTargets) {
+  return langsParam(clipAfter(code, action, oneLine(targets.ko), "ko"), clipAfter(code, action, oneLine(targets.en), "en"));
 }
 function str(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 function homeShort(path: string): string {
@@ -155,8 +172,11 @@ const ACTIONS: Record<string, string> = {
   SlashCommand: "명령어 쓰기",
 };
 
-/** 도구 이름과 입력에서 '무엇을'(action)과 '어디에'(target)를 만든다. target 은 가리고 자른 것이다. */
-export function describeToolRequest(toolName: string, toolInput: unknown): { action: string; target: string } {
+/**
+ * 도구 이름과 입력에서 '무엇을'(action)과 '어디에'(target)를 만든다. target 은 가리고 자른 것이다.
+ * lang: 대상에 붙이는 말('(5자)', '…(N자 더 있음)' 등)의 언어. 한국어가 예전 그대로다. action 은 늘 한국어(대조용, 카드는 toolActionRef 로 그린다).
+ */
+export function describeToolRequest(toolName: string, toolInput: unknown, lang: TextLang = "ko"): { action: string; target: string } {
   const input = toolInput && typeof toolInput === "object" && !Array.isArray(toolInput) ? toolInput as Record<string, unknown> : {};
   const mcp = /^mcp__(.+?)__(.+)$/.exec(toolName);
   let action = ACTIONS[toolName] ?? (mcp ? `연결 도구 쓰기(${mcp[1]})` : `도구 쓰기(${toolName})`);
@@ -166,7 +186,7 @@ export function describeToolRequest(toolName: string, toolInput: unknown): { act
     case "Bash": target = str(input.command) ?? ""; break;
     case "Write": {
       const size = typeof input.content === "string" ? Array.from(input.content).length : null;
-      target = `${path ? homeShort(path) : "(경로 없음)"}${size !== null ? ` (${size}자)` : ""}`;
+      target = `${path ? homeShort(path) : FRAGMENTS[lang].noPath}${size !== null ? FRAGMENTS[lang].size(size) : ""}`;
       break;
     }
     case "Edit": case "MultiEdit": case "NotebookEdit": case "Read": case "LS":
@@ -180,9 +200,14 @@ export function describeToolRequest(toolName: string, toolInput: unknown): { act
     default:
       target = mcp ? `${mcp[2]} ${safeJson(toolInput)}` : safeJson(toolInput);
   }
-  if (!target.trim()) target = clip(safeJson(toolInput), 200) || "(내용 없음)";
-  action = clip(oneLine(action), 60);
-  return { action, target: clipLines(clip(redactSecrets(target), MAX_TARGET), MAX_TARGET_LINES) };
+  if (!target.trim()) target = clip(safeJson(toolInput), 200, lang) || FRAGMENTS[lang].empty;
+  action = clip(oneLine(action), MAX_ACTION);
+  return { action, target: clipLines(clip(redactSecrets(target, lang), MAX_TARGET, lang), MAX_TARGET_LINES, lang) };
+}
+
+/** 두 언어의 대상(ko 는 describeToolRequest 그대로). */
+export function describeToolTargets(toolName: string, toolInput: unknown): ToolTargets {
+  return { ko: describeToolRequest(toolName, toolInput, "ko").target, en: describeToolRequest(toolName, toolInput, "en").target };
 }
 
 /** 마크다운 코드 블록 울타리. 내용 안의 가장 긴 ` 줄보다 길게 둔다. */
@@ -205,19 +230,28 @@ export function toolActionRef(toolName: string): ServerTextRef {
   const known = ACTION_CODES[toolName];
   if (known) return textRef(known);
   const mcp = /^mcp__(.+?)__(.+)$/.exec(toolName);
-  return mcp ? textRef("tool.action.mcp", { server: mcp[1]! }) : textRef("tool.action.other", { tool: toolName });
+  const [code, clipped, key, raw] = mcp ? ["tool.action.mcp", "tool.action.mcp_clipped", "server", mcp[1]!] as const : ["tool.action.other", "tool.action.other_clipped", "tool", toolName] as const;
+  // 0.2.6 Y 리뷰: 예전 '무엇을'은 한국어 문장을 한 줄로 펴(oneLine) 60자에서 잘랐다(clip). 코드로 그려도 한국어는 그 글자 그대로가 되게
+  // 값을 펴고, 한국어 문장이 60자를 넘으면 잘린 앞부분과 잘려 나간 글자 수를 값으로 싣는다(값 앞 머리는 '연결 도구 쓰기(' 9자, '도구 쓰기(' 6자).
+  const value = raw.replace(/\s+/g, " ");
+  const whole = Array.from(mustRender(textRef(code, { [key]: value }), "ko")).length;
+  if (whole <= MAX_ACTION) return textRef(code, { [key]: value });
+  const head = Array.from(SERVER_TEXTS[code].ko.slice(0, SERVER_TEXTS[code].ko.indexOf(`{${key}}`))).length;
+  return textRef(clipped, { [key]: Array.from(value).slice(0, MAX_ACTION - head).join(""), count: String(whole - MAX_ACTION) });
 }
 
 /**
  * 0.2.6 Y: 카드의 글 코드. 보고 언어 한국어로 그리면 toolPermissionCard 와 글자까지 같다(tests/server-text.test.ts 대조).
  * 제목은 card.tool_permission.title(=`<무엇을>: <대상 한 줄>`), 선택지는 허용·거절의 이름과 설명.
  */
-export function toolPermissionCardTexts(member: Pick<Member, "name">, info: ToolPermissionInfo, ttlMs: number) {
+export function toolPermissionCardTexts(member: Pick<Member, "name">, info: ToolPermissionInfo, ttlMs: number, targets: ToolTargets = { ko: info.target, en: info.target }) {
   const minutes = Math.max(1, Math.round(ttlMs / 60_000));
-  const bar = fence(info.target);
+  // 울타리는 대상 안의 가장 긴 ` 줄로 정한다. 두 언어의 대상은 가린 말의 길이가 달라 잘리는 자리가 다를 수 있어 따로 정한다.
+  const bar = langsParam(fence(targets.ko), fence(targets.en));
   const action = toolActionRef(info.tool);
   return {
-    text: textRef("card.tool_permission", { name: member.name, action, bar, target: info.target, titleTarget: clip(oneLine(info.target), MAX_TITLE_TARGET),
+    text: textRef("card.tool_permission", { name: member.name, action, bar, target: langsParam(targets.ko, targets.en),
+      titleTarget: langsParam(clip(oneLine(targets.ko), MAX_TITLE_TARGET, "ko"), clip(oneLine(targets.en), MAX_TITLE_TARGET, "en")),
       folderLine: info.cwd ? textRef("card.tool_permission.folder", { folder: homeShort(info.cwd) }) : "", minutes: String(minutes) }),
     options: {
       allow: { label: textRef("card.tool_permission.allow"), desc: textRef("card.tool_permission.allow_desc") },
@@ -299,20 +333,23 @@ export class ToolPermissions {
     if (!project || project.archived) return { id: null, state: "closed" };
     // 사람이 터미널에서 직접 골라야 하는 도구(질문 창·계획 확정)는 CLI 가 훅의 허용을 받지 않는다. 카드를 띄우지 않는다.
     if (PERSON_ONLY_TOOLS.has(input.toolName)) return { id: null, state: "closed" };
-    const { target } = describeToolRequest(input.toolName, input.toolInput);
+    // Y: '무엇을'·대상은 보고 언어로 적는다(한국어면 예전과 같다). 카드의 글은 코드로 넘겨 저장소가 보고 언어로 그린다.
+    const lang = store.reportLang();
+    const targets = describeToolTargets(input.toolName, input.toolInput);
+    const target = targets[lang];
     const cwd = str(input.cwd) ?? member.cwd ?? null;
     const expiresAt = this.now() + this.ttl;
-    // Y: '무엇을'은 보고 언어로 적는다(한국어면 예전과 같다). 카드의 글은 코드로 넘겨 저장소가 보고 언어로 그린다.
+    // 코드가 이미 예전 60자 자르기를 담는다(toolActionRef). 한국어로 그리면 예전 clip(oneLine(action), 60) 과 같다.
     const actionRef = toolActionRef(input.toolName);
-    const action = clip(oneLine(store.renderText(actionRef)), 60);
-    const info: ToolPermissionInfo = { tool: clip(input.toolName, 200), action, target, cwd, expiresAt: new Date(expiresAt).toISOString() };
+    const action = store.renderText(actionRef);
+    const info: ToolPermissionInfo = { tool: clip(input.toolName, 200, lang), action, target, cwd, expiresAt: new Date(expiresAt).toISOString() };
     const { title, detail } = toolPermissionCard(member, info, this.ttl);
     const decision = store.createToolPermissionDecision({ projectId: member.projectId, memberId: member.id, who: member.name, title, detail, options: TOOL_PERMISSION_OPTIONS, toolPermission: info,
-      texts: toolPermissionCardTexts(member, info, this.ttl) });
-    const entry: Entry = { id: decision.id, memberId: member.id, expiresAt, inflight: 0, lastSeen: this.now(), answer: null, closed: false,
+      texts: toolPermissionCardTexts(member, info, this.ttl, targets) });
+    const entry: Entry = { id: decision.id, memberId: member.id, expiresAt, inflight: 0, targets, lastSeen: this.now(), answer: null, closed: false,
       sawBlocked: member.status === "blocked", grace: null, wake: new Set() };
     this.entries.set(decision.id, entry);
-    store.appendActivity(member.id, "system", textRef("activity.tool_requested", { action: actionRef, target: clipAfter("activity.tool_requested", actionRef, oneLine(target)) }));
+    store.appendActivity(member.id, "system", textRef("activity.tool_requested", { action: actionRef, target: activityTarget("activity.tool_requested", actionRef, targets) }));
     this.deps.notify(textRef("notice.tool_permission.title", { name: member.name }), textRef("card.tool_permission.title", { action: actionRef, titleTarget: oneLine(target) }));
     return this.waitOn(entry, signal);
   }
@@ -408,7 +445,7 @@ export class ToolPermissions {
       if (info) {
         const code = state === "allow" ? "activity.tool_allowed" : "activity.tool_denied";
         const actionRef = toolActionRef(info.tool);
-        store.appendActivity(member.id, "system", textRef(code, { action: actionRef, target: clipAfter(code, actionRef, oneLine(info.target)) }));
+        store.appendActivity(member.id, "system", textRef(code, { action: actionRef, target: activityTarget(code, actionRef, entry.targets) }));
       } else store.appendActivity(member.id, "system", textRef(state === "allow" ? "activity.tool_allowed_plain" : "activity.tool_denied_plain"));
       if (state === "allow" && note) this.deps.deliverNote(member, answered);
     }

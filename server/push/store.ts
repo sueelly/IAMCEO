@@ -159,7 +159,11 @@ export class PushStore implements PushReportGroupStore {
       return this.requireDevice(id);
     });
   }
-  patchDevice(id: string, patch: PatchPushDeviceRequest, language: TextLang | null = null): PushDevice {
+  /**
+   * 0.2.6 Y 리뷰: 알림 언어는 바꾸지 않는다. 이 요청은 그 iPhone 만 보내는 것이 아니다: Mac 앱 설정의 알림 화면이나 다른 iPhone 이
+   * 남의 기기 줄(전체·종류별 스위치)을 바꿀 때도 같은 PATCH 가 나간다. 언어는 푸시 토큰을 가진 그 iPhone 만 보내는 등록(PUT)에서 정한다.
+   */
+  patchDevice(id: string, patch: PatchPushDeviceRequest): PushDevice {
     uuid(id); revision(patch.expectedRevision);
     if (patch.label !== undefined) label(patch.label);
     if (patch.authorization !== undefined && !["authorized", "provisional", "ephemeral", "denied", "notDetermined"].includes(patch.authorization)) throw new ApiError(400, "알림 권한이 올바르지 않습니다", "push_authorization_invalid");
@@ -178,7 +182,6 @@ export class PushStore implements PushReportGroupStore {
         enabled ? 1 : 0, JSON.stringify(preferences), patch.label ?? row.label, permission, id);
       if (!enabled) this.cancelDevice(id, this.timestamp());
       else for (const kind of PUSH_KINDS) if (!preferences[kind]) this.cancelDevice(id, this.timestamp(), kind);
-      if (language) this.run("UPDATE push_devices SET language=? WHERE id=?", language, id);
       return this.requireDevice(id);
     });
   }

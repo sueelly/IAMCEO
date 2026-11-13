@@ -7,7 +7,7 @@ import { DeliveryRecovery, type RecoveryRunner } from "./delivery-recovery.ts";
 import { verdictRejudged, type PumpVerdictCode } from "./pump-verdict.ts";
 import { writeStatuslineWrapper } from "./runner/statusline.ts";
 import { emptyBunfig } from "./runner/bun-script.ts";
-import { endedByRestart, RESTART_EXIT_NOTE, RESTART_RESUME_TEXT, RESTART_WAKE_MAX_ATTEMPTS, RESTART_WAKE_PACING, restartNoteIn, type RestartWake, type RestartWakePacing } from "./restart-wake.ts";
+import { endedByRestart, RESTART_RESUME_TEXT, RESTART_WAKE_MAX_ATTEMPTS, RESTART_WAKE_PACING, restartNoteIn, type RestartWake, type RestartWakePacing } from "./restart-wake.ts";
 // Orchestrator: 전달 펌프, 턴 종료 처리, 압축 판단, 띄우기·잠재우기·다시 열기, 승인 근거 확인(spec §4·§6·§7).
 // 다음은 떼어 낸 모듈이 맡고, 이 클래스는 같은 이름의 공개 메서드로 넘겨준다:
 //   전달 글 delivery-text.ts · 판 정리 board-hygiene.ts · 대표 쪽 흐름 flows/owner.ts · 직원 쪽 흐름 flows/member.ts · 터미널 조작 terminal-control.ts
@@ -83,6 +83,7 @@ import { MemberFlows, type AskInput, type AssignInput, type AssignResult, type P
 export type { AskInput, AssignInput, AssignResult, PostInput } from "./flows/member.ts";
 import { conductorHandle, conductorName, DEFAULT_NAMES } from "./text.ts";
 import { mustRender, textRef, type ServerTextRef } from "../shared/server-text.ts";
+import { exitActivity, exitDetail, lastErrorParam } from "./text-refs.ts";
 
 // 전달 글(§4)은 delivery-text.ts 가 만든다. 예전처럼 이 파일에서 가져가는 곳(시험)을 위해 같은 이름으로 내보낸다.
 import { formatAnswer, formatInstruction, formatReport, formatSystem, formatTodoUndone, formatUserMessage, guardLines, isTidy, normalizeSpace, quoteNeedsContext, type QuoteSource } from "./delivery-text.ts";
@@ -318,14 +319,6 @@ class OrchestratorDeliveryRecovery extends DeliveryRecovery {
   }
 }
 
-/**
- * 팀장의 lastError·활동에 남는 터미널 종료 글. 터미널을 붙잡던 실행 엔진이나 Mac 이 다시 시작돼 CLI 가 함께 꺼진 것(endedByRestart)은
- * CLI 의 잘못이 아니다: 서버가 같은 세션을 스스로 다시 연다(restart-wake.ts).
- */
-function exitDetail(reason: string | null | undefined, exitCode: number | null | undefined): string {
-  if (endedByRestart(reason)) return RESTART_EXIT_NOTE;
-  return `초기/실행 종료: ${reason ?? "원인 미확인"} (exit_code=${exitCode ?? "unknown"})`;
-}
 /** 재시작으로 터미널을 잃은 종료를 표식의 사유로. 엔진이 그 터미널을 모른다(not_found)는 것도 엔진이 다시 시작된 것이다. CLI 가 스스로 끝났으면 null. */
 function restartLossOf(reason: string | null | undefined, exitCode: number | null | undefined): RestartWake["reason"] | null {
   if (reason === "holder_lost" || reason === "stopped_by_restart") return reason;
@@ -944,7 +937,7 @@ export class Orchestrator implements OrchestratorApi {
   private async reconcileAbsentTerminal(member: Member, probed?: Awaited<ReturnType<Orchestrator["probeOwnedTerminal"]>>): Promise<boolean> {
     if (!(this.runners.get("core") instanceof CoreRunner)) {
       this.releaseGoneTerminal(member.id, member.paneId);
-      this.endExecution(member, "interrupted", "재결합 조회에서 소유 터미널의 부재를 확인했습니다");
+      this.endExecution(member, "interrupted", textRef("why.terminal_absent_rejoin"));
       return true;
     }
     const probe = probed ?? await this.probeOwnedTerminal(member);
@@ -954,16 +947,16 @@ export class Orchestrator implements OrchestratorApi {
     this.releaseGoneTerminal(member.id, member.paneId);
     const terminal = probe.terminal;
     if (!terminal) {
-      this.endExecution(member, "interrupted", "소유 터미널의 부재를 확인했습니다", null, undefined, this.noteRestartLoss(member, "terminal_absent"));
+      this.endExecution(member, "interrupted", textRef("why.terminal_absent"), null, undefined, this.noteRestartLoss(member, "terminal_absent"));
       return true;
     }
     const run = this.store.listPendingExecutions().find(r => r.memberId === member.id);
     const settled = ["idle", "done"].includes(terminal.status?.state ?? "") && run?.turn !== null && run?.turn !== undefined && (terminal.turn ?? -1) > run.turn;
     const result = terminal.status?.state === "error" ? "error" : settled ? "success" : "interrupted";
     const lost = restartLossOf(terminal.reason, terminal.exit_code);
-    this.endExecution(member, result, terminal.reason ?? terminal.status?.msg ?? "소유 터미널이 종료되었습니다", terminal.exit_code ?? null, terminal.turn, lost !== null && this.noteRestartLoss(member, lost));
+    this.endExecution(member, result, terminal.reason ?? terminal.status?.msg ?? textRef("why.terminal_ended"), terminal.exit_code ?? null, terminal.turn, lost !== null && this.noteRestartLoss(member, lost));
     const detail = exitDetail(terminal.reason, terminal.exit_code);
-    if (member.lastError !== detail) this.store.appendActivity(member.id, result === "success" || endedByRestart(terminal.reason) ? "system" : "error", detail.slice(0, 500));
+    if (member.lastError !== detail) this.store.appendActivity(member.id, result === "success" || endedByRestart(terminal.reason) ? "system" : "error", exitActivity(terminal.reason, terminal.exit_code));
     // 한도로 보류 중인 팀장의 표시는 남긴다. 종료 사유는 위에서 활동에 남겼다.
     if (!this.keepsUsageNote(this.store.requireMember(member.id))) this.store.patchMember(member.id, { lastError: result === "success" ? null : detail.slice(0, 500) });
     return true;
@@ -1133,8 +1126,10 @@ export class Orchestrator implements OrchestratorApi {
    * restartLost: 재시작으로 터미널을 잃었고 서버가 그 팀장을 스스로 다시 연다(noteRestartLoss 가 참). 그때 끊긴 실행은 여기서 알리지 않고
    * 표식에 적어 둔다. 다시 열면 이어가기 글을 넣고, 못 열면 그때 예전처럼 총괄에게 알린다(settleRestartWake). 어느 쪽이든 실행마다 한 번이다.
    */
-  private endExecution(member: Member, result: "success" | "error" | "interrupted", reason: string | null, exitCode: number | null = null, turn?: number | null, restartLost = false): void {
+  private endExecution(member: Member, result: "success" | "error" | "interrupted", why: string | ServerTextRef | null, exitCode: number | null = null, turn?: number | null, restartLost = false): void {
     const at = new Date().toISOString();
+    // 0.2.6 Y 리뷰: 서버가 정한 사유는 코드로 받는다. 실행 기록(journal)과 판정에는 지금처럼 한국어 문장을, 대화의 중단 글에는 코드를 쓴다.
+    const reason = why === null || typeof why === "string" ? why : mustRender(why, "ko");
     this.store.transaction(() => {
       for (const run of this.store.listPendingExecutions().filter(r => r.memberId === member.id && r.identity.sessionGeneration === this.store.memberRevisions(member.id).sessionGeneration)) {
         const reported = this.completedReportSince(member, run.createdAt);
@@ -1156,7 +1151,7 @@ export class Orchestrator implements OrchestratorApi {
           continue;
         }
         this.store.claimExecutionNotice(run.runId, "interruption", () => this.noticeInterrupted(member, run,
-          endedByRestart(reason) ? textRef("why.restart_session_off") : reason ?? textRef("why.session_vanished")));
+          endedByRestart(reason) ? textRef("why.restart_session_off") : why ?? textRef("why.session_vanished")));
       }
     });
   }
@@ -2047,7 +2042,7 @@ export class Orchestrator implements OrchestratorApi {
       const sameProvider = patch.cli === member.cli;
       let continued = false;
       this.store.transaction(() => {
-        this.endExecution(member, "interrupted", freshSession ? "명시적 새 세션으로 전환했습니다" : "세션 설정을 변경했습니다");
+        this.endExecution(member, "interrupted", textRef(freshSession ? "why.fresh_session" : "why.settings_changed"));
         this.confirmStop(member.id);
         this.store.archiveAndRotateSession(member.id, patch.cli!, freshSession ? "fresh_session" : sameProvider ? "settings_change" : "provider_switch");
         // 옛 터미널은 끝났다. 새 터미널을 띄우기 전에 보류를 풀고 이어가기 글을 줄에 세운다: 띄우기가 실패해도 다음 기동이 그 글부터 넣는다.
@@ -2960,7 +2955,7 @@ export class Orchestrator implements OrchestratorApi {
       const menuClosed = !opts.force && !opts.holdAs && this.apiRecovery.usageLimited(memberId) ? await this.closeUsageMenu(member) : false;
       try { await this.stopManaged(member, opts.holdAs === "archived" ? "archive" : "sleep", !!opts.force && !opts.holdAs); }
       catch (e) { if (menuClosed) this.restoreAfterUsageMenu(member); throw e; }
-      this.endExecution(member, "interrupted", "팀원을 잠재워 실행을 종료했습니다");
+      this.endExecution(member, "interrupted", textRef("why.slept"));
       if (rt.turn) rt.turn.interrupted = true;
       rt.compactRequest = null;
       this.store.transaction(() => {
@@ -3043,7 +3038,7 @@ export class Orchestrator implements OrchestratorApi {
     this.scheduleRetry(member.id, rt, until);
     if (!rt.quickExitNotified) {
       rt.quickExitNotified = true;
-      const text = member.lastError ? textRef("chat.quick_exit_error", { name: member.name, error: member.lastError }) : textRef("chat.quick_exit", { name: member.name });
+      const text = member.lastError ? textRef("chat.quick_exit_error", { name: member.name, error: lastErrorParam(member.lastError) }) : textRef("chat.quick_exit", { name: member.name });
       this.store.appendActivity(member.id, "error", text);
       this.systemMessage(member.projectId, text);
       this.notifyInbox(textRef("notice.start_failed.title", { name: member.name }), text);
@@ -3158,7 +3153,7 @@ export class Orchestrator implements OrchestratorApi {
         // 지워진 옛 실행기(backend 가 core 가 아닌 값)의 세션도 같다. 다룰 실행기가 없어 끝낼 수 없으니('실행기가 없습니다' 503 이 났다) 명부에서만 뺀다.
         if (member.origin !== "adopted" && this.backendOf(member) === "core") await this.stopManaged(member, "close", true);
       }
-      this.endExecution(member, "interrupted", "팀원을 닫아 실행을 종료했습니다");
+      this.endExecution(member, "interrupted", textRef("why.closed"));
       if (rt.turn) rt.turn.interrupted = true;
       if (member.origin !== "manual") this.store.patchMember(memberId, { status: "asleep" });
       this.confirmStop(memberId);
@@ -4043,7 +4038,8 @@ export class Orchestrator implements OrchestratorApi {
         }
         this.store.patchMember(memberId, { status: "error", lastError: detail });
         this.holdHeld(memberId, rt, this.timings.retryMs);
-        if (first) this.systemMessage(member.projectId, textRef("chat.delivery_failed", { name: member.name, detail }));
+        // 실행기가 준 까닭(result.detail)은 그대로, 없을 때의 정해진 말만 코드로.
+        if (first) this.systemMessage(member.projectId, textRef("chat.delivery_failed", { name: member.name, detail: result.detail ?? textRef("why.delivery_failed") }));
         return "retry_wait";
       }
     }
@@ -4280,10 +4276,10 @@ export class Orchestrator implements OrchestratorApi {
           // 실행기가 종료를 알렸다(엔진이 끝났다고 답했거나 그 터미널을 모른다고 답했다). 실행을 끝내기 전에 그 터미널에 묶인 상태부터 정리한다.
           this.releaseGoneTerminal(member.id, e.terminalId ?? member.paneId);
           const lost = restartLossOf(e.exit?.reason, e.exit?.exitCode);
-          this.endExecution(member, "interrupted", e.exit?.reason ?? "소유 터미널이 종료되거나 사라졌습니다", e.exit?.exitCode ?? null, e.turn, lost !== null && this.noteRestartLoss(member, lost));
+          this.endExecution(member, "interrupted", e.exit?.reason ?? textRef("why.terminal_ended_or_gone"), e.exit?.exitCode ?? null, e.turn, lost !== null && this.noteRestartLoss(member, lost));
           if (e.exit) {
             const detail = exitDetail(e.exit.reason, e.exit.exitCode);
-            if (member.lastError !== detail) this.store.appendActivity(member.id, endedByRestart(e.exit.reason) ? "system" : "error", detail.slice(0, 500));
+            if (member.lastError !== detail) this.store.appendActivity(member.id, endedByRestart(e.exit.reason) ? "system" : "error", exitActivity(e.exit.reason, e.exit.exitCode));
             // 한도로 보류 중인 팀장의 표시는 남긴다('말을 걸면 이어 연다'는 안내는 한도가 풀릴 때까지 맞지 않는다). 종료 사유는 활동에 남았다.
             if (!this.keepsUsageNote(this.store.requireMember(member.id))) this.store.patchMember(member.id, { lastError: detail.slice(0, 500) });
           }

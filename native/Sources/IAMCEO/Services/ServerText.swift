@@ -9,18 +9,23 @@ import Foundation
 /// - 다르면 코드의 틀(ServerTextCatalog: 영어는 문구 표 server.text.*, 한국어는 기본값)로 다시 그린다.
 /// - 모르는 코드·빠진 값·모르는 언어면 받은 문장 그대로다(뜻을 지어내지 않는다).
 ///
-/// 틀 문법: `{이름}` 은 값, 한국어 틀의 `{이름:이}`·`{이름:을}`·`{이름:은}`·`{이름:으로}` 는 값 뒤 조사. 값은 글자, 다른 코드, 시각(`{"at": ISO}`).
+/// 틀 문법: `{이름}` 은 값, 한국어 틀의 `{이름:이}`·`{이름:을}`·`{이름:은}`·`{이름:으로}` 는 값 뒤 조사. 값은 글자, 다른 코드, 시각(`{"at": ISO}`),
+/// 언어별 글자(`{"ko": …, "en": …}`: 서버가 두 언어로 따로 만든 값. 도구 승인 카드의 대상처럼 '…(N자 더 있음)' 같은 붙임말이 든 값).
 indirect enum ServerTextParam: Codable, Sendable, Equatable {
     case text(String)
     case ref(ServerTextRef)
     case date(String)
+    case langs(ko: String, en: String)
 
-    private enum Keys: String, CodingKey { case code, params, at }
+    private enum Keys: String, CodingKey { case code, params, at, ko, en }
 
     init(from decoder: Decoder) throws {
         if let single = try? decoder.singleValueContainer(), let value = try? single.decode(String.self) { self = .text(value); return }
         let c = try decoder.container(keyedBy: Keys.self)
         if let at = try c.decodeIfPresent(String.self, forKey: .at) { self = .date(at); return }
+        if !c.contains(.code), let ko = try c.decodeIfPresent(String.self, forKey: .ko), let en = try c.decodeIfPresent(String.self, forKey: .en) {
+            self = .langs(ko: ko, en: en); return
+        }
         self = .ref(try ServerTextRef(from: decoder))
     }
 
@@ -29,6 +34,7 @@ indirect enum ServerTextParam: Codable, Sendable, Equatable {
         case .text(let value): var c = encoder.singleValueContainer(); try c.encode(value)
         case .ref(let ref): try ref.encode(to: encoder)
         case .date(let at): var c = encoder.container(keyedBy: Keys.self); try c.encode(at, forKey: .at)
+        case .langs(let ko, let en): var c = encoder.container(keyedBy: Keys.self); try c.encode(ko, forKey: .ko); try c.encode(en, forKey: .en)
         }
     }
 }
@@ -85,6 +91,7 @@ enum ServerText {
         case .text(let value)?: value
         case .ref(let ref)?: render(ref, language: language, depth: depth + 1)
         case .date(let at)?: dateText(at, language: language)
+        case .langs(let ko, let en)?: language == .en ? en : ko
         case nil: nil
         }
     }

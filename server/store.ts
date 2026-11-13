@@ -65,7 +65,7 @@ import { parseRestartWake, type RestartWake } from "./restart-wake.ts";
 import type { ErrorCode } from "../shared/error-codes.ts";
 import { deliveryNoteCode } from "./hold-codes.ts";
 import { mustRender, textLang, textRef, type ServerTextRef, type TextLang } from "../shared/server-text.ts";
-import { activityTextFields, decisionTextFields, lastErrorCodeField, messageTextFields, readDecisionTexts, renderDecisionText, renderOptions, storedDecisionTexts, storedText, type DecisionTextRefs } from "./text-refs.ts";
+import { activityTextFields, decisionTextFields, lastErrorCodeField, messageTextFields, readDecisionTexts, relocalizeDecisionTexts, renderDecisionText, renderOptions, storedDecisionTexts, storedText, type DecisionTextRefs } from "./text-refs.ts";
 
 /**
  * status 가 그대로 HTTP 응답 코드가 되는 오류. 응답 몸은 `{ error: message, code, reason? }`.
@@ -1300,7 +1300,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const before = this.requireDecision(id);
       // Y: 글 코드를 주면 제목·본문·선택지를 보고 언어로 그린다(넘겨받은 문장은 쓰지 않는다).
       if (refs) {
-        const texts = this.decisionTexts({ title, detail, options: options ?? before.options, texts: refs });
+        // 리뷰: 카드에 있던 다시 연 까닭·닫힌 이유의 코드는 이어 간다(버리면 그 칸만 코드 없이 남는다). 보고 언어가 바뀌었으면 그 문장도 새 언어로.
+        const kept = this.decisionTextsIn(id, this.reportLang());
+        const notes: DecisionTextRefs = { ...(kept.closeReason ? { closeReason: kept.closeReason } : {}), ...(kept.reopenNote ? { reopenNote: kept.reopenNote } : {}) };
+        const texts = this.decisionTexts({ title, detail, options: options ?? before.options, texts: { ...refs, ...notes } });
         title = texts.input.title; detail = texts.input.detail ?? ""; options = texts.input.options;
         if (this.row("SELECT text_ref FROM decisions WHERE id = ?", id)?.text_ref !== texts.stored) this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", texts.stored, id);
       }
@@ -2004,14 +2007,30 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return { input: { ...input, title: rendered.title, detail: rendered.detail, options: renderOptions(input.options ?? [], refs.options, lang) }, stored: storedDecisionTexts(refs, lang) };
   }
 
-  /** 카드의 text_ref 한 칸(닫힌 이유·다시 연 까닭)을 바꾸고 그 문장을 돌려준다. 다른 칸의 코드와 언어는 그대로 둔다. */
+  /** 카드의 text_ref 한 칸(닫힌 이유·다시 연 까닭)을 바꾸고 그 문장을 돌려준다. 다른 칸의 코드는 그대로 둔다. */
   private withDecisionText(id: string, field: "closeReason" | "reopenNote", ref: ServerTextRef): string {
-    const stored = readDecisionTexts(this.row("SELECT text_ref FROM decisions WHERE id = ?", id)?.text_ref);
     const lang = this.reportLang();
-    // 언어가 바뀐 카드(보고 언어를 바꾼 뒤)는 앞 칸들의 코드를 버리고 이 칸만 새 언어로 둔다(한 카드의 코드는 한 언어다).
-    const base: DecisionTextRefs = stored && stored.lang === lang ? { text: stored.text, options: stored.options, closeReason: stored.closeReason, reopenNote: stored.reopenNote } : {};
+    const base = this.decisionTextsIn(id, lang);
     this.run("UPDATE decisions SET text_ref = ? WHERE id = ?", storedDecisionTexts({ ...base, [field]: ref }, lang), id);
     return mustRender(ref, lang);
+  }
+
+  /**
+   * 카드에 저장된 글 코드를 이 언어로. 같은 언어면 그대로, 보고 언어가 바뀐 뒤면 코드가 있는 칸(제목·본문·선택지·닫힌 이유·다시 연 까닭)의
+   * 문장을 새 언어로 다시 써 둔다(0.2.6 Y 리뷰: 한 카드는 한 언어. 앞 칸 코드를 버리면 그 칸만 앞 언어로 남아 두 언어가 섞였다).
+   * 부르는 쪽이 같은 거래 안에서 판(updated_at)을 올리고 알린다.
+   */
+  private decisionTextsIn(id: string, lang: TextLang): DecisionTextRefs {
+    const stored = readDecisionTexts(this.row("SELECT text_ref FROM decisions WHERE id = ?", id)?.text_ref);
+    if (!stored) return {};
+    if (stored.lang === lang) return { text: stored.text, options: stored.options, closeReason: stored.closeReason, reopenNote: stored.reopenNote };
+    const { refs, patch } = relocalizeDecisionTexts(stored, this.requireDecision(id), lang);
+    if (patch.title !== undefined) this.run("UPDATE decisions SET title = ? WHERE id = ?", patch.title, id);
+    if (patch.detail !== undefined) this.run("UPDATE decisions SET detail = ? WHERE id = ?", patch.detail, id);
+    if (patch.options !== undefined) this.run("UPDATE decisions SET options = ? WHERE id = ?", JSON.stringify(patch.options), id);
+    if (patch.closeReason !== undefined) this.run("UPDATE decisions SET close_reason = ? WHERE id = ?", patch.closeReason, id);
+    if (patch.reopenNote !== undefined) this.run("UPDATE decisions SET reopen_note = ? WHERE id = ?", patch.reopenNote, id);
+    return refs;
   }
 
   /** 앞 판보다 반드시 큰 시각. 같은 ms 안의 전이도 화면이 순서를 가른다. */

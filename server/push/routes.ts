@@ -16,7 +16,7 @@ export interface PushRoutesContext {
 const MAX_BODY_BYTES = 8 * 1024;
 
 /**
- * 0.2.6 Y: 이 iPhone 이 알림을 받을 언어. 앱(URLSession)이 모든 요청에 붙이는 Accept-Language 의 첫 언어로 정한다
+ * 0.2.6 Y: 이 iPhone 이 알림을 받을 언어. 그 iPhone 이 보내는 등록(PUT)의 Accept-Language 첫 언어로 정한다
  * (출시된 0.2.4·0.2.5 는 앱 화면 언어, 0.2.6 부터는 앱이 화면 언어를 직접 적는다). 머리글이 없거나 `*` 면 모른다(null: 저장된 값을 두고, 없으면 한국어).
  * 등록 본문에 새 칸을 더하지 않는다: 본문 검사가 엄격해 새 앱이 옛 서버에 보내면 400 이 난다.
  */
@@ -129,7 +129,8 @@ export function createPushHandler(ctx: PushRoutesContext): (req: Request, url: U
         const saved = push.registerDevice(id, request, requestLanguage(req));
         return response(saved, request.expectedRevision === null ? 201 : 200);
       }
-      if (req.method === "PATCH") return response(push.patchDevice(id, json(text, patch), requestLanguage(req)));
+      // 언어는 PUT 에서만 정한다(PATCH 는 다른 앱이 남의 기기 줄을 바꿀 때도 온다).
+      if (req.method === "PATCH") return response(push.patchDevice(id, json(text, patch)));
       if (req.method === "DELETE") {
         push.revokeDevice(id, deleteRevision(req));
         return response({ ok: true });
