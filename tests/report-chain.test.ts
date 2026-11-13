@@ -151,8 +151,14 @@ test("about_report_id 는 이 프로젝트 다른 직원 보고만 받는다", a
   }
   const tool = await f.orch.handleAgentTool(f.lead, "post", { kind: "알림", title: "확인", about_report_id: own.id });
   expect(tool.isError).toBe(true);
-  const ok = await f.orch.handleAgentTool(f.lead, "post", { kind: "알림", title: "확인", about_report_id: (await f.orch.recordPost(f.worker, { kind: "완료", title: "직원 보고" })).id });
+  const report = await f.orch.recordPost(f.worker, { kind: "완료", title: "직원 보고" });
+  const ok = await f.orch.handleAgentTool(f.lead, "post", { kind: "알림", title: "확인", about_report_id: report.id });
   expect(ok.isError).toBeUndefined();
+  const confirmation = f.store.getMessage(/#(msg_[A-Za-z0-9_]+)/.exec(ok.text)![1]!)!;
+  expect(confirmation.aboutMessageId).toBe(report.id);
+  // 원보고를 조회하면 확인 글이 함께 온다(원보고와 총괄 확인을 한 결과로 읽는다).
+  const lookup = JSON.parse((await f.orch.handleAgentTool(f.lead, "post", { report_id: report.id })).text);
+  expect(lookup.confirmations).toEqual([{ id: confirmation.id, who: f.lead.name, kind: "알림", title: "확인", at: confirmation.at }]);
 });
 
 test("기다리는 자기 결재를 밝힌 알림은 마감하고, 남의 결재나 닫힌 결재는 마감하지 않는다", async () => {

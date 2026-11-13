@@ -3747,7 +3747,7 @@ export class Orchestrator implements OrchestratorApi {
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
-      body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
+      body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId, aboutMessageId: input.aboutReportId ?? null,
     }), message => {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });

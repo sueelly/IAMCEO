@@ -313,6 +313,8 @@ export interface Message {
   deliveryNote: string | null;
   /** 이 글이 속한 작업. 대표 글은 보낸 순간 고른 작업으로 정해진다. 없으면 전체 대화에만 속한다. */
   taskId?: string | null;
+  /** 이 글이 확인한 다른 직원의 보고 원본(post about_report_id). 화면은 새 결정 없는 확인 글을 그 원보고에 묶는다. */
+  aboutMessageId?: string | null;
 }
 
 export type MessageScope = { kind: "project" } | { kind: "member"; memberId: string } | { kind: "task"; taskId: string };

@@ -142,6 +142,34 @@ describe("총괄 과정 글 접기", () => {
     const gone = msg("g", "2026-11-09T02:00:00Z", { memberId: "removed", kind: "완료" });
     expect(processKind([gone, lead("l", "2026-11-09T02:00:30Z", { kind: "알림" })], 1, kindOf)).toBe("renotify");
   });
+  test("확인: 원보고를 밝힌 총괄 알림은 2분이 지나고 다른 글이 끼어도 그 보고의 확인으로 접는다", () => {
+    const report = web("r", "2026-11-13T11:15:00Z", { kind: "완료", title: "사전 개정 끝", fileId: "f_r" });
+    const list = [
+      report,
+      native("n", "2026-11-13T11:16:00Z", { title: "네이티브 진행" }),
+      lead("c", "2026-11-13T11:30:00Z", { kind: "알림", title: "판에 적었습니다", body: "한 줄\n두 줄\n세 줄", aboutMessageId: "r" }),
+    ];
+    expect(processKind(list, 2, kindOf)).toBe("confirm");
+    const fold = foldThread(list, kindOf).find((i) => i.type === "fold");
+    expect(fold && fold.type === "fold" && [fold.messages.map((m) => m.id), foldLabel(fold)]).toEqual([["c"], "총괄 · 확인 1건"]);
+    // 원보고가 아직 안 불러온 앞쪽에 있어도 확인으로 접는다(펼치면 원문이 보인다).
+    expect(processKind([lead("c2", "2026-11-13T11:30:00Z", { kind: "알림", aboutMessageId: "old" })], 0, kindOf)).toBe("confirm");
+  });
+
+  test("확인이라도 진행·완료, 새 소식·대표 차례·새 자료, 직원 보고가 아닌 원본이면 접지 않는다", () => {
+    const report = web("r", "2026-11-13T11:15:00Z", { kind: "완료", title: "사전 개정 끝", fileId: "f_r" });
+    const at = "2026-11-13T11:30:00Z";
+    const cases: Message[] = [
+      lead("p", at, { kind: "진행", title: "확인 중", aboutMessageId: "r" }),
+      lead("d", at, { kind: "완료", title: "종합", aboutMessageId: "r" }),
+      lead("e", at, { kind: "알림", title: "시험 실패가 남았습니다", aboutMessageId: "r" }),
+      lead("o", at, { kind: "알림", title: "판에 적었습니다", body: `${buildOwnerLine("합칠지 정해 주세요")}\n본문`, aboutMessageId: "r" }),
+      lead("f", at, { kind: "알림", title: "판에 적었습니다", fileId: "f_new", aboutMessageId: "r" }),
+    ];
+    for (const m of cases) expect([m.id, processKind([report, m], 1, kindOf)]).toEqual([m.id, null]);
+    const own = lead("own", "2026-11-13T11:20:00Z", { kind: "알림", title: "총괄 글" });
+    expect(processKind([own, lead("x", at, { kind: "알림", aboutMessageId: "own" })], 1, kindOf)).toBeNull();
+  });
 });
 
 describe("대표 차례 띠", () => {

@@ -370,7 +370,9 @@ const TOOLS: Record<ToolName, Tool<any>> = {
           if (!file || file.projectId !== member.projectId) throw new ApiError(404, `자료를 찾을 수 없습니다: ${id}`);
           return { id: file.id, title: file.title, summary: file.summary, body: file.body, kind: file.kind, attachments: file.attachments, ...(file.kind === "artifact" ? { html: orch.store.getFileHtml(file.id) } : {}) };
         });
-        return reply(JSON.stringify({ ...refs, source, files }));
+        // 이 보고를 확인한 글(총괄 확인 등)도 함께 돌려준다. 원보고와 확인을 한 결과로 읽게 한다.
+        const confirmations = orch.store.listMessagesAbout(member.projectId, source.id).map(m => ({ id: m.id, who: m.who, kind: m.kind, title: m.title, at: m.at }));
+        return reply(JSON.stringify({ ...refs, source, files, confirmations }));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
       const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id });

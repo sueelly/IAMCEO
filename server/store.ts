@@ -258,6 +258,7 @@ export interface NewMessage {
   delivery?: DeliveryStatus | null;
   deliveryNote?: string | null;
   taskId?: string | null;
+  aboutMessageId?: string | null;
 }
 
 export interface NewFile {
@@ -574,6 +575,7 @@ function toMessage(r: Row): Message {
     delivery: r.delivery,
     deliveryNote: r.delivery_note,
     taskId: r.task_id ?? null,
+    aboutMessageId: r.about_message_id ?? null,
   };
 }
 
@@ -2157,8 +2159,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = input.id ?? newId("msg_");
       this.run(
-        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id, about_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.at ?? this.nextMessageAt(),
@@ -2176,6 +2178,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.delivery ?? null,
         input.deliveryNote ?? null,
         this.taskRef(input.projectId, input.taskId),
+        input.aboutMessageId ?? null,
       );
       const message = this.requireMessage(id);
       // 보관 중 늦은 manual 보고도 저장한다. 푸시는 활성 프로젝트의 실제 작성자만 대상이다.
@@ -2868,6 +2871,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       write();
       return true;
     });
+  }
+
+  /** 이 보고 원본을 확인한 글(about_message_id). 작성 순서대로. */
+  listMessagesAbout(projectId: string, messageId: string): Message[] {
+    return this.rows("SELECT * FROM messages WHERE project_id = ? AND about_message_id = ? ORDER BY at COLLATE BINARY, id COLLATE BINARY", projectId, messageId).map(toMessage);
   }
 
   // ---- 보고 마감·보고 보완 ----
