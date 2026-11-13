@@ -388,7 +388,7 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     expect(t.inTask(t.B.id).messages).toBe(beforeB.messages + 1);
   });
 
-  test("자동 보고(턴 마지막 글)는 그 턴에 받은 전달이 한 작업이면 그 작업, A·B 가 한 묶음이면 한쪽으로 몰지 않고 A·B 에 같은 글을 남긴다(총괄 보고는 한 번)", async () => {
+  test("자동 보고(턴 마지막 글)는 그 턴에 받은 전달이 한 작업이면 그 작업, A·B 가 한 묶음이면 어느 쪽에도 복사하지 않고 직원의 '여러 업무 결과'에 한 번 남긴다(총괄 보고도 한 번)", async () => {
     const t = await twoTasks();
     // B 하나만 받은 턴: post 없이 끝나면 자동 보고가 B
     await t.send("정산도 봐 주세요", t.B.id);
@@ -410,9 +410,11 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     const reportsBefore = t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report").length;
     t.runner.end(t.w.id, "환불은 됐고 정산은 보는 중");
     await settle();
-    const copies = t.store.listMessages(t.project.id).filter((m) => m.body.startsWith("환불은 됐고 정산은 보는 중"));
-    expect(copies.map((m) => m.taskId).sort()).toEqual([t.A.id, t.B.id].sort());
-    expect(copies.every((m) => m.body.includes("업무 2곳에 함께 남겼습니다"))).toBe(true);
+    const mixed = t.store.listMessages(t.project.id).filter((m) => m.body.startsWith("환불은 됐고 정산은 보는 중"));
+    expect(mixed).toHaveLength(1);
+    expect([t.A.id, t.B.id]).not.toContain(mixed[0]!.taskId);
+    expect(t.store.requireTask(mixed[0]!.taskId!)).toMatchObject({ origin: "server" });
+    expect(mixed[0]!.body).toContain(`받은 업무: #${t.A.id}`);
     expect(t.store.listMessages(t.project.id).some((m) => m.memberId === t.w.id && !m.taskId)).toBe(false);
     expect(t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report").length).toBe(reportsBefore + 1);
   });

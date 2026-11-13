@@ -263,7 +263,8 @@ export interface Todo {
  * 업무가 생긴 곳. staff: 직원이 task 도구로 등록 · board: 총괄의 진행판 일 항목 · owner: 대표가 이름 붙인 새 업무 ·
  * auto: 업무를 고르지 않은 대표 글 등에서 서버가 첫 줄로 이름 붙인 새 업무 · backfill: 업무가 없던 옛 글을 정리하며 만든 업무.
  */
-export type TaskOrigin = "staff" | "board" | "owner" | "auto" | "backfill";
+/** 업무가 생긴 곳. server 는 근거 없는 서버 알림·여러 업무가 섞인 자동 보고를 모으려고 서버가 직원마다 한 번 만든 업무. */
+export type TaskOrigin = "staff" | "board" | "owner" | "auto" | "backfill" | "server";
 
 /**
  * 업무(작업): 대화·결재·자료·할 일이 모이는 일 하나. id 는 처음 만들 때 정해지고, 제목·브랜치·워크트리를 고쳐도 바뀌지 않는다.

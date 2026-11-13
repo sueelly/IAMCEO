@@ -116,6 +116,86 @@ describe("서버가 남기는 글의 업무", () => {
   });
 });
 
+describe("업무를 정할 수 없는 서버 글", () => {
+  type Priv = {
+    memberNotice(m: unknown, body: string, ds?: Delivery[]): void;
+    fallbackReport(m: unknown, text: string, direct: boolean, ds?: Delivery[]): Promise<void>;
+  };
+  const two = () => {
+    const t = setup();
+    const p = t.orch as unknown as Priv;
+    const a = t.store.ensureSourceTask({ projectId: t.project.id, sourceRef: "t:a", title: "환불", origin: "owner" }).task;
+    const b = t.store.ensureSourceTask({ projectId: t.project.id, sourceRef: "t:b", title: "정산", origin: "owner" }).task;
+    const give = (memberId: string, taskId: string, wake = true, kind: Delivery["kind"] = "instruction") =>
+      t.store.enqueue({ projectId: t.project.id, memberId, kind, text: `일 ${taskId}`, taskId, wake, status: "held", holdReason: "시험" });
+    const inTask = (taskId: string) => t.store.listMessages(t.project.id, { limit: 500 }).filter((m) => m.taskId === taskId);
+    return { ...t, p, a, b, give, inTask };
+  };
+
+  test("서버 알림(대화의 시스템 줄)은 그 실행이 받은 업무에 붙고, 정할 수 없으면 직원의 '세션 알림' 업무에 한 번만 남는다", async () => {
+    const t = two();
+    const dA = t.give(t.w.id, t.a.id), dB = t.give(t.w.id, t.b.id), quietB = t.give(t.w.id, t.b.id, false);
+    t.p.memberNotice(t.w, "철수 오류: 하나", [dA]);
+    expect(t.inTask(t.a.id).map((m) => m.body)).toEqual(["철수 오류: 하나"]);
+    // 함께 묶여 온 조용한 안내(wake=false)는 업무를 가르지 않는다
+    t.p.memberNotice(t.w, "철수 오류: 둘", [dA, quietB]);
+    expect(t.inTask(t.a.id).map((m) => m.body)).toEqual(["철수 오류: 하나", "철수 오류: 둘"]);
+    // 근거가 없으면(재시작·편입 해제 등) 직원의 세션 알림 업무. 두 번째도 같은 업무다
+    t.p.memberNotice(t.w, "서버 재시작으로 철수의 턴이 끊겼습니다");
+    const notice = t.store.listTasks(t.project.id).find((x) => x.origin === "server")!;
+    expect(notice).toMatchObject({ title: "철수 세션 알림", memberId: null });
+    const tasks = t.store.listTasks(t.project.id).length;
+    t.p.memberNotice(t.w, "철수: 칸을 잃었습니다");
+    // 업무가 둘인 실행: 어느 한쪽에 붙이거나 둘에 복사하지 않고 세션 알림 업무에 한 번, 받은 업무를 적는다
+    t.p.memberNotice(t.w, "철수: 실행 r1 중단", [dA, dB]);
+    expect(t.store.listTasks(t.project.id)).toHaveLength(tasks);
+    const inNotice = t.inTask(notice.id);
+    expect(inNotice.map((m) => m.body.split("\n")[0])).toEqual(["서버 재시작으로 철수의 턴이 끊겼습니다", "철수: 칸을 잃었습니다", "철수: 실행 r1 중단"]);
+    expect(inNotice.at(-1)!.body).toContain(`받은 업무: #${t.a.id} '환불', #${t.b.id} '정산'`);
+    expect(t.inTask(t.b.id)).toHaveLength(0);
+    // 대표에게 보이는 시스템 줄 가운데 업무 없는 것은 없다
+    expect(t.store.listMessages(t.project.id, { limit: 500 }).filter((m) => m.kind === "시스템" && !m.taskId)).toHaveLength(0);
+    // 본사는 업무를 쓰지 않는다
+    const root = t.store.createMember({ projectId: "hq", kind: "root", name: "본사 AI", handle: "root", role: "본사" } as never);
+    t.p.memberNotice(root, "본사 AI 오류: x");
+    expect(t.store.listMessages("hq").find((m) => m.body === "본사 AI 오류: x")!.taskId).toBeNull();
+    await t.orch.shutdown();
+  });
+
+  test("턴 마지막 글(자동 보고)은 한 번만 남는다. A·B 를 함께 받은 턴의 글은 A·B 어느 대화에도 복사하지 않고 직원의 '여러 업무 결과' 업무에 둔다", async () => {
+    const t = two();
+    const dA = t.give(t.w.id, t.a.id), dB = t.give(t.w.id, t.b.id), quietB = t.give(t.w.id, t.b.id, false);
+    const reports = () => t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report");
+    // A 를 받고, B 의 조용한 안내가 함께 묶인 턴: A 의 결과다
+    await t.p.fallbackReport(t.w, "환불 끝냈습니다", false, [dA, quietB]);
+    expect(t.inTask(t.a.id).map((m) => m.body)).toEqual(["환불 끝냈습니다"]);
+    expect(reports()).toHaveLength(1);
+    // A·B 지시를 함께 받은 턴: 글 하나, 총괄 보고 하나. A·B 대화에는 없다
+    await t.p.fallbackReport(t.w, "환불은 됐고 정산은 보는 중", false, [dA, dB]);
+    const mixed = t.store.listMessages(t.project.id, { limit: 500 }).filter((m) => m.body.startsWith("환불은 됐고 정산은 보는 중"));
+    expect(mixed).toHaveLength(1);
+    const mixedTask = t.store.requireTask(mixed[0]!.taskId!);
+    expect(mixedTask).toMatchObject({ title: "철수 여러 업무 결과", origin: "server" });
+    expect(mixed[0]!.body).toContain(`받은 업무: #${t.a.id} '환불', #${t.b.id} '정산'`);
+    expect(t.inTask(t.a.id).map((m) => m.body)).toEqual(["환불 끝냈습니다"]);
+    expect(t.inTask(t.b.id)).toHaveLength(0);
+    expect(reports()).toHaveLength(2);
+    expect(reports().at(-1)!.text).toContain(`받은 업무: #${t.a.id}, #${t.b.id}`);
+    // 같은 직원의 다음 섞인 턴도 같은 업무(업무가 늘지 않는다)
+    const tasks = t.store.listTasks(t.project.id).length;
+    await t.p.fallbackReport(t.w, "둘 다 마무리 중", false, [dB, dA]);
+    expect(t.store.listTasks(t.project.id)).toHaveLength(tasks);
+    expect(t.inTask(mixedTask.id)).toHaveLength(2);
+    // 총괄이 두 업무의 보고를 받고 쓴 글도 한 번만
+    const rA = t.give(t.lead.id, t.a.id, true, "report"), rB = t.give(t.lead.id, t.b.id, true, "report");
+    await t.p.fallbackReport(t.lead, "두 보고를 판에 적었습니다", false, [rA, rB]);
+    const lead = t.store.listMessages(t.project.id, { limit: 500 }).filter((m) => m.body.startsWith("두 보고를 판에 적었습니다"));
+    expect(lead).toHaveLength(1);
+    expect(t.store.requireTask(lead[0]!.taskId!)).toMatchObject({ title: "총괄 여러 업무 결과", origin: "server" });
+    await t.orch.shutdown();
+  });
+});
+
 describe("옛 글 정리(계획·적용·되돌리기)", () => {
   function legacy() {
     const t = setup();
