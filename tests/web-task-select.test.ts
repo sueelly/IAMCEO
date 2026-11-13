@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Message, Task } from "../shared/types";
 import { SubmissionManager, type MessageAttempt } from "../web/src/lib/submissions";
-import { visibleTasks, withTask } from "../web/src/lib/tasks";
+import { chipTasks, withTask } from "../web/src/lib/tasks";
 
 class MemoryStorage implements Storage {
   values = new Map<string, string>();
@@ -52,10 +52,10 @@ describe("작업 고르기", () => {
     expect(m.snapshot("p1").attempts[0]!.payload.taskId).toBeNull();
   });
 
-  test("업무 칩 목록은 최신순이고, 직원별 목록 함수는 그 직원이 등록한 업무만 고른다", () => {
+  test("업무 칩 목록은 최근 글 순이고, 글이 같으면 최근 생긴 순이다", () => {
     const tasks = [task("old", "w1", "2026-11-01T00:00:00Z"), task("new", "w2", "2026-11-03T00:00:00Z"), task("mid", "w1", "2026-11-02T00:00:00Z"), task("lead", "c1", "2026-11-04T00:00:00Z")];
-    expect(visibleTasks(tasks, null).map((t) => t.id)).toEqual(["lead", "new", "mid", "old"]);
-    expect(visibleTasks(tasks, "w1").map((t) => t.id)).toEqual(["mid", "old"]);
+    expect(chipTasks(tasks).map((t) => t.id)).toEqual(["lead", "new", "mid", "old"]);
+    expect(chipTasks(tasks, [{ taskId: "old", at: "2026-11-05T00:00:00Z" }]).map((t) => t.id)).toEqual(["old", "lead", "new", "mid"]);
   });
 
   // 대표 2026-11-13: "업무 선택할 때, 직원까지 함께 선택될 필요는 없는 것 같아" — 업무를 고르거나 '전체'로 돌아와도 받는 사람은 그대로다.

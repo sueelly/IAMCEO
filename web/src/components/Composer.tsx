@@ -9,7 +9,7 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
-import { liveTasks, taskWorkers, visibleTasks } from "../lib/tasks";
+import { chipTasks } from "../lib/tasks";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
@@ -177,12 +177,8 @@ export default function Composer() {
   const target = workers.find((m) => m.id === draft.targetId) ?? null;
   const allTasks = project?.tasks ?? [];
   const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
-  // 업무 칩은 받는 사람과 상관없이 늘 같은 목록이다(직원을 바꿔도 칩이 사라지거나 고른 업무가 풀리지 않는다). 맡은 직원은 이름으로만 보인다.
-  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), null);
-  const chipWho = (t: Task): string | null => {
-    const names = taskWorkers(t, workers).map((id) => workers.find((w) => w.id === id)!.name);
-    return names.length ? names.join("·") : t.who.trim() || null;
-  };
+  // 업무 칩은 받는 사람과 상관없이 늘 같은 목록이다. 업무 이름만 보이고 맡은 직원은 붙이지 않는다(업무에는 여러 직원이 붙는다).
+  const shownTasks = chipTasks(allTasks, project?.messages ?? [], task?.id ?? null);
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
     { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
@@ -395,10 +391,9 @@ export default function Composer() {
                   type="button"
                   className="cmp-task"
                   aria-pressed={task?.id === t.id}
-                  title={[t.title, t.who, t.branch, t.worktree].filter(Boolean).join(" · ")}
+                  title={[t.title, t.branch].filter(Boolean).join(" · ")}
                   onClick={() => pickTask(task?.id === t.id ? null : t)}
                 >
-                  {chipWho(t) ? <span className="cmp-task__who">{chipWho(t)}</span> : null}
                   <span className="cmp-task__title">{t.title}</span>
                 </button>
               ))}

@@ -107,7 +107,7 @@ describe("웹 멈춤·이어서 지시", () => {
     const bar = page.locator(".cmp-stop");
     await bar.waitFor({ timeout: 10_000 });
     const runId = store.requireMember(lead.id).executionState!.runId;
-    await expect(bar.innerText()).resolves.toContain(`총괄 일하는 중 · 실행 ${runId.slice(0, 8)} · 작업: 전체`);
+    await expect(bar.innerText()).resolves.toContain(`총괄 일하는 중 · 실행 ${runId.slice(0, 8)} · 업무: 전체`);
     await page.screenshot({ path: join(SHOTS, "1-working-bar.png") });
 
     // 이어가기: 멈춤 키가 도는 동안 버튼은 눌리지 않고(겹친 클릭 방지), 글은 이미 대기열에 있다

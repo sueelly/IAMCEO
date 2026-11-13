@@ -193,7 +193,10 @@ export function applyToProject(p: ProjectState, e: WsEvent): ProjectState {
       return e.file.projectId === id ? { ...p, files: upsert(p.files, e.file) } : p;
     case "task": {
       if (e.task.projectId !== id) return p;
-      const tasks = upsertNewer(p.tasks ?? [], e.task);
+      // 마지막 글 시각을 싣지 않은 알림이면 앞서 받은 값을 남긴다(업무 이름만 바뀌어도 칩이 사라지지 않게).
+      const before = (p.tasks ?? []).find((t) => t.id === e.task.id);
+      const task = e.task.lastMessageAt === undefined && before?.lastMessageAt !== undefined ? { ...e.task, lastMessageAt: before.lastMessageAt } : e.task;
+      const tasks = upsertNewer(p.tasks ?? [], task);
       return { ...p, tasks: [...tasks].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
     }
     default:

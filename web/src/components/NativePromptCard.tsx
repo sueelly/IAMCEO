@@ -149,7 +149,7 @@ export default function NativePromptCard({ member, tasks }: { member: Member; ta
       </p>
       <div className="npc-tags">
         {prompt ? <Badge tone="neutral">{PROVIDER_LABEL[prompt.provider]}</Badge> : null}
-        <Badge tone="neutral">{task ? `작업: ${task.title}` : "작업: 전체"}</Badge>
+        <Badge tone="neutral">{task ? `업무: ${task.title}` : "업무: 전체"}</Badge>
         <GlassButton variant="ghost" size="s" className="apv-reread" disabled={busy} onClick={() => void read()}>
           다시 읽기
         </GlassButton>

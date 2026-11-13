@@ -532,6 +532,9 @@ function toTodo(r: Row): Todo {
   };
 }
 
+/** 업무의 마지막 글 시각. 입력칸 업무 목록이 '대화가 있는 업무'를 고르고 최근 순으로 세운다(첫 쪽 글 밖의 옛 업무도 빠지지 않게). */
+const TASK_LAST_MESSAGE = "(SELECT MAX(m.at) FROM messages m WHERE m.project_id = tasks.project_id AND m.task_id = tasks.id) AS last_message_at";
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -548,6 +551,8 @@ function toTask(r: Row): Task {
     mergedInto: r.merged_into ?? null,
     renamedAt: r.renamed_at ?? null,
     renamedBy: r.renamed_by ?? null,
+    // 마지막 글 시각을 함께 읽은 조회에서만 싣는다(칸이 없으면 '모름'이지 '글 없음'이 아니다).
+    ...("last_message_at" in r ? { lastMessageAt: r.last_message_at ?? null } : {}),
   };
 }
 
@@ -1838,7 +1843,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   getTask(id: string): Task | null {
-    const r = this.row("SELECT * FROM tasks WHERE id = ?", id);
+    const r = this.row(`SELECT tasks.*, ${TASK_LAST_MESSAGE} FROM tasks WHERE id = ?`, id);
     return r ? toTask(r) : null;
   }
 
@@ -1850,7 +1855,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 최근 등록한 작업부터. */
   listTasks(projectId: string): Task[] {
-    return this.rows("SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC", projectId).map(toTask);
+    return this.rows(`SELECT tasks.*, ${TASK_LAST_MESSAGE} FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`, projectId).map(toTask);
   }
 
   /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */
