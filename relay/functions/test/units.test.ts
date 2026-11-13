@@ -25,7 +25,7 @@ describe("설치 자격(무상태 HMAC)", () => {
     const other = createInstallation(MASTER);
     for (const value of [undefined, "", secret, `bearer ${installationId}.${secret}`, `Bearer ${installationId}.${other.secret}`,
       `Bearer ${other.installationId}.${secret}`, `Bearer ${installationId}.${secret}x`, `Bearer ${installationId.toUpperCase()}.${secret}`,
-      `Bearer ${installationId}.${secret.slice(0, -1)}A`, `Bearer  ${installationId}.${secret}`, `Bearer ${installationId}.${secret} `]) {
+      `Bearer ${installationId}.${secret.slice(0, -1)}${secret.endsWith("A") ? "B" : "A"}`, `Bearer  ${installationId}.${secret}`, `Bearer ${installationId}.${secret} `]) {
       expect(verifyAuthorization(MASTER, value)).toBeNull();
     }
   });
