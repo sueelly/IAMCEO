@@ -51,8 +51,8 @@ describe("App Store 등록 정보", () => {
       expect(listing.description!).toMatch(lang === "ko" ? /중계/ : /relay/);
       // "운영하는 서버가 없다"는 말은 중계와 어긋난다.
       expect(listing.description!).not.toMatch(/IAMCEO가 운영하는 서버도 없|no IAMCEO cloud/);
-      // 이름은 두 언어가 같다.
-      expect(listing.name).toBe("IAMCEO");
+      // 이름은 IAMCEO 로 시작한다. 미국 스토어에는 다른 계정의 'IAMCEO' 가 있어 영어 이름에는 설명을 붙인다(App Store Connect 가 같은 이름을 거절).
+      expect(listing.name).toBe(lang === "ko" ? "IAMCEO" : "IAMCEO: AI Coding Team");
     });
   }
 

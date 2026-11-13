@@ -6,10 +6,10 @@ The text for the iPhone app's English App Store listing, field by field. Each fi
 
 ## name
 
-App name (2–30 characters). Same as the Korean listing.
+App name (2–30 characters). Another developer's app already uses the name "IAMCEO" in this locale, so App Store Connect refuses it; the English name adds a short description.
 
 ```text
-IAMCEO
+IAMCEO: AI Coding Team
 ```
 
 ## subtitle

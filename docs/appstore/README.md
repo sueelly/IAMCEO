@@ -35,5 +35,19 @@ The iPhone app's App Store listing, one file per language. The release owner upl
 ## 심사 메모(영어) · App Review notes
 
 ```text
-IAMCEO is a remote for an IAMCEO server that the user runs on their own Mac, so a reviewer without that Mac can use the built-in sample: tap "Explore the sample" on the first screen. The sample is a complete example company running inside the app (no account, no network requests). You can send instructions in Chat (the lead replies), answer decisions in the Inbox, check off to-dos on Home, and open documents, tables, images and the HTML mockup in Files. The sample appears in English or Korean, following the app's language (Settings → General → Language).
+IAMCEO is a remote client for a developer tool: the user's own self-hosted IAMCEO server, which runs on the user's Mac (free, source-available: https://github.com/yehsung/IAMCEO). The server runs AI coding command-line tools (Claude Code / Codex CLI) that the user installed and signed in to on their Mac; the iPhone app lets the user give instructions, answer approval requests, and follow progress. There are no accounts, and all conversations, decisions and files stay on the user's Mac.
+
+HOW TO REVIEW WITHOUT A MAC SERVER
+On the first screen, below the "or" divider, tap "Explore the sample". The sample is a complete example company running inside the app (no account, no network requests), and you can visit every tab: Home, Inbox, Team, Chat, Files. You can send instructions in Chat (the lead replies), answer decisions in the Inbox, check off to-dos on Home, and open documents, tables, images and the HTML mockup in Files. Changes stay on the device. To leave the sample, tap "Connect to a Mac" in the bar at the top. The sample deliberately shows states this app exists to surface, such as a staff member waiting for the user's decision; these are example data, not app errors. The names, fees, dates and figures in the sample are fictional. The sample appears in English or Korean, following the app's language (Settings > General > Language, or the Language menu at the bottom of the first screen).
+
+NOTIFICATIONS (new in this version)
+Notifications are sent by the user's Mac server (version 0.2.5 or later), so they cannot be tried from the sample. If the user's Mac has its own Apple push key it sends to Apple directly. Otherwise it sends the request to a small relay run by the developer on Google Cloud Functions, which forwards it to the Apple Push Notification service. The relay receives only the device token, the kind of notification and an item ID, never message content; it uses fixed notification text for each kind and stores nothing it receives. The iPhone app itself never contacts the relay.
+
+CONNECTING TO A REAL SERVER (optional for review)
+Requirements: an Apple silicon Mac on macOS 14+ with IAMCEO installed (brew install --cask yehsung/tap/iamceo), Claude Code installed and signed in on that Mac, and Tailscale (a free private-network/VPN app) signed in to the same account on both the Mac and the iPhone, as with other self-hosted remote tools. Then open IAMCEO on the Mac, go to Settings > Connect iPhone, and scan the QR code with this app. On a device without Tailscale, the first screen shows "Turn on Tailscale" and the QR button stays off. This is expected and only concerns real pairing; the sample works without it. No login or account is required; pairing uses a one-time code.
+
+THIRD-PARTY AI (Guideline 5.1.2(i))
+This app does not send user data to any third-party AI service and contains no AI model. It connects only to the user's own Mac. The AI command-line tools on that Mac are installed, signed in to, and paid for by the user, under their providers' terms, outside this app.
+
+The interface is in English and Korean. No accounts, in-app purchases, ads, or tracking. The camera is used only to scan the pairing QR code and to take photos the user chooses to attach.
 ```
