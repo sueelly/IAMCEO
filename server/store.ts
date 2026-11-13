@@ -54,7 +54,8 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { requiredChecks, type ContractAuthorKind, type ContractInput, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
@@ -324,6 +325,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maxAwakeWorkers: 8,
   notifyMac: false,
   boardTidyHours: 6,
+  harnessMode: "label",
+  harnessRequiredSince: null,
 };
 
 type TimeField = "createdAt" | "updatedAt" | "answeredAt" | "deliveredAt" | "doneAt";
@@ -2743,6 +2746,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const before = this.getSettings();
       if (this.runtimeBackend !== "core" && patch.backend) this.runtimeBackend = patch.backend;
       const next: Record<string, unknown> = { ...patch };
+      // 처음 required 로 바꾸는 순간부터 새로 만드는 업무에 계약이 필요하다(옛 업무는 표시만).
+      if (patch.harnessMode === "required" && before.harnessMode !== "required" && patch.harnessRequiredSince === undefined) next.harnessRequiredSince = nowIso();
       if (patch.ranks) {
         next.ranks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...before.ranks[rank], ...patch.ranks![rank] }]));
       }
@@ -3123,19 +3128,100 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판을 함께 남긴다. */
-  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; reviewNeeded?: string | null }): void {
+  /** 직원이 단 계약의 지금 판을 총괄·대표가 확인한다. 확인된 판은 총괄 계약처럼 완료 판정을 받는다. 옛 판은 확인하지 않는다. */
+  confirmTaskContract(taskId: string, rev: number, by: { name: string; memberId: string | null }): TaskContract {
+    const current = this.getTaskContract(taskId);
+    if (!current) throw new ApiError(404, `업무 #${taskId} 에는 계약이 없습니다`);
+    if (current.rev !== rev) throw new ApiError(409, `업무 #${taskId} 의 지금 계약은 r${current.rev} 입니다. r${rev} 은 확인하지 않습니다`);
+    if (current.authorKind !== "worker") return current;
+    if (!current.confirmedAt) this.run("UPDATE task_contracts SET confirmed_by = ?, confirmed_by_member_id = ?, confirmed_at = ? WHERE task_id = ? AND rev = ?", by.name, by.memberId, nowIso(), taskId, rev);
+    return this.getTaskContract(taskId)!;
+  }
+
+  /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판, 검사마다 대조한 실행 증거, 조사 주장을 함께 남긴다. */
+  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
     const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
-    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, message.at);
-    checks.forEach((c, i) => this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, criterion) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", message.id, i, c.name, c.kind, c.result, c.evidence, c.command ?? null, c.criterion ?? null));
+    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at);
+    checks.forEach((c, i) => {
+      const e = extra.evidence?.find(x => x.idx === i);
+      this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, criterion, exec_status, exec_ref, exec_exit, exec_at, exec_output_sha, exec_command) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        message.id, i, c.name, c.kind, c.result, c.evidence, c.command ?? null, c.criterion ?? null, e?.status ?? null, e?.ref ?? null, e?.exitCode ?? null, e?.at ?? null, e?.outputSha ?? null, e?.command ?? null);
+      // 한 실행은 한 업무의 증거로만 쓴다(같은 업무의 다른 검사·다시 올린 보고는 같은 실행을 가리켜도 된다).
+      if (e?.status === "matched" && e.ref) this.run("INSERT OR IGNORE INTO harness_exec_refs (exec_ref, message_id, contract_task_id, task_id, member_id, at) VALUES (?, ?, ?, ?, ?, ?)", e.ref, message.id, extra.contractTaskId, message.taskId ?? null, member.id, message.at);
+    });
+    (extra.claims ?? []).forEach((c, i) => this.run("INSERT INTO report_claims (message_id, idx, text, basis, source, quote, criterion, verified, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, i, c.text, c.basis, c.source ?? null, c.quote ?? null, c.criterion ?? null, c.verified ? 1 : 0, c.via));
+  }
+
+  /**
+   * 이 직원이 지시·대표 글로 받은 업무 중 받은 뒤 완료·막힘으로 마감하지 않은 것(최근 14일, 최근 받은 차례).
+   * 다음 턴에 계약 없는 다른 업무로 완료를 올려 받은 계약을 비켜 가지 못하게 한다.
+   */
+  openAssignedTasks(memberId: string, isUnder: (taskId: string, root: string) => boolean = (a, b) => a === b): string[] {
+    const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+    const received = this.rows(`SELECT d.task_id AS task_id, MAX(d.created_at) AS at FROM deliveries d
+      WHERE d.member_id = ? AND d.task_id IS NOT NULL AND d.kind IN ('instruction','user_message') AND d.status = 'delivered' AND d.created_at >= ?
+      GROUP BY d.task_id ORDER BY at DESC LIMIT 20`, memberId, since).map(r => ({ taskId: r.task_id as string, at: r.at as string }));
+    if (!received.length) return [];
+    // 받은 업무나 그 갈래로 올린 완료·막힘이 받은 뒤에 있으면 마감이다.
+    const closing = this.rows("SELECT task_id, at FROM messages WHERE member_id = ? AND mine = 0 AND kind IN ('완료','막힘') AND task_id IS NOT NULL AND at >= ?", memberId, received[received.length - 1]!.at)
+      .map(r => ({ taskId: r.task_id as string, at: r.at as string }));
+    return received.filter(r => !closing.some(c => c.at >= r.at && isUnder(c.taskId, r.taskId))).map(r => r.taskId);
+  }
+
+  /** 총괄이 이 직원에게 이 업무를 맡긴 적이 있는지(전달된 지시). */
+  hasInstruction(memberId: string, taskId: string): boolean {
+    return !!this.row("SELECT 1 FROM deliveries WHERE member_id = ? AND task_id = ? AND kind = 'instruction' LIMIT 1", memberId, taskId);
+  }
+
+  /** 업무의 전달(누구에게 어떤 글이 갔는지). 글 내용은 싣지 않는다. */
+  listTaskDeliveries(taskId: string, limit = 60): { id: string; memberId: string; kind: string; status: string; createdAt: string; deliveredAt: string | null }[] {
+    return this.rows("SELECT id, member_id, kind, status, created_at, delivered_at FROM deliveries WHERE task_id = ? ORDER BY created_at, rowid LIMIT ?", taskId, limit)
+      .map(r => ({ id: r.id as string, memberId: r.member_id as string, kind: r.kind as string, status: r.status as string, createdAt: r.created_at as string, deliveredAt: (r.delivered_at as string | null) ?? null }));
+  }
+
+  /** 이 실행 표지를 이미 증거로 쓴 업무(계약이 붙은 업무). 없으면 null. */
+  execRefTask(ref: string): string | null {
+    const r = this.row("SELECT contract_task_id, task_id FROM harness_exec_refs WHERE exec_ref = ?", ref);
+    return r ? ((r.contract_task_id as string | null) ?? (r.task_id as string | null) ?? "?") : null;
+  }
+
+  /** 보고의 조사 주장과 대조 결과. */
+  listReportClaims(messageId: string): ClaimResult[] {
+    return this.rows("SELECT * FROM report_claims WHERE message_id = ? ORDER BY idx", messageId).map(r => ({ text: r.text as string, basis: r.basis as ClaimResult["basis"], source: (r.source as string | null) ?? null, quote: (r.quote as string | null) ?? null, criterion: (r.criterion as number | null) ?? null, verified: !!r.verified, via: (r.via as string | null) ?? null }));
+  }
+
+  /** 개선 후보 한 줄. 규칙·권한을 바꾸지 않는 기록이다(총괄이 보고 개발 기억에 남길지 정한다). */
+  recordHarnessFinding(input: Omit<HarnessFinding, "id" | "at">): void {
+    this.run("INSERT INTO harness_findings (project_id, task_id, member_id, kind, detail, ref_type, ref_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", input.projectId, input.taskId, input.memberId, input.kind, input.detail.slice(0, 2000), input.refType, input.refId, nowIso());
+  }
+
+  listHarnessFindings(projectId: string, opts: { taskId?: string | null; since?: string | null; limit?: number } = {}): HarnessFinding[] {
+    const where = ["project_id = ?"], args: (string | number)[] = [projectId];
+    if (opts.taskId) { where.push("task_id = ?"); args.push(opts.taskId); }
+    if (opts.since) { where.push("at >= ?"); args.push(opts.since); }
+    return this.rows(`SELECT * FROM harness_findings WHERE ${where.join(" AND ")} ORDER BY at DESC, id DESC LIMIT ?`, ...args, Math.max(1, Math.min(opts.limit ?? 50, 200))).map(r => ({
+      id: r.id as number, projectId: r.project_id as string, taskId: (r.task_id as string | null) ?? null, memberId: (r.member_id as string | null) ?? null,
+      kind: r.kind as HarnessFinding["kind"], detail: r.detail as string, refType: (r.ref_type as string | null) ?? null, refId: (r.ref_id as string | null) ?? null, at: r.at as string,
+    }));
+  }
+
+  /** 업무의 계약 판 전부(옛 판 포함, 오래된 것부터). */
+  listTaskContracts(taskId: string): TaskContract[] {
+    return this.rows("SELECT * FROM task_contracts WHERE task_id = ? ORDER BY rev", taskId).map(toContract);
+  }
+
+  /** 업무(와 그 업무 계약을 따른 갈래)의 하네스 기록 보고 id, 오래된 것부터. */
+  listTaskHarnessReports(taskId: string): string[] {
+    return this.rows("SELECT message_id FROM report_harness WHERE task_id = ? OR contract_task_id = ? ORDER BY at, rowid", taskId, taskId).map(r => r.message_id as string);
   }
 
   /** 보고 글의 하네스 기록(실행·계약 판·검토 요청)과 검사. 기록이 없으면 null. */
-  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; reviewNeeded: string | null; memberId: string; checks: ReportCheck[] } | null {
+  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; reviewNeeded: string | null; memberId: string; gate: HarnessGate | null; evidenceStatus: string | null; checks: ReportCheck[]; claims: ClaimResult[] } | null {
     const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.message_id = ?", messageId);
     if (!h) return null;
     const checks = this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", messageId).map(r => toCheck(r, h));
-    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: (h.review_needed as string | null) ?? null, memberId: h.member_id as string, checks };
+    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: (h.review_needed as string | null) ?? null, memberId: h.member_id as string,
+      gate: (h.gate as HarnessGate | null) ?? null, evidenceStatus: (h.evidence_status as string | null) ?? null, checks, claims: this.listReportClaims(messageId) };
   }
 
   /** 이 계약(계약이 붙은 업무·판)으로 완료 판정을 받은 보고가 있는지. 갈래 업무의 완료도 위 업무의 계약으로 센다(완료 글은 판정을 통과해야만 남는다). */
@@ -3335,6 +3421,7 @@ function toContract(r: Row): TaskContract {
     evidence: JSON.parse(r.evidence as string), checks: JSON.parse(r.checks as string), author: r.author as string,
     authorMemberId: (r.author_member_id as string | null) ?? null, authorKind: (r.author_kind as ContractAuthorKind | null) ?? "conductor",
     sourceMessageId: (r.source_message_id as string | null) ?? null, at: r.at as string,
+    confirmedBy: (r.confirmed_by as string | null) ?? null, confirmedByMemberId: (r.confirmed_by_member_id as string | null) ?? null, confirmedAt: (r.confirmed_at as string | null) ?? null,
   };
 }
 
@@ -3345,5 +3432,7 @@ function toCheck(r: Row, h: Row): ReportCheck {
     taskId: (h.task_id as string | null) ?? null, memberId: h.member_id as string, who: h.who as string, runId: (h.run_id as string | null) ?? null,
     contractTaskId: (h.contract_task_id as string | null) ?? null,
     contractRev: (h.contract_rev as number | null) ?? null, at: h.at as string,
+    execStatus: (r.exec_status as ReportCheck["execStatus"]) ?? null, execRef: (r.exec_ref as string | null) ?? null, execExit: (r.exec_exit as number | null) ?? null,
+    execAt: (r.exec_at as string | null) ?? null, execOutputSha: (r.exec_output_sha as string | null) ?? null, execCommand: (r.exec_command as string | null) ?? null,
   };
 }

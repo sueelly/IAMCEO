@@ -803,6 +803,53 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX report_harness_task ON report_harness(task_id, at);
    CREATE INDEX report_harness_contract ON report_harness(contract_task_id, contract_rev);`,
+  // v32: 하네스 기본 적용. 직원이 단 계약의 총괄 확인, 검사마다 대조한 실행 증거(제공자 기록의 실행 표지·종료 코드·출력 지문),
+  // 한 실행은 한 업무의 증거로만 쓰는 표, 조사 주장(사실/해석·출처·인용)과 대조 결과, 보고의 판정 종류,
+  // 개선 후보(완료 차단·증거 없음·대표 개입·거절). 후보는 기록일 뿐 규칙·권한을 바꾸지 않는다.
+  `ALTER TABLE task_contracts ADD COLUMN confirmed_by TEXT;
+   ALTER TABLE task_contracts ADD COLUMN confirmed_by_member_id TEXT;
+   ALTER TABLE task_contracts ADD COLUMN confirmed_at TEXT;
+   ALTER TABLE report_harness ADD COLUMN gate TEXT;
+   ALTER TABLE report_harness ADD COLUMN evidence_status TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_status TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_ref TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_exit INTEGER;
+   ALTER TABLE report_checks ADD COLUMN exec_at TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_output_sha TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_command TEXT;
+   CREATE TABLE harness_exec_refs (
+     exec_ref TEXT PRIMARY KEY,
+     message_id TEXT NOT NULL,
+     contract_task_id TEXT,
+     task_id TEXT,
+     member_id TEXT NOT NULL,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE report_claims (
+     message_id TEXT NOT NULL,
+     idx INTEGER NOT NULL,
+     text TEXT NOT NULL,
+     basis TEXT NOT NULL,
+     source TEXT,
+     quote TEXT,
+     criterion INTEGER,
+     verified INTEGER NOT NULL DEFAULT 0,
+     via TEXT,
+     PRIMARY KEY (message_id, idx)
+   );
+   CREATE TABLE harness_findings (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     project_id TEXT NOT NULL,
+     task_id TEXT,
+     member_id TEXT,
+     kind TEXT NOT NULL,
+     detail TEXT NOT NULL,
+     ref_type TEXT,
+     ref_id TEXT,
+     at TEXT NOT NULL
+   );
+   CREATE INDEX harness_findings_project ON harness_findings(project_id, at);
+   CREATE INDEX harness_findings_task ON harness_findings(task_id, at);`,
 ];
 
 export function openDb(path: string): Database {

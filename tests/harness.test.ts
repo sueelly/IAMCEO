@@ -1,70 +1,7 @@
 // 공통 하네스: 업무 시작 계약 → 직원 실행 → 필수 검사 → 근거 있는 완료 보고.
 // 격리 데이터·가짜 core 실행기로 본다. 실제 직원·대표 화면·운영 DB 에는 아무것도 보내지 않는다.
-import { afterEach, expect, test } from "bun:test";
-import { Bus } from "../server/bus.ts";
-import { loadConfig } from "../server/config.ts";
-import { openDb } from "../server/db.ts";
-import { Orchestrator } from "../server/orchestrator.ts";
-import { Store } from "../server/store.ts";
-import type { Backend, Member } from "../shared/types.ts";
-import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
-import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
-
-class FakeRunner implements Runner {
-  readonly kind: Backend = "core";
-  sent: { memberId: string; text: string }[] = [];
-  busy = new Set<string>();
-  callback: (event: RunnerEvent) => void = () => {};
-  async available() { return { ok: true }; }
-  async start(m: RunnerMember) { return { sessionId: m.sessionId ?? `session-${m.id}`, paneId: `pane-${m.id}` }; }
-  async send(m: RunnerMember, text: string): Promise<SendResult> { this.sent.push({ memberId: m.id, text }); this.busy.add(m.id); return { ok: true, started: false, turn: 0 }; }
-  isBusy(id: string) { return this.busy.has(id); }
-  async compact(): Promise<SendResult> { return { ok: true }; }
-  async setParallel(): Promise<SendResult> { return { ok: true }; }
-  async interrupt() {}
-  async stop(m: RunnerMember) { this.busy.delete(m.id); }
-  async screen() { return ""; }
-  on(callback: (event: RunnerEvent) => void) { this.callback = callback; }
-  async shutdown() {}
-  to(member: Member) { return this.sent.filter(s => s.memberId === member.id).map(s => s.text); }
-  end(member: Member, turn = 0) { this.busy.delete(member.id); this.callback({ type: "turn_end", memberId: member.id, terminalId: member.paneId, sessionGeneration: 0, turn, isError: false, finalText: "" }); }
-}
-
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function until(what: string, check: () => boolean) {
-  for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(5);
-  if (!check()) throw new Error(`기다리다 끝남: ${what}`);
-}
-
-function fixture() {
-  const isolated = createIsolatedRuntime();
-  const config = loadConfig({ IAMCEO_HOME: isolated.paths.iamceoHome, IAMCEO_PORT: "0", IAMCEO_CORE_SOCKET: isolated.socketPath, IAMCEO_CORE_BIN: isolated.bins.coreBin, IAMCEO_CLAUDE_BIN: isolated.bins.claudeBin, IAMCEO_CODEX_BIN: isolated.bins.codexBin });
-  const db = openDb(config.dbPath);
-  const store = new Store(db, new Bus());
-  store.patchSettings({ maxConcurrentTurns: 3, boardTidyHours: 0 });
-  const project = store.createProject({ name: "하네스", cwd: isolated.paths.work });
-  const runner = new FakeRunner();
-  const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), timings: { tickMs: 60_000, healthMs: 60_000, turnErrorRetryMs: 1000 } });
-  const make = (handle: string, name: string, kind: "conductor" | "worker") => store.createMember({ projectId: project.id, handle, name, kind, origin: "runner", backend: "core", status: "idle", cwd: isolated.paths.work, paneId: `pane-${handle}`, sessionId: `session-${handle}` });
-  const lead = make("lead", "총괄", "conductor");
-  const worker = make("w1", "철수", "worker");
-  const worker2 = make("w2", "영희", "worker");
-  const tool = async (member: Member, name: string, args: Record<string, unknown>) => orch.handleAgentTool(store.requireMember(member.id), name, args);
-  cleanups.push(async () => { await orch.shutdown(); db.close(); await isolated.stop(); });
-  return { store, project, runner, orch, lead, worker, worker2, tool, make };
-}
-
-const CODING = {
-  kind: "coding",
-  goal: "보고 화면에 검사 줄을 보인다",
-  acceptance: ["완료 보고 아래에 검사 결과가 한 줄로 보인다", "검사가 없으면 완료가 거절된다"],
-  scope: "server/ 안에서만 고친다",
-  forbidden: ["깃허브에 올리지 않는다", "임시 폴더를 지우지 않는다"],
-  evidence: ["시험 이름과 통과 수"],
-};
-const pass = (kind: string, criterion?: number, name = kind) => ({ name, kind, result: "pass", evidence: `${name} 12 pass 0 fail`, command: `bun test ${name}`, ...(criterion ? { criterion } : {}) });
-
+import { expect, test } from "bun:test";
+import { CODING, fixture, pass, until, writeToolResult } from "./fixtures/harness-fixture.ts";
 test("업무 한 건 전 과정: 계약이 지시에 실리고, 검사 없는·실패한 완료는 거절되며, 통과한 완료는 실행·계약 판과 함께 총괄에게 간다", async () => {
   const f = fixture();
   const task = (await f.tool(f.lead, "task", { title: "검사 줄 보이기" })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
@@ -92,26 +29,42 @@ test("업무 한 건 전 과정: 계약이 지시에 실리고, 검사 없는·�
   // 막힘은 실패를 안고도 받는다
   const blocked = await f.tool(f.worker, "post", { task_id: task, kind: "막힘", title: "코드 검사 실패", checks: [{ name: "tsc", kind: "typecheck", result: "fail", evidence: "오류 2건" }], unverified: ["화면 확인"] });
   expect(blocked.isError).toBeUndefined();
+  // 세션 기록이 없으면 통과 증거가 없다(막지 않고 넘기지 않는다)
+  const noLog = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "고쳤습니다", contract_rev: 1, checks: [pass("behavior", 1), pass("typecheck"), pass("regression", 2), pass("real", 1)], unverified: [] });
+  expect(noLog.text).toContain("세션 실행 기록을 찾지 못했습니다(log_not_found)");
+  // 통과라고 적어도 세션 실행 기록에 그 명령이 없으면 받지 않는다
+  f.ran(f.worker, "ls");
+  const unproven = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "고쳤습니다", contract_rev: 1, checks: [pass("behavior", 1), pass("typecheck"), pass("regression", 2), pass("real", 1)], unverified: [] });
+  expect(unproven.isError).toBe(true);
+  expect(unproven.text).toContain("'bun test behavior'을 계약 뒤 실행 기록에서 찾지 못했습니다");
   // 고쳐서 다시 검사한 완료 → 받음
+  f.ran(f.worker, "bun test behavior", "bun test typecheck", "cd server && bun test regression");
   const done = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "검사 줄을 보이게 고침", contract_rev: 1, checks: [pass("behavior", 1), pass("typecheck"), pass("regression", 2), pass("real", 1)], unverified: [], review_needed: "server/harness.ts 의 판정 규칙을 다른 직원이 계약 기준 1·2로 확인" });
   expect(done.isError).toBeUndefined();
   const id = done.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!;
   // 총괄은 앞 보고(막힘)를 받는 중이라 이 보고는 대기열에 있다. 전달 글을 본다.
   const report = f.store.listDeliveries().find(d => d.memberId === f.lead.id && d.kind === "report" && d.text.includes(id))!.text;
-  expect(report).toContain("검사(작성자 자기 확인, 계약 r1): behavior 통과 · typecheck 통과 · regression 통과 · real 통과 · 미확인 항목 통과");
+  expect(report).toContain("검사(작성자 보고, 계약 r1): behavior 통과(실행 기록 대조: 종료 0) · typecheck 통과(실행 기록 대조: 종료 0) · regression 통과(실행 기록 대조: 종료 0) · real 통과 · 미확인 항목 통과");
   expect(report).toContain("독립 검토 필요: server/harness.ts 의 판정 규칙");
   const lookup = JSON.parse((await f.tool(f.lead, "post", { report_id: id })).text);
   expect(lookup.harness).toMatchObject({ contractTaskId: task, contractRev: 1, contractRevNow: 1, memberId: f.worker.id, reviewNeeded: expect.stringContaining("다른 직원") });
   expect(lookup.harness.checks.map((c: { kind: string; criterion: number | null }) => [c.kind, c.criterion])).toEqual([["behavior", 1], ["typecheck", null], ["regression", 2], ["real", 1], ["unverified", null]]);
-  expect(lookup.harness.checks[0]).toMatchObject({ taskId: task, who: "철수", command: "bun test behavior" });
+  expect(lookup.harness.checks[0]).toMatchObject({ taskId: task, who: "철수", command: "bun test behavior", execStatus: "matched", execExit: 0, execCommand: "bun test behavior" });
+  expect(lookup.harness.checks[2]).toMatchObject({ execStatus: "matched", execCommand: "cd server && bun test regression" });
+  expect(lookup.harness.checks[3]).toMatchObject({ execStatus: "not_required" });
+  expect(lookup.harness).toMatchObject({ gate: "contract", evidenceStatus: "ok" });
 });
 
 test("총괄의 완료는 그 계약 판으로 통과한 직원 완료 보고가 있어야 받고, 계약이 바뀌면 다시 막힌다", async () => {
   const f = fixture();
   const task = (await f.tool(f.lead, "task", { title: "총괄 완료 판정", contract: { ...CODING, checks: ["behavior"], acceptance: ["동작한다"] } })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
   expect((await f.tool(f.lead, "post", { task_id: task, kind: "완료", title: "끝났습니다" })).text).toContain("계약 r1 로 검사를 통과한 직원 완료 보고가 아직 없습니다");
+  f.ran(f.worker, "bun test behavior");
   expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "동작함", contract_rev: 1, checks: [pass("behavior", 1)] })).isError).toBeUndefined();
   expect((await f.tool(f.lead, "post", { task_id: task, kind: "완료", title: "끝났습니다" })).isError).toBeUndefined();
+  // 총괄이 자기 검사를 붙이면 총괄 세션 기록과 대조한다(직원의 실행을 빌려 쓰지 못한다)
+  f.ran(f.lead, "ls");
+  expect((await f.tool(f.lead, "post", { task_id: task, kind: "완료", title: "총괄도 봄", contract_rev: 1, checks: [pass("behavior", 1)] })).text).toContain("실행 기록에서 찾지 못했습니다");
   // 총괄이 기준을 바꾸면 새 판이다. 옛 판의 통과는 새 판의 완료 근거가 아니다.
   expect((await f.tool(f.lead, "task", { task_id: task, contract: { ...CODING, checks: ["behavior"], acceptance: ["동작한다", "문서도 고친다"] } })).text).toContain("업무 계약 r2");
   expect((await f.tool(f.lead, "post", { task_id: task, kind: "완료", title: "끝났습니다" })).text).toContain("계약 r2 로 검사를 통과한 직원 완료 보고가 아직 없습니다");
@@ -124,11 +77,27 @@ test("조사 업무: 출처·사실과 해석·미확인이 없는 완료는 거
   expect(thin.isError).toBe(true);
   expect(thin.text).toContain("주장별 원문 출처(source) 검사가 없습니다");
   expect(thin.text).toContain("미확인 항목(unverified) 검사가 없습니다");
-  const full = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "직원 CLI 훅 지원을 정리함", contract_rev: 1, checks: [
+  const checks = [
     { name: "주장 3개의 출처", kind: "source", result: "pass", evidence: "claude --help 2.1.323 · codex --help 0.167.0 · agy --help 1.5.8", criterion: 1 },
     { name: "사실/해석 표시", kind: "fact", result: "pass", evidence: "표의 '확정'·'해석' 열", criterion: 2 },
-  ], unverified: ["Codex 훅의 실행 시 신뢰 절차"] });
+  ];
+  // 주장(claims) 없이는 조사 완료가 아니다
+  const noClaims = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "조사 끝", contract_rev: 1, checks, unverified: ["Codex 훅의 실행 시 신뢰 절차"] });
+  expect(noClaims.text).toContain("claims(주장·사실/해석·출처·원문 인용)가 1개 이상");
+  // 직원이 실제로 본 도구 결과(계약 뒤)에 인용이 있어야 사실로 받는다
+  writeToolResult(f.isolated.paths.claudeHome, f.worker, "Read", { file_path: "/docs/other.txt" }, "다른 글");
+  const fact = { text: "Claude 는 --settings 로 훅을 받는다", basis: "fact", source: "/docs/claude-help.txt", quote: "--settings <file-or-json>  Load additional settings", criterion: 1 };
+  const seenNothing = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "조사 끝", contract_rev: 1, checks, claims: [fact], unverified: [] });
+  expect(seenNothing.text).toContain("인용을 출처 '/docs/claude-help.txt'를 연 계약 뒤 도구 결과나 자료 본문에서 찾지 못했습니다");
+  // echo 로 인용을 직접 쓴 것은 본 것이 아니다
+  writeToolResult(f.isolated.paths.claudeHome, f.worker, "Bash", { command: `echo '--settings <file-or-json>  Load additional settings' # /docs/claude-help.txt` }, "--settings <file-or-json>  Load additional settings");
+  expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "조사 끝", contract_rev: 1, checks, claims: [fact], unverified: [] })).isError).toBe(true);
+  writeToolResult(f.isolated.paths.claudeHome, f.worker, "Read", { file_path: "/docs/claude-help.txt" }, "Options:\n  --settings <file-or-json>  Load additional settings from a JSON file\n");
+  const full = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "직원 CLI 훅 지원을 정리함", contract_rev: 1, checks,
+    claims: [fact, { text: "Codex 훅은 Claude 보다 막는 범위가 좁아 보인다", basis: "interpretation", source: "/docs/codex-hooks.txt" }], unverified: ["Codex 훅의 실행 시 신뢰 절차"] });
   expect(full.isError).toBeUndefined();
+  const harness = f.store.getReportHarness(full.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!)!;
+  expect(harness.claims.map(c => [c.basis, c.verified, c.via])).toEqual([["fact", true, "Read 결과"], ["interpretation", false, null]]);
 });
 
 test("같은 업무를 다른 직원에게 넘기면 계약 판·지난 검사(보고 id·누가)가 실리고, 직원은 총괄 계약을 바꾸지 못한다", async () => {
@@ -166,7 +135,7 @@ test("검토 반례 1: 계약 업무를 받은 턴에 계약 없는 다른 업�
   await until("직원 지시", () => f.runner.to(f.worker).some(t => t.includes("업무 계약 r1")));
   const other = await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "계약 업무 끝" });
   expect(other.isError).toBe(true);
-  expect(other.text).toContain(`이번에 받은 업무(#${gated} 계약 r1)는 계약이 있습니다`);
+  expect(other.text).toContain(`받은 업무(#${gated} 계약 r1)는 계약이 있고 아직 완료·막힘으로 마감하지 않았습니다`);
   const fresh = (await f.tool(f.worker, "task", { title: "내가 만든 업무" })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
   expect((await f.tool(f.worker, "post", { task_id: fresh, kind: "완료", title: "새 업무로 끝" })).isError).toBe(true);
   const self = (await f.tool(f.worker, "task", { title: "자기 계약", contract: { kind: "other", goal: "x", acceptance: ["됨"], checks: [] } })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
@@ -191,6 +160,7 @@ test("검토 반례 1: 갈래 업무는 위 업무의 계약을 따르고, 직�
   expect(loose.text).toContain("이 계약을 이어받습니다");
   expect((await f.tool(f.worker, "task", { task_id: childId, contract: { kind: "other", goal: "x", acceptance: ["아무거나"], checks: [] } })).isError).toBe(true);
   expect((await f.tool(f.lead, "post", { task_id: gated, kind: "완료", title: "끝" })).isError).toBe(true);
+  f.ran(f.worker, "bun test behavior");
   const done = await f.tool(f.worker, "post", { task_id: childId, kind: "완료", title: "갈래에서 끝", contract_rev: 1, checks: [pass("behavior", 1)] });
   expect(done.isError).toBeUndefined();
   const id = done.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!;
@@ -211,6 +181,7 @@ test("검토 반례 1: 계약 업무와 계약 없는 업무를 한 턴에 함�
   const batch = f.runner.to(f.worker).find(t => t.includes("업무 계약 r1"))!;
   expect(batch).toContain(`작업 #${free}`);
   expect((await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "계약 없는 일 끝" })).isError).toBeUndefined();
+  f.ran(f.worker, "bun test behavior");
   expect((await f.tool(f.worker, "post", { task_id: gated, kind: "완료", title: "계약 일 끝", contract_rev: 1, checks: [pass("behavior", 1)] })).isError).toBeUndefined();
 });
 
@@ -229,6 +200,7 @@ test("검토 반례 2: 판이 바뀌면 옛 판 번호의 검사는 기준 수�
   const blocked = await f.tool(f.worker, "post", { task_id: task, kind: "막힘", title: "옛 판에서 막힘", contract_rev: 1, checks: [{ name: "동작", kind: "behavior", result: "fail", evidence: "1 fail", criterion: 1 }] });
   expect(f.store.getReportHarness(blocked.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!)!.contractRev).toBe(1);
   expect((await f.tool(f.lead, "post", { task_id: task, kind: "완료", title: "끝" })).isError).toBe(true);
+  f.ran(f.worker, "bun test behavior");
   expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "새 기준으로 끝", contract_rev: 2, checks: [pass("behavior", 1)] })).isError).toBeUndefined();
 });
 
@@ -253,5 +225,6 @@ test("검토 작은 지적: 통과와 실행 안 함이 섞인 완료는 거절�
   expect(done.isError).toBeUndefined();
   const id = done.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!;
   const report = f.store.listDeliveries().find(d => d.memberId === f.lead.id && d.kind === "report" && d.text.includes(id))!.text;
-  expect(report).toContain("검사(작성자 자기 확인, 계약 r2(직원 작성 계약)): 봄 통과 · 화면 통과");
+  expect(report).toContain("검사(작성자 보고, 계약 r2(직원 작성 계약)): 봄 통과 · 화면 통과");
+  expect(report).toContain("하네스: 확인 전 직원 계약(완료 판정 밖");
 });

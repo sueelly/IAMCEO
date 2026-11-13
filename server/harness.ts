@@ -1,5 +1,6 @@
 // 업무 시작 계약과 완료 판정. 계약은 업무에 붙고(직원이 아니다), 판(rev)이 올라가며 바뀐다.
-// 완료 판정은 직원이 보고에 적은 검사로만 한다. 서버는 그 명령이 실제로 돌았는지 실행 기록과 대조하지 않는다.
+// 완료 판정은 보고에 적은 검사로 한다. 실행 검사(behavior·typecheck·regression)의 통과는 harness-evidence 가 제공자 실행 기록과 대조한다.
+// 그 밖의 종류(real·source·fact·other)는 작성자 보고다. 조사의 사실 주장은 claims 로 원문과 대조한다.
 
 export type ContractKind = "coding" | "research" | "other";
 export const CHECK_KINDS = ["behavior", "typecheck", "regression", "real", "source", "fact", "unverified", "other"] as const;
@@ -34,7 +35,14 @@ export interface TaskContract {
   authorKind: ContractAuthorKind;
   sourceMessageId: string | null;
   at: string;
+  /** 직원이 단 계약을 총괄·대표가 확인한 사람·시각. 확인되면 총괄 계약과 같이 완료 판정을 받는다. */
+  confirmedBy?: string | null;
+  confirmedByMemberId?: string | null;
+  confirmedAt?: string | null;
 }
+
+/** 판정에 묶이는 계약인지: 총괄·대표가 정했거나, 직원이 단 것을 총괄·대표가 확인했다. */
+export const bindingContract = (c: TaskContract | null | undefined): boolean => !!c && (c.authorKind !== "worker" || !!c.confirmedAt);
 
 export type ContractAuthorKind = "owner" | "conductor" | "worker";
 
@@ -57,6 +65,28 @@ export interface ReportCheck extends ReportCheckInput {
   /** 이 검사가 따른 계약이 붙은 업무(갈래 업무면 위 업무). */
   contractTaskId: string | null;
   contractRev: number | null;
+  at: string;
+  /** 실행 증거 대조: matched(기록과 맞음)·unsupported(제공자 기록 형식 모름)·not_required(실행 검사가 아님)·null(옛 기록). */
+  execStatus?: "matched" | "unsupported" | "not_required" | null;
+  execRef?: string | null;
+  execExit?: number | null;
+  execAt?: string | null;
+  execOutputSha?: string | null;
+  execCommand?: string | null;
+}
+
+export type HarnessGate = "contract" | "no_contract" | "exempt";
+
+export interface HarnessFinding {
+  id: number;
+  projectId: string;
+  taskId: string | null;
+  memberId: string | null;
+  /** completion_refused 완료 차단 · evidence_missing 증거 없음 · evidence_unsupported 증거 미지원 제공자 · no_contract 계약 없는 완료 · owner_rejected 대표 거절(추정) · owner_intervened 대표가 맡긴 일에 직접 끼어듦 */
+  kind: "completion_refused" | "evidence_missing" | "evidence_unsupported" | "no_contract" | "owner_rejected" | "owner_intervened";
+  detail: string;
+  refType: string | null;
+  refId: string | null;
   at: string;
 }
 
@@ -90,7 +120,7 @@ const line = (text: string) => text.replace(/\s+/g, " ").trim().replace(/[\\'"]/
  * 지시·재개 글에 싣는 계약 덩어리. 대화 전량 대신 계약 판, 원문 참조, 그 업무의 최근 검사(보고 id), 열린 결재만 싣는다.
  */
 export function formatContract(contract: TaskContract, state: { latest?: ReportCheck[]; openDecisions?: { id: string; title: string }[]; forTaskId?: string | null } = {}): string {
-  const out = [`업무 계약 r${contract.rev} (#${contract.taskId}, ${contract.kind === "coding" ? "코딩" : contract.kind === "research" ? "조사" : "기타"}${contract.sourceMessageId ? `, 원문 #${contract.sourceMessageId}` : ""}, 작성 ${contract.author}${contract.authorKind === "worker" ? ", 직원 작성 계약" : ""})`];
+  const out = [`업무 계약 r${contract.rev} (#${contract.taskId}, ${contract.kind === "coding" ? "코딩" : contract.kind === "research" ? "조사" : "기타"}${contract.sourceMessageId ? `, 원문 #${contract.sourceMessageId}` : ""}, 작성 ${contract.author}${contract.authorKind === "worker" ? contract.confirmedAt ? `, 직원 작성·${contract.confirmedBy ?? "총괄"} 확인` : ", 직원 작성 계약(확인 전)" : ""})`];
   if (state.forTaskId && state.forTaskId !== contract.taskId) out.push(`- 갈래 업무 #${state.forTaskId} 는 위 업무 #${contract.taskId} 의 계약을 그대로 따른다. 갈래만 끝났으면 완료가 아니라 진행으로 올린다`);
   out.push(`- 원하는 결과: ${line(contract.goal)}`);
   contract.acceptance.forEach((a, i) => out.push(`- 합격 기준 ${i + 1}: ${line(a)}`));
@@ -99,6 +129,7 @@ export function formatContract(contract: TaskContract, state: { latest?: ReportC
   for (const e of contract.evidence) out.push(`- 필요한 증거: ${line(e)}`);
   out.push(`- 필수 검사: ${contract.checks.length ? contract.checks.map(k => `${k}(${CHECK_LABEL[k]})`).join(", ") : "없음(합격 기준만)"}`);
   out.push(`완료는 post 의 contract_rev 에 이 판 번호 ${contract.rev} 를, checks 에 검사마다 kind·result·evidence·criterion(기준 번호)을 적어야 받는다. 판이 바뀌면 옛 판의 검사로는 받지 않는다. 실패·실행 안 함이 하나라도 남으면 완료로 받지 않으니, 고쳐서 다시 검사하거나 막힘으로 올리고 unverified 에 미확인을 적는다.`);
+  out.push(`실행 검사(behavior·typecheck·regression)의 통과는 command 에 실제로 돌린 명령을 적는다. 서버가 이 세션의 실행 기록에서 계약 뒤 그 명령의 마지막 실행과 종료 코드 0 을 찾는다. 파이프·;로 다른 명령을 뒤에 붙이면 종료 코드가 그 명령 것이라 받지 않는다(&& 또는 set -o pipefail).${contract.kind === "research" || contract.checks.includes("source") ? " 조사 완료는 claims 에 주장마다 basis(fact·interpretation)·source·quote(본 원문 그대로)를 적는다. 사실 주장의 인용은 계약 뒤 그 출처를 연 도구 결과나 대표·다른 직원의 자료 본문에 그대로 있어야 한다." : ""}`);
   if (state.latest?.length) {
     const by = state.latest[0]!;
     out.push(`지난 검사(보고 #${by.messageId}, ${by.who}, 계약 r${by.contractRev ?? "?"}): ${state.latest.map(c => `${c.name} ${RESULT_LABEL[c.result]}`).join(" · ")}`);
@@ -111,7 +142,8 @@ export function formatContract(contract: TaskContract, state: { latest?: ReportC
 export function formatChecksLine(checks: ReportCheck[], contractRev: number | null, reviewNeeded: string | null, contract?: Pick<TaskContract, "taskId" | "authorKind"> | null): string {
   const parts: string[] = [];
   const which = contractRev ? `, 계약 r${contractRev}${contract?.authorKind === "worker" ? "(직원 작성 계약)" : ""}${contract && checks[0]?.taskId && contract.taskId !== checks[0].taskId ? `, 위 업무 #${contract.taskId}` : ""}` : "";
-  if (checks.length) parts.push(`검사(작성자 자기 확인${which}): ${checks.map(c => `${c.name} ${RESULT_LABEL[c.result]}`).join(" · ")}`);
+  const exec = (c: ReportCheck) => c.execStatus === "matched" ? `(실행 기록 대조: 종료 0)` : c.execStatus === "unsupported" ? "(실행 기록 미지원 제공자)" : "";
+  if (checks.length) parts.push(`검사(작성자 보고${which}): ${checks.map(c => `${c.name} ${RESULT_LABEL[c.result]}${exec(c)}`).join(" · ")}`);
   if (reviewNeeded) parts.push(`독립 검토 필요: ${line(reviewNeeded)}`);
   return parts.join("\n");
 }

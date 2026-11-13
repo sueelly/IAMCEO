@@ -4,10 +4,12 @@
 //
 // 묻기(대표 승인 창): rm -r 류, find -delete·-exec rm, git clean -f·reset --hard·worktree remove·branch -D·stash drop/clear,
 //   작업 중 변경을 버리는 git restore·checkout -- ·switch --discard-changes, git push,
-//   gh pr·issue·release·repo·gist 의 쓰기 하위 명령, gh api 의 쓰기 표시(-X POST 등·-f 필드), npm·bun·pnpm·yarn publish.
-// 거절: 홈의 키·토큰 파일과 폴더, IAMCEO 데이터 폴더 전체(직원 첨부 inbox·역할 roles 는 읽는다), 그 폴더를 품은 상위 폴더의 통째 검색·복사, 키체인 읽기.
+//   gh pr·issue·release·repo·gist·workflow·run·secret·variable·label 의 쓰기 하위 명령, gh api 의 쓰기 표시(-X POST 등·-f 필드,
+//   graphql 은 mutation 이나 내용을 못 보는 @파일만), npm·bun·pnpm·yarn publish. watch·git -c alias.X=push·$(which rm) 도 푼다.
+// 거절: 홈의 키·토큰 파일과 폴더, IAMCEO 데이터 폴더 전체(직원 첨부 inbox·역할 roles 는 읽는다), 그 폴더를 품은 상위 폴더의 통째 '내용' 검색·복사, 키체인 읽기.
+//   이름만 보는 목록(find·fd·tree·du·ls -R·Glob)은 상위 폴더에서도 받는다. 다만 같은 명령 줄에 xargs·read 가 있으면 내용 검색으로 친다.
 // 못 막는 것: curl·wget 같은 다른 네트워크 도구, 외부 MCP 도구(mcp__…, 훅 대상이 아니다), 스크립트·프로그램 안의 지우기·읽기,
-//   변수로 지은 경로, 셸 파일 실행, 파이프로 셸에 넘긴 글. 이 훅은 셸 전체를 통제하지 않는다.
+//   변수로 지은 경로·명령, 저장소 설정에 둔 git 별칭, 셸 파일 실행, 파이프로 셸에 넘긴 글. 이 훅은 셸 전체를 통제하지 않는다.
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -90,8 +92,16 @@ function globTouches(pattern: string, roots: Roots): "inside" | "above" | null {
   return best;
 }
 
+/** 글로브 앞의 고정된 경로. 이름 목록은 이 부분이 비밀 폴더 안일 때만 막는다. */
+function literalPrefix(pattern: string): string {
+  const segs = pattern.split("/").filter(Boolean);
+  const cut = segs.findIndex(hasGlob);
+  return `/${segs.slice(0, cut < 0 ? segs.length : cut).join("/")}`;
+}
+
 // ---- 셸 낱말 풀기 ----
-interface SimpleCommand { words: string[]; redirects: string[]; heredocs: string[] }
+/** sep: 이 명령을 끝낸 구분자(&&, ||, |, ;, &, 줄바꿈은 ;, 끝은 빈 글). 실행 증거가 종료 코드를 누구 것으로 볼지 정한다. */
+interface SimpleCommand { words: string[]; redirects: string[]; heredocs: string[]; sep: string }
 
 function captureParen(src: string, start: number): [string, number] {
   let depth = 1, i = start;
@@ -118,10 +128,16 @@ function expandVar(src: string, i: number, home: string): [string, number] {
   return [v, i + Math.max(1, v.length)];
 }
 
+/** $(which rm)·$(command -v rm) 처럼 프로그램 위치만 찾는 대입은 그 프로그램 이름으로 본다. */
+function resolvedName(code: string): string | null {
+  const m = /^\s*(?:which|command\s+-v|type\s+-[pP])\s+([A-Za-z0-9_.+-]+)\s*$/.exec(code);
+  return m ? m[1]! : null;
+}
+
 /** 셸 글을 단순 명령들로 나눈다. $( )·백틱·<( ) 안의 글은 nested 로 따로 돌려준다. */
 function parseShell(src: string, home: string): { commands: SimpleCommand[]; nested: string[] } {
   const commands: SimpleCommand[] = [], nested: string[] = [];
-  let cmd: SimpleCommand = { words: [], redirects: [], heredocs: [] };
+  let cmd: SimpleCommand = { words: [], redirects: [], heredocs: [], sep: "" };
   let word: string | null = null;
   let next: "arg" | "redirect" | "heredoc" | "heredoc-strip" | "herestring" = "arg";
   const pending: { delim: string; strip: boolean; cmd: SimpleCommand }[] = [];
@@ -137,7 +153,7 @@ function parseShell(src: string, home: string): { commands: SimpleCommand[]; nes
   const endCommand = () => {
     endWord();
     if (cmd.words.length || cmd.redirects.length || cmd.heredocs.length) commands.push(cmd);
-    cmd = { words: [], redirects: [], heredocs: [] }; next = "arg";
+    cmd = { words: [], redirects: [], heredocs: [], sep: "" }; next = "arg";
   };
   let i = 0;
   const n = src.length;
@@ -158,8 +174,8 @@ function parseShell(src: string, home: string): { commands: SimpleCommand[]; nes
       }
       i++; add(buf); continue;
     }
-    if (c === "$" && src[i + 1] === "(") { const [code, to] = captureParen(src, i + 2); if (!code.startsWith("(")) nested.push(code); add("$(…)"); i = to; continue; }
-    if (c === "`") { const [code, to] = captureBacktick(src, i + 1); nested.push(code); add("`…`"); i = to; continue; }
+    if (c === "$" && src[i + 1] === "(") { const [code, to] = captureParen(src, i + 2); if (!code.startsWith("(")) nested.push(code); add(resolvedName(code) ?? "$(…)"); i = to; continue; }
+    if (c === "`") { const [code, to] = captureBacktick(src, i + 1); nested.push(code); add(resolvedName(code) ?? "`…`"); i = to; continue; }
     if ((c === "<" || c === ">") && src[i + 1] === "(") { const [code, to] = captureParen(src, i + 2); nested.push(code); add("<(…)"); i = to; continue; }
     if (c === "$") { const [text, to] = expandVar(src, i, home); add(text); i = to; continue; }
     if (c === "~" && word === null && (i + 1 >= n || /[/\s;&|)]/.test(src[i + 1]!))) { add(home); i++; continue; }
@@ -173,7 +189,7 @@ function parseShell(src: string, home: string): { commands: SimpleCommand[]; nes
       next = "redirect"; continue;
     }
     if (c === "\n") {
-      endCommand(); i++;
+      cmd.sep = ";"; endCommand(); i++;
       // 다음 줄부터는 here-doc 본문이다(명령이 아니다). 셸에 먹이는 본문만 따로 본다.
       while (pending.length) {
         const h = pending.shift()!, lines: string[] = [];
@@ -187,7 +203,11 @@ function parseShell(src: string, home: string): { commands: SimpleCommand[]; nes
       }
       continue;
     }
-    if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") { endCommand(); i++; continue; }
+    if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
+      const two = src.slice(i, i + 2);
+      const sep = two === "&&" || two === "||" ? two : c === "(" || c === ")" ? ";" : c;
+      cmd.sep = sep; endCommand(); i += two === "&&" || two === "||" ? 2 : 1; continue;
+    }
     if (c === " " || c === "\t") { endWord(); i++; continue; }
     add(c); i++;
   }
@@ -243,11 +263,17 @@ const GH_WRITE: Record<string, string[]> = {
   release: ["create", "delete", "edit", "upload", "delete-asset"],
   repo: ["create", "delete", "edit", "rename", "archive", "unarchive", "fork", "sync"],
   gist: ["create", "edit", "delete"],
+  workflow: ["run", "enable", "disable"],
+  run: ["rerun", "cancel", "delete"],
+  secret: ["set", "delete", "remove"],
+  variable: ["set", "delete"],
+  label: ["create", "edit", "delete", "clone"],
+  cache: ["delete"],
 };
 
 type Hit = { kind: "delete" | "publish"; what: string };
 
-function riskyCommand(name: string, args: string[], analyze: (words: string[]) => void): Hit | null {
+function riskyCommand(name: string, args: string[], analyze: (words: string[]) => void, analyzeText: (code: string) => void = () => {}, depth = 0): Hit | null {
   if (name === "rm") return shortFlag(args, /[rR]/) || longFlag(args, "--recursive") ? { kind: "delete", what: "폴더째 지우기(rm -r)" } : null;
   if (name === "find") {
     if (args.includes("-delete")) return { kind: "delete", what: "find -delete" };
@@ -261,8 +287,19 @@ function riskyCommand(name: string, args: string[], analyze: (words: string[]) =
   }
   if (name === "git") {
     let i = 0;
-    while (i < args.length && args[i]!.startsWith("-")) i += GIT_VALUE_OPTS.has(args[i]!) ? 2 : 1;
+    const aliases = new Map<string, string>();
+    while (i < args.length && args[i]!.startsWith("-")) {
+      const alias = args[i] === "-c" ? /^alias\.([^=]+)=(.*)$/s.exec(args[i + 1] ?? "") : null;
+      if (alias) aliases.set(alias[1]!, alias[2]!.trim());
+      i += GIT_VALUE_OPTS.has(args[i]!) ? 2 : 1;
+    }
     const sub = args[i], rest = args.slice(i + 1);
+    // git -c alias.p=push p → push. '!' 별칭은 셸 명령이다.
+    const expanded = sub ? aliases.get(sub) : undefined;
+    if (expanded !== undefined && depth < 3) {
+      if (expanded.startsWith("!")) { analyzeText(expanded.slice(1)); return null; }
+      return riskyCommand("git", [...expanded.split(/\s+/).filter(Boolean), ...rest], analyze, analyzeText, depth + 1);
+    }
     if (sub === "push") return { kind: "publish", what: "깃허브에 올리기(git push)" };
     if (sub === "clean" && (shortFlag(rest, /f/) || longFlag(rest, "--force"))) return { kind: "delete", what: "git clean -f" };
     if (sub === "reset" && longFlag(rest, "--hard")) return { kind: "delete", what: "git reset --hard" };
@@ -283,6 +320,18 @@ function riskyCommand(name: string, args: string[], analyze: (words: string[]) =
   if (name === "gh") {
     const [group, action] = args;
     if (group && action && GH_WRITE[group]?.includes(action)) return { kind: "publish", what: `깃허브 게시(gh ${group} ${action})` };
+    if (group === "api" && action === "graphql") {
+      // graphql 은 늘 POST 다. 읽기(query)는 받고, mutation 이나 내용을 볼 수 없는 @파일·--input 만 묻는다.
+      const fields: string[] = [];
+      args.forEach((a, i) => {
+        if (/^(-f|-F|--field|--raw-field)$/.test(a)) fields.push(args[i + 1] ?? "");
+        else { const m = /^(?:-[fF]|--field=|--raw-field=)(.+)$/s.exec(a); if (m) fields.push(m[1]!); }
+      });
+      const query = fields.find(f => /^query=/.test(f));
+      const text = query?.slice(6) ?? "";
+      if (!query || text.startsWith("@") || args.includes("--input") || /^\s*mutation\b/.test(text) || /(^|[}\s])mutation\s*[({A-Za-z]/.test(text)) return { kind: "publish", what: "깃허브 쓰기 요청(gh api graphql mutation)" };
+      return null;
+    }
     if (group === "api") {
       let method: string | null = null;
       args.forEach((a, i) => {
@@ -303,14 +352,24 @@ function riskyCommand(name: string, args: string[], analyze: (words: string[]) =
   return null;
 }
 
-const TRAVERSE_ALWAYS = new Set(["rg", "ag", "ack", "fd", "find", "tree", "du", "tar", "zip", "rsync", "scp", "ditto", "7z"]);
+const TRAVERSE_ALWAYS = new Set(["rg", "ag", "ack", "tar", "zip", "rsync", "scp", "ditto", "7z"]);
+/** 이름·크기만 보는 목록. 내용은 읽지 않으므로 비밀 폴더를 품은 상위 폴더에서도 받는다(비밀 폴더를 바로 가리키면 거절). */
+const NAME_ONLY = new Set(["find", "fd", "tree", "du", "ls", "stat"]);
+const EXEC_OPTS = ["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-x", "-X", "--exec", "--exec-batch"];
+/** 내용을 읽지 않는 목록 명령인지. find·fd 가 다른 명령을 돌리면 내용 검색이다. */
+function namesOnly(name: string, args: string[]): boolean {
+  if (!NAME_ONLY.has(name)) return false;
+  if (name === "find" || name === "fd") return !args.some(a => EXEC_OPTS.includes(a) || a.startsWith("--exec="));
+  return true;
+}
 const GREPS = new Set(["grep", "egrep", "fgrep", "zgrep"]);
-/** 폴더를 통째로 지나는 명령(검색·목록·복사·묶기)인지. */
+/** 폴더를 통째로 지나며 내용을 읽거나 복사·바꾸는 명령(검색·복사·묶기)인지. */
 function traverses(name: string, args: string[]): boolean {
   if (TRAVERSE_ALWAYS.has(name)) return true;
+  if (NAME_ONLY.has(name) && !namesOnly(name, args)) return true;
   if (GREPS.has(name)) return shortFlag(args, /[rR]/) || longFlag(args, "--recursive", "--dereference-recursive") || args.some((a, i) => (a === "-d" && args[i + 1] === "recurse") || a === "--directories=recurse");
   if (name === "cp") return shortFlag(args, /[rRa]/) || longFlag(args, "--recursive", "--archive");
-  if (name === "ls" || name === "chmod" || name === "chown") return shortFlag(args, /R/);
+  if (name === "chmod" || name === "chown") return shortFlag(args, /R/);
   return false;
 }
 
@@ -329,7 +388,10 @@ function analyzeShell(src: string, cwd0: string, ctx: GuardContext, roots: Roots
   const home = ctx.userHome ?? homedir();
   const { commands, nested } = parseShell(src, home);
   let cwd = cwd0;
+  // 목록을 xargs·read 로 다른 명령에 넘기면 이름 목록이 아니라 내용 읽기다.
+  const feeds = commands.some(c => { const w = commandWords(c.words); return ["xargs", "parallel", "read", "while"].includes(basename(w[0] ?? "")) || c.words.some(x => basename(x) === "xargs"); });
   const pathOf = (word: string) => resolve(cwd, word.replace(/^~(?=\/|$)/, home));
+  let listing = false;
   const checkWord = (word: string) => {
     if (!word || word.includes("…")) return;
     const candidates = [word];
@@ -340,15 +402,25 @@ function analyzeShell(src: string, cwd0: string, ctx: GuardContext, roots: Roots
     for (const w of candidates) {
       if (!w) continue;
       const full = pathOf(w);
-      if (hasGlob(w) ? globTouches(full, roots) === "inside" : isSecretPath(full, roots)) out.push({ decision: "deny", reason: secretReason(shortName(full, ctx)) });
+      const hit = !hasGlob(w) ? isSecretPath(full, roots) : listing ? isSecretPath(literalPrefix(full), roots) : globTouches(full, roots) === "inside";
+      if (hit) out.push({ decision: "deny", reason: secretReason(shortName(full, ctx)) });
     }
   };
   const analyzeWords = (raw: string[], cmd?: SimpleCommand) => {
-    for (const w of raw) checkWord(w);
-    for (const r of cmd?.redirects ?? []) checkWord(r);
     const words = commandWords(raw);
+    const name = basename(words[0] ?? ""), args = words.slice(1);
+    listing = !feeds && namesOnly(name, args);
+    for (const w of raw) checkWord(w);
+    listing = false;
+    for (const r of cmd?.redirects ?? []) checkWord(r);
     if (!words.length) return;
-    const name = basename(words[0]!), args = words.slice(1);
+    // watch 는 나머지를 셸 명령으로 되풀이한다.
+    if (name === "watch") {
+      const rest = args.slice();
+      while (rest.length && rest[0]!.startsWith("-")) { const o = rest.shift()!; if (["-n", "--interval", "-q", "--equexit"].includes(o)) rest.shift(); if (o === "--") break; }
+      analyzeShell(rest.join(" "), cwd, ctx, roots, depth + 1, out);
+      return;
+    }
     if (name === "security" && ["find-generic-password", "find-internet-password", "dump-keychain", "export"].includes(args[0] ?? "")) out.push({ decision: "deny", reason: secretReason("키체인") });
     if (name === "cd" || name === "pushd") { cwd = args[0] ? pathOf(args[0]) : home; return; }
     if (SHELLS.has(name)) {
@@ -358,9 +430,9 @@ function analyzeShell(src: string, cwd0: string, ctx: GuardContext, roots: Roots
       else if (code === undefined) for (const body of cmd?.heredocs ?? []) analyzeShell(body, cwd, ctx, roots, depth + 1, out);
     }
     if (name === "eval") analyzeShell(args.join(" "), cwd, ctx, roots, depth + 1, out);
-    const hit = riskyCommand(name, args, inner => analyzeWords(inner));
+    const hit = riskyCommand(name, args, inner => analyzeWords(inner), code => analyzeShell(code, cwd, ctx, roots, depth + 1, out));
     if (hit) out.push({ decision: "ask", reason: hit.kind === "delete" ? `IAMCEO 하네스: ${hit.what}는 되돌리기 어렵습니다. 대표 승인 창으로 넘깁니다. 임시 폴더·기존 변경은 지우지 않습니다` : `IAMCEO 하네스: ${hit.what}는 밖으로 나가는 일입니다. 대표 승인 창으로 넘깁니다` });
-    if (traverses(name, args)) {
+    if (traverses(name, args) || (feeds && NAME_ONLY.has(name) && name !== "ls" && name !== "stat")) {
       const targets = nonOptions(args);
       for (const t of targets.length > (GREPS.has(name) || ["rg", "ag", "ack"].includes(name) ? 1 : 0) ? targets : [...targets, "."]) {
         const full = pathOf(t);
@@ -396,7 +468,9 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
       if (tool === "Grep" && holdsSecret(base, roots)) out.push({ decision: "deny", reason: sweepReason(shortName(base, ctx)) });
       const pattern = tool === "Glob" ? args.pattern : args.glob;
       if (typeof pattern === "string" && pattern) {
-        const reach = globTouches(full(pattern, base), roots);
+        const target = full(pattern, base);
+        // Glob 은 이름만 돌려준다. 고정된 앞부분이 비밀 폴더 안일 때만 막는다. Grep 은 내용을 읽으므로 글로브가 닿기만 해도 막는다.
+        const reach = tool === "Glob" ? (isSecretPath(literalPrefix(target), roots) || SECRET_NAMES.test(basename(target)) ? "inside" : null) : globTouches(target, roots);
         if (reach === "inside" || (reach === "above" && tool === "Grep")) out.push({ decision: "deny", reason: secretReason(pattern) });
         // 이름만 보는 Grep glob(예: *.json)은 어느 깊이에서나 맞는다. 비밀 폴더를 품은 곳의 Grep 은 위에서 이미 막았다.
       }
@@ -412,4 +486,19 @@ export function guardDecision(input: GuardInput, ctx: GuardContext): GuardDecisi
 export function hookOutput(decision: GuardDecision): string | null {
   if (decision.decision === "allow") return null;
   return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision.decision, permissionDecisionReason: decision.reason } });
+}
+
+/**
+ * 실행 증거 대조용: 셸 글의 맨 위 단순 명령(앞말·변수 대입을 걷은 낱말)과 그 뒤 구분자.
+ * 'bash -c "…"' 하나뿐이면 안의 글을 본다. $( )·here-doc 안은 보지 않는다(종료 코드를 정하지 않는다).
+ */
+export function commandChain(src: string, home = homedir(), depth = 0): { words: string[]; sep: string }[] {
+  const { commands } = parseShell(src, home);
+  const chain = commands.map(c => ({ words: commandWords(c.words), sep: c.sep })).filter(c => c.words.length);
+  if (chain.length === 1 && depth < 3 && SHELLS.has(basename(chain[0]!.words[0]!))) {
+    const args = chain[0]!.words.slice(1);
+    const code = args.find(a => !a.startsWith("-"));
+    if (code !== undefined && args.some(a => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))) return commandChain(code, home, depth + 1);
+  }
+  return chain;
 }

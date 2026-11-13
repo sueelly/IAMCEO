@@ -61,7 +61,7 @@ test("검토 반례: IAMCEO 데이터 폴더(DB·백업·토큰)와 그 상위 �
   for (const command of [
     "sqlite3 /fake/iamceo-home/iamceo.db 'select token from members'", "sqlite3 'file:/fake/iamceo-home/iamceo.db?mode=ro' 'select 1'", "cp /fake/iamceo-home/backups/x.db /tmp/",
     "cat /fake/home/.iamceo/config.json", "cat ~/.config/gh/hosts.yml", "cat $HOME/.s*h/id*", "cat /fake/iamceo-home/run/*",
-    "grep -r token ~/.config", "grep -r TOKEN /fake/iamceo-home/run", "rg TOKEN /fake/home", "find ~ -name '*.json'", "tar czf /tmp/a.tgz /fake/home", "du -sh ~/*",
+    "grep -r token ~/.config", "grep -r TOKEN /fake/iamceo-home/run", "rg TOKEN /fake/home", "find ~ -name 'id_*' | xargs cat", "find ~ -name '*.json' -exec cat {} +", "tar czf /tmp/a.tgz /fake/home",
     "cd /fake/home && cat .ssh/id_rsa", "cd /fake/iamceo-home; ls -la; cat config.json",
   ]) expect([command, bash(command).decision]).toEqual([command, "deny"]);
   const tool = (name: string, input: Record<string, unknown>) => guardDecision({ tool_name: name, tool_input: input, cwd: "/fake/home/work" }, ctx).decision;
@@ -70,7 +70,10 @@ test("검토 반례: IAMCEO 데이터 폴더(DB·백업·토큰)와 그 상위 �
   expect(tool("Grep", { pattern: "TOKEN", path: "/fake/iamceo-home/run" })).toBe("deny");
   expect(tool("Grep", { pattern: "BEGIN", path: "/fake/home", glob: ".ssh/*" })).toBe("deny");
   expect(tool("Grep", { pattern: "x", path: "/fake" })).toBe("deny");
-  expect(tool("Glob", { pattern: "**/*.json", path: "/fake/home" })).toBe("deny");
+  // 이름만 보는 목록(Glob·find·du)은 상위 폴더에서 받는다. 내용은 읽지 않는다
+  expect(tool("Glob", { pattern: "**/*.json", path: "/fake/home" })).toBe("allow");
+  expect(tool("Glob", { pattern: "**/id_rsa", path: "/fake/home" })).toBe("deny");
+  for (const command of ["find ~ -name '*.json'", "du -sh ~/*", "ls -R ~", "tree ~"]) expect([command, bash(command).decision]).toEqual([command, "allow"]);
   expect(tool("Glob", { pattern: "/fake/iamceo-home/run/*" })).toBe("deny");
   // 읽어야 하는 곳은 그대로 연다
   expect(tool("Read", { file_path: "/fake/iamceo-home/inbox/m_x/a.png" })).toBe("allow");

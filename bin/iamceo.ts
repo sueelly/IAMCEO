@@ -194,6 +194,7 @@ export async function startOpsRuntime(config: Config, options: OpsRuntimeOptions
     worker.start();
     const backupDir = join(config.home, "backups");
     backups = new BackupManager({ home: config.home, backupDir, policy: options.backupPolicy });
+    orch.setBackups?.(backups);
     // Surface the first backup failure; periodic failures remain visible in diagnostics.
     try { await backups.run(); } catch { console.error("정기 백업 실패"); }
     backups.start();
