@@ -4,7 +4,7 @@ export interface Upload { key: string; name: string; attachment: Attachment | nu
 /** taskId: 대화에서 고른 작업(없으면 전체). 보낼 때 그 순간의 값이 글에 고정된다. */
 export interface Draft { text: string; targetId: string | null; uploads: Upload[]; error: string | null; taskId?: string | null }
 /** 보낸 순간의 요청. taskId 는 옛 기기에 남은 시도에는 없다(= 전체). */
-export type SendPayload = Required<Omit<SendMessageReq, "taskId">> & { taskId?: string | null };
+export type SendPayload = Required<Omit<SendMessageReq, "taskId" | "newTaskTitle">> & { taskId?: string | null; newTaskTitle?: string | null };
 export interface MessageAttempt {
   readonly id: string;
   readonly projectId: string;

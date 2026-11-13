@@ -235,6 +235,8 @@ const SendMessageSchema = z.object({
   targetMemberId: z.string().nullable().optional(),
   attachmentIds: z.array(z.string()).max(50).optional(),
   taskId: z.string().max(256).nullable().optional(),
+  /** 새 업무 이름. taskId 와 함께 보내지 않는다. 둘 다 없으면 서버가 글 첫 줄로 새 업무를 만든다. */
+  newTaskTitle: z.string().max(200).nullable().optional(),
 });
 const AnswerSchema = z.object({
   expectedVersion: nonEmpty.optional(),
@@ -547,7 +549,9 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     }),
     route("POST", "/api/projects/:id/files/from-path", async (req, _url, [id]) => {
       activeProject(id!);
-      const body = await parseBody(req, z.strictObject({ path: z.string().min(1), title: z.string().trim().min(1).max(500).optional() }));
+      const body = await parseBody(req, z.strictObject({ path: z.string().min(1), title: z.string().trim().min(1).max(500).optional(),
+        // 자료도 업무에 붙는다. 고른 업무가 없으면 서버가 자료 이름으로 새 업무를 만든다(같은 파일은 한 번만).
+        taskId: z.string().max(256).nullable().optional(), newTaskTitle: z.string().max(200).nullable().optional() }));
       const local = readLocalFile(store, id!, body.path, ctx.folderHome, configuredSecretRoots(config, process.env, ctx.folderHome));
       return Response.json(await once(`local-file:${id}:${local.info.path}`, async () => {
         activeProject(id!);
@@ -570,7 +574,9 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
           const kind = local.info.kind === "text" && detectedKind === "file" ? "code" : detectedKind;
           const file = store.transaction(() => {
             activeProject(id!);
-            return store.createFile({ projectId: id!, title: body.title ?? local.info.name, who: "대표", path: local.info.path,
+            const title = body.title ?? local.info.name;
+            const taskId = store.ownerTask(id!, { taskId: body.taskId, newTaskTitle: body.newTaskTitle, sourceRef: `file-path:${local.info.path}`, text: `자료 ${title}`, fallbackLabel: "대표 자료" });
+            return store.createFile({ projectId: id!, title, who: "대표", path: local.info.path, taskId,
               body: kind === "artifact" || attachments.length ? "" : local.info.content ?? "", kind,
               html: kind === "artifact" ? local.info.content ?? null : null,
               attachments: attachments.map(saved => store.createAttachment(saved)) });
@@ -778,6 +784,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
         throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
       }
       if (body.taskId && store.getTask(body.taskId)?.projectId !== id) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
+      if (body.taskId && body.newTaskTitle?.trim()) throw new ApiError(400, "고른 업무(taskId)와 새 업무 이름(newTaskTitle)은 함께 보내지 않습니다");
       await requireReachable(id!, body.targetMemberId ?? null);
       for (const attachmentId of body.attachmentIds ?? []) {
         if (!store.getAttachment(attachmentId)) throw new ApiError(400, `없는 첨부입니다: ${attachmentId}`);

@@ -179,16 +179,18 @@ function boardView(orch: Orchestrator, projectId: string) {
 
 const TOOLS: Record<ToolName, Tool<any>> = {
   task: tool(
-    "작업을 등록하거나 고친다. 새 일을 위해 브랜치·워크트리를 팔 때 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 작업별로 글을 보고 보낸다. 등록한 뒤로는 post·ask·file·todo 에 task_id 를 넣는다(서버는 작업을 추측하지 않는다). 같은 브랜치로 이미 등록했으면 그 작업을 돌려준다.",
+    "업무(작업)를 만들거나 고친다. 모든 글·카드·자료·할 일은 업무에 붙는다. 받은 글의 '작업 #' 줄이 없는 새 일이면 먼저 이것으로 새 업무를 만든다(제목만 넣어도 된다). 새 일을 위해 브랜치·워크트리를 팔 때도 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 업무별로 글을 보고 보낸다. 만든 뒤로는 post·ask·file·todo 에 task_id 를 넣는다(서버는 업무를 짐작하지 않는다). 같은 브랜치, 또는 브랜치 없이 같은 제목으로 이미 만들었으면 그 업무를 돌려준다. 이름에 비밀값·내부 번호·경로를 쓰지 않는다.",
     z.strictObject({
-      task_id: oneLine(64).optional().describe("고칠 작업 id(tk_...). 새로 등록할 때는 비운다"),
-      title: oneLine(120).optional().describe("대표가 알아볼 작업 제목(한 줄). 새로 등록할 때 필요"),
+      task_id: oneLine(64).optional().describe("고칠 업무 id(tk_...). 새로 만들 때는 비운다"),
+      title: oneLine(120).optional().describe("대표가 알아볼 업무 이름(한 줄). 새로 만들 때 필요"),
       branch: oneLineOpt(200).optional().describe("git 브랜치 이름"),
       worktree: oneLineOpt(500).optional().describe("워크트리 경로(절대 경로)"),
+      parent_task_id: oneLine(64).optional().describe("새로 만들 때만: 이 업무가 갈라져 나온 업무 id(받은 글의 '작업 #' 줄). 갈라진 관계가 남는다"),
     }),
     (orch, member, a) => {
-      if (!a.task_id && !a.title) throw new ApiError(400, "새 작업에는 title 이 필요합니다");
-      const { task, created } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree });
+      if (!a.task_id && !a.title) throw new ApiError(400, "새 업무에는 title 이 필요합니다");
+      if (a.task_id && a.parent_task_id) throw new ApiError(400, "parent_task_id 는 새로 만들 때만 넣습니다");
+      const { task, created } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree, parentTaskId: a.parent_task_id });
       return reply(`${created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다`);
     },
   ),
@@ -231,14 +233,14 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       content: z.string().trim().min(1).max(30000).describe("배경·선택·적용 조건·확인한 결과(원문)"),
       evidence: z.array(z.string().trim().min(1).max(2000)).max(28).optional().describe("근거: 명령과 결과, 시험 이름과 통과 수, 커밋, 바뀐 파일"),
       commit_sha: z.string().trim().regex(/^[0-9a-f]{7,40}$/).optional().describe("확인한 커밋"),
-      task_id: oneLine(64).nullable().optional().describe("이 기록이 속한 작업 id(null 은 전체). 작업을 쓰는 직원은 꼭 넣는다"),
+      task_id: oneLine(64).nullable().optional().describe("이 기록이 속한 업무 id. 업무와 무관한 프로젝트 전체 교훈이면 null"),
     }),
     async (orch, member, a) => {
       const memory = orch.requireMemory(member);
       if (a.basis === "verified" && !a.evidence?.length) throw new ApiError(400, "verified 기록에는 evidence(실제 명령·결과·커밋)가 필요합니다. 근거가 없으면 basis 를 ai_inference 로 둡니다");
       const sensitive = findSensitive([a.summary, a.content, ...(a.evidence ?? [])].join("\n"), orch.memorySecrets());
       if (sensitive) throw new ApiError(400, `민감 정보(${sensitive})로 보이는 부분이 있어 남기지 않았습니다. 키·토큰·비밀번호·로그 원문을 빼고 다시 남기세요`);
-      const taskId = orch.memberTask(member, a.task_id);
+      const taskId = orch.memberTask(member, a.task_id, [], { allowNone: true });
       const scope = orch.memoryScope(member, taskId);
       const { content, capture } = clip(`분류: AI 보고(${a.basis === "verified" ? "직원이 확인한 결과" : "직원의 추론·의견"}) — 대표 결정 아님. 작성: ${member.name}(${member.handle}) · IAMCEO 프로젝트 ${member.projectId}${taskId ? ` · 작업 #${taskId}` : ""}\n\n${a.content}`);
       const eventId = stableEventId("iamceo-ai", member.id, scope, a.kind, a.basis, a.summary, a.content);
@@ -315,7 +317,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       group: oneLineOpt(80).optional().describe("묶음 이름"),
       file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),
     async (orch, member, a) => {
       const keys = (a.options ?? []).map((o: { k: string }) => o.k);
@@ -352,7 +354,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
         if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
@@ -386,7 +388,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       content: z.string().optional().describe("마크다운 전문"),
       html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),
     async (orch, member, a) => {
       const taskId = orch.memberTask(member, a.task_id);
@@ -451,7 +453,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   todo: tool(
     "대표가 손수 해야 할 일(로그인·결제·실물 확인 등)을 결재함의 내 할 일에 올린다. 끝나면 다음 입력으로 알려 준다.",
     z.strictObject({ title: oneLine(200), detail: z.string().optional(),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),
     (orch, member, a) => {
       const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail, taskId: orch.memberTask(member, a.task_id) });
@@ -541,7 +543,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 지시가 속한 작업 id. 대표 글에 '작업 #' 줄이 있으면 그 작업. 진행판 일 항목의 일이면 맡기기 전에 work_set 으로 만든 항목의 대화 작업 id(tk_w_…). 어느 작업에도 속하지 않으면 null. 작업을 쓰는 프로젝트에서 빼면 거절된다(인용한 대표 글이 작업에서 온 글이면 그 작업)"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 지시가 속한 업무 id. 대표 글에 '작업 #' 줄이 있으면 그 업무. 진행판 일 항목의 일이면 맡기기 전에 work_set 으로 만든 항목의 대화 작업 id(tk_w_…). 업무가 없는 새 일이면 task 도구로 만든 업무 id. 대표가 업무를 고르지 않아 서버가 만든 업무의 대표 글을 user_quote 로 인용하고 다른 업무 id 를 넣으면, 그 대표 글을 그 업무로 분류한다. 빼거나 null 이면 인용한 대표 글·결재의 업무이고, 없으면 거절된다"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
@@ -557,7 +559,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       expect_run_id: oneLine(100).optional().describe("roster 의 run.id. 지금 실행이 이것과 다르면 멈추지 않는다"),
       then: z.string().trim().min(1).max(20000).optional().describe("멈춘 뒤 이어서 할 지시(끝났다고 볼 기준 포함)"),
       user_quote: userQuote,
-      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("then 이 속한 작업 id(team_assign 과 같은 규칙). 어느 작업에도 속하지 않으면 null"),
+      task_id: z.string().trim().min(1).max(64).nullable().optional().describe("then 이 속한 업무 id(team_assign 과 같은 규칙)"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);

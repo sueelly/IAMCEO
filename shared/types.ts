@@ -260,13 +260,20 @@ export interface Todo {
 }
 
 /**
- * 작업: 직원이 브랜치·워크트리를 파서 하는 일 하나. id 는 처음 등록할 때 정해지고, 제목·브랜치·워크트리를 고쳐도 바뀌지 않는다.
- * 대화·결재·자료·할 일은 taskId 로 작업에 붙는다. taskId 가 없는 것은 전체 대화에만 속한다.
+ * 업무가 생긴 곳. staff: 직원이 task 도구로 등록 · board: 총괄의 진행판 일 항목 · owner: 대표가 이름 붙인 새 업무 ·
+ * auto: 업무를 고르지 않은 대표 글 등에서 서버가 첫 줄로 이름 붙인 새 업무 · backfill: 업무가 없던 옛 글을 정리하며 만든 업무.
+ */
+export type TaskOrigin = "staff" | "board" | "owner" | "auto" | "backfill";
+
+/**
+ * 업무(작업): 대화·결재·자료·할 일이 모이는 일 하나. id 는 처음 만들 때 정해지고, 제목·브랜치·워크트리를 고쳐도 바뀌지 않는다.
+ * 대화·결재·자료·할 일은 taskId 로 업무에 붙는다. 본사가 아닌 프로젝트에서 새로 생기는 글은 모두 업무가 있다.
+ * taskId 가 없는 것은 이 규칙 전의 옛 글이거나 서버 알림이다('모든 대화'에서만 보인다).
  */
 export interface Task {
   id: string;
   projectId: string;
-  /** 등록한 직원. 그 직원이 닫히면 null. */
+  /** 등록한 직원. 그 직원이 닫히면 null. 대표·서버가 만든 업무도 null(어느 직원 하나에 묶지 않는다). */
   memberId: string | null;
   who: string;
   title: string;
@@ -274,6 +281,30 @@ export interface Task {
   worktree: string | null;
   createdAt: string;
   updatedAt: string;
+  /** 생긴 곳. 이 칸이 생기기 전 응답에는 없다. */
+  origin?: TaskOrigin;
+  /** 이 업무가 갈라져 나온 업무(파생 업무). 없으면 null. */
+  parentTaskId?: string | null;
+  /** 총괄이 이 업무의 글을 다른 업무로 분류해 합친 곳. 합쳐진 업무는 칩에서 숨기고, 이 id 로 오는 글은 합쳐진 업무로 간다. */
+  mergedInto?: string | null;
+}
+
+/** 글·카드·자료·할 일의 업무를 바꾼 기록 한 줄. 원문은 바꾸지 않고 업무 칸만 바꾼다. */
+export interface TaskLink {
+  id: string;
+  projectId: string;
+  /** task 는 업무 사이 관계(합침 merged·갈라짐 derived) 기록이다. */
+  refType: "message" | "decision" | "file" | "todo" | "task";
+  refId: string;
+  fromTaskId: string | null;
+  toTaskId: string | null;
+  /** 바꾼 근거(예: classify 총괄 분류, backfill-decision 이어 준 결재). */
+  basis: string;
+  note: string | null;
+  actor: string;
+  batchId: string | null;
+  undoneAt: string | null;
+  createdAt: string;
 }
 
 /** 팀 화면 아래: 진행 중 · 예정(AI가 곧 할 일) · 보류 · 완료 */
@@ -624,8 +655,11 @@ export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "res
 };
 /** PATCH /api/members/:id. null 이면 직급 기본으로 돌아간다. */
 export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | null; effortOverride?: Effort | null }
-/** taskId: 보낸 순간 고른 작업. 없으면 전체 대화에 남고 어느 작업에도 붙지 않는다. */
-export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[]; taskId?: string | null }
+/**
+ * taskId: 보낸 순간 고른 업무. newTaskTitle: 새 업무 이름(taskId 와 함께 쓰지 않는다).
+ * 둘 다 없으면 서버가 글 첫 줄로 이름 붙인 새 업무를 만든다(본사는 업무를 쓰지 않는다). 같은 id 로 다시 보내면 업무를 새로 만들지 않는다.
+ */
+export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[]; taskId?: string | null; newTaskTitle?: string | null }
 /** POST /api/members/:id/stop 의 조건('멈추고 이어서'는 글을 먼저 대기열에 고정한 뒤 이것을 부른다). 화면에서 본 실행 id·세션 세대와 지금이 다르면 멈추지 않는다(다른 턴을 끊지 않는다). */
 export interface StopReq { expectRunId?: string | null; expectGeneration?: number | null }
 /**

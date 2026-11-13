@@ -177,7 +177,7 @@ describe("작업별 대화", () => {
     expect(answer).toContain(`#${decision.id} · 작업 #${ta.id}`);
   });
 
-  test("다른 작업으로 옮겨 보내도 먼저 보낸 작업의 늦은 보고는 원래 작업에 남고, 전체에서 보낸 글은 직전 작업에 붙지 않는다", async () => {
+  test("다른 작업으로 옮겨 보내도 먼저 보낸 작업의 늦은 보고는 원래 작업에 남고, 업무 없이 보낸 글은 직전 작업이 아닌 새 업무에 붙는다", async () => {
     const t = await setup();
     const a = await t.worker("결제", "pay");
     const b = await t.worker("검색", "search");
@@ -189,7 +189,9 @@ describe("작업별 대화", () => {
     await t.api("POST", `/api/projects/${t.project.id}/messages`, { text: "검색 속도 봐 주세요", targetMemberId: b.id, taskId: tb.id });
     // a 가 일하는 동안 대표가 '전체'에서 a 에게 새 글을 보낸다(대기열)
     const all = await t.api<{ id: string; taskId: string | null; delivery: string }>("POST", `/api/projects/${t.project.id}/messages`, { text: "오늘 일정 알려 주세요", targetMemberId: a.id });
-    expect(all.body.taskId).toBeNull();
+    const auto = t.store.requireTask(all.body.taskId!);
+    expect(auto).toMatchObject({ title: "오늘 일정 알려 주세요", origin: "auto", memberId: null, who: "결제" });
+    expect([ta.id, tb.id]).not.toContain(auto.id);
     await settle();
     expect(t.store.requireMessage(all.body.id).delivery).toBe("queued");
 
@@ -198,19 +200,22 @@ describe("작업별 대화", () => {
     await t.call(b, "post", { kind: "완료", title: "검색 속도 개선", task_id: tb.id });
     t.runner.end(a.id);
     await settle();
-    // 전체 글을 받은 뒤의 보고는 어느 작업에도 붙지 않는다
+    // 업무 없이 보낸 글은 서버가 만든 새 업무 줄과 함께 간다
     const wire = t.sentTo(a).find((s) => s.includes("오늘 일정 알려 주세요"))!;
-    expect(wire).toContain("작업: 전체(어느 작업에도 속하지 않는 글)");
-    // 작업을 쓰는 직원이 작업을 빼먹으면 거절(마지막 작업으로 추측하지 않는다). 전체는 null 로 밝힌다
-    expect((await t.call(a, "post", { kind: "완료", title: "일정 정리" })).isError).toBe(true);
-    await t.call(a, "post", { kind: "완료", title: "일정 정리", task_id: null });
+    expect(wire).toContain(`작업 #${auto.id} '오늘 일정 알려 주세요'`);
+    // 작업을 빼먹거나 null 이면 거절(마지막 작업·받은 작업으로 짐작하지 않는다). 거절 안내에 이번에 받은 업무가 적힌다
+    const missed = await t.call(a, "post", { kind: "완료", title: "일정 정리" });
+    expect(missed.isError).toBe(true);
+    expect(missed.text).toContain(`#${auto.id} '오늘 일정 알려 주세요'`);
+    expect((await t.call(a, "post", { kind: "완료", title: "일정 정리", task_id: null })).isError).toBe(true);
+    await t.call(a, "post", { kind: "완료", title: "일정 정리", task_id: auto.id });
     // 직원이 작업을 밝히면 그것을 따른다(받은 글의 작업 줄)
     await t.call(a, "post", { kind: "진행", title: "결제 쪽 추가 확인", task_id: ta.id });
 
     const by = (title: string) => t.store.listMessages(t.project.id).find((m) => m.title.endsWith(title))!.taskId;
     expect(by("결제 테스트 붙임")).toBe(ta.id);
     expect(by("검색 속도 개선")).toBe(tb.id);
-    expect(by("일정 정리")).toBeNull();
+    expect(by("일정 정리")).toBe(auto.id);
     expect(by("결제 쪽 추가 확인")).toBe(ta.id);
 
     // 작업별 페이지: 그 작업 글만. 전체는 작업 없는 글까지 모두
@@ -222,7 +227,8 @@ describe("작업별 대화", () => {
     expect(pageB.body.items.every((m) => m.taskId === tb.id)).toBe(true);
     expect(pageB.body.items).toHaveLength(2);
     const project = await t.api<MessagePage>("GET", `/api/projects/${t.project.id}/messages/page`);
-    expect(project.body.items.some((m) => m.taskId === null && m.body === "오늘 일정 알려 주세요")).toBe(true);
+    expect(project.body.items.some((m) => m.taskId === auto.id && m.body === "오늘 일정 알려 주세요")).toBe(true);
+    expect(project.body.items.filter((m) => m.mine).every((m) => m.taskId)).toBe(true);
     expect(project.body.items.filter((m) => m.taskId === ta.id)).toHaveLength(3);
 
     // 없는 작업·다른 조합은 거절
@@ -268,7 +274,7 @@ describe("작업별 대화", () => {
     expect((await t.call(a, "post", { kind: "진행", title: "섞기", task_id: foreign.id })).isError).toBe(true);
   });
 
-  test("총괄이 작업을 이어 맡기면 지시에 작업 줄이 붙고, 작업을 빼면 거절하며, null 로 맡기면 전체 줄이 붙는다", async () => {
+  test("총괄이 작업을 이어 맡기면 지시에 작업 줄이 붙고, 작업을 빼거나 null 이면 거절하며, 새 일은 새 업무를 만들어 맡긴다", async () => {
     const t = await setup();
     const a = await t.worker("결제", "pay");
     const ta = await t.register(a, { title: "결제 연동", branch: "feat/pay", worktree: "/repo/.wt/pay" });
@@ -278,24 +284,27 @@ describe("작업별 대화", () => {
     expect(t.sentTo(a).find((s) => s.includes("결제 실패 문구"))).toContain(`작업 #${ta.id} '결제 연동'`);
     t.runner.end(a.id);
     await settle();
-    // 작업을 쓰는 프로젝트에서 작업을 빼면 거절한다(말없이 전체로 가 칩이 비지 않게). 전체 지시는 null 로 밝힌다.
+    // 작업을 빼거나 null 이면 거절한다(말없이 전체로 가 칩이 비지 않게). 새 일은 task 로 새 업무를 만들어 맡긴다.
     const missing = await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요" });
     expect(missing.isError).toBe(true);
-    expect(missing.text).toContain("task_id: null");
-    await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: null });
+    expect(missing.text).toContain("task 도구로 새 업무");
+    expect((await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: null })).isError).toBe(true);
+    const made = await t.call(t.lead, "task", { title: "회의록 정리" });
+    const meeting = /#(tk_[A-Za-z0-9]+)/.exec(made.text)![1]!;
+    expect((await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: meeting })).isError).toBeFalsy();
     await settle();
-    expect(t.sentTo(a).find((s) => s.includes("회의록"))).toContain("작업: 전체");
+    expect(t.sentTo(a).find((s) => s.includes("회의록"))).toContain(`작업 #${meeting} '회의록 정리'`);
   });
 
-  test("작업이 없는 프로젝트의 글은 예전과 같고, 옛 글은 작업 없이 전체에 남는다", async () => {
+  test("업무가 없던 프로젝트에서도 대표 글은 새 업무에 붙고, 옛 글은 바꾸지 않고 그대로 남는다", async () => {
     const t = await setup();
     const a = await t.worker("결제", "pay");
     const old = t.store.createMessage({ projectId: t.project.id, mine: true, who: "나", kind: "나", body: "옛 글" });
     expect(old.taskId).toBeNull();
-    await t.api("POST", `/api/projects/${t.project.id}/messages`, { text: "예전처럼", targetMemberId: a.id });
+    const sent = await t.api<{ taskId: string }>("POST", `/api/projects/${t.project.id}/messages`, { text: "예전처럼", targetMemberId: a.id });
     await settle();
     const wire = t.sentTo(a).find((s) => s.includes("예전처럼"))!;
-    expect(wire).not.toContain("작업");
+    expect(wire).toContain(`작업 #${sent.body.taskId} '예전처럼'`);
     expect(formatUserMessage("안녕", [], "msg_1", true)).toBe('[대표 직접] "안녕"\n#msg_1');
     await t.register(a, { title: "결제 연동", branch: "feat/pay" });
     expect(t.store.requireMessage(old.id).taskId).toBeNull();
@@ -335,7 +344,7 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     return { ...t, w, A, B, send, titled, inTask };
   }
 
-  test("A 완료 → B 수신 → 작업 ID 없는 A 후속 보고·자료·결재·할 일은 B 에 저장되지 않고 거절된다. A·전체를 밝히면 그대로, 정상 B 결과는 B", async () => {
+  test("A 완료 → B 수신 → 작업 ID 없는(또는 null) A 후속 보고·자료·결재·할 일은 B 에도 전체에도 저장되지 않고 거절된다. A 를 밝히면 A, 정상 B 결과는 B", async () => {
     const t = await twoTasks();
     await t.send("환불 붙여 주세요", t.A.id);
     await settle();
@@ -354,6 +363,8 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
       ["file", { title: "환불 결과표", content: "# 표" }],
       ["ask", { title: "환불 한도 올릴까요", detail: "배경" }],
       ["todo", { title: "환불 계정 확인" }],
+      ["post", { kind: "알림", title: "환불 후속 메모", task_id: null }],
+      ["todo", { title: "환불 계정 확인", task_id: null }],
     ] as const) {
       const res = await t.call(t.w, tool, args);
       expect(res.isError).toBe(true);
@@ -362,24 +373,22 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     expect(t.inTask(t.B.id)).toEqual(beforeB);
     expect({ messages: t.store.listMessages(t.project.id).length, files: t.store.listFiles(t.project.id).length, todos: t.store.listTodos(t.project.id).length, decisions: t.store.listDecisions(t.project.id).length }).toEqual(beforeAll);
 
-    // A 를 밝히면 A, 전체를 밝히면 전체
+    // A 를 밝히면 A
     await t.call(t.w, "post", { kind: "알림", title: "환불 후속 메모", task_id: t.A.id });
     const f = await t.call(t.w, "file", { title: "환불 결과표", content: "# 표", task_id: t.A.id });
     await t.call(t.w, "ask", { title: "환불 한도 올릴까요", detail: "배경", task_id: t.A.id });
     await t.call(t.w, "todo", { title: "환불 계정 확인", task_id: t.A.id });
-    await t.call(t.w, "post", { kind: "알림", title: "오늘 메모", task_id: null });
     expect(t.titled("환불 후속 메모")!.taskId).toBe(t.A.id);
     expect(t.store.getFile(/#(f_[A-Za-z0-9]+)/.exec(f.text)![1]!)!.taskId).toBe(t.A.id);
     expect(t.store.listOpenDecisionsByMember(t.w.id).at(-1)!.taskId).toBe(t.A.id);
     expect(t.store.listTodos(t.project.id).at(-1)!.taskId).toBe(t.A.id);
-    expect(t.titled("오늘 메모")!.taskId).toBeNull();
     // 정상 B 결과
     await t.call(t.w, "post", { kind: "진행", title: "정산 시작", task_id: t.B.id });
     expect(t.titled("정산 시작")!.taskId).toBe(t.B.id);
     expect(t.inTask(t.B.id).messages).toBe(beforeB.messages + 1);
   });
 
-  test("자동 보고(턴 마지막 글)는 그 턴에 받은 전달이 한 작업이면 그 작업, A·B 가 한 묶음이면 어느 쪽에도 붙지 않고 전체", async () => {
+  test("자동 보고(턴 마지막 글)는 그 턴에 받은 전달이 한 작업이면 그 작업, A·B 가 한 묶음이면 한쪽으로 몰지 않고 A·B 에 같은 글을 남긴다(총괄 보고는 한 번)", async () => {
     const t = await twoTasks();
     // B 하나만 받은 턴: post 없이 끝나면 자동 보고가 B
     await t.send("정산도 봐 주세요", t.B.id);
@@ -388,18 +397,24 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     await settle();
     expect(t.store.listMessages(t.project.id).find((m) => m.body === "정산은 보는 중입니다")!.taskId).toBe(t.B.id);
     // 일하는 동안 A·B 가 쌓여 한 묶음으로 들어간다
-    await t.send("먼저 받을 일", null);
+    const first = await t.send("먼저 받을 일", null);
+    const firstTask = t.store.requireMessage(first.body.id).taskId!;
     await settle();
     await t.send("환불 붙여 주세요", t.A.id);
     await t.send("정산 마저 해 주세요", t.B.id);
-    await t.call(t.w, "post", { kind: "완료", title: "먼저 받은 일 끝", task_id: null });
+    await t.call(t.w, "post", { kind: "완료", title: "먼저 받은 일 끝", task_id: firstTask });
     t.runner.end(t.w.id);
     await settle();
     const bundle = t.sentTo(t.w).find((s) => s.includes("환불 붙여 주세요"))!;
     expect(bundle).toContain("정산 마저 해 주세요");
+    const reportsBefore = t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report").length;
     t.runner.end(t.w.id, "환불은 됐고 정산은 보는 중");
     await settle();
-    expect(t.store.listMessages(t.project.id).find((m) => m.body === "환불은 됐고 정산은 보는 중")!.taskId).toBeNull();
+    const copies = t.store.listMessages(t.project.id).filter((m) => m.body.startsWith("환불은 됐고 정산은 보는 중"));
+    expect(copies.map((m) => m.taskId).sort()).toEqual([t.A.id, t.B.id].sort());
+    expect(copies.every((m) => m.body.includes("업무 2곳에 함께 남겼습니다"))).toBe(true);
+    expect(t.store.listMessages(t.project.id).some((m) => m.memberId === t.w.id && !m.taskId)).toBe(false);
+    expect(t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report").length).toBe(reportsBefore + 1);
   });
 
   test("B 를 하는 중에 A 의 옛 결재 답이 와도: 결재를 이어 준 보고는 그 결재의 작업 A, 이어 준 자료가 서로 다른 작업이면 거절", async () => {
@@ -423,23 +438,20 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     expect(t.titled("부분 환불 반영")!.taskId).toBe(t.A.id);
     const idOf = (r: { text: string }) => /#(f_[A-Za-z0-9]+)/.exec(r.text)![1]!;
     expect((await t.call(t.w, "post", { kind: "알림", title: "표 둘", file_ids: [idOf(fa), idOf(fb)] })).isError).toBe(true);
-    await t.call(t.w, "post", { kind: "알림", title: "표 둘", file_ids: [idOf(fa), idOf(fb)], task_id: null });
-    expect(t.titled("표 둘")!.taskId).toBeNull();
+    expect((await t.call(t.w, "post", { kind: "알림", title: "표 둘", file_ids: [idOf(fa), idOf(fb)], task_id: null })).isError).toBe(true);
+    await t.call(t.w, "post", { kind: "알림", title: "표 둘", file_ids: [idOf(fa), idOf(fb)], task_id: t.B.id });
+    expect(t.titled("표 둘")!.taskId).toBe(t.B.id);
   });
 
-  test("작업을 쓴 적 없는 직원은 예전처럼 task_id 없이 올려도 전체에 남는다", async () => {
+  test("작업을 쓴 적 없는 직원도 task_id 를 빼면 거절되고, 받은 글의 업무 줄(서버가 만든 새 업무)을 넣으면 그 업무에 남는다", async () => {
     const t = await setup();
     const w = await t.worker("검색", "search");
-    await t.api("POST", `/api/projects/${t.project.id}/messages`, { text: "검색 봐 주세요", targetMemberId: w.id });
+    const sent = await t.api<{ taskId: string }>("POST", `/api/projects/${t.project.id}/messages`, { text: "검색 봐 주세요", targetMemberId: w.id });
     await settle();
     const res = await t.call(w, "post", { kind: "완료", title: "검색 봄" });
-    expect(res.isError).toBeFalsy();
-    expect(t.store.listMessages(t.project.id).find((m) => m.title.endsWith("검색 봄"))!.taskId).toBeNull();
-    // 다른 직원이 작업을 써도 이 직원은 그대로
-    const other = await t.worker("결제", "pay");
-    await t.register(other, { title: "환불", branch: "feat/refund" });
-    expect((await t.call(w, "post", { kind: "알림", title: "검색 메모" })).isError).toBeFalsy();
-    // 작업을 등록하면 그때부터는 밝혀야 한다
-    expect((await t.call(other, "post", { kind: "알림", title: "환불 메모" })).isError).toBe(true);
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain(`#${sent.body.taskId} '검색 봐 주세요'`);
+    expect((await t.call(w, "post", { kind: "완료", title: "검색 봄", task_id: sent.body.taskId })).isError).toBeFalsy();
+    expect(t.store.listMessages(t.project.id).find((m) => m.title.endsWith("검색 봄"))!.taskId).toBe(sent.body.taskId);
   });
 });
