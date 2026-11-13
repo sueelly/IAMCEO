@@ -25,16 +25,16 @@ function taskNames(ids: readonly string[], tasks: readonly Task[]): string {
   return ids.map((id) => tasks.find((t) => t.id === id)?.title ?? `#${id}`).join(", ");
 }
 
-/** "실행 1a2b3c4d · 작업: 전체" — 무엇이 멈추는지 누르기 전에 보인다. */
+/** "실행 1a2b3c4d · 업무: 전체" — 무엇이 멈추는지 누르기 전에 보인다. */
 export function runLabel(m: Member, tasks: readonly Task[]): string {
   const run = liveRun(m);
-  return [run ? `실행 ${short(run.runId)}` : "지금 턴", `작업: ${taskNames(run?.taskIds ?? [], tasks)}`].join(" · ");
+  return [run ? `실행 ${short(run.runId)}` : "지금 턴", `업무: ${taskNames(run?.taskIds ?? [], tasks)}`].join(" · ");
 }
 
 /** 결과 안내. followUp: 이어서 보낼 글을 먼저 대기열에 넣었는가. */
 export function stopNotice(r: StopResult, tasks: readonly Task[], followUp: boolean): string {
   const run = r.runId ? `실행 ${short(r.runId)}` : "지금 턴";
-  const work = r.taskIds.length ? `(작업: ${taskNames(r.taskIds, tasks)})` : "";
+  const work = r.taskIds.length ? `(업무: ${taskNames(r.taskIds, tasks)})` : "";
   switch (r.outcome) {
     case "stopped":
       return `${r.memberName}의 ${run}${work}을 멈췄습니다. 대화·바뀐 파일은 그대로이고 끊긴 일은 다시 보내지 않습니다.${followUp ? " 보낸 글은 입력이 가능해지면 한 번 전달됩니다." : ""}`;

@@ -81,7 +81,8 @@ function TaskBar({ task }: { task: Task }) {
     <div className="th-task" role="note">
       <span className="th-task__label">업무</span>
       <span className="th-task__title">{task.title}</span>
-      <span className="th-task__meta">{[task.who, task.branch, task.worktree].filter(Boolean).join(" · ")}</span>
+      {/* 맡은 직원은 적지 않는다. 업무에는 여러 직원이 붙고, 누가 썼는지는 글마다 보인다. */}
+      {task.branch || task.worktree ? <span className="th-task__meta">{[task.branch, task.worktree].filter(Boolean).join(" · ")}</span> : null}
     </div>
   );
 }

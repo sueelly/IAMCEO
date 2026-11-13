@@ -291,6 +291,8 @@ export interface Task {
   /** 만든 뒤 이름을 바꾼 때와 바꾼 직원. 서버가 지은 이름(auto·backfill)은 바꾸기 전까지 임시 이름이다. */
   renamedAt?: string | null;
   renamedBy?: string | null;
+  /** 이 업무에 붙은 마지막 글의 시각. 글이 없으면 null. 이 칸이 생기기 전 응답에는 없다. */
+  lastMessageAt?: string | null;
 }
 
 /** 글·카드·자료·할 일의 업무를 바꾼 기록 한 줄. 원문은 바꾸지 않고 업무 칸만 바꾼다. */

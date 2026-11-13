@@ -51,8 +51,6 @@
 .cmp-tasks { flex:1 1 160px; display:flex; align-items:center; gap:4px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:thin; -webkit-overflow-scrolling:touch; padding:2px 0; }
 .cmp-task { flex:none; max-width:200px; height:28px; padding:0 10px; border-radius:999px; font-size:12.5px; font-weight:500; line-height:28px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink-2);
   background:transparent; box-shadow:inset 0 0 0 1px var(--line-strong); }
-.cmp-task__who { margin-right:5px; font-size:11.5px; font-weight:600; color:var(--link); }
-.cmp-task[aria-pressed="true"] .cmp-task__who { color:rgb(255 255 255 / .85); }
 .cmp-task:hover { color:var(--ink-1); background:var(--soft-hover); }
 .cmp-task[aria-pressed="true"] { color:#fff; font-weight:600; background:var(--accent-fill); box-shadow:inset 0 1px 0 rgb(255 255 255 / .3), var(--lift); }
 

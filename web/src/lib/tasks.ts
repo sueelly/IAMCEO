@@ -1,38 +1,32 @@
 // 대화의 작업 고르기(화면 공통 규칙). 브라우저 API 를 쓰지 않는다.
-import type { Member, Task, WorkItem } from "@shared/types";
+import type { Message, Task } from "@shared/types";
 
 /** 진행판 일 항목에서 생긴 작업이면 그 일 항목 id(서버 규칙: tk_<일 항목 id>). */
 export function workIdOf(task: Pick<Task, "id">): string | null {
   return task.id.startsWith("tk_w_") ? task.id.slice(3) : null;
 }
 
-/** 칩으로 보일 작업: 진행판에서 완료했거나 지운 일 항목의 작업은 숨긴다(글은 '전체'에 남는다). 지금 고른 작업은 남긴다. */
-export function liveTasks(tasks: readonly Task[], work: readonly Pick<WorkItem, "id" | "sec">[] | undefined, keepId: string | null = null): Task[] {
-  if (!work) return [...tasks];
-  const open = new Set(work.filter((w) => w.sec !== "done").map((w) => w.id));
-  return tasks.filter((t) => {
-    const workId = workIdOf(t);
-    return !workId || open.has(workId) || t.id === keepId;
-  });
+/** 업무의 마지막 글 시각: 서버가 준 값과 지금 화면에 받은 글 중 늦은 것. 글이 하나도 없으면 null. */
+export function taskActivity(task: Pick<Task, "id" | "lastMessageAt">, messages: readonly Pick<Message, "taskId" | "at">[] = []): string | null {
+  let last = task.lastMessageAt ?? null;
+  for (const m of messages) if (m.taskId === task.id && (!last || m.at > last)) last = m.at;
+  return last;
 }
 
 /**
- * 이 작업을 맡은 직원 id. 직원이 task 도구로 등록한 작업은 그 직원, 진행판 일 항목의 작업은 담당(who: "엘리트사원 클로드·총괄")에
- * 이름이 적힌 직원들이다. 총괄은 직원이 아니라 빠진다.
+ * 입력칸 아래 업무 목록(대표 2026-11-13·14). 업무는 여러 직원이 함께 하는 목적 단위라 받는 사람·담당과 상관없이 같은 목록이다.
+ * - 대화가 있는 업무는 모두 보인다. 진행판에서 끝낸 일의 업무도 숨기지 않는다(글이 있는데 목록에 없으면 찾아갈 수 없다).
+ * - 글이 하나도 없는 업무(진행판 계획만 있는 일 등)는 눌러도 빈 화면이라 뺀다. 지금 고른 업무는 비어 있어도 남긴다.
+ * - 다른 업무로 합쳐진 업무는 뺀다. 최근 글 순, 같으면 최근 생긴 순.
+ * 서버가 마지막 글 시각을 주지 않는 옛 응답(lastMessageAt 없음)이면 비었는지 모르니 남긴다.
  */
-export function taskWorkers(task: Pick<Task, "memberId" | "who">, workers: readonly Pick<Member, "id" | "name">[]): string[] {
-  if (task.memberId) return workers.some((w) => w.id === task.memberId) ? [task.memberId] : [];
-  const names = new Set(task.who.split(/[·,、/]/).map((x) => x.trim()).filter(Boolean));
-  return workers.filter((w) => names.has(w.name)).map((w) => w.id);
-}
-
-/**
- * 직원이 맡은 작업 목록(직접 등록한 작업 + 진행판에서 담당으로 적힌 작업). targetId 가 없으면 전부, 최신순.
- * 입력칸 업무 칩은 받는 사람과 떼어 늘 전부를 보인다(대표 2026-11-13). 업무를 골라도 받는 사람은 바뀌지 않는다.
- */
-export function visibleTasks(tasks: readonly Task[], targetId: string | null, workers: readonly Pick<Member, "id" | "name">[] = []): Task[] {
-  const list = targetId ? tasks.filter((t) => t.memberId === targetId || taskWorkers(t, workers).includes(targetId)) : [...tasks];
-  return list.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+export function chipTasks(tasks: readonly Task[], messages: readonly Pick<Message, "taskId" | "at">[] = [], keepId: string | null = null): Task[] {
+  const rows = tasks
+    .filter((t) => !t.mergedInto || t.id === keepId)
+    .map((t) => ({ t, last: taskActivity(t, messages) }))
+    .filter(({ t, last }) => t.id === keepId || last !== null || t.lastMessageAt === undefined);
+  const key = (r: { t: Task; last: string | null }) => r.last ?? r.t.createdAt;
+  return rows.sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : a.t.createdAt < b.t.createdAt ? 1 : -1)).map((r) => r.t);
 }
 
 /**

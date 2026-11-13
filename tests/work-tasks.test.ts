@@ -10,7 +10,7 @@ import { openDb } from "../server/db.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import type { Runner } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
-import { liveTasks, taskWorkers, visibleTasks, workIdOf } from "../web/src/lib/tasks";
+import { chipTasks, taskActivity, workIdOf } from "../web/src/lib/tasks";
 
 function setup() {
   const home = mkdtempSync(join(tmpdir(), "iamceo-worktask-"));
@@ -93,26 +93,30 @@ describe("진행판 일 항목의 작업 칩", () => {
 
 describe("화면: 칩으로 보일 작업", () => {
   const task = (id: string, memberId: string | null = null): Task => ({ id, projectId: "p1", memberId, who: "", title: id, branch: null, worktree: null, createdAt: id, updatedAt: id });
-  test("완료했거나 지운 일 항목의 작업은 숨기고, 직원이 등록한 작업과 지금 고른 작업은 남긴다", () => {
-    const tasks = [task("tk_w_open"), task("tk_w_done"), task("tk_w_gone"), task("tk_mine", "w1")];
-    const work = [{ id: "w_open", sec: "doing" as const }, { id: "w_done", sec: "done" as const }];
-    expect(liveTasks(tasks, work).map((x) => x.id)).toEqual(["tk_w_open", "tk_mine"]);
-    expect(liveTasks(tasks, work, "tk_w_done").map((x) => x.id)).toEqual(["tk_w_open", "tk_w_done", "tk_mine"]);
-    expect(workIdOf(task("tk_w_open"))).toBe("w_open");
+  // 대표 2026-11-14: "밑에 업무 목록 뜰 때 맡은 직원은 뜨지 않게… 얘는 작업 목록에 뜨지도 않아… 누르면 아무것도 안뜨는 것도 있는데"
+  // 실제 대표 화면(11-14 06시): 칩 14개 중 9개가 글 0건(진행판 계획만 있는 일), 글이 있는 업무 10개는 진행판에서 끝났다고 칩에서 빠짐.
+  test("업무 목록은 글이 있는 업무를 모두 최근 글 순으로 보이고, 끝낸 일의 업무도 숨기지 않으며, 글 없는 업무는 뺀다", () => {
+    const at = (h: number) => `2026-11-13T${String(h).padStart(2, "0")}:00:00.000Z`;
+    const tasks: Task[] = [
+      { ...task("tk_w_done"), createdAt: at(1), lastMessageAt: at(9) }, // 진행판에서 끝낸 일, 글 있음
+      { ...task("tk_w_plan"), createdAt: at(8), lastMessageAt: null }, // 진행판 계획만, 글 0
+      { ...task("tk_mine", "w1"), createdAt: at(2), lastMessageAt: at(3) },
+      { ...task("tk_owner"), createdAt: at(7), lastMessageAt: null }, // 서버는 글 0이라 했지만 방금 화면에 글이 옴
+      { ...task("tk_merged"), createdAt: at(6), lastMessageAt: at(6), mergedInto: "tk_mine" },
+      { ...task("tk_old_server"), createdAt: at(0) }, // 마지막 글 시각을 모르는 옛 응답: 비었는지 모르니 남긴다
+    ];
+    const live = [{ taskId: "tk_owner", at: at(10) }];
+    expect(chipTasks(tasks, live).map((x) => x.id)).toEqual(["tk_owner", "tk_w_done", "tk_mine", "tk_old_server"]);
+    // 지금 고른 업무는 글이 없어도 남는다(팀 화면 일 목록에서 고른 계획 일)
+    expect(chipTasks(tasks, live, "tk_w_plan").map((x) => x.id)).toContain("tk_w_plan");
+    expect(taskActivity(tasks[3]!, live)).toBe(at(10));
+    expect(workIdOf(task("tk_w_done"))).toBe("w_done");
     expect(workIdOf(task("tk_mine"))).toBeNull();
-    // 직원을 대상으로 고르면 그 직원의 작업만(담당이 적히지 않은 일 항목 작업은 빠진다)
-    expect(visibleTasks(liveTasks(tasks, work), "w1").map((x) => x.id)).toEqual(["tk_mine"]);
   });
 
-  // 대표: "총괄에서는 잘 뜨는데 각 직원별로는 몇 개만 뜨네? 통일시켜" — 진행판 담당에 이름이 적힌 직원의 칩에도 그 작업이 보인다.
-  test("진행판 담당에 이름이 적힌 직원의 업무로 셀 수 있다(칩의 맡은 사람 표시)", () => {
-    const workers = [{ id: "w1", name: "엘리트사원 클로드" }, { id: "w3", name: "작업 실행 체계" }];
-    const t = (id: string, who: string, memberId: string | null = null): Task => ({ ...task(id, memberId), who, createdAt: id });
-    const tasks = [t("tk_w_a", "총괄·엘리트사원 클로드"), t("tk_w_b", "작업 실행 체계"), t("tk_w_c", "비서·총괄"), t("tk_mine", "엘리트사원 클로드", "w1")];
-    expect(taskWorkers(tasks[0]!, workers)).toEqual(["w1"]);
-    expect(taskWorkers(tasks[2]!, workers)).toEqual([]);
-    expect(visibleTasks(tasks, "w1", workers).map((x) => x.id).sort()).toEqual(["tk_mine", "tk_w_a"]);
-    expect(visibleTasks(tasks, "w3", workers).map((x) => x.id)).toEqual(["tk_w_b"]);
+  test("업무 목록은 받는 사람·담당과 상관없이 같다(맡은 직원으로 거르지 않는다)", () => {
+    const tasks: Task[] = [{ ...task("tk_a"), who: "총괄·엘리트사원 클로드", lastMessageAt: "2026-11-13T02:00:00Z" }, { ...task("tk_b", "w3"), who: "작업 실행 체계", lastMessageAt: "2026-11-13T01:00:00Z" }];
+    expect(chipTasks(tasks).map((x) => x.id)).toEqual(["tk_a", "tk_b"]);
   });
 });
 
