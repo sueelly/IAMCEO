@@ -352,10 +352,11 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
+      about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 작업 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 작업을 쓰는 직원은 꼭 넣는다(null 은 어느 작업에도 속하지 않는 전체 글). 이어 준 결재·자료에 작업이 있으면 생략해도 그 작업"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
-        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
+        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
     }),
     async (orch, member, a) => {
@@ -372,7 +373,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         return reply(JSON.stringify({ ...refs, source, files }));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
-      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, taskId: a.task_id });
+      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),

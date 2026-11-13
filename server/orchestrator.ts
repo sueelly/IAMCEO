@@ -400,6 +400,8 @@ export interface PostInput {
   fileIds?: string[];
   decisionId?: string | null;
   correctsMessageId?: string | null;
+  /** 이 글이 확인한 다른 직원의 보고 원본 id. '알림'이면 그 보고를 받은 입력의 보고 의무를 마감한다. */
+  aboutReportId?: string | null;
   /** 대표가 할 일 한 줄. 서버가 본문 첫 줄에 '● 대표 차례: …'로 쓴다(shared/owner-lines.ts). */
   ownerAction?: string | null;
   /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
@@ -524,6 +526,8 @@ const HOLD_NOTES: Record<string, string> = {
 const HELD_RETRY_FACTOR = 5;
 
 const WAKE_POST_KINDS = new Set<string>(["완료", "막힘", "질문"]);
+/** 보고 의무를 마감할 수 있는 도구. 실행이 끝날 때 결과가 안 돌아왔으면 보고 판정을 미룬다. */
+const REPORT_CLOSING_TOOLS = new Set<string>(["post", "ask", "ask_close", "team_assign", "team_add", "team_resume"]);
 
 /** Domain references also include orphan answers and todo correction notices. */
 class OrchestratorDeliveryRecovery extends DeliveryRecovery {
@@ -665,6 +669,9 @@ export class Orchestrator implements OrchestratorApi {
   private readonly projectPatches = new Set<string>();
   private readonly terminalMutations = new Set<string>();
   private readonly agentOperations = new Map<string, Promise<AgentToolResult>>();
+  /** 결과가 아직 안 돌아온 보고·질문·위임 도구 수(직원별). 0 이 되면 미뤄 둔 보고 판정을 한다. */
+  private readonly inflightReportTools = new Map<string, number>();
+  private readonly deferredReportChecks = new Map<string, Set<string>>();
   private readonly providerHomes: OrchestratorDeps["providerHomes"];
 
   private readonly models: ModelCatalogReader;
@@ -1126,23 +1133,93 @@ export class Orchestrator implements OrchestratorApi {
     this.store.setBoardTidiedAt(member.projectId, new Date().toISOString());
   }
 
+  /**
+   * 보고 의무는 실행을 깨운 입력에서만 생긴다. 조용한 안내(wake=false)·판 정리·보고 보완은 의무를 만들지 않는다.
+   * 보고 보완은 원인 실행마다 한 번이고, 보완을 받은 실행이 끝나면 원인 실행을 마감 또는 '보고 미확인'으로 한 번 정리한다.
+   * 같은 재촉으로 다시 깨우지 않는다.
+   */
   private requestMissingReport(member: Member, run: ExecutionJournal): void {
-    if (this.store.requireProject(member.projectId).archived || this.backendOf(member) !== "core" || run.reason === "awaiting_delegation" || this.runtime(member.id).delegated || this.runtime(member.id).background) return;
+    if (this.store.requireProject(member.projectId).archived || this.backendOf(member) !== "core") return;
+    // 결과가 아직 돌아오지 않은 보고·질문·위임 도구가 있으면 그 결과를 본 뒤 판정한다. 확인 못 한 요청을 새로 시키지 않는다.
+    if (this.inflightReportTools.get(member.id)) {
+      const runs = this.deferredReportChecks.get(member.id) ?? new Set<string>();
+      runs.add(run.runId);
+      this.deferredReportChecks.set(member.id, runs);
+      return;
+    }
     const deliveries = run.deliveryIds.map(id => this.store.getDelivery(id)).filter((d): d is Delivery => !!d);
-    if (!deliveries.some(d => d.wake) || deliveries.every(d => isTidy(d) || d.text.startsWith(formatSystem("보고 보완")))) return;
-    if (this.completedReportSince(member, run.createdAt) || this.store.listOpenDecisionsByMember(member.id).some(d => d.createdAt >= run.createdAt)) return;
-    // A blocked post is a result, while a progress update alone is not a final report.
-    let cursor: string | undefined;
-    do {
-      const page = this.store.listMessagePage(member.projectId, { scope: { kind: "member", memberId: member.id }, cursor, limit: 200 });
-      if (page.items.some(m => m.memberId === member.id && !m.mine && m.at >= run.createdAt && ["막힘", "질문"].includes(m.kind))) return;
-      if (!page.nextCursor || !page.items.some(m => m.at >= run.createdAt)) break;
-      cursor = page.nextCursor;
-    } while (cursor);
+    for (const delivery of deliveries) {
+      const followup = this.store.getReportFollowupByDelivery(delivery.id);
+      if (followup && !followup.settledAt) this.settleReportFollowup(member, followup.rootRunId, run.runId);
+    }
+    if (run.reason === "awaiting_delegation" || this.runtime(member.id).delegated || this.runtime(member.id).background) return;
+    const open = this.openReportDuties(member, run.createdAt, this.reportDuties(deliveries));
+    if (!open.length) return;
+    const reports = open.filter(d => d.kind === "report" && d.refType === "message" && d.refId).map(d => d.refId!);
+    const reviewHint = reports.length ? ` 직원 보고를 확인만 했으면 kind 알림에 about_report_id(${reports.map(id => `#${id}`).join(", ")})를 넣어 그 보고 확인을 마감하세요.` : "";
     this.store.claimExecutionNotice(run.runId, "report", () => {
       this.store.appendActivity(member.id, "system", `실행 ${run.runId}의 필수 보고가 없어 보고 보완을 요청했습니다`, `${run.runId}:missing_report`);
-      this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.`) });
+      const supplement = this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.${reviewHint}`) });
+      this.store.recordReportFollowup(run.runId, member.id, member.projectId, supplement.id);
     });
+  }
+
+  /** 실행을 깨운 입력 중 보고가 필요한 것. 보고 보완(원인 실행에 이어진 전달·옛 글 머리)과 판 정리는 뺀다. */
+  private reportDuties(deliveries: Delivery[]): Delivery[] {
+    return deliveries.filter(d => d.wake && !isTidy(d) && !this.store.getReportFollowupByDelivery(d.id) && !d.text.startsWith(formatSystem("보고 보완")));
+  }
+
+  /**
+   * since 이후 근거로 마감되지 않은 의무. 완료·답변·막힘·질문 글, 새 결재, 위임, 기다리는 자기 결재를 밝힌 알림은 실행 전체를 마감한다.
+   * 원보고를 밝힌 알림(reviewed)은 그 보고를 받은 입력만 마감한다. 진행·근거 없는 알림은 마감하지 않는다.
+   */
+  private openReportDuties(member: Member, since: string, duties: Delivery[]): Delivery[] {
+    if (!duties.length) return [];
+    if (this.store.listOpenDecisionsByMember(member.id).some(d => d.createdAt >= since)) return [];
+    let cursor: string | undefined;
+    do {
+      const opts = { scope: { kind: "member" as const, memberId: member.id }, cursor, limit: 200 };
+      const page = this.store.requireProject(member.projectId).archived ? this.store.listArchiveMessagePage(member.projectId, opts) : this.store.listMessagePage(member.projectId, opts);
+      if (page.items.some(m => m.memberId === member.id && !m.mine && m.at >= since && ["완료", "답변", "막힘", "질문"].includes(m.kind))) return [];
+      if (!page.nextCursor || !page.items.some(m => m.at >= since)) break;
+      cursor = page.nextCursor;
+    } while (cursor);
+    const closures = this.store.listReportClosures(member.id, since);
+    if (closures.some(c => c.kind !== "reviewed")) return [];
+    const reviewed = new Set(closures.filter(c => c.kind === "reviewed").map(c => c.causeId));
+    return duties.filter(d => !(d.kind === "report" && d.refType === "message" && d.refId && reviewed.has(d.refId)));
+  }
+
+  /** 보완을 받은 실행(byRunId)이 끝났다. 원인 실행의 의무가 그 사이 마감됐으면 closed, 아니면 '보고 미확인'을 한 번 남긴다. */
+  private settleReportFollowup(member: Member, rootRunId: string, byRunId: string): void {
+    const root = this.store.getExecutionJournal(rootRunId);
+    const duties = root ? this.reportDuties(root.deliveryIds.map(id => this.store.getDelivery(id)).filter((d): d is Delivery => !!d)) : [];
+    const open = root ? this.openReportDuties(member, root.createdAt, duties) : [];
+    if (!open.length) {
+      this.store.settleReportFollowup(rootRunId, "closed", byRunId, () => {
+        this.store.appendActivity(member.id, "system", `실행 ${rootRunId}의 보고를 보완 실행 ${byRunId}에서 확인했습니다`, `${rootRunId}:report_closed`);
+      });
+      return;
+    }
+    this.store.settleReportFollowup(rootRunId, "unconfirmed", byRunId, () => {
+      this.store.appendActivity(member.id, "system", `실행 ${rootRunId}의 보고가 보완 뒤에도 없어 보고 미확인으로 남겼습니다. 같은 보완으로 다시 깨우지 않습니다`, `${rootRunId}:report_unconfirmed`);
+      const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
+      if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", wake: false, text: formatSystem(`보고 미확인: ${member.name}의 실행 ${rootRunId} 결과 보고가 보고 보완 뒤에도 없습니다. 서버는 다시 재촉하지 않습니다. 다음에 판을 볼 때 이 직원의 상태와 결과를 확인하세요.`) });
+    });
+  }
+
+  /** 늦게 끝난 보고·질문·위임 도구 뒤에 미뤄 둔 판정을 한다. */
+  private runDeferredReportChecks(memberId: string): void {
+    if (this.inflightReportTools.get(memberId)) return;
+    const runs = this.deferredReportChecks.get(memberId);
+    if (!runs) return;
+    this.deferredReportChecks.delete(memberId);
+    const member = this.store.getMember(memberId);
+    if (!member) return;
+    for (const runId of runs) {
+      const run = this.store.getExecutionJournal(runId);
+      if (run?.result === "success") this.requestMissingReport(member, run);
+    }
   }
 
   async operation(operationId: string): Promise<OperationReceipt> {
@@ -2881,6 +2958,21 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async handleAgentTool(member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
+    const closes = REPORT_CLOSING_TOOLS.has(name);
+    if (closes) this.inflightReportTools.set(member.id, (this.inflightReportTools.get(member.id) ?? 0) + 1);
+    try {
+      return await this.runAgentTool(member, name, args, signal);
+    } finally {
+      if (closes) {
+        const left = (this.inflightReportTools.get(member.id) ?? 1) - 1;
+        if (left > 0) this.inflightReportTools.set(member.id, left);
+        else this.inflightReportTools.delete(member.id);
+        this.runDeferredReportChecks(member.id);
+      }
+    }
+  }
+
+  private async runAgentTool(member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
     const tools = await this.tools();
     const boardRevision = name === "board" ? this.store.boardRevision(member.projectId) : null;
     const result = await tools.handleAgentTool(this, member, name, args, signal);
@@ -3640,6 +3732,11 @@ export class Orchestrator implements OrchestratorApi {
       const previous = this.store.requireMessage(input.correctsMessageId);
       if (previous.projectId !== member.projectId || previous.memberId !== member.id || previous.mine) throw new ApiError(400, "자신이 작성한 보고만 정정할 수 있습니다");
     }
+    if (input.aboutReportId) {
+      const about = this.store.getMessage(input.aboutReportId);
+      if (!about || about.projectId !== member.projectId || about.mine || !about.memberId || about.memberId === member.id) throw new ApiError(400, "about_report_id 는 이 프로젝트 다른 직원 보고의 원본 id 여야 합니다(받은 글의 '보고 원본 #' 줄)");
+    }
+    const closure = this.postClosure(member, input);
     const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
     // 고정 출처: 이어 준 결재·자료, 정정하는 자신의 이전 보고
     const taskId = this.memberTask(member, input.taskId, [
@@ -3653,12 +3750,26 @@ export class Orchestrator implements OrchestratorApi {
       body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId,
     }), message => {
       this.store.noteDelegationPost(member.id);
+      if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind), refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
     return message;
+  }
+
+  /**
+   * 보고 글이 마감하는 의무. 완료·막힘·질문은 결과다. 알림은 확인한 원보고(reviewed)나 기다리는 자기 결재(waiting)를 밝힐 때만,
+   * 진행은 어떤 경우에도 마감하지 않는다(중간 소식만으로 끝난 일로 치지 않는다).
+   */
+  private postClosure(member: Member, input: PostInput): { kind: "result" | "reviewed" | "waiting"; causeId: string | null } | null {
+    if (WAKE_POST_KINDS.has(input.kind)) return { kind: "result", causeId: null };
+    if (input.kind !== "알림") return null;
+    if (input.aboutReportId) return { kind: "reviewed", causeId: input.aboutReportId };
+    const decision = input.decisionId ? this.store.getDecision(input.decisionId) : null;
+    if (decision && decision.memberId === member.id && decision.status === "open") return { kind: "waiting", causeId: decision.id };
+    return null;
   }
 
   reportReferences(projectId: string, messageId: string): ReportReferences {
@@ -3720,6 +3831,7 @@ export class Orchestrator implements OrchestratorApi {
         taskId,
       });
       this.store.patchMember(member.id, { status: "waiting" });
+      this.store.recordReportClosure({ memberId: member.id, kind: "question", refType: "decision", refId: decision.id });
       return decision;
     }, decision => {
       const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
@@ -4950,7 +5062,7 @@ export class Orchestrator implements OrchestratorApi {
     const title = `${direct ? "(직접) " : ""}(자동) ${firstLine}`;
     const conductor = this.store.getConductor(member.projectId);
     const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId }), message => conductor && conductor.id !== member.id ? [{
-      projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText), wake: true, refType: "message", refId: message.id,
+      projectId: member.projectId, memberId: conductor.id, kind: "report", text: `${formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText)}\n보고 원본 #${message.id}`, wake: true, refType: "message", refId: message.id,
     }] : []);
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
   }

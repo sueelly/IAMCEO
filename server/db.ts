@@ -706,6 +706,30 @@ export const MIGRATIONS: string[] = [
      delivery_id TEXT PRIMARY KEY,
      search_id TEXT NOT NULL
    );`,
+  // v29: 보고 의무의 마감 근거와 보고 보완의 원인 실행. 보완을 받은 실행은 새 보고 의무를 만들지 않고,
+  // 보완 뒤에도 근거가 없으면 원래 실행을 '보고 미확인'으로 한 번만 남긴다(재시작해도 같은 판정).
+  `CREATE TABLE report_closures (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     member_id TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     run_id TEXT,
+     kind TEXT NOT NULL,
+     ref_type TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     cause_id TEXT,
+     at TEXT NOT NULL
+   );
+   CREATE INDEX report_closures_member ON report_closures(member_id, at);
+   CREATE TABLE report_followups (
+     root_run_id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     delivery_id TEXT NOT NULL UNIQUE,
+     requested_at TEXT NOT NULL,
+     settled_kind TEXT,
+     settled_ref TEXT,
+     settled_at TEXT
+   );`,
 ];
 
 export function openDb(path: string): Database {
