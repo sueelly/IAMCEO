@@ -16,6 +16,7 @@ import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from ".
 import { CoreError } from "../server/runner/core-client.ts";
 import { Store } from "../server/store.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 const SERVICE_KEY = "svc-test-key-not-real";
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -124,7 +125,7 @@ async function setup() {
   orch.setServerUrl(url);
   cleanups.push(async () => { await orch.shutdown(); await server.stop(); gw.stop(); });
   const call = async (member: Member, name: string, args: Record<string, unknown> = {}): Promise<AgentToolResult> => {
-    const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args }) });
+    const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }) });
     return (await res.json()) as AgentToolResult;
   };
   const tools = async (member: Member) => {

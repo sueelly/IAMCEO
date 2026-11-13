@@ -26,6 +26,8 @@ import type {
   FileKind,
   Member,
   Task,
+  TaskLink,
+  TaskOrigin,
   MemberLifecycleState,
   MemberKind,
   MemberOrigin,
@@ -51,6 +53,7 @@ import type { DeliveryDispatch, DeliveryIntentResult, DeliveryRecoveryRecord, Do
 import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
+import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
@@ -229,6 +232,8 @@ export interface TaskInput {
   title?: string;
   branch?: string | null;
   worktree?: string | null;
+  /** 새로 만들 때만: 이 업무가 갈라져 나온 업무. */
+  parentTaskId?: string | null;
 }
 
 export interface WorkInput {
@@ -537,8 +542,29 @@ function toTask(r: Row): Task {
     worktree: r.worktree,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    origin: (r.origin ?? (String(r.id).startsWith("tk_w_") ? "board" : "staff")) as TaskOrigin,
+    parentTaskId: r.parent_task_id ?? null,
+    mergedInto: r.merged_into ?? null,
+    renamedAt: r.renamed_at ?? null,
+    renamedBy: r.renamed_by ?? null,
   };
 }
+
+/** 서버가 글에서 지은 이름이고 아직 아무도 목적 이름으로 바꾸지 않았다. */
+export function provisionalTaskTitle(task: Task): boolean {
+  return (task.origin === "auto" || task.origin === "backfill") && !task.renamedAt;
+}
+
+function toTaskLink(r: Row): TaskLink {
+  return {
+    id: r.id, projectId: r.project_id, refType: r.ref_type, refId: r.ref_id, fromTaskId: r.from_task_id ?? null, toTaskId: r.to_task_id ?? null,
+    basis: r.basis, note: r.note ?? null, actor: r.actor, batchId: r.batch_id ?? null, undoneAt: r.undone_at ?? null, createdAt: r.created_at,
+  };
+}
+
+/** 업무를 붙이는 기록의 표. */
+const TASK_REF_TABLES = { message: "messages", decision: "decisions", file: "files", todo: "todos" } as const;
+export type TaskRefType = keyof typeof TASK_REF_TABLES;
 
 function toWork(r: Row): WorkItem {
   return {
@@ -1763,7 +1789,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (!existing) {
       if (item.sec === "done") return;
       const at = nowIso();
-      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, ?)",
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at, origin) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, ?, 'board')",
         id, item.projectId, item.who, title, at, at);
       this.emit({ type: "task", task: this.requireTask(id) });
       return;
@@ -1941,6 +1967,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           ? this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, branch)
           : this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND worktree = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, worktree!);
         existing = r ? toTask(r) : null;
+      } else if (title) {
+        // 브랜치 없이 제목만으로 만든 업무: 같은 직원이 같은 제목으로 다시 부르면(응답 유실·재시도) 새로 만들지 않는다.
+        const r = this.row("SELECT * FROM tasks WHERE project_id = ? AND member_id = ? AND title = ? AND branch IS NULL AND worktree IS NULL AND merged_into IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1", input.projectId, input.memberId, title);
+        existing = r ? toTask(r) : null;
       }
       if (existing) {
         const next = {
@@ -1948,8 +1978,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           branch: branch !== undefined ? branch : existing.branch,
           worktree: worktree !== undefined ? worktree : existing.worktree,
         };
-        if (next.title !== existing.title || next.branch !== existing.branch || next.worktree !== existing.worktree) {
+        const renamed = next.title !== existing.title;
+        // 대표가 이름 붙인 업무는 대표의 말이라 직원이 바꾸지 않는다. 서버가 지은 임시 이름·직원 이름은 목적이 정해지면 바꾼다.
+        if (renamed && existing.origin === "owner") throw new ApiError(409, `대표가 이름 붙인 업무라 이름을 바꾸지 않습니다: #${existing.id} '${existing.title}'`);
+        if (renamed || next.branch !== existing.branch || next.worktree !== existing.worktree) {
           this.run("UPDATE tasks SET title = ?, branch = ?, worktree = ?, updated_at = ? WHERE id = ?", next.title, next.branch, next.worktree, at, existing.id);
+          if (renamed) this.run("UPDATE tasks SET renamed_at = ?, renamed_by = ? WHERE id = ?", at, input.who ?? null, existing.id);
           const task = this.requireTask(existing.id);
           this.emit({ type: "task", task });
           return { task, created: false };
@@ -1958,8 +1992,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       }
       if (!title) throw new ApiError(400, "새 작업에는 제목이 필요합니다");
       const id = newId("tk_");
-      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        id, input.projectId, input.memberId, input.who, title, branch ?? null, worktree ?? null, at, at);
+      const parent = input.parentTaskId ? this.taskRef(input.projectId, input.parentTaskId) : null;
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at, origin, parent_task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'staff', ?)",
+        id, input.projectId, input.memberId, input.who, title, branch ?? null, worktree ?? null, at, at, parent);
       const task = this.requireTask(id);
       this.emit({ type: "task", task });
       return { task, created: true };
@@ -1970,6 +2005,181 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   memberUsesTasks(memberId: string): boolean {
     return !!this.row("SELECT 1 FROM tasks WHERE member_id = ? LIMIT 1", memberId)
       || !!this.row("SELECT 1 FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL AND status = 'delivered' LIMIT 1", memberId);
+  }
+
+  /**
+   * 출처 하나에 업무 하나: 같은 출처 키(message:<글 id> 등)로 이미 만든 업무가 있으면 그것을 돌려주고 새로 만들지 않는다.
+   * 대표 글을 같은 id 로 다시 보내거나, 보고 보완·자동 보고가 되풀이돼도 업무가 늘지 않는다. 등록한 직원은 두지 않는다(memberId NULL).
+   */
+  ensureSourceTask(input: { projectId: string; sourceRef: string; title: string; origin: Exclude<TaskOrigin, "staff" | "board">; who?: string; parentTaskId?: string | null }): { task: Task; created: boolean } {
+    return this.transaction(() => {
+      this.requireProject(input.projectId);
+      const found = this.row("SELECT * FROM tasks WHERE project_id = ? AND source_ref = ?", input.projectId, input.sourceRef);
+      if (found) return { task: toTask(found), created: false };
+      const title = input.title.trim();
+      if (!title) throw new ApiError(400, "새 업무에는 이름이 필요합니다");
+      const parent = input.parentTaskId ? this.taskRef(input.projectId, input.parentTaskId) : null;
+      const id = newId("tk_");
+      const at = nowIso();
+      this.run("INSERT INTO tasks (id, project_id, member_id, who, title, branch, worktree, created_at, updated_at, origin, source_ref, parent_task_id) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
+        id, input.projectId, input.who ?? "", title, at, at, input.origin, input.sourceRef, parent);
+      const task = this.requireTask(id);
+      this.emit({ type: "task", task });
+      return { task, created: true };
+    });
+  }
+
+  /**
+   * 대표가 남기는 기록(대화 글·자료)의 업무. 고른 업무가 있으면 그 업무(합쳐졌으면 합쳐진 곳), 새 업무 이름을 줬으면 그 이름(owner),
+   * 둘 다 없으면 글 첫 줄로 서버가 이름 붙인 새 업무(auto). 같은 출처 키로는 업무가 하나만 생긴다. 본사는 업무를 쓰지 않는다(null).
+   */
+  ownerTask(projectId: string, input: { taskId?: string | null; newTaskTitle?: string | null; sourceRef: string; text: string; fallbackLabel: string; who?: string }): string | null {
+    const project = this.requireProject(projectId);
+    const named = input.newTaskTitle?.trim() || null;
+    if (input.taskId && named) throw new ApiError(400, "고른 업무(taskId)와 새 업무 이름(newTaskTitle)은 함께 보내지 않습니다");
+    if (input.taskId) {
+      const task = this.getTask(input.taskId);
+      if (!task || task.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
+      return this.resolveTask(task).id;
+    }
+    if (project.isHq) {
+      if (named) throw new ApiError(400, "본사 대화는 업무를 쓰지 않습니다");
+      return null;
+    }
+    const title = named ? ownerTaskTitle(named) : taskTitleFrom(input.text, datedTitle(input.fallbackLabel, new Date()));
+    return this.ensureSourceTask({ projectId, sourceRef: input.sourceRef, title, origin: named ? "owner" : "auto", who: input.who ?? "" }).task.id;
+  }
+
+  /** 출처 키로 만든 업무(없으면 null). */
+  sourceTask(projectId: string, sourceRef: string): Task | null {
+    const r = this.row("SELECT * FROM tasks WHERE project_id = ? AND source_ref = ?", projectId, sourceRef);
+    return r ? toTask(r) : null;
+  }
+
+  /** 기록의 지금 업무(기록이 없으면 undefined). */
+  recordTaskId(refType: TaskRefType, refId: string): string | null | undefined {
+    const r = this.row(`SELECT task_id FROM ${TASK_REF_TABLES[refType]} WHERE id = ?`, refId);
+    return r ? ((r.task_id as string | null) ?? null) : undefined;
+  }
+
+  /**
+   * 기록 하나의 업무를 바꾼다. 원문(id·본문·시각·보낸 이)은 그대로 두고 업무 칸만 바꾸며, 바꾼 기록을 task_links 에 남긴다.
+   * from 이 지금 값과 다르면(그새 누가 바꿨으면) 바꾸지 않고 false. 같은 값으로는 바꾸지 않는다.
+   */
+  moveRecordTask(input: { projectId: string; refType: TaskRefType; refId: string; from: string | null; to: string | null; basis: string; actor: string; note?: string | null; batchId?: string | null }): boolean {
+    return this.transaction(() => {
+      const table = TASK_REF_TABLES[input.refType];
+      const row = this.row(`SELECT project_id, task_id FROM ${table} WHERE id = ?`, input.refId);
+      if (!row || row.project_id !== input.projectId) throw new ApiError(404, `기록을 찾을 수 없습니다: ${input.refId}`);
+      const current = (row.task_id as string | null) ?? null;
+      if (current !== input.from || current === input.to) return false;
+      const to = input.to ? this.taskRef(input.projectId, input.to) : null;
+      this.run(`UPDATE ${table} SET task_id = ? WHERE id = ?`, to, input.refId);
+      this.run("INSERT INTO task_links (id, project_id, ref_type, ref_id, from_task_id, to_task_id, basis, note, actor, batch_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        newId("tl_"), input.projectId, input.refType, input.refId, current, to, input.basis, input.note ?? null, input.actor, input.batchId ?? null, nowIso());
+      if (input.refType === "message") {
+        // 그 글을 다시 전달할 때도 같은 업무 줄이 붙게, 아직 안 나간 전달의 업무도 따라 바꾼다(나간 전달은 그때 받은 그대로 둔다).
+        this.run("UPDATE deliveries SET task_id = ? WHERE ref_type = 'message' AND ref_id = ? AND status IN ('queued','held') AND task_id IS ?", to, input.refId, current);
+        this.bumpBoard(input.projectId);
+        this.emit({ type: "message", message: this.requireMessage(input.refId) });
+      } else if (input.refType === "decision") this.emit({ type: "decision", decision: this.getDecision(input.refId)! });
+      else if (input.refType === "todo") this.emit({ type: "todo", todo: this.getTodo(input.refId)! });
+      else this.emit({ type: "file", file: this.getFile(input.refId)! });
+      return true;
+    });
+  }
+
+  /** 합쳐진 업무를 따라가 지금 쓸 업무를 돌려준다(합쳐지지 않았으면 그대로). */
+  resolveTask(task: Task): Task {
+    let current = task;
+    for (let i = 0; i < 8 && current.mergedInto; i++) {
+      const next = this.getTask(current.mergedInto);
+      if (!next || next.projectId !== current.projectId) break;
+      current = next;
+    }
+    return current;
+  }
+
+  /** 총괄의 분류로 빈 업무를 다른 업무에 합쳤다고 남긴다. 업무 자체와 그 출처 키는 지우지 않는다(같은 출처로 다시 만들지 않게). */
+  markTaskMerged(taskId: string, into: string, actor: string): void {
+    this.transaction(() => {
+      const task = this.requireTask(taskId);
+      if (task.mergedInto === into || taskId === into) return;
+      this.taskRef(task.projectId, into);
+      this.run("UPDATE tasks SET merged_into = ?, updated_at = ? WHERE id = ?", into, nowIso(), taskId);
+      this.run("INSERT INTO task_links (id, project_id, ref_type, ref_id, from_task_id, to_task_id, basis, note, actor, created_at) VALUES (?, ?, 'task', ?, ?, ?, 'merged', NULL, ?, ?)",
+        newId("tl_"), task.projectId, taskId, taskId, into, actor, nowIso());
+      this.emit({ type: "task", task: this.requireTask(taskId) });
+    });
+  }
+
+  /**
+   * 업무 사이 갈라진 관계를 남긴다(글은 옮기지 않는다). 나중에 생긴 업무에 아직 부모가 없으면 부모로도 적는다. 같은 관계는 한 번만 남긴다.
+   */
+  recordTaskRelation(input: { projectId: string; taskId: string; fromTaskId: string; basis: "derived"; actor: string; note?: string | null }): void {
+    this.transaction(() => {
+      if (input.taskId === input.fromTaskId) return;
+      const task = this.requireTask(input.taskId);
+      const from = this.requireTask(input.fromTaskId);
+      if (task.projectId !== input.projectId || from.projectId !== input.projectId) throw new ApiError(400, "이 프로젝트의 업무가 아닙니다");
+      if (this.row("SELECT 1 FROM task_links WHERE project_id = ? AND ref_type = 'task' AND ref_id = ? AND from_task_id = ? AND basis = ? AND undone_at IS NULL", input.projectId, input.taskId, input.fromTaskId, input.basis)) return;
+      this.run("INSERT INTO task_links (id, project_id, ref_type, ref_id, from_task_id, to_task_id, basis, note, actor, created_at) VALUES (?, ?, 'task', ?, ?, ?, ?, ?, ?, ?)",
+        newId("tl_"), input.projectId, input.taskId, input.fromTaskId, input.taskId, input.basis, input.note ?? null, input.actor, nowIso());
+      if (!task.parentTaskId && task.createdAt >= from.createdAt) {
+        this.run("UPDATE tasks SET parent_task_id = ?, updated_at = ? WHERE id = ?", from.id, nowIso(), task.id);
+        this.emit({ type: "task", task: this.requireTask(task.id) });
+      }
+    });
+  }
+
+  /** 옛 글 정리 묶음이 업무를 만들었다고 남긴다(되돌릴 때 그 묶음이 만든 업무만 지우려고). */
+  noteTaskCreated(projectId: string, taskId: string, batchId: string, actor: string): void {
+    this.run("INSERT INTO task_links (id, project_id, ref_type, ref_id, from_task_id, to_task_id, basis, note, actor, batch_id, created_at) VALUES (?, ?, 'task', ?, NULL, ?, 'backfill-created', NULL, ?, ?, ?)",
+      newId("tl_"), projectId, taskId, taskId, actor, batchId, nowIso());
+  }
+
+  markTaskLinkUndone(id: string): void {
+    this.run("UPDATE task_links SET undone_at = ? WHERE id = ? AND undone_at IS NULL", nowIso(), id);
+  }
+
+  /**
+   * 아무 기록도 붙지 않은 업무만 지운다(옛 글 정리를 되돌릴 때). 글·결재·자료·할 일·전달·기억 기록이 붙었거나
+   * 다른 업무의 부모·합친 곳이면 지우지 않고 false.
+   */
+  deleteTaskIfEmpty(taskId: string): boolean {
+    return this.transaction(() => {
+      if (!this.getTask(taskId)) return false;
+      for (const table of ["messages", "decisions", "files", "todos", "deliveries", "memory_captures", "memory_searches"]) {
+        if (this.row(`SELECT 1 FROM ${table} WHERE task_id = ? LIMIT 1`, taskId)) return false;
+      }
+      if (this.row("SELECT 1 FROM tasks WHERE parent_task_id = ? OR merged_into = ? LIMIT 1", taskId, taskId)) return false;
+      this.run("DELETE FROM tasks WHERE id = ?", taskId);
+      return true;
+    });
+  }
+
+  /** 업무를 바꾼 기록. ref 를 주면 그 기록의 것만, 오래된 것부터. */
+  listTaskLinks(projectId: string, ref?: { refType: TaskRefType | "task"; refId: string }): TaskLink[] {
+    return (ref
+      ? this.rows("SELECT * FROM task_links WHERE project_id = ? AND ref_type = ? AND ref_id = ? ORDER BY created_at, rowid", projectId, ref.refType, ref.refId)
+      : this.rows("SELECT * FROM task_links WHERE project_id = ? ORDER BY created_at, rowid", projectId)).map(toTaskLink);
+  }
+
+  /**
+   * 업무에 붙은 기록(글·결재·자료·할 일) 중 keep 에 없는 것의 수. 서버가 만든 업무가 대표 글 하나만 담고 있는지 볼 때 쓴다.
+   * keepAuthor 를 주면 그 직원이 쓴 글도 센다에서 뺀다(분류하는 총괄 자신의 글).
+   */
+  taskOtherRecords(taskId: string, keepIds: string[], keepAuthor?: string | null): number {
+    const keep = new Set(keepIds);
+    let n = 0;
+    for (const r of this.rows("SELECT id, member_id FROM messages WHERE task_id = ?", taskId)) if (!keep.has(r.id) && !(keepAuthor && r.member_id === keepAuthor)) n++;
+    for (const table of ["decisions", "files", "todos"]) n += this.rows(`SELECT id FROM ${table} WHERE task_id = ?`, taskId).filter(r => !keep.has(r.id)).length;
+    return n;
+  }
+
+  /** 업무에 붙은 글 id(오래된 것부터). */
+  taskMessageIds(taskId: string): { id: string; memberId: string | null; mine: boolean }[] {
+    return this.rows("SELECT id, member_id, mine FROM messages WHERE task_id = ? ORDER BY at, rowid", taskId).map(r => ({ id: r.id, memberId: r.member_id ?? null, mine: !!r.mine }));
   }
 
   /** 전달의 작업(없으면 null). */

@@ -12,6 +12,7 @@ import { Orchestrator, type OrchestratorTimings } from "../server/orchestrator.t
 import { HerdrError } from "../server/runner/herdr-client.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { IMPORT_HOLD_NOTE, Store } from "../server/store.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 class Fake {
   readonly kind = "herdr" as const;
@@ -105,7 +106,7 @@ async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabl
   const api = (method: string, path: string, body?: unknown, token = "code") =>
     fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const manual = async (name = "직접") => (await (await api("POST", "/agent/join", { project: project.id, name })).json()) as { member: Member; token: string };
-  const tool = async (token: string, name: string, args: unknown) => (await (await api("POST", "/agent/tool", { name, args }, token)).json()) as { text: string; isError?: boolean };
+  const tool = async (token: string, name: string, args: unknown) => (await (await api("POST", "/agent/tool", { name, args: withDefaultTask(store, store.getMemberByToken(token)!, name, args) }, token)).json()) as { text: string; isError?: boolean };
   return { store, orch, runner, project, api, manual, tool, config, runners, herdr };
 }
 
@@ -472,7 +473,7 @@ describe("죽은 직접 세션", () => {
   test("답을 기다리다 조용해지면 offline 으로 내려 게이트가 닫히고, 롱폴이 살아 있으면 내려가지 않는다", async () => {
     const t = await setup({ runnerEnabled: false, timings: { manualOfflineMs: 150, manualIdleMs: 50 } });
     const m = await t.manual();
-    const ask = await t.api("POST", "/agent/tool", { name: "ask", args: { title: "물음", detail: "내용" } }, m.token);
+    const ask = await t.api("POST", "/agent/tool", { name: "ask", args: withDefaultTask(t.store, m.member, "ask", { title: "물음", detail: "내용" }) }, m.token);
     const { wait } = (await ask.json()) as { wait: { decisionId: string } };
     await until(() => t.store.requireMember(m.member.id).status === "waiting", "대기");
     // 살아 있는 동안

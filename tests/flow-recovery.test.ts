@@ -7,6 +7,7 @@ import { Store } from "../server/store.ts";
 import type { Backend, Member, WsEvent } from "../shared/types.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 class FakeRunner implements Runner {
   readonly kind: Backend = "core";
@@ -153,8 +154,8 @@ test("report envelope retains every file, decision, authored order and explicit 
   f.store.patchProject(f.project.id, { runnerEnabled: false });
   const files = ["One", "Two", "Three"].map(title => f.store.createFile({ projectId: f.project.id, title }));
   const decision = f.store.createDecision({ projectId: f.project.id, memberId: worker.id, who: worker.name, title: "Reference" });
-  const first = await f.orch.recordPost(worker, { kind: "완료", title: "Artifacts", fileIds: files.map(file => file.id), decisionId: decision.id });
-  const correction = await f.orch.recordPost(worker, { kind: "알림", title: "Correction", correctsMessageId: first.id });
+  const first = await f.orch.recordPost(worker, { kind: "완료", title: "Artifacts", fileIds: files.map(file => file.id), decisionId: decision.id, taskId: defaultTaskId(f.store, f.project.id) });
+  const correction = await f.orch.recordPost(worker, { kind: "알림", title: "Correction", correctsMessageId: first.id, taskId: defaultTaskId(f.store, f.project.id) });
   const refs = f.orch.reportReferences(f.project.id, first.id);
   expect(refs).toMatchObject({ sourceMessageId: first.id, fileIds: files.map(file => file.id), decisionIds: [decision.id], authoredAt: first.at, correctsMessageId: null });
   const newer = f.orch.reportReferences(f.project.id, correction.id);
@@ -185,7 +186,7 @@ test("core missing final report requests a single supplement, progress is insuff
   const f = fixture(); const member = f.member();
   await f.orch.assign(f.project.id, member.handle, { text: "Do the work" });
   const run = f.store.listPendingExecutions()[0];
-  await f.orch.recordPost(member, { kind: "진행", title: "Still progressing" });
+  await f.orch.recordPost(member, { kind: "진행", title: "Still progressing", taskId: defaultTaskId(f.store, f.project.id) });
   f.runner.end(member);
   await until(() => f.runner.sent.length === 2);
   expect(f.store.getExecutionJournal(run.runId)?.reportRequestedAt).toEqual(expect.any(String));
@@ -202,11 +203,11 @@ test("completed/blocked posts, questions, delegation and tidy-only turns are val
     const text = kind === "정리" ? "[시스템] 판 정리: nothing changed" : "Work";
     f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "system", text });
     await f.orch.pump(member.id);
-    if (kind === "질문") await f.orch.registerAsk(member, { title: "Need a decision" });
+    if (kind === "질문") await f.orch.registerAsk(member, { title: "Need a decision", taskId: defaultTaskId(f.store, f.project.id) });
     else if (kind === "위임") {
       const child = f.member();
-      expect((await f.orch.handleAgentTool(member, "team_assign", { member: child.handle, text: "Delegate" })).isError).toBeUndefined();
-    } else if (kind !== "정리") await f.orch.recordPost(member, { kind, title: "Result" });
+      expect((await f.orch.handleAgentTool(member, "team_assign", withDefaultTask(f.store, member, "team_assign", { member: child.handle, text: "Delegate" }))).isError).toBeUndefined();
+    } else if (kind !== "정리") await f.orch.recordPost(member, { kind, title: "Result", taskId: defaultTaskId(f.store, f.project.id) });
     f.runner.end(member);
     await Bun.sleep(10);
     expect(f.store.listDeliveries().filter(d => d.text.includes("보고 보완:"))).toHaveLength(0);

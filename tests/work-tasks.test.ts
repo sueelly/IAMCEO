@@ -67,13 +67,15 @@ describe("진행판 일 항목의 작업 칩", () => {
     expect(reopened.listTasks(t.project.id)).toHaveLength(1);
   });
 
-  test("일 항목에서 생긴 작업은 직원에게 task_id 를 강제하지 않는다", async () => {
+  test("일 항목의 담당으로 적혀도 그 작업으로 짐작하지 않는다: 근거 없는 직원 글은 거절하고 새 업무를 만들라고 안내한다", async () => {
     const t = setup();
     const orch = new Orchestrator({ config: t.config, store: t.store, runners: new Map<Backend, Runner>() });
     const w = t.store.createMember({ projectId: t.project.id, kind: "worker", name: "작업 실행 체계", handle: "w3", role: "개발" } as never);
-    t.store.upsertWork({ projectId: t.project.id, sec: "doing", title: "기억", who: "작업 실행 체계" });
+    const item = t.store.upsertWork({ projectId: t.project.id, sec: "doing", title: "기억", who: "작업 실행 체계" });
     expect(t.store.memberUsesTasks(w.id)).toBe(false);
-    expect(orch.memberTask(w)).toBeNull();
+    expect(() => orch.memberTask(w)).toThrow(/task 도구로 새 업무를 만들고/);
+    expect(() => orch.memberTask(w, null)).toThrow(/null 로 '전체'에 두지 않/);
+    expect(orch.memberTask(w, Store.workTaskId(item.id))).toBe(Store.workTaskId(item.id));
     await orch.shutdown();
   });
 
@@ -140,17 +142,25 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     return { ...t, orch, lead, w, deliveries, chip, taskMessages };
   }
 
-  test("작업이 없는 프로젝트는 예전대로: task_id 없이 맡기고 총괄 글은 전체", async () => {
+  test("업무가 하나도 없는 프로젝트에서도 지시·총괄 글은 업무 없이 남지 않는다: 빼면 거절하고, task 로 새 업무를 만들어 넣는다", async () => {
     const t = await team();
     const r = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "확인해 주세요" });
-    expect(r.isError).toBeFalsy();
-    expect(t.store.deliveryTaskId(t.deliveries()[0]!.id)).toBeNull();
-    const p = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "맡겼습니다" });
-    expect(p.isError).toBeFalsy();
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("task 도구로 새 업무");
+    expect(t.deliveries()).toHaveLength(0);
+    const made = await t.orch.handleAgentTool(t.lead, "task", { title: "로그인 확인" });
+    const id = /#(tk_[A-Za-z0-9_-]+)/.exec(made.text)![1]!;
+    // 같은 제목으로 다시 부르면(응답 유실·재시도) 새로 만들지 않는다
+    expect(/#(tk_[A-Za-z0-9_-]+)/.exec((await t.orch.handleAgentTool(t.lead, "task", { title: "로그인 확인" })).text)![1]).toBe(id);
+    expect(t.store.listTasks(t.project.id)).toHaveLength(1);
+    expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "확인해 주세요", task_id: id })).isError).toBeFalsy();
+    expect(t.store.deliveryTaskId(t.deliveries()[0]!.id)).toBe(id);
+    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "맡겼습니다" })).isError).toBe(true);
+    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "맡겼습니다", task_id: id })).isError).toBeFalsy();
     await t.orch.shutdown();
   });
 
-  test("칩이 생긴 뒤 task_id 를 빼면 지시·총괄 글을 거절하고, 밝히면 지시·보고가 같은 칩에 모인다", async () => {
+  test("칩이 생긴 뒤 task_id 를 빼거나 null 이면 지시·총괄 글을 거절하고, 밝히면 지시·보고가 같은 칩에 모인다", async () => {
     const t = await team();
     const a = await t.chip("작업A");
     const b = await t.chip("작업B");
@@ -168,12 +178,14 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     expect(t.store.deliveryTaskId(d.id)).toBe(a);
     expect(d.text).toContain(`작업 #${a}`);
 
-    // 총괄 자기 글도 밝혀야 한다(빼면 전체로 새지 않게 거절)
+    // 총괄 자기 글도 밝혀야 한다(빼거나 null 이면 업무 없이 새지 않게 거절)
     const leadMiss = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다" });
     expect(leadMiss.isError).toBe(true);
     expect(leadMiss.text).toContain("work_set");
     expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다", task_id: a })).isError).toBeFalsy();
-    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "알림", title: "판 정리", task_id: null })).isError).toBeFalsy();
+    const leadNull = await t.orch.handleAgentTool(t.lead, "post", { kind: "알림", title: "판 정리", task_id: null });
+    expect(leadNull.isError).toBe(true);
+    expect(leadNull.text).toContain("null 로 '전체'에 두지 않");
 
     // 직원 보고·결재·자료
     expect((await t.orch.handleAgentTool(t.w, "post", { kind: "완료", title: "A 끝", task_id: a })).isError).toBeFalsy();
@@ -183,38 +195,69 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     const titles = t.taskMessages(a).map((m) => m.title);
     expect(titles).toEqual(expect.arrayContaining(["A 맡겼습니다", "A 끝", "A 합칠까요?"]));
     expect(t.taskMessages(b)).toHaveLength(0);
-    expect(t.store.listMessagePage(t.project.id).items.find((m) => m.title === "판 정리")!.taskId ?? null).toBeNull();
+    expect(t.store.listMessagePage(t.project.id).items.some((m) => m.title === "판 정리")).toBe(false);
 
-    // 일부러 전체 지시는 null 로
-    expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "전체 일", task_id: null })).isError).toBeFalsy();
-    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBeNull();
+    // null 지시(옛 도구의 '전체')도 근거가 없으면 거절한다
+    const nullAssign = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "전체 일", task_id: null });
+    expect(nullAssign.isError).toBe(true);
+    expect(t.deliveries()).toHaveLength(1);
     await t.orch.shutdown();
   });
 
-  test("대표가 칩에서 보낸 글을 인용하면 그 작업이 증거가 되고, 다른 작업을 넣으면 거절한다. 전체 글은 옮기지 않는다", async () => {
+  test("대표가 칩에서 보낸 글을 인용하면 그 작업이 증거가 되고, 다른 작업을 넣으면 거절한다. 업무 없이 보낸 글은 서버가 만든 새 업무를 총괄이 분류한다", async () => {
     const t = await team();
     const a = await t.chip("작업A");
     const b = await t.chip("작업B");
     const onB = await t.orch.sendUserMessage(t.project.id, { text: "B 버튼 색을 파랗게 바꿔 줘", taskId: b });
     expect(onB.taskId).toBe(b);
     const whole = await t.orch.sendUserMessage(t.project.id, { text: "전체에서 보낸 다른 부탁이야", taskId: null });
+    const auto = t.store.getTask(whole.taskId!)!;
+    expect(auto).toMatchObject({ title: "전체에서 보낸 다른 부탁이야", origin: "auto", memberId: null, mergedInto: null });
 
     const quoted = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "B 색 바꾸기", user_quote: "B 버튼 색을 파랗게 바꿔 줘" });
     expect(quoted.isError).toBeFalsy();
     expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(b);
 
+    // 대표가 고른 업무의 글은 다른 업무로 옮기지 않는다
     const wrong = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "B 색 바꾸기", user_quote: "B 버튼 색을 파랗게 바꿔 줘", task_id: a });
     expect(wrong.isError).toBe(true);
     expect(wrong.text).toContain(b);
+    expect(t.store.getMessage(onB.id)!.taskId).toBe(b);
 
-    // 전체 글 인용만으로는 작업이 정해지지 않는다(밝혀야 한다)
+    // 업무 없이 보낸 글을 인용하면 서버가 만든 그 업무가 증거다
     const fromWhole = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "다른 부탁", user_quote: "전체에서 보낸 다른 부탁이야" });
-    expect(fromWhole.isError).toBe(true);
-    // 총괄이 새 칩으로 맡겨도 대표의 원래 전체 글은 전체에 남는다
+    expect(fromWhole.isError).toBeFalsy();
+    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(auto.id);
+
+    // 총괄이 그 글을 이미 있는 업무 C 의 일로 분류하면: 그 업무에 대표 글만 있으니 글을 C 로 옮기고 기록을 남긴다(원문은 그대로)
     const c = await t.chip("작업C");
+    const before = t.store.getMessage(whole.id)!;
     expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "다른 부탁", user_quote: "전체에서 보낸 다른 부탁이야", task_id: c })).isError).toBeFalsy();
-    expect(t.store.getMessage(whole.id)!.taskId ?? null).toBeNull();
+    const after = t.store.getMessage(whole.id)!;
+    expect(after.taskId).toBe(c);
+    expect({ ...after, taskId: null }).toEqual({ ...before, taskId: null });
+    expect(t.store.getTask(auto.id)!.mergedInto).toBe(c);
+    expect(t.store.listTaskLinks(t.project.id, { refType: "message", refId: whole.id })).toEqual([expect.objectContaining({ fromTaskId: auto.id, toTaskId: c, basis: "classify", actor: t.lead.id })]);
     expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(c);
+    // 합쳐진 업무 id 로 오는 글은 합쳐진 곳으로 간다(오래 열어 둔 화면·옛 작업 줄)
+    expect((await t.orch.sendUserMessage(t.project.id, { text: "하나 더", taskId: auto.id })).taskId).toBe(c);
+    expect(t.orch.memberTask(t.w, auto.id)).toBe(c);
+    await t.orch.shutdown();
+  });
+
+  test("서버가 만든 업무에 다른 직원 글이 이미 있으면 총괄이 다른 업무로 맡겨도 글을 옮기지 않고 갈라진 관계만 남긴다", async () => {
+    const t = await team();
+    const whole = await t.orch.sendUserMessage(t.project.id, { text: "견적서 양식 만들어 줘" });
+    const auto = whole.taskId!;
+    expect((await t.orch.handleAgentTool(t.w, "post", { kind: "진행", title: "양식 초안 작성 중", task_id: auto })).isError).toBeFalsy();
+    const made = await t.orch.handleAgentTool(t.lead, "task", { title: "견적서 양식 개편" });
+    const next = /#(tk_[A-Za-z0-9_-]+)/.exec(made.text)![1]!;
+    expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "개편으로 이어서", user_quote: "견적서 양식 만들어 줘", task_id: next })).isError).toBeFalsy();
+    expect(t.store.getMessage(whole.id)!.taskId).toBe(auto);
+    expect(t.store.getTask(auto)!.mergedInto).toBeNull();
+    expect(t.store.getTask(next)!.parentTaskId).toBe(auto);
+    expect(t.store.listTaskLinks(t.project.id, { refType: "task", refId: next })).toEqual([expect.objectContaining({ fromTaskId: auto, toTaskId: next, basis: "derived" })]);
+    expect(t.store.deliveryTaskId(t.deliveries().at(-1)!.id)).toBe(next);
     await t.orch.shutdown();
   });
 

@@ -19,6 +19,7 @@ import { ApiError, Store } from "../server/store.ts";
 import type { AgentToolResult } from "../server/orchestrator-api.ts";
 import type { AgentOperationService } from "../server/service-contracts.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { withDefaultTask } from "./fixtures/default-task.ts";
 
 const runtime = createIsolatedRuntime();
 const FAKE = resolve(import.meta.dir, "fixtures", "fake-claude.ts");
@@ -91,11 +92,15 @@ async function connect(token: string, opts: { url?: string; env?: Record<string,
   const env: Record<string, string> = { ...runtime.childEnv(), IAMCEO_URL: opts.url ?? url, IAMCEO_TOKEN: token, ...opts.env };
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp"], env, stderr: "pipe" }));
   clients.push(client);
+  clientTokens.set(client, token);
   return client;
 }
 
+/** 규칙을 지키는 직원처럼 업무 id 를 넣는다(브리지 왕복이 주제인 시험이라 업무는 시험 업무 하나). */
+const clientTokens = new WeakMap<Client, string>();
 async function callText(client: Client, name: string, args: Record<string, unknown> = {}) {
-  const r = await client.callTool({ name, arguments: args });
+  const member = store.getMemberByToken(clientTokens.get(client) ?? "");
+  const r = await client.callTool({ name, arguments: member ? withDefaultTask(store, member, name, args) : args });
   const content = r.content as { type: string; text: string }[];
   return { text: content.map((c) => c.text).join(""), isError: r.isError === true };
 }
@@ -241,7 +246,7 @@ describe("직접 띄운 CLI 의 ask", () => {
 
     const progress: number[] = [];
     const pending = client.callTool(
-      { name: "ask", arguments: { title: "손님 질문", detail: "배경", options: [{ k: "y", label: "좋아요", desc: "진행" }] } },
+      { name: "ask", arguments: withDefaultTask(store, member, "ask", { title: "손님 질문", detail: "배경", options: [{ k: "y", label: "좋아요", desc: "진행" }] }) },
       CallToolResultSchema,
       { onprogress: (p) => progress.push(p.progress), resetTimeoutOnProgress: true },
     );
@@ -252,7 +257,7 @@ describe("직접 띄운 CLI 의 ask", () => {
     await orch.answerDecision(decision.id, { choice: "y", note: "메모요" });
     const result = await pending;
     expect(result.isError).toBeFalsy();
-    expect((result.content as { text: string }[])[0]!.text).toBe(`[대표 답(원문) '손님 질문'] "좋아요"(진행) 메모 "메모요" #${decision.id}`);
+    expect((result.content as { text: string }[])[0]!.text).toBe(`[대표 답(원문) '손님 질문'] "좋아요"(진행) 메모 "메모요" #${decision.id} · 작업 #${decision.taskId}`);
     expect(store.requireDecision(decision.id).status).toBe("delivered");
 
     const count = progress.length;

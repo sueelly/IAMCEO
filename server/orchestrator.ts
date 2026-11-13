@@ -85,8 +85,10 @@ import { detectHerdr, HerdrRunner, inspectPane, listAgents, type PaneInspection 
 import { approvalSummary } from "./runner/approval.ts";
 import { exactSource, measureContext, validWindow } from "./runner/context.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, RunnerStartResult, RunnerTerminalIdentity, DeliveryRepair } from "./runner/types.ts";
-import { ApiError, TASK_SOURCE_KINDS, type AppliedConfig, type ExecutionJournal, type MemoryCapture, type NewDelivery, type Store } from "./store.ts";
+import { ApiError, provisionalTaskTitle, type AppliedConfig, type ExecutionJournal, type MemoryCapture, type NewDelivery, type Store } from "./store.ts";
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
+import { newId } from "./db.ts";
+import { datedTitle, taskTitleFrom } from "./task-names.ts";
 import { clip, DevMemory, devMemoryConfigFromEnv, findSensitive, memoryKindLabel, memoryTaskId, MemoryError, redactSensitive, stableEventId, type Experience, type ExperienceInput } from "./integrations/dev-memory.ts";
 import { conductorHandle, conductorName } from "./text.ts";
 
@@ -158,9 +160,10 @@ export function formatUserMessage(text: string, attachments: Attachment[], id: s
  * task 가 null 이면 대표가 '전체'에서 보낸 글이다. 그 글의 보고를 직전 작업에 붙이지 않게 알린다.
  */
 export function formatTaskLine(task: Task | null): string {
-  if (!task) return "작업: 전체(어느 작업에도 속하지 않는 글). 이 일의 post·ask·file·todo 에 task_id 를 넣지 않는다";
+  if (!task) return "작업: 없음(업무가 붙기 전의 옛 글). 이 일의 post·ask·file·todo 에는 이어 갈 업무의 task_id 를 넣거나, 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다";
   const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
-  return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다`;
+  const naming = provisionalTaskTitle(task) ? ` 이 이름은 서버가 글에서 지은 임시 이름이다. 목적이 드러나는 이름(40자 안)으로 task 도구(task_id "${task.id}", title)로 바꾸고, 대화 중 목적이 정해지거나 바뀌면 다시 바꾼다` : "";
+  return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다${naming ? `.${naming}` : ""}`;
 }
 
 /** 결재 답·할 일 알림 끝에 붙는 작업 표지. 옛 카드(작업 없음)는 붙이지 않는다. */
@@ -371,6 +374,8 @@ export interface NewMemberInput {
   firstInstruction?: string;
   userQuote?: string;
   parallel?: boolean;
+  /** 첫 지시가 속한 업무. 업무를 쓰는 프로젝트에서 첫 지시를 주면 꼭 있어야 한다(instructionTask 로 정한다). */
+  taskId?: string | null;
 }
 
 export interface AssignInput {
@@ -1105,12 +1110,15 @@ export class Orchestrator implements OrchestratorApi {
           this.requestMissingReport(member, run);
         }
         if (outcome === "interrupted") this.store.claimExecutionNotice(run.runId, "interruption", () => {
-          this.systemMessage(member.projectId, `${member.name}: 실행 ${run.runId} 중단 — ${reason ?? "종료 근거 없이 세션이 사라졌습니다"}`);
+          // 중단 알림은 그 실행이 받은 업무에 붙인다(정할 수 없으면 그 직원의 세션 알림 업무). 총괄에게 가는 안내도 같은 업무다.
+          const runTasks = this.certainTasks(this.runDeliveries(run));
+          const runTask = runTasks.length === 1 ? runTasks[0]! : null;
+          this.memberNotice(member, `${member.name}: 실행 ${run.runId} 중단 — ${reason ?? "종료 근거 없이 세션이 사라졌습니다"}`, this.runDeliveries(run));
           const conductor = this.store.getConductor(member.projectId);
           // 대표가 멈춘 것은 대표가 이어서 지시한다. 총괄을 깨워 같은 일을 다시 시키게 하지 않는다. 총괄이 멈춘 것은 총괄이 이미 안다.
           if (stoppedBy === "user") {
-            if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${member.name}의 실행 ${run.runId}을 직접 멈췄습니다. 전달 ${run.deliveryIds.join(", ")}. 이어서 할 지시는 대표가 직접 보냈거나 보냅니다. 같은 일을 다시 시키지 말고 판만 맞추세요.`), wake: false });
-          } else if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true });
+            if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${member.name}의 실행 ${run.runId}을 직접 멈췄습니다. 전달 ${run.deliveryIds.join(", ")}. 이어서 할 지시는 대표가 직접 보냈거나 보냅니다. 같은 일을 다시 시키지 말고 판만 맞추세요.`), wake: false, taskId: runTask });
+          } else if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true, taskId: runTask });
         });
       }
     });
@@ -1139,9 +1147,14 @@ export class Orchestrator implements OrchestratorApi {
       if (!page.nextCursor || !page.items.some(m => m.at >= run.createdAt)) break;
       cursor = page.nextCursor;
     } while (cursor);
+    // 보고 보완도 그 실행이 받은 업무를 밝힌다. 하나면 그 업무 줄을 붙이고, 여럿이면 업무마다 따로 보고하라고 적는다(서버가 고르지 않는다).
+    const taskIds = this.turnTasks(deliveries);
+    const tasks = taskIds.map(id => this.store.getTask(id)).filter((t): t is Task => !!t);
+    const taskNote = tasks.length > 1 ? `\n이 실행은 여러 업무의 글을 받았습니다: ${tasks.map(t => `#${t.id} '${t.title}'`).join(", ")}. 업무마다 그 task_id 로 따로 post 하세요.`
+      : tasks.length === 1 ? `\n${formatTaskLine(tasks[0]!)}` : "";
     this.store.claimExecutionNotice(run.runId, "report", () => {
       this.store.appendActivity(member.id, "system", `실행 ${run.runId}의 필수 보고가 없어 보고 보완을 요청했습니다`, `${run.runId}:missing_report`);
-      this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.`) });
+      this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.`) + taskNote, taskId: tasks.length === 1 ? tasks[0]!.id : null });
     });
   }
 
@@ -1297,7 +1310,7 @@ export class Orchestrator implements OrchestratorApi {
         }
         if (member.status === "working" || member.status === "blocked") {
           this.settle(member);
-          this.systemMessage(project.id, `서버 재시작으로 ${member.name}의 턴이 끊겼습니다`);
+          this.memberNotice(member, `서버 재시작으로 ${member.name}의 턴이 끊겼습니다`);
           const conductor = this.store.getConductor(project.id);
           if (conductor && conductor.id !== member.id) {
             this.store.enqueue({
@@ -1342,7 +1355,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 일하던 칸을 잃었거나 턴이 끊겼다. 대기열이 없으면 아무도 깨우지 않아 팀이 조용히 멈춘다. 총괄이 기다리는 일이라 깨운다. */
   private noticeCutTurn(member: Member, why: string): void {
-    this.systemMessage(member.projectId, `${member.name}: ${why}`);
+    this.memberNotice(member, `${member.name}: ${why}`);
     const conductor = this.store.getConductor(member.projectId);
     if (conductor && conductor.id !== member.id) {
       void this.deliver({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}: ${why}. 필요하면 다시 지시하세요.`) });
@@ -2123,13 +2136,22 @@ export class Orchestrator implements OrchestratorApi {
     const attachments = (req.attachmentIds ?? []).map(id => this.store.getAttachment(id)).filter((a): a is Attachment => a !== null);
     const target = req.targetMemberId ? this.store.requireMember(req.targetMemberId) : null;
     if (target && target.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
-    const task = req.taskId ? this.store.requireTask(req.taskId) : null;
-    if (task && task.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
+    const chosen = req.taskId ? this.store.requireTask(req.taskId) : null;
+    if (chosen && chosen.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
+    const named = req.newTaskTitle?.trim() || null;
+    if (chosen && named) throw new ApiError(400, "고른 업무(taskId)와 새 업무 이름(newTaskTitle)은 함께 보내지 않습니다");
+    if (named && project.isHq) throw new ApiError(400, "본사 대화는 업무를 쓰지 않습니다");
+    // 합쳐진 업무를 골랐으면(오래 열어 둔 화면) 합쳐진 곳으로 보낸다.
+    const picked = chosen ? this.store.resolveTask(chosen) : null;
+    const messageId = req.id ?? newId("msg_");
     let recipient = target ?? this.store.getConductor(projectId);
     let booting: Promise<void> | null = null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => {
-      const message = this.store.createMessage({ id: req.id, projectId, mine: true, who: "나", kind: "나", body: req.text,
-        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued", taskId: task?.id ?? null });
+      // 같은 id 로 다시 보낸 글은 처음 붙은 업무 그대로다(업무를 새로 만들지 않는다).
+      const existing = this.store.getMessage(messageId);
+      const taskId = existing ? existing.taskId ?? null : picked?.id ?? this.ownerMessageTask(project, messageId, req.text, named, attachments.length > 0, target);
+      const message = this.store.createMessage({ id: messageId, projectId, mine: true, who: "나", kind: "나", body: req.text,
+        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued", taskId });
       if (!recipient && project.runnerEnabled) {
         const spawn = this.beginConductor(project);
         recipient = spawn.member;
@@ -2140,15 +2162,26 @@ export class Orchestrator implements OrchestratorApi {
     }, message => {
       if (!recipient) return [];
       const intents: NewDelivery[] = [{ projectId, memberId: recipient.id, kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target, this.taskLineFor(projectId, task?.id ?? null)), refType: "message", refId: message.id }];
+        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target, this.taskLineFor(projectId, message.taskId)), refType: "message", refId: message.id }];
       const conductor = this.store.getConductor(projectId);
+      const task = message.taskId ? this.store.getTask(message.taskId) : null;
+      // 직접 지시 알림도 그 글의 업무에 붙인다(총괄이 같은 업무 칩에서 판을 맞추게).
       if (target && conductor && conductor.id !== target.id) intents.push({ projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id})` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false });
+        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id} '${task.title}')` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false, taskId: task?.id ?? null });
       return intents;
     });
     if (booting) await (booting as Promise<void>).catch(e => console.warn(`${project.name} 총괄을 띄우지 못했습니다:`, (e as Error).message));
     await Promise.all([...new Set(deliveries.map(d => d.memberId))].map(id => this.pump(id)));
     return this.store.requireMessage(message.id);
+  }
+
+  /**
+   * 업무를 고르지 않고 보낸 대표 글의 업무. 대표가 새 업무 이름을 줬으면 그 이름(owner), 아니면 글 첫 줄로 서버가 이름 붙인 새 업무(auto).
+   * 출처 키가 글 id 라 같은 글로는 업무가 하나만 생긴다. 마지막으로 본 업무로 짐작하지 않는다. 본사는 업무를 쓰지 않는다.
+   * auto 업무는 총괄이 그 대표 글을 인용해 다른 업무로 맡기면 그 업무로 합쳐진다(instructionTask).
+   */
+  private ownerMessageTask(project: Project, messageId: string, text: string, named: string | null, hasAttachments: boolean, target: Member | null): string | null {
+    return this.store.ownerTask(project.id, { newTaskTitle: named, sourceRef: `message:${messageId}`, text, fallbackLabel: hasAttachments ? "대표 첨부" : "대표 글", who: target?.name ?? "" });
   }
 
   /** 첨부를 그 직원의 폴더로 잇는다. herdr 칸은 이 폴더만 승인 없이 읽고, 다른 프로젝트의 첨부는 열지 않는다. */
@@ -2479,7 +2512,7 @@ export class Orchestrator implements OrchestratorApi {
     const what = r.chosen.freeText ? `직접 입력으로 답했습니다: ${Orchestrator.cut(cleanText(req.text ?? ""), 120)}` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}' 을 골랐습니다`;
     this.store.appendActivity(member.id, "system", `대표가 대화에서 ${what} · ${Orchestrator.cut([r.prompt.title, r.prompt.question].filter(Boolean).join(" — "), 160)}`);
     // 대화에도 한 줄 남긴다: 다른 탭·기기에서도 이미 답한 것을 보고, 업무 지시와 섞이지 않게 시스템 글로 둔다.
-    this.systemMessage(member.projectId, `${member.name}의 ${r.prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 대화에서 답함 — ${r.chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}'`}`);
+    this.memberNotice(member, `${member.name}의 ${r.prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 대화에서 답함 — ${r.chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}'`}`);
     return receipt("answered", r.chosen.freeText ? "보냈습니다" : `'${Orchestrator.cut(r.chosen.label, 60)}' 을 골랐습니다`, r.chosen.label);
   }
 
@@ -2607,7 +2640,7 @@ export class Orchestrator implements OrchestratorApi {
       this.store.patchProject(project.id, { runnerEnabled: false });
       this.store.setRunnerByAdopt(project.id, false);
     }
-    this.systemMessage(project.id, `${josa(member.name, "을")} 편입 해제했습니다. 세션과 대화 기록은 그대로입니다`);
+    this.memberNotice(member, `${josa(member.name, "을")} 편입 해제했습니다. 세션과 대화 기록은 그대로입니다`);
     const conductor = this.store.getConductor(project.id);
     if (conductor) await this.deliver({ projectId: project.id, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${josa(member.name, "을")} 편입 해제했습니다. 이제 지시할 수 없습니다.${dropped.length ? ` 나가지 않은 입력 ${dropped.length}건: ${dropped.join(" / ")}` : ""}`), wake: false });
     const resumeCommand = !paneKept && member.sessionId ? `cd ${shellQuote(member.cwd)} && claude --resume ${shellQuote(member.sessionId)}` : null;
@@ -3020,6 +3053,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!name) throw new ApiError(400, "이름이 필요합니다");
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
     const quote = input.userQuote?.trim() ? { text: input.userQuote, verified: source !== null, source } : null;
+    const firstTask = input.firstInstruction ? this.instructionTaskFor(projectId, input.taskId) : null;
     const { value: { member, ready }, deliveries } = this.store.transaction(() => {
       const spawned = this.store.withDeliveryIntents(() => this.beginSpawn(project, {
         kind: input.kind ?? "worker",
@@ -3032,7 +3066,8 @@ export class Orchestrator implements OrchestratorApi {
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
-        return [{ projectId, memberId: member.id, kind: "instruction", text: formatInstruction(member.name, input.firstInstruction, quote) }];
+        const taskLine = this.taskLineFor(projectId, firstTask?.id ?? null);
+        return [{ projectId, memberId: member.id, kind: "instruction", text: [formatInstruction(member.name, input.firstInstruction, quote), ...(taskLine ? [taskLine] : [])].join("\n"), taskId: firstTask?.id ?? null }];
       });
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
       return spawned;
@@ -3149,8 +3184,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!attachment || !this.store.isProjectAttachment(projectId, id)) throw new ApiError(404, `이 프로젝트에서 대표가 보낸 첨부가 아닙니다: ${id}`);
       return attachment;
     });
-    const task = input.taskId ? this.store.requireTask(input.taskId) : null;
-    if (task && task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${input.taskId}`);
+    const task = this.instructionTaskFor(projectId, input.taskId);
     const delivery = this.store.transaction(() => {
       const taskLine = this.taskLineFor(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
@@ -3382,8 +3416,9 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** --resume 으로 다시 연다. 실패하면 같은 핸들로 새 세션을 띄우고 마지막 일을 첫 지시에 넣는다. */
-  async resumeMember(memberId: string, firstInstruction?: string, assignedBy?: Member): Promise<Member> {
+  async resumeMember(memberId: string, firstInstruction?: string, assignedBy?: Member, taskId?: string | null): Promise<Member> {
     const member = this.store.requireMember(memberId);
+    if (firstInstruction?.trim()) this.instructionTaskFor(member.projectId, taskId); // 없는 업무면 다시 열기 전에 거절한다.
     if (member.origin === "manual") throw new ApiError(400, "직접 띄운 세션은 다시 열 수 없습니다");
     this.requireActive(this.store.requireProject(member.projectId));
     this.requireNotSwitching();
@@ -3399,7 +3434,7 @@ export class Orchestrator implements OrchestratorApi {
       this.checkAwakeLimit(member.projectId);
     }
     if (firstInstruction?.trim()) {
-      await this.assign(member.projectId, member.handle, { text: firstInstruction }, assignedBy);
+      await this.assign(member.projectId, member.handle, { text: firstInstruction, taskId }, assignedBy);
     } else {
       await this.pump(memberId);
     }
@@ -3551,10 +3586,11 @@ export class Orchestrator implements OrchestratorApi {
 
   // ---- 작업 ----
   /** 직원이 작업을 등록하거나 고친다. 이후 그 직원의 출력은 task_id 를 밝혀야 한다. */
-  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null }): { task: Task; created: boolean } {
+  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null; parentTaskId?: string | null }): { task: Task; created: boolean } {
     return this.store.transaction(() => {
       if (input.taskId) this.requireTaskInProject(member, input.taskId);
-      return this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree });
+      const parent = input.parentTaskId ? this.store.resolveTask(this.requireTaskInProject(member, input.parentTaskId)).id : null;
+      return this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
     });
   }
 
@@ -3564,52 +3600,95 @@ export class Orchestrator implements OrchestratorApi {
     return task;
   }
 
+  /** 본사가 아닌 프로젝트는 모든 글에 업무를 붙인다. 본사(본사 AI 하나와 대표의 대화)는 업무를 쓰지 않는다. */
+  usesTasks(projectId: string): boolean {
+    return !this.store.requireProject(projectId).isHq;
+  }
+
   /**
-   * 직원이 남기는 글·카드·자료·할 일의 작업. 서버는 출처가 증명하는 것만 쓴다(마지막으로 받은 작업으로 추측하지 않는다).
-   * 1) 직원이 밝힌 task_id(null 은 일부러 전체). 2) 바뀌지 않는 출처: 이어 준 결재·자료·정정 대상 글의 작업(작업이 붙은 것만,
-   * 서로 다르면 거절). 3) 둘 다 없으면: 작업을 쓰는 직원은 누락으로 보고 거절해 다시 부르게 하고, 작업을 쓴 적 없는 직원은 예전대로 전체.
+   * 직원이 남기는 글·카드·자료·할 일의 업무. 서버는 출처가 증명하는 것만 쓴다(마지막으로 받은 업무로 짐작하지 않는다).
+   * 1) 직원이 밝힌 task_id(합쳐진 업무면 합쳐진 곳). 2) 바뀌지 않는 출처: 이어 준 결재·자료·정정 대상 글의 업무(서로 다르면 거절).
+   * 3) 둘 다 없으면 거절해 task_id 를 넣거나 task 도구로 새 업무를 만들게 한다. 지금 턴이 받은 업무로도 붙이지 않는다:
+   *    A 를 끝내고 B 를 받은 턴에 쓴 A 의 후속 글이 B 로 섞인다. 받은 업무는 거절 안내에만 적는다.
+   * null(옛 도구의 '전체')도 같다. 새 글은 업무 없이 남지 않는다. 본사, 그리고 allowNone(개발 기억 기록)의 null 만 예외다.
    */
-  memberTask(member: Member, explicit?: string | null, sources: (string | null | undefined)[] = []): string | null {
-    if (explicit === null) return null;
-    if (explicit !== undefined) return this.requireTaskInProject(member, explicit).id;
+  memberTask(member: Member, explicit?: string | null, sources: (string | null | undefined)[] = [], opts: { allowNone?: boolean } = {}): string | null {
+    if (typeof explicit === "string") return this.store.resolveTask(this.requireTaskInProject(member, explicit)).id;
+    if (!this.usesTasks(member.projectId)) return null;
+    if (explicit === null && opts.allowNone) return null;
     const fixed = [...new Set(sources.filter((id): id is string => !!id))];
     if (fixed.length === 1) return fixed[0]!;
-    if (fixed.length > 1) throw new ApiError(400, `이어 준 결재·자료가 서로 다른 작업(${fixed.join(", ")})이라 어느 작업의 글인지 정할 수 없습니다. task_id 를 넣어 다시 부르세요`);
-    const lead = this.conductorUsesTasks(member);
-    if (!lead && !this.store.memberUsesTasks(member.id)) return null;
-    throw new ApiError(400, `task_id 가 없습니다. 작업을 쓰는 중이라 작업을 밝히지 않은 글을 서버가 어느 작업에 둘지 정하지 않습니다. 이 글이 속한 작업의 id(받은 글의 '작업 #' 줄)를 task_id 로 넣거나, 어느 작업에도 속하지 않는 글이면 task_id: null 로 다시 부르세요${lead ? WORK_TASK_HINT : ""}`);
+    if (fixed.length > 1) throw new ApiError(400, `이어 준 결재·자료가 서로 다른 업무(${fixed.join(", ")})라 어느 업무의 글인지 정할 수 없습니다. task_id 를 넣어 다시 부르세요`);
+    const lead = this.store.getConductor(member.projectId)?.id === member.id;
+    const received = this.turnTasks(this.runtime(member.id).turn?.deliveries).map(id => this.store.getTask(id)).filter((t): t is Task => !!t);
+    const hint = received.length ? ` 이번에 받은 글의 업무: ${received.map(t => `#${t.id} '${t.title}'`).join(", ")}. 이 글이 그중 하나의 일이면 그 id 를 넣으세요.` : "";
+    throw new ApiError(400, `task_id 가 없습니다. 모든 글은 업무에 붙습니다(null 로 '전체'에 두지 않고, 서버가 업무를 짐작하지 않습니다).${hint} 받은 글의 '작업 #' 줄의 id 를 task_id 로 넣으세요. 새 일이면 task 도구로 새 업무를 만들고(제목만 넣어도 됩니다) 돌려받은 id 를 넣으세요${lead ? WORK_TASK_HINT : "."}`);
   }
 
   /**
-   * 총괄은 진행판(work_set)으로 작업 칩을 만드는 쪽이다. 프로젝트에 작업이 하나라도 있으면 작업을 쓰는 직원으로 본다.
-   * 그러지 않으면 총괄이 task_id 를 빼먹은 글·카드가 말없이 전체로 가고, 작업 칩은 비어 보인다.
-   */
-  private conductorUsesTasks(member: Member): boolean {
-    return this.store.getConductor(member.projectId)?.id === member.id && this.store.listTasks(member.projectId).length > 0;
-  }
-
-  /**
-   * 총괄 지시(team_assign·team_stop then)의 작업. 서버는 증거로만 정한다(마지막 작업으로 추측하지 않는다).
-   * 1) 밝힌 task_id(null 은 일부러 전체). 2) 인용한 대표 글이 작업에서 보낸 글이면 그 작업.
-   * 3) 둘 다 없으면: 작업을 쓰는 프로젝트에서는 거절해 다시 부르게 하고, 작업이 없는 프로젝트는 예전대로 전체.
+   * 총괄 지시(team_assign·team_stop then)의 업무. 서버는 증거로만 정한다(마지막 업무로 짐작하지 않는다).
+   * 1) 밝힌 task_id. 인용한 대표 글이 다른 업무에 있을 때: 대표가 고른 업무면 거절, 서버가 첫 줄로 만든 업무(auto)에
+   *    그 대표 글(과 분류하는 총괄의 글)만 있으면 그 글들을 밝힌 업무로 옮기고 기록을 남긴다(총괄의 분류). 다른 글이 이미 있으면
+   *    옮기지 않고 지시만 밝힌 업무로 보내며 갈라진 관계를 기록한다. 2) 인용한 대표 글·결재의 업무. 3) 둘 다 없으면 거절.
+   * null(옛 도구의 '전체')도 2)를 거친다.
    */
   instructionTask(member: Member, explicit: string | null | undefined, userQuote?: string | null): string | null {
-    if (explicit === null) return null;
+    if (!this.usesTasks(member.projectId)) return explicit ?? null;
     const source = userQuote?.trim() ? this.findQuoteSource(member.projectId, userQuote) : null;
-    const quoted = source ? this.store.getMessage(source.id)?.taskId ?? null : null;
-    if (explicit !== undefined) {
-      if (quoted && quoted !== explicit) throw new ApiError(400, `인용한 대표 글은 작업 #${quoted} 에서 보낸 글인데 task_id 는 ${explicit} 입니다. 대표가 고른 작업(${quoted})으로 다시 부르세요. 다른 일로 나누는 것이면 그 대표 글을 인용하지 마세요`);
-      return explicit;
+    const quotedMessage = source ? this.store.getMessage(source.id) : null;
+    const quoted = quotedMessage ? quotedMessage.taskId ?? null : source ? this.store.getDecision(source.id)?.taskId ?? null : null;
+    if (typeof explicit === "string") {
+      const target = this.store.resolveTask(this.requireTaskInProject(member, explicit)).id;
+      if (!quoted || quoted === target) return target;
+      const from = this.store.getTask(quoted);
+      if (from?.origin !== "auto" || !quotedMessage) {
+        throw new ApiError(400, `인용한 대표 글은 업무 #${quoted} 에서 보낸 글인데 task_id 는 ${target} 입니다. 대표가 고른 업무(${quoted})로 다시 부르세요. 다른 일로 나누는 것이면 그 대표 글을 인용하지 마세요`);
+      }
+      this.classifyAutoTask(member, from, quotedMessage.id, target);
+      return target;
     }
     if (quoted) return quoted;
-    if (!this.store.listTasks(member.projectId).length) return null;
-    throw new ApiError(400, `task_id 가 없습니다. 이 프로젝트는 작업 칩을 쓰므로 지시가 어느 작업의 일인지 밝혀야 대표 대화의 그 칩에 지시와 보고가 모입니다${WORK_TASK_HINT} 어느 작업에도 속하지 않는 지시면 task_id: null 로 다시 부르세요`);
+    throw new ApiError(400, `task_id 가 없습니다. 모든 지시는 업무에 붙습니다(null 로 '전체'에 두지 않습니다). 대표 글에 '작업 #' 줄이 있으면 그 id 를, 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣으세요${WORK_TASK_HINT}`);
   }
 
-  /** 턴 마지막 글(자동 보고)의 작업: 그 턴에 받은 대표 글·답·지시가 모두 같은 작업일 때만 그 작업, 아니면 전체. */
-  private turnTask(deliveries: Delivery[] | undefined): string | null {
-    const ids = new Set((deliveries ?? []).filter((d) => TASK_SOURCE_KINDS.has(d.kind)).map((d) => this.store.deliveryTaskId(d.id)));
-    return ids.size === 1 ? [...ids][0]! : null;
+  /**
+   * 서버가 첫 줄로 만든 업무(auto)의 대표 글을 총괄이 고른 업무로 옮긴다. 그 업무에 그 대표 글과 분류하는 총괄 자신의 글만 있을 때만
+   * 옮긴다(다른 직원의 보고·결재·자료가 있으면 그 문맥을 깨지 않게 옮기지 않고, 갈라진 관계만 남긴다). 옮긴 기록은 task_links 에 남는다.
+   */
+  private classifyAutoTask(member: Member, from: Task, messageId: string, to: string): void {
+    const projectId = member.projectId;
+    if (this.store.taskOtherRecords(from.id, [messageId], member.id) > 0) {
+      this.store.recordTaskRelation({ projectId, taskId: to, fromTaskId: from.id, basis: "derived", actor: member.id, note: `대표 글 #${messageId} 을 인용한 지시` });
+      return;
+    }
+    this.store.transaction(() => {
+      for (const m of this.store.taskMessageIds(from.id)) {
+        if (m.id !== messageId && m.memberId !== member.id) continue;
+        this.store.moveRecordTask({ projectId, refType: "message", refId: m.id, from: from.id, to, basis: "classify", actor: member.id, note: m.id === messageId ? "총괄이 대표 글을 이 업무로 분류" : "분류한 대표 글에 대한 총괄의 글" });
+      }
+      this.store.markTaskMerged(from.id, to, member.id);
+    });
+  }
+
+  /**
+   * 지시 전달의 업무가 이 프로젝트의 업무인지 본다(합쳐진 업무면 합쳐진 곳). 업무를 정하고 빠진 지시를 거절하는 것은
+   * 도구 입구(team_assign·team_stop then·team_add·team_resume 의 instructionTask)다.
+   */
+  private instructionTaskFor(projectId: string, taskId: string | null | undefined): Task | null {
+    if (!taskId) return null;
+    const task = this.store.getTask(taskId);
+    if (!task || task.projectId !== projectId) throw new ApiError(404, `작업을 찾을 수 없습니다: ${taskId}`);
+    return this.store.resolveTask(task);
+  }
+
+  /** 턴이 받은 전달의 업무들(업무 없는 전달은 빼고, 받은 차례대로). */
+  private turnTasks(deliveries: Delivery[] | undefined): string[] {
+    const ids: string[] = [];
+    for (const d of deliveries ?? []) {
+      const id = this.store.deliveryTaskId(d.id);
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
   }
 
   /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
@@ -3724,7 +3803,7 @@ export class Orchestrator implements OrchestratorApi {
     }, decision => {
       const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
       return conductor ? [{ projectId: member.projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`${josa(member.name, "이")} 대표에게 질문했습니다: ${normalizeSpace(input.title)} #${decision.id}`), wake: false }] : [];
+        text: formatSystem(`${josa(member.name, "이")} 대표에게 질문했습니다: ${normalizeSpace(input.title)} #${decision.id}`), wake: false, taskId: decision.taskId ?? null }] : [];
     });
     this.runtime(member.id).posted = true;
     this.notifyInbox(`${member.name}의 결재`, input.title);
@@ -4507,7 +4586,7 @@ export class Orchestrator implements OrchestratorApi {
         }
         this.store.patchMember(memberId, { status: "error", lastError: detail });
         this.holdHeld(memberId, rt, this.timings.retryMs);
-        if (first) this.systemMessage(member.projectId, `${member.name}에게 전달하지 못했습니다: ${detail}`);
+        if (first) this.memberNotice(member, `${member.name}에게 전달하지 못했습니다: ${detail}`, deliveries);
         return;
       }
     }
@@ -4910,7 +4989,7 @@ export class Orchestrator implements OrchestratorApi {
     } else if (e.isError && e.noOutput && turn?.deliveries?.length) {
       await this.onTurnUnread(member, rt, turn.deliveries, e.errorText ?? "오류");
     } else if (e.isError) {
-      await this.onTurnError(member, e.errorText ?? "오류");
+      await this.onTurnError(member, e.errorText ?? "오류", turn?.deliveries);
     } else {
       this.settle(member, true);
       const tidied = member.kind !== "worker" && !!turn?.deliveries?.some(isTidy);
@@ -4925,9 +5004,9 @@ export class Orchestrator implements OrchestratorApi {
     this.releaseSlots();
   }
 
-  private async onTurnError(member: Member, errorText: string): Promise<void> {
+  private async onTurnError(member: Member, errorText: string, deliveries?: Delivery[]): Promise<void> {
     this.store.patchMember(member.id, { status: "error", lastError: errorText });
-    this.systemMessage(member.projectId, `${member.name} 오류: ${errorText}`);
+    this.memberNotice(member, `${member.name} 오류: ${errorText}`, deliveries);
     if (member.kind === "worker") await this.reportToConductor(member, "막힘", "(자동) 턴 오류", errorText, true);
   }
 
@@ -4936,21 +5015,36 @@ export class Orchestrator implements OrchestratorApi {
     for (const d of deliveries) {
       if (this.store.getDelivery(d.id)?.status !== "delivered") this.deliveryRecovery.beginRecovery(d.id);
     }
-    await this.onTurnError(member, errorText);
+    await this.onTurnError(member, errorText, deliveries);
   }
 
-  /** post 를 안 부른 턴의 마지막 글(§6). 직원은 총괄에게 보고, 총괄·본사 AI 는 대표에게 하는 말. */
+  /**
+   * post 를 안 부른 턴의 마지막 글(§6). 직원은 총괄에게 보고, 총괄·본사 AI 는 대표에게 하는 말.
+   * 업무: 그 턴이 받은 전달(일을 시킨 전달이 먼저)의 업무. 여럿이면 업무마다 같은 글을 남긴다(한 업무로 몰거나 고르지 않는다.
+   * 총괄에게는 한 번만 보고한다).
+   * 받은 전달에 업무가 없으면(대표가 터미널에 직접 친 일 등) 글 첫 줄로 새 업무를 만든다. 본사는 예전대로다.
+   */
   private async fallbackReport(member: Member, finalText: string, direct: boolean, turnDeliveries?: Delivery[]): Promise<void> {
-    const taskId = this.turnTask(turnDeliveries);
+    // 글은 한 번만 남긴다(업무마다 복사하지 않는다). 그 턴을 깨운 전달의 업무가 하나면 그 업무. 여럿이면 어느 업무의 결과인지
+    // 정할 수 없어(A·B 결과가 섞인 글이 B 대화에 A 내용을 싣는다) 그 직원의 '여러 업무 결과' 업무에 한 번 남기고 받은 업무를 적는다.
+    // 근거가 없으면 첫 줄로 새 업무를 만든다.
+    const received = this.certainTasks(turnDeliveries);
+    const usesTasks = this.usesTasks(member.projectId);
+    const id = newId("msg_");
+    const taskId: string | null = !usesTasks ? (received.length === 1 ? received[0]! : null)
+      : received.length === 1 ? received[0]!
+      : received.length > 1 ? this.serverTask(member, "mixed").id
+      : this.store.ensureSourceTask({ projectId: member.projectId, sourceRef: `message:${id}`, title: taskTitleFrom(finalText, datedTitle(`${member.name} 보고`, new Date())), origin: "auto", who: member.kind === "worker" ? member.name : "" }).task.id;
+    const note = usesTasks ? this.receivedTasksNote(received) : "";
     if (member.kind !== "worker") {
-      this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText, taskId });
+      this.store.createMessage({ id, projectId: member.projectId, memberId: member.id, who: member.name, kind: "답변", body: finalText + note, taskId });
       return;
     }
     const firstLine = normalizeSpace(finalText.split("\n")[0] ?? "").slice(0, 60);
     const title = `${direct ? "(직접) " : ""}(자동) ${firstLine}`;
     const conductor = this.store.getConductor(member.projectId);
-    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText, taskId }), message => conductor && conductor.id !== member.id ? [{
-      projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText), wake: true, refType: "message", refId: message.id,
+    const { deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({ id, projectId: member.projectId, memberId: member.id, who: member.name, kind: "알림", title, body: finalText + note, taskId }), message => conductor && conductor.id !== member.id ? [{
+      projectId: member.projectId, memberId: conductor.id, kind: "report", text: formatReport(member.name, direct ? "(직접) (자동) 알림" : "(자동) 알림", firstLine, finalText.trim() === firstLine ? "" : finalText) + (usesTasks && received.length > 1 ? `\n받은 업무: ${received.map(t => `#${t}`).join(", ")}(어느 업무의 결과인지 정할 수 없어 업무마다 따로 보고하게 하세요)` : ""), wake: true, refType: "message", refId: message.id,
     }] : []);
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
   }
@@ -5077,8 +5171,54 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   // ---- 도움 ----
-  private systemMessage(projectId: string, body: string): void {
-    this.store.createMessage({ projectId, who: "시스템", kind: "시스템", body });
+  /** 서버 알림 글(대화 화면의 '시스템' 줄). 업무는 부르는 쪽이 정한다(memberNotice). */
+  private systemMessage(projectId: string, body: string, taskId: string | null = null): void {
+    this.store.createMessage({ projectId, who: "시스템", kind: "시스템", body, taskId });
+  }
+
+  /**
+   * 직원의 실행·세션에 관한 서버 알림. 대화 화면에 보이는 글이라 업무에 붙는다(본사 제외). 그 실행이 받은 업무가
+   * 하나로 정해지면 그 업무, 없거나 여럿이면 그 직원의 '세션 알림' 업무(출처 키로 직원마다 한 번만 만든다)에 한 번만 남긴다.
+   * 마지막 업무로 짐작하지 않고, 여러 업무에 같은 글을 복사하지 않는다. 여럿이면 받은 업무를 글에 적는다.
+   */
+  private memberNotice(member: Member, body: string, deliveries?: Delivery[]): void {
+    if (!this.usesTasks(member.projectId)) return this.systemMessage(member.projectId, body);
+    const tasks = this.certainTasks(this.noticeDeliveries(member, deliveries));
+    if (tasks.length === 1) return this.systemMessage(member.projectId, body, tasks[0]!);
+    this.systemMessage(member.projectId, body + this.receivedTasksNote(tasks), this.serverTask(member, "notice").id);
+  }
+
+  /** 알림의 근거가 되는 전달: 넘겨받은 것, 없으면 지금 턴, 없으면 그 직원의 끝나지 않은 실행. */
+  private noticeDeliveries(member: Member, deliveries?: Delivery[]): Delivery[] {
+    if (deliveries?.length) return deliveries;
+    const turn = this.runtimes.get(member.id)?.turn?.deliveries;
+    if (turn?.length) return turn;
+    const run = this.store.listPendingExecutions().filter(r => r.memberId === member.id).at(-1);
+    return run ? this.runDeliveries(run) : [];
+  }
+
+  private runDeliveries(run: ExecutionJournal): Delivery[] {
+    return run.deliveryIds.map(id => this.store.getDelivery(id)).filter((d): d is Delivery => !!d);
+  }
+
+  /**
+   * 그 턴의 글이 어느 업무의 것인지 확실한 업무들. 깨운 전달(wake)의 업무만 본다: 함께 묶여 온 조용한 안내(wake=false)는
+   * 맥락일 뿐 답할 일이 아니다. 깨운 전달에 업무가 없으면 받은 전달 전부의 업무. 하나면 확실하고, 여럿이면 정할 수 없다.
+   */
+  private certainTasks(deliveries: Delivery[] | undefined): string[] {
+    const waking = this.turnTasks(deliveries?.filter(d => d.wake));
+    return waking.length ? waking : this.turnTasks(deliveries);
+  }
+
+  /** 근거 없는(또는 여러 업무가 섞인) 서버 글을 모으는 직원별 업무. 출처 키로 한 번만 만들고 이름에 목적을 쓴다. */
+  private serverTask(member: Member, kind: "notice" | "mixed"): Task {
+    const title = `${member.name} ${kind === "notice" ? "세션 알림" : "여러 업무 결과"}`;
+    return this.store.ensureSourceTask({ projectId: member.projectId, sourceRef: `${kind}:member:${member.id}`, title: [...title].slice(0, 60).join(""), origin: "server" }).task;
+  }
+
+  private receivedTasksNote(tasks: string[]): string {
+    if (tasks.length < 2) return "";
+    return `\n\n(업무 ${tasks.length}곳을 받은 실행이라 어느 업무의 글인지 정할 수 없어 여기에 한 번만 남겼습니다. 받은 업무: ${tasks.map(id => `#${id} '${this.store.getTask(id)?.title ?? ""}'`).join(", ")})`;
   }
 
   private runtime(memberId: string): Runtime {

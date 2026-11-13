@@ -27,7 +27,8 @@ const resumeFlag = flag("--resume");
 const sessionId = sessionFlag ?? resumeFlag ?? crypto.randomUUID();
 
 const directives = new Map<string, string>();
-for (const match of `${process.env.FAKE_CLAUDE_DIRECTIVES ?? ""} ${prompt}`.matchAll(/@fake:([a-z-]+)(?:=([^\s"]+))?/g)) {
+// 값에는 따옴표가 들어가지 않는다(대표 글 첫 줄로 이름 붙인 업무의 작업 줄 '…@fake:text=값'. 에서 따옴표까지 읽지 않게).
+for (const match of `${process.env.FAKE_CLAUDE_DIRECTIVES ?? ""} ${prompt}`.matchAll(/@fake:([a-z-]+)(?:=([^\s"']+))?/g)) {
   directives.set(match[1]!, match[2] ?? "");
 }
 
@@ -109,7 +110,12 @@ function toolResult(id: string, text: string): Record<string, unknown> {
   return { type: "user", parent_tool_use_id: null, session_id: sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] }] } };
 }
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
+// 규칙을 지키는 직원처럼 받은 글의 '작업 #' 줄 업무를 글에 넣는다(시험이 task_id 를 밝히면 그대로).
+const promptTask = prompt.match(/작업 #(tk_[A-Za-z0-9_]+)/)?.[1];
+const TASK_TOOLS = new Set(["post", "ask", "file", "todo", "team_assign"]);
+
+async function callTool(name: string, rawArgs: Record<string, unknown>): Promise<string> {
+  const args = promptTask && TASK_TOOLS.has(name) && !("task_id" in rawArgs) && !rawArgs.decision_id && !rawArgs.file_id ? { ...rawArgs, task_id: promptTask } : rawArgs;
   const id = `toolu_${crypto.randomUUID()}`;
   await emit(assistant([{ type: "tool_use", id, name: `mcp__iamceo__${name}`, input: args }]));
   const config = JSON.parse(readFileSync(flag("--mcp-config")!, "utf8"));

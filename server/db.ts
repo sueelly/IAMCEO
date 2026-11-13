@@ -706,6 +706,36 @@ export const MIGRATIONS: string[] = [
      delivery_id TEXT PRIMARY KEY,
      search_id TEXT NOT NULL
    );`,
+  // 모든 글의 업무. origin: staff(직원 task 도구)·board(진행판 일 항목)·owner(대표가 이름 붙인 새 업무)·auto(서버가 첫 줄로 이름 붙인 새 업무)·backfill(옛 글 정리).
+  // source_ref: 서버가 만든 업무의 출처 키(message:<id> 등). 같은 출처로는 업무를 한 번만 만든다(재시도·보고 보완이 업무를 늘리지 않게).
+  // merged_into: 총괄이 auto 업무의 대표 글을 다른 업무로 분류해 비게 된 업무가 합쳐진 곳. 그 업무 id 로 오는 글은 합쳐진 업무로 간다.
+  // renamed_at·renamed_by: 만든 뒤 이름을 바꾼 때와 바꾼 직원. 서버가 지은 이름(auto·backfill)은 바꾸기 전까지 임시다.
+  // task_links: 글·카드·자료·할 일의 업무를 처음 붙인 뒤 바꾼 기록과 업무 사이 관계(ref_type 'task'). 원문(글 id·본문·시각)은 그대로 두고
+  // 업무 칸만 바꾸며, 여기서 되돌린다.
+  `ALTER TABLE tasks ADD COLUMN origin TEXT;
+   ALTER TABLE tasks ADD COLUMN source_ref TEXT;
+   ALTER TABLE tasks ADD COLUMN parent_task_id TEXT;
+   ALTER TABLE tasks ADD COLUMN merged_into TEXT;
+   ALTER TABLE tasks ADD COLUMN renamed_at TEXT;
+   ALTER TABLE tasks ADD COLUMN renamed_by TEXT;
+   UPDATE tasks SET origin = CASE WHEN id LIKE 'tk_w_%' THEN 'board' ELSE 'staff' END;
+   CREATE UNIQUE INDEX tasks_source ON tasks(project_id, source_ref) WHERE source_ref IS NOT NULL;
+   CREATE TABLE task_links (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     ref_type TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     from_task_id TEXT,
+     to_task_id TEXT,
+     basis TEXT NOT NULL,
+     note TEXT,
+     actor TEXT NOT NULL,
+     batch_id TEXT,
+     undone_at TEXT,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX task_links_ref ON task_links(project_id, ref_type, ref_id, created_at);
+   CREATE INDEX task_links_batch ON task_links(batch_id) WHERE batch_id IS NOT NULL;`,
 ];
 
 export function openDb(path: string): Database {

@@ -14,6 +14,7 @@ import { Store } from "../server/store";
 import type { Member, Message, MessagePage } from "../shared/types";
 import type { OperationReceipt } from "../shared/operations";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 /** Real runner/orchestrator/SQLite/HTTP; only the generation-1 core peer is fake.
  * The peer NEVER executes argv or reads provider credentials. Used by Swift too. */
@@ -189,7 +190,7 @@ if (process.argv[2] === "--crash-write") {
 
   test("release: HTTP agent workflow keeps operation receipts, answer and all report references", async () => {
     const f = await fixture(); const lead = await f.orch.ensureConductor(f.project.id);
-    const tool = (memberId: string, name: string, args: Record<string, unknown>, operationId = randomUUID()) => f.request("/agent/tool", "POST", { name, args, operationId },
+    const tool = (memberId: string, name: string, args: Record<string, unknown>, operationId = randomUUID()) => f.request("/agent/tool", "POST", { name, args: withDefaultTask(f.store, f.store.requireMember(memberId), name, args), operationId },
       { ...v2, Authorization: `Bearer ${f.store.getMemberToken(memberId)}` });
     await json(await tool(f.member.id, "status", { now: "verifying release", next: "report" }));
     await json(await tool(f.member.id, "status", { now: "verified" }));
@@ -231,7 +232,7 @@ if (process.argv[2] === "--crash-write") {
     const f = await fixture(); const lead = await f.orch.ensureConductor(f.project.id);
     f.store.patchProject(f.project.id, { runnerEnabled: false });
     const file = f.store.createFile({ projectId: f.project.id, who: f.member.name, title: "late report evidence", body: "retained" });
-    const message = await f.orch.recordPost(f.member, { kind: "완료", title: "late completion", body: "completed while the runner was disabled", fileIds: [file.id] });
+    const message = await f.orch.recordPost(f.member, { kind: "완료", title: "late completion", body: "completed while the runner was disabled", fileIds: [file.id], taskId: defaultTaskId(f.store, f.project.id) });
     const pending = f.store.listDeliveries().filter(d => d.kind === "report" && d.refId === message.id);
     expect(pending).toHaveLength(1); expect(pending[0]!.memberId).toBe(lead.id);
     expect(pending[0]!.holdReason).toBe("runner_disabled");

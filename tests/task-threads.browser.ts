@@ -198,11 +198,14 @@ describe("웹 작업별 대화", () => {
     text = await listText(page);
     for (const s of ["작업 전의 옛 지시", "부분 환불 넣음", "검색 색인 점검"]) expect(text).toContain(s);
 
-    // 전체에서 보낸 글은 작업이 없다(직전 작업에 붙지 않는다)
+    // 전체에서 보낸 글은 직전 작업에 붙지 않고, 서버가 첫 줄로 이름 붙인 새 업무에 붙는다
     await page.getByLabel("입력칸").fill("@pay 오늘 일정 알려 주세요");
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("오늘 일정 알려 주세요"));
-    expect(await stored("오늘 일정 알려 주세요")).toMatchObject({ taskId: null, targetMemberId: pay.id });
+    const fromAll = await stored("오늘 일정 알려 주세요");
+    expect(fromAll).toMatchObject({ targetMemberId: pay.id });
+    expect([null, taskPay.id, taskSearch.id]).not.toContain(fromAll.taskId);
+    expect(store.getTask(fromAll.taskId!)).toMatchObject({ origin: "auto" });
     await page.close();
   }, 120_000);
 
@@ -368,7 +371,10 @@ describe("웹 작업별 대화", () => {
     await expect(stale.getByLabel("입력칸").inputValue()).resolves.toBe("남은 초안");
     await stale.getByLabel("입력칸").fill("없는 작업에서 보냄");
     await stale.getByLabel("입력칸").press("Enter");
-    expect((await stored("없는 작업에서 보냄")).taskId).toBeNull();
+    // 없는 작업은 고르지 않은 것과 같다: 첫 줄 이름의 새 업무에 붙는다
+    const ghost = await stored("없는 작업에서 보냄");
+    expect(ghost.taskId).not.toBeNull();
+    expect(store.getTask(ghost.taskId!)).toMatchObject({ origin: "auto", title: "없는 작업에서 보냄" });
     await stale.close();
 
     // 9) 폰 폭: 표지를 손가락으로 눌러 옮기고, 페이지가 가로로 넘치지 않는다
