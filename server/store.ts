@@ -545,7 +545,14 @@ function toTask(r: Row): Task {
     origin: (r.origin ?? (String(r.id).startsWith("tk_w_") ? "board" : "staff")) as TaskOrigin,
     parentTaskId: r.parent_task_id ?? null,
     mergedInto: r.merged_into ?? null,
+    renamedAt: r.renamed_at ?? null,
+    renamedBy: r.renamed_by ?? null,
   };
+}
+
+/** 서버가 글에서 지은 이름이고 아직 아무도 목적 이름으로 바꾸지 않았다. */
+export function provisionalTaskTitle(task: Task): boolean {
+  return (task.origin === "auto" || task.origin === "backfill") && !task.renamedAt;
 }
 
 function toTaskLink(r: Row): TaskLink {
@@ -1971,8 +1978,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           branch: branch !== undefined ? branch : existing.branch,
           worktree: worktree !== undefined ? worktree : existing.worktree,
         };
-        if (next.title !== existing.title || next.branch !== existing.branch || next.worktree !== existing.worktree) {
+        const renamed = next.title !== existing.title;
+        // 대표가 이름 붙인 업무는 대표의 말이라 직원이 바꾸지 않는다. 서버가 지은 임시 이름·직원 이름은 목적이 정해지면 바꾼다.
+        if (renamed && existing.origin === "owner") throw new ApiError(409, `대표가 이름 붙인 업무라 이름을 바꾸지 않습니다: #${existing.id} '${existing.title}'`);
+        if (renamed || next.branch !== existing.branch || next.worktree !== existing.worktree) {
           this.run("UPDATE tasks SET title = ?, branch = ?, worktree = ?, updated_at = ? WHERE id = ?", next.title, next.branch, next.worktree, at, existing.id);
+          if (renamed) this.run("UPDATE tasks SET renamed_at = ?, renamed_by = ? WHERE id = ?", at, input.who ?? null, existing.id);
           const task = this.requireTask(existing.id);
           this.emit({ type: "task", task });
           return { task, created: false };

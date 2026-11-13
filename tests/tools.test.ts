@@ -594,10 +594,11 @@ describe("총괄 도구", () => {
     const { member: w } = await orch.addMember(project.id, { name: "메뉴 가격표", handle: "menu" });
     const message = await orch.sendUserMessage(project.id, { text: "가격을 수정해 주세요", targetMemberId: w.id });
     const notices = () => store.listDeliveries(project.id).filter(d => d.memberId === lead.id && d.kind === "system");
-    // 대표 글은 업무 없이 보내 서버가 첫 줄로 만든 업무에 있다. 알림에도 그 업무가 붙는다.
+    // 대표 글은 업무 없이 보내 서버가 목적 문장으로 만든 업무(임시 이름)에 있다. 알림에도 그 업무가 붙는다.
     expect(message.taskId).toBeTruthy();
+    expect(store.requireTask(message.taskId!).title).toBe("가격을 수정");
     expect(notices().find(d => d.text.includes(`#${message.id}`))).toMatchObject({ wake: false,
-      text: `[시스템] 대표가 메뉴 가격표에게 직접 지시했습니다 #${message.id}(작업 #${message.taskId} '가격을 수정해 주세요'). 이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.` });
+      text: `[시스템] 대표가 메뉴 가격표에게 직접 지시했습니다 #${message.id}(작업 #${message.taskId} '가격을 수정'). 이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.` });
     const { decision } = await orch.registerAsk(w, { title: "가격을 적용할까요?", options: [{ k: "y", label: "적용하세요" }], taskId: message.taskId });
     await orch.answerDecision(decision.id, { choice: "y" });
     expect(notices().find(d => d.text.includes("결재에 답했습니다"))).toMatchObject({ wake: false });

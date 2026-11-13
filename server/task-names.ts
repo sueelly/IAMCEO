@@ -1,4 +1,4 @@
-// 서버가 붙이는 새 업무 이름. 글 첫 줄에서 만든다. 이름은 칩·목록·전달 글의 '작업 #' 줄에 그대로 보이므로
+// 서버가 붙이는 새 업무 이름(임시). 글에서 목적 문장을 골라 만든다. 이름은 칩·목록·전달 글의 '작업 #' 줄에 그대로 보이므로
 // 주소·내부 번호·해시·비밀값을 남기지 않는다. 브라우저·DB 를 쓰지 않는 순수 함수다.
 
 /** 이름 길이(빈칸 포함). 칩에 한 줄로 보이게 짧게 둔다. */
@@ -63,14 +63,31 @@ function cut(text: string, max: number): string {
   return `${(space >= max * 0.6 ? head.slice(0, space) : head).replace(/[\s,.;:·…-]+$/, "")}…`;
 }
 
+/** 부탁·지시의 표지. 이런 말이 든 문장을 글의 목적으로 본다(대표 2026-11-14: "첫 글에서가 아니라, 내용에서 목적을 추출해서"). */
+const REQUEST_CUE = /해\s?줘|해\s?주세요|해\s?주십시오|해\s?줄래|해\s?봐|봐\s?줘|내\s?놔|알려\s?줘|부탁|해야\s?(?:해|돼|겠)|하자|합시다|해라|하도록|되도록|붙도록|하게\s?해|싶어|싶다|원해|바라|좋겠|(?:만들|고쳐|바꿔|넣어|올려|합쳐|맡겨|시켜|붙여|돌려|보내|지워|정해|줄여|늘려|나눠|옮겨)|(?:확인|정리|분석|개선|구현|검토|조사|적용|반영|진행|추가|삭제|수정|통일|준비|설정|연결|정의|비교|설계|작성|기록|요약|번역|검증|시험)\s?해/;
+/** 목적 문장 끝의 부탁 말. 떼면 무엇을 할지만 남는다. */
+const REQUEST_END = /\s*(?:좀\s*)?(?:해\s?줘|해\s?주세요|해\s?주십시오|해\s?줄래|해\s?봐|봐\s?줘|내\s?놔|알려\s?줘|해야\s?(?:해|돼|겠어)|하자|합시다|해라|부탁(?:해|합니다|드립니다|드려요)?|해)\s*[.!~]*$/;
+/** 문장 앞의 군말. */
+const FILLER = /^(?:(?:그리고|그럼|그러면|근데|그런데|아니|음+|아+|어+|자|일단|우선|혹시|이거|저기|그래서|또)[\s,.…]+)+/;
+const meaningful = (text: string) => text.replace(/[…\s\p{P}\p{S}]/gu, "").length;
+
+/** 내용 줄을 문장으로 나눈다(마침표·물음표·느낌표 뒤). */
+function sentences(lines: string[]): string[] {
+  return lines.flatMap((line) => line.split(/(?<=[.!?。？！])\s+/)).map((s) => s.replace(/^[\s…,.;:·-]+/, "").trim()).filter((s) => meaningful(s) >= 2);
+}
+
 /**
- * 글에서 새 업무 이름을 만든다. 첫 내용 줄에서 주소·내부 번호·해시·비밀값을 지우고 40자로 자른다.
- * 남는 글자가 없으면(주소·첨부만 보낸 글 등) fallback 을 쓴다.
+ * 글에서 새 업무 이름을 만든다. 첫 줄이 아니라 부탁·지시가 든 첫 문장을 목적으로 보고, 앞 군말과 끝의 부탁 말을 뗀다
+ * (예: "… 모든 것에 업무가 붙도록 해줘" → "모든 것에 업무가 붙도록"). 그런 문장이 없으면 첫 문장을 쓴다.
+ * 주소·내부 번호·해시·비밀값은 지우고 40자로 자른다. 남는 글자가 없으면(주소·첨부만 보낸 글 등) fallback 을 쓴다.
+ * 이 이름은 임시다. 총괄·직원이 대화로 목적을 알게 되면 task 도구로 목적 이름으로 바꾼다(formatTaskLine 의 안내).
  */
 export function taskTitleFrom(text: string, fallback: string): string {
-  const line = contentLines(text)[0];
-  if (!line) return cut(scrubTaskText(fallback) || "새 업무", TASK_TITLE_MAX);
-  return cut(line.replace(/^[\s…,.;:·-]+/, ""), TASK_TITLE_MAX);
+  const all = sentences(contentLines(text));
+  const sentence = all.find((s) => REQUEST_CUE.test(s)) ?? all[0];
+  if (!sentence) return cut(scrubTaskText(fallback) || "새 업무", TASK_TITLE_MAX);
+  const core = sentence.replace(FILLER, "").replace(REQUEST_END, "").replace(/[\s,.;:·…-]+$/, "").trim();
+  return cut(meaningful(core) >= 4 ? core : sentence.replace(/[.!?。？！]+$/, ""), TASK_TITLE_MAX);
 }
 
 /** 대표가 직접 붙인 새 업무 이름. 대표의 말이라 낱말을 지우지 않고 빈칸만 정리해 60자까지 둔다. */

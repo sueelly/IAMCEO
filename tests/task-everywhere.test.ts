@@ -1,4 +1,4 @@
-// 모든 글의 업무: 대표 글·자료·보고 보완·서버 알림이 업무 없이 남지 않고, 새 업무 이름은 비밀값·내부 번호 없이 글 첫 줄로 만든다.
+// 모든 글의 업무: 대표 글·자료·보고 보완·서버 알림이 업무 없이 남지 않고, 새 업무 이름은 비밀값·내부 번호 없이 글의 목적 문장으로 만든다(임시 이름).
 // 재시도해도 업무가 늘지 않고, 옛 글 정리는 원문을 바꾸지 않으며 묶음 단위로 되돌린다.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
@@ -28,10 +28,10 @@ function setup() {
 }
 
 describe("새 업무 이름", () => {
-  test("첫 내용 줄에서 주소·내부 번호·해시·경로·비밀값을 지우고 40자로 자른다", () => {
+  test("부탁이 든 첫 문장을 목적으로 보고, 주소·내부 번호·해시·경로·비밀값을 지우고 40자로 자른다", () => {
     const fb = datedTitle("대표 글", "2026-11-13T11:15:00Z");
     expect(fb).toBe("대표 글 11월 13일 20:15");
-    expect(taskTitleFrom("아니 접속코드는 언제나 1118로 통일해", fb)).toBe("아니 접속코드는 언제나 …로 통일해");
+    expect(taskTitleFrom("아니 접속코드는 언제나 1118로 통일해", fb)).toBe("접속코드는 언제나 …로 통일");
     expect(taskTitleFrom("https://example.com/a/b 이거 봐줘", fb)).toBe("이거 봐줘");
     expect(taskTitleFrom("msg_aQb2xaTxxgfA 보고 다시 봐줘 6b98ccc 커밋 기준", fb)).toBe("보고 다시 봐줘 … 커밋 기준");
     expect(taskTitleFrom("/Users/me/Projects/x 폴더 정리, 127.0.0.1:7881 다시 열기", fb)).not.toMatch(/Users|7881|127\.0/);
@@ -43,10 +43,53 @@ describe("새 업무 이름", () => {
     // 남는 글자가 없으면 시각 이름
     expect(taskTitleFrom("https://example.com", fb)).toBe(fb);
     expect(taskTitleFrom("", fb)).toBe(fb);
-    const long = taskTitleFrom("지금 전체 제외하고 작업 클릭했을 때 대화가 모두 없다고 떠. 작업 부여하고 관리하는 부분 한번 확인해봐", fb);
+    // 첫 줄이 아니라 목적 문장(대표 2026-11-14 결재 답): 상황 설명·불만 문장을 건너 부탁 문장을 쓰고, 끝의 부탁 말을 뗀다
+    expect(taskTitleFrom("지금 전체 제외하고 작업 클릭했을 때 대화가 모두 없다고 떠. 작업 부여하고 관리하는 부분 한번 확인해봐", fb)).toBe("작업 부여하고 관리하는 부분 한번 확인");
+    expect(taskTitleFrom("지금 업무 선택할 때, 직원까지 함께 선택될 필요는 없는 것 같아. 모든 것에 업무가 붙도록 해줘. 그리고 알림이 너무 많거든?", fb)).toBe("모든 것에 업무가 붙도록");
+    expect(taskTitleFrom("합치고 대표 화면에 반영해", fb)).toBe("합치고 대표 화면에 반영");
+    // 부탁 문장이 없으면 첫 문장. 부탁 말을 떼고 남는 게 없으면 그 문장 그대로
+    expect(taskTitleFrom("어떻게 돼가?", fb)).toBe("어떻게 돼가?");
+    const long = taskTitleFrom("배포 전에 결제 화면과 정산 화면과 알림 화면과 설정 화면의 글자 크기를 모두 같은 기준으로 맞춰 줘", fb);
     expect([...long].length).toBeLessThanOrEqual(40);
     expect(long.endsWith("…")).toBe(true);
     expect(scrubTaskText("비밀번호: hunter22 바꿔")).toBe("비밀번호: … 바꿔");
+  });
+});
+
+describe("업무 이름을 목적으로 바꾸기", () => {
+  test("서버가 지은 이름은 임시라 전달 글에 바꾸라는 안내가 붙고, 총괄이 목적 이름으로 바꾸면 안내가 빠진다", async () => {
+    const t = setup();
+    const m = await t.orch.sendUserMessage(t.project.id, { text: "지금 알림이 너무 많아. 중복을 분석하고 개선안을 내놔" });
+    const task = t.store.requireTask(m.taskId!);
+    expect(task).toMatchObject({ origin: "auto", title: "중복을 분석하고 개선안을", renamedAt: null });
+    const first = t.store.listDeliveries(t.project.id).find((d) => d.memberId === t.lead.id && d.refId === m.id)!;
+    expect(first.text).toContain("서버가 글에서 지은 임시 이름");
+    expect(first.text).toContain(`task_id "${task.id}"`);
+    const tool = await t.orch.handleAgentTool(t.lead, "task", { task_id: task.id, title: "알림 중복 분석·개선안" });
+    expect(tool.isError).toBeUndefined();
+    const renamed = t.store.requireTask(task.id);
+    expect(renamed).toMatchObject({ title: "알림 중복 분석·개선안", renamedBy: "총괄" });
+    expect(renamed.renamedAt).toEqual(expect.any(String));
+    // 대화 중 목적이 바뀌면 다시 바꾼다. 바꾼 뒤 전달 글에는 임시 안내가 없다
+    expect((await t.orch.handleAgentTool(t.lead, "task", { task_id: task.id, title: "알림 줄이기 구현" })).isError).toBeUndefined();
+    const next = await t.orch.sendUserMessage(t.project.id, { text: "구현도 해", taskId: task.id });
+    const later = t.store.listDeliveries(t.project.id).find((d) => d.memberId === t.lead.id && d.refId === next.id)!;
+    expect(later.text).toContain("'알림 줄이기 구현'");
+    expect(later.text).not.toContain("임시 이름");
+  });
+
+  test("대표가 이름 붙인 업무는 직원이 바꾸지 않는다. 직원·진행판 업무에는 임시 안내가 없다", async () => {
+    const t = setup();
+    const named = await t.orch.sendUserMessage(t.project.id, { text: "이번 주 안에", newTaskTitle: "견적서 개편" });
+    const owner = t.store.requireTask(named.taskId!);
+    const refused = await t.orch.handleAgentTool(t.lead, "task", { task_id: owner.id, title: "다른 이름" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("대표가 이름 붙인 업무");
+    expect(t.store.requireTask(owner.id).title).toBe("견적서 개편");
+    const delivered = t.store.listDeliveries(t.project.id).find((d) => d.memberId === t.lead.id && d.refId === named.id)!;
+    expect(delivered.text).not.toContain("임시 이름");
+    const staff = await t.orch.handleAgentTool(t.w, "task", { title: "결제 연동" });
+    expect(staff.text).not.toContain("임시 이름");
   });
 });
 
@@ -228,7 +271,7 @@ describe("옛 글 정리(계획·적용·되돌리기)", () => {
     // 질문 글과 그 결재는 한 새 업무
     expect(item(t.question.id).group).toBe(item(t.dec.id).group);
     expect(item(t.lonely.id).group).not.toBe(item(t.owner.id).group);
-    expect(plan.groups.find((g) => g.key === item(t.owner.id).group)!.title).toBe("로그인 오류 봐 줘");
+    expect(plan.groups.find((g) => g.key === item(t.owner.id).group)!.title).toBe("로그인 오류");
     // 기존 업무 '환불'로 짐작해 넣지 않는다(이름·시각만으로는)
     expect(plan.items.filter((i) => i.action === "link").map((i) => i.refId)).toEqual([t.viaFile.id]);
 
@@ -238,7 +281,7 @@ describe("옛 글 정리(계획·적용·되돌리기)", () => {
     expect(t.store.getMessage(t.viaFile.id)!.taskId).toBe(t.A.id);
     expect(t.store.getMessage(t.sys.id)!.taskId ?? null).toBeNull();
     expect(t.store.getMessage(t.owner.id)!.taskId).toBeTruthy();
-    expect(t.store.requireTask(t.store.getMessage(t.owner.id)!.taskId!)).toMatchObject({ origin: "backfill", title: "로그인 오류 봐 줘" });
+    expect(t.store.requireTask(t.store.getMessage(t.owner.id)!.taskId!)).toMatchObject({ origin: "backfill", title: "로그인 오류" });
     expect(t.store.listTaskLinks(p, { refType: "message", refId: t.viaFile.id })).toEqual([expect.objectContaining({ fromTaskId: null, toTaskId: t.A.id, basis: "backfill-file", batchId: applied.batchId })]);
 
     // 같은 계획을 다시 적용해도 아무것도 바뀌지 않는다
