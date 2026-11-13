@@ -212,6 +212,16 @@ struct AppShell: View {
                 if sheet.hasPrefix("terminal:") { router.terminalMemberID = String(sheet.dropFirst("terminal:".count)) }
             }
         }
+        // Review hook (0.2.6): `--send <text>` [`--send-delay <seconds>`, default 2] writes <text> into the open chat's
+        // composer and sends it the way the send button does, so screenshots can catch the reply line after a send.
+        .task {
+            guard store.isDemo, let text = LaunchOptions.value(after: "--send") else { return }
+            let delay = Double(LaunchOptions.value(after: "--send-delay") ?? "") ?? 2
+            try? await Task.sleep(for: .seconds(delay))
+            let target = router.chatTarget
+            store.drafts.setText(text, for: DraftStore.key(project: store.selectedProjectID, target: target))
+            await ComposerBar.submit(in: store, targetMemberID: target)
+        }
         #endif
         #if DEBUG && os(macOS)
         // Review hook: `--peek` keeps every window of the sample app on the current Space (also over a full-screen app)

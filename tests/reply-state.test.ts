@@ -14,6 +14,7 @@ import { REPLY_STATES, type DeliveryWaitReason, type Member, type Message, type 
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 import { USAGE_RESUME_TEXT } from "../server/api-outage.ts";
 import { RESTART_RESUME_TEXT } from "../server/restart-wake.ts";
+import { textRef } from "../shared/server-text.ts";
 
 // ---- 판정표(저장소 없이) ----
 const AT = "2026-11-14T01:00:00.000Z", LATER = "2026-11-14T01:03:00.000Z";
@@ -459,6 +460,31 @@ describe("저장소와 실시간", () => {
     f.store.createMessage({ projectId: f.project.id, memberId: lead.id, who: "시스템", kind: "시스템", body: "총괄 오류" });
     await Bun.sleep(20);
     expect(f.reply(sent.id)?.state).toBe("working");
+  });
+
+  test("보고 언어가 English(0.2.6 Y)여도 서버가 코드로 만든 글은 답이 아니다: 문장은 영어지만 보낸 이·종류는 '시스템' 그대로이고, 답은 팀장이 쓴 글이다", async () => {
+    const f = fixture(); const lead = f.member("conductor");
+    f.store.patchSettings({ reportLanguage: "en" });
+    const sent = await f.orch.sendUserMessage(f.project.id, { text: "확인해 주세요" });
+    await until(() => f.reply(sent.id)?.state === "working", "일하는 중");
+    // 일하는 동안 보낸 다음 글이 30분 넘게 못 들어가면 서버가 '대표 전달 지연'을 그 팀장 ID 를 붙여 쓴다(실제 경로).
+    const next = await f.orch.sendUserMessage(f.project.id, { text: "이것도요" });
+    await until(() => f.reply(next.id)?.state === "behind", "앞 일을 마치는 중");
+    f.orch.notifyDelayedDeliveries(Date.now() + 31 * 60_000);
+    const late = f.store.listMessages(f.project.id).find(m => m.textCode === "chat.owner_message_late")!;
+    // systemMessage 와 같은 모양의 팀장 오류 글(더 엄격하게 팀장 ID 를 붙였다).
+    const note = f.store.createMessage({ projectId: f.project.id, memberId: lead.id, who: "시스템", kind: "시스템", text: textRef("chat.member_error", { name: lead.name, error: "boom" }) });
+    expect(late).toMatchObject({ memberId: lead.id, who: "시스템", title: "Delivery delayed", textLang: "en" });
+    expect(note).toMatchObject({ who: "시스템", kind: "시스템", body: `${lead.name} error: boom`, textLang: "en" });
+    await Bun.sleep(20);
+    expect(f.reply(sent.id)?.state).toBe("working");
+    expect(f.states(sent.id)).not.toContain("replied");
+    const answer = f.store.createMessage({ projectId: f.project.id, memberId: lead.id, who: lead.name, kind: "답변", body: "Checked." });
+    await until(() => f.reply(sent.id)?.state === "replied", "답함");
+    expect(f.reply(sent.id)).toMatchObject({ state: "replied", memberId: lead.id, since: answer.at });
+    // 대표 글에는 답 상태만, 서버 글에는 글 코드만 실린다(두 선택 칸이 한 글에 섞이지 않는다).
+    expect(f.store.requireMessage(sent.id).textCode).toBeUndefined();
+    expect(f.store.requireMessage(late.id).reply).toBeUndefined();
   });
 
   test("잠든 팀장: 깨우는 동안은 깨우는 중", async () => {
