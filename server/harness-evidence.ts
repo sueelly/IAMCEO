@@ -37,7 +37,8 @@ export interface ProviderEvidence {
 const MAX_LOG_BYTES = 192 * 1024 * 1024;
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const time = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v)) ? v : null;
-export const normalizeCommand = (text: string) => text.trim();
+// 셸 원문을 문장처럼 다듬지 않는다. 인용 안 공백과 줄바꿈도 인자 데이터다.
+export const normalizeCommand = (text: string) => text;
 const head = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 160);
 
 function contentText(value: unknown): string {
