@@ -260,13 +260,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   code_read: tool(
-    "현재 확정 조사 계약에서 두 프로젝트 코드 출처의 실제 줄 조각을 읽습니다. 전체 파일·의미 검증이 아닙니다. 업무/직원/판/시각에 묶인 서버 관찰을 보관하며 원 출처의 인용 대조에 씁니다. 외부 경로·URL·비밀·셸 출력은 받지 않습니다.",
+    "현재 확정 조사 계약에서 두 프로젝트 코드 출처의 실제 줄 조각을 읽습니다. 요청80줄·응답16KiB·파일2MiB까지이며 초과/미완료/민감 조각은 거절합니다. 전체 파일·의미 검증이 아닙니다. 업무/직원/판/시각에 묶인 서버 관찰을 보관하며 원 출처의 인용 대조에 씁니다. 외부 경로·URL·비밀·셸 출력은 받지 않습니다.",
     z.strictObject({
-      task_id: z.string().regex(/^tk_[A-Za-z0-9_-]+$/).max(64),
-      contract_rev: z.number().int().min(1),
-      source: z.enum(CODE_SOURCES),
-      start_line: z.number().int().min(1),
-      end_line: z.number().int().min(1),
+      task_id: z.string().regex(/^tk_[A-Za-z0-9_-]+$/).max(64).describe("같은 프로젝트의 현재 조사 업무 id. 이 직원/업무의 관찰만 완료에 쓸 수 있습니다"),
+      contract_rev: z.number().int().min(1).describe("현재 확정된 계약 판"),
+      source: z.enum(CODE_SOURCES).describe("프로젝트 root의 고정 코드 출처. 응답의 절대 출처 식별을 원 claims.source와 대조합니다"),
+      start_line: z.number().int().min(1).describe("읽기 시작 줄(1부터)"),
+      end_line: z.number().int().min(1).describe("포함할 마지막 줄. 시작부터80줄까지이며 없는 줄/잘린 결과는 받지 않습니다"),
     }).refine(a => a.end_line >= a.start_line && a.end_line - a.start_line < CODE_LINES, "허용 줄 범위를 요청하세요"),
     (orch, member, a) => reply(JSON.stringify(orch.readCode(member, a.task_id, a.contract_rev, a.source, a.start_line, a.end_line))),
   ),
