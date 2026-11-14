@@ -93,11 +93,11 @@ test("직원이 제안한 계약은 총괄 확인 전까지 판정에 묶이지 
   expect(confirmed.text).toContain("직원 작성·총괄 확인");
   // 확인 뒤: 검사·실행 증거가 있어야 받는다
   expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "끝" })).text).toContain("관련 동작 시험(behavior) 검사가 없습니다");
-  // 직원이 기준을 느슨하게 고치면 새 판(확인 전)이 되고, 판정은 다시 확인 뒤에만 묶인다
+  // 직원의 새 제안은 확인 전까지 기존 확정 r1을 대신하지 않는다
   const loosened = await f.tool(f.worker, "task", { task_id: task, contract: { ...ONE, acceptance: ["대충 된다"], checks: [] } });
   expect(loosened.text).toContain("업무 계약 r2");
   await until("두 번째 확인 요청", () => f.store.listDeliveries().some(d => d.memberId === f.lead.id && d.text.includes("계약 r2 을 제안했습니다") && d.text.includes("바로 전 판 r1(총괄 확인)")));
-  expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "끝", contract_rev: 2, checks: [{ name: "봄", kind: "other", result: "pass", evidence: "봄", criterion: 1 }] })).text).toContain("아직 총괄 확인 전입니다");
+  expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "끝", contract_rev: 2, checks: [{ name: "봄", kind: "other", result: "pass", evidence: "봄", criterion: 1 }] })).text).toContain("현재 확정 판은 r1");
   await f.tool(f.lead, "task", { task_id: task, confirm_contract_rev: 2 });
   f.ran(f.worker, "bun test behavior");
   expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "끝", contract_rev: 2, checks: [{ name: "봄", kind: "other", result: "pass", evidence: "봄", criterion: 1 }] })).isError).toBeUndefined();
@@ -232,7 +232,8 @@ test("task_trace: 업무 한 건의 계약 판·전달·보고·검사 대조·�
 });
 
 test("셸 대조 규칙: 명령 자리·&& 사슬·pipefail·bash -c 를 가른다", () => {
-  expect(execProves("cd x && bun test a.test.ts", "bun test a.test.ts")).toBe("ok");
+  expect(execProves("cd x && bun test a.test.ts", "bun test a.test.ts")).toBe("absent");
+  expect(execProves("cd x && bun test a.test.ts", "cd x && bun test a.test.ts", "/fixture", "/fixture")).toBe("ok");
   expect(execProves("bash -lc 'bun test a.test.ts'", "bun test a.test.ts")).toBe("ok");
   expect(execProves("bunx tsc --noEmit && echo ok", "bunx tsc --noEmit")).toBe("ok");
   expect(execProves("echo bun test a.test.ts", "bun test a.test.ts")).toBe("absent");

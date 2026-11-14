@@ -21,10 +21,10 @@ export function writeExec(claudeHome: string, member: Member, command: string, e
   const id = `toolu_${++execSeq}_${Math.random().toString(36).slice(2, 8)}`;
   const at = new Date().toISOString();
   const lines = [
-    { type: "assistant", timestamp: at, sessionId: member.sessionId, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } },
+    { type: "assistant", timestamp: at, cwd: member.cwd, sessionId: member.sessionId, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } },
     exit === 0
-      ? { type: "user", timestamp: at, sessionId: member.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: output, is_error: false }] }, toolUseResult: { stdout: output, stderr: "", interrupted: false, isImage: false } }
-      : { type: "user", timestamp: at, sessionId: member.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `Exit code ${exit}\n${output}`, is_error: true }] }, toolUseResult: `Error: Exit code ${exit}` },
+      ? { type: "user", timestamp: at, cwd: member.cwd, sessionId: member.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: output, is_error: false }] }, toolUseResult: { stdout: output, stderr: "", interrupted: false, isImage: false } }
+      : { type: "user", timestamp: at, cwd: member.cwd, sessionId: member.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `Exit code ${exit}\n${output}`, is_error: true }] }, toolUseResult: `Error: Exit code ${exit}` },
   ];
   appendFileSync(path, lines.map(l => JSON.stringify(l)).join("\n") + "\n");
   return id;
@@ -36,8 +36,8 @@ export function writeToolResult(claudeHome: string, member: Member, name: string
   const id = `toolu_${++execSeq}_r`;
   const at = new Date().toISOString();
   appendFileSync(path, [
-    { type: "assistant", timestamp: at, message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] } },
-    { type: "user", timestamp: at, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] }] } },
+    { type: "assistant", timestamp: at, cwd: member.cwd, message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] } },
+    { type: "user", timestamp: at, cwd: member.cwd, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] }] } },
   ].map(l => JSON.stringify(l)).join("\n") + "\n");
 }
 

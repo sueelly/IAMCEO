@@ -39,7 +39,7 @@ test("업무 한 건 전 과정: 계약이 지시에 실리고, 검사 없는·�
   expect(unproven.text).toContain("'bun test behavior'을 계약 뒤 실행 기록에서 찾지 못했습니다");
   // 고쳐서 다시 검사한 완료 → 받음
   f.ran(f.worker, "bun test behavior", "bun test typecheck", "cd server && bun test regression");
-  const done = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "검사 줄을 보이게 고침", contract_rev: 1, checks: [pass("behavior", 1), pass("typecheck"), pass("regression", 2), pass("real", 1)], unverified: [], review_needed: "server/harness.ts 의 판정 규칙을 다른 직원이 계약 기준 1·2로 확인" });
+  const done = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "검사 줄을 보이게 고침", contract_rev: 1, checks: [pass("behavior", 1), pass("typecheck"), { ...pass("regression", 2), command: "cd server && bun test regression" }, pass("real", 1)], unverified: [], review_needed: "server/harness.ts 의 판정 규칙을 다른 직원이 계약 기준 1·2로 확인" });
   expect(done.isError).toBeUndefined();
   const id = done.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!;
   // 총괄은 앞 보고(막힘)를 받는 중이라 이 보고는 대기열에 있다. 전달 글을 본다.
@@ -93,11 +93,12 @@ test("조사 업무: 출처·사실과 해석·미확인이 없는 완료는 거
   writeToolResult(f.isolated.paths.claudeHome, f.worker, "Bash", { command: `echo '--settings <file-or-json>  Load additional settings' # /docs/claude-help.txt` }, "--settings <file-or-json>  Load additional settings");
   expect((await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "조사 끝", contract_rev: 1, checks, claims: [fact], unverified: [] })).isError).toBe(true);
   writeToolResult(f.isolated.paths.claudeHome, f.worker, "Read", { file_path: "/docs/claude-help.txt" }, "Options:\n  --settings <file-or-json>  Load additional settings from a JSON file\n");
+  writeToolResult(f.isolated.paths.claudeHome, f.worker, "Read", { file_path: "/docs/codex-hooks.txt" }, "Codex hook support: fixture source.\n");
   const full = await f.tool(f.worker, "post", { task_id: task, kind: "완료", title: "직원 CLI 훅 지원을 정리함", contract_rev: 1, checks,
     claims: [fact, { text: "Codex 훅은 Claude 보다 막는 범위가 좁아 보인다", basis: "interpretation", source: "/docs/codex-hooks.txt" }], unverified: ["Codex 훅의 실행 시 신뢰 절차"] });
   expect(full.isError).toBeUndefined();
   const harness = f.store.getReportHarness(full.text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!)!;
-  expect(harness.claims.map(c => [c.basis, c.verified, c.via])).toEqual([["fact", true, "Read 결과"], ["interpretation", false, null]]);
+  expect(harness.claims.map(c => [c.basis, c.verified, c.quoteMatched, c.sourceRead, c.semanticReview])).toEqual([["fact", false, true, true, "required"], ["interpretation", false, false, true, "required"]]);
 });
 
 test("같은 업무를 다른 직원에게 넘기면 계약 판·지난 검사(보고 id·누가)가 실리고, 직원은 총괄 계약을 바꾸지 못한다", async () => {

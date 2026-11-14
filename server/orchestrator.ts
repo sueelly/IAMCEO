@@ -1,3 +1,4 @@
+import { redactHarnessText } from "./harness-redaction.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { ModelCatalogReader } from "./models.ts";
@@ -67,7 +68,8 @@ import type {
 } from "../shared/types.ts";
 import { adoptRefusal, memberConfig, memberRank } from "../shared/types.ts";
 import { VERSION, type Config } from "./config.ts";
-import type { BackupManager } from "./backup.ts";
+import { listBackups, type BackupManager } from "./backup.ts";
+import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderRole } from "./roles.ts";
@@ -966,7 +968,7 @@ export class Orchestrator implements OrchestratorApi {
     return {
       version: VERSION, schema: { version: schemaVersion, supportedVersion: MIGRATIONS.length, ok: schemaVersion === MIGRATIONS.length },
       harness: { mode: settings.harnessMode, requiredSince: settings.harnessRequiredSince },
-      backups: this.backups ? { recent: readBackupManifests(this.backups.options.backupDir, 5), lastError: this.backups.lastError?.message ?? null } : { recent: [], lastError: null, note: "이 서버에는 정기 백업 관리자가 없습니다" },
+      backups: this.backups ? { recent: readVerifiedBackups(this.backups.options.backupDir, 5, this.backups.options.home), lastError: this.backups.lastError?.message ?? null } : { recent: [], lastError: null, note: "이 서버에는 정기 백업 관리자가 없습니다" },
       execEvidence: member.cli === "antigravity" ? "unsupported" : log ? "available" : "log_not_found",
     };
   }
@@ -974,12 +976,13 @@ export class Orchestrator implements OrchestratorApi {
   /** 서버가 자기 데이터 폴더를 백업한다(검증 포함, 보관 규칙대로 정리). 10분 안에 만든 백업이 있으면 새로 만들지 않고 그것을 알린다. */
   async serverBackup(member: Member): Promise<Record<string, unknown>> {
     if (!this.backups) throw new ApiError(503, "이 서버에는 백업 관리자가 없습니다. 대표에게 iamceo backup 을 부탁하세요");
-    const recent = readBackupManifests(this.backups.options.backupDir, 1)[0];
-    if (recent && Date.now() - Date.parse(recent.createdAt) < 10 * 60_000) return { created: false, reason: "10분 안에 만든 백업이 있습니다", backup: recent };
+    const recent = readVerifiedBackups(this.backups.options.backupDir, 1, this.backups.options.home)[0];
+    if (recent && Date.now() >= Date.parse(recent.createdAt) && Date.now() - Date.parse(recent.createdAt) < 10 * 60_000) return { created: false, reason: "10분 안에 만든 백업이 있습니다", backup: recent };
     const snapshot = await this.backups.run(true);
     this.store.appendActivity(member.id, "system", `서버 백업 요청: ${snapshot?.manifest.id ?? "만들지 않음"}`);
-    const made = snapshot ? readBackupManifests(this.backups.options.backupDir, 5).find(b => b.id === snapshot.manifest.id) ?? null : null;
-    return { created: !!snapshot, backup: made };
+    const made = snapshot ? readVerifiedBackups(this.backups.options.backupDir, 5, this.backups.options.home).find(b => b.id === snapshot.manifest.id) ?? null : null;
+    if (!snapshot || !made) throw new ApiError(503, "새 백업을 검증하지 못했습니다. 백업을 재사용하지 않습니다");
+    return { created: true, backup: made };
   }
 
   /** 업무 한 건의 시작→지시→보고 사슬(읽기만). 계약 판·전달·검사와 실행 증거·조사 주장·열린 결재·개선 후보. 글 본문은 싣지 않는다. */
@@ -992,7 +995,7 @@ export class Orchestrator implements OrchestratorApi {
       const h = this.store.getReportHarness(id);
       return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
         checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null })) ?? [],
-        claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, via: c.via })) ?? [] };
+        claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
     });
     return {
       task: { id: task.id, title: task.title, createdAt: task.createdAt, origin: task.origin ?? null, parent: task.parentTaskId ?? null },
@@ -3826,7 +3829,7 @@ export class Orchestrator implements OrchestratorApi {
       const previous = saved.contract.rev > 1 ? this.store.listTaskContracts(saved.contract.taskId).find(c => c.rev === saved.contract!.rev - 1) : null;
       const change = previous ? `\n바로 전 판 r${previous.rev}(${previous.confirmedAt ? `${previous.confirmedBy ?? "총괄"} 확인` : "확인 전"}): 합격 기준 ${previous.acceptance.length}개 → ${saved.contract.acceptance.length}개, 필수 검사 ${previous.checks.join("·") || "없음"} → ${saved.contract.checks.join("·") || "없음"}` : "";
       void this.deliver({ projectId: member.projectId, memberId: conductor.id, kind: "system", wake: true, taskId: saved.task.id,
-        text: formatSystem(`계약 확인 요청: ${member.name}이(가) 업무 #${saved.task.id} 에 계약 r${saved.contract.rev} 을 제안했습니다. 맞으면 task(task_id "${saved.task.id}", confirm_contract_rev ${saved.contract.rev})로 확인하세요. 기준을 바꿔야 하면 task 의 contract 로 총괄이 새 판을 정합니다. 확인 전 직원 계약은 완료 판정에 묶이지 않습니다.${change}`) + `\n${formatContract(saved.contract)}` }).catch(() => {});
+        text: formatSystem(`계약 확인 요청: ${member.name}이(가) 업무 #${saved.task.id} 에 계약 r${saved.contract.rev} 을 제안했습니다. 맞으면 task(task_id "${saved.task.id}", confirm_contract_rev ${saved.contract.rev})로 확인하세요. 기준을 바꿔야 하면 task 의 contract 로 총괄이 새 판을 정합니다. 확인 전 새 제안은 적용하지 않습니다. 기존 확정 계약이 있으면 그 판으로 검사합니다.${change}`) + `\n${formatContract(saved.contract)}` }).catch(() => {});
     }
     return saved;
   }
@@ -4014,6 +4017,8 @@ export class Orchestrator implements OrchestratorApi {
    */
   private gateCompletion(member: Member, taskId: string | null, contract: TaskContract | null, checks: ReportCheckInput[], declaredRev: number | null, claims: ClaimInput[]): { gate: HarnessGate; evidenceStatus: string | null; evidence: CheckEvidence[]; claims: ClaimResult[] } {
     const refuse = (reason: string, log = reason, kind: HarnessFinding["kind"] = "completion_refused"): never => {
+      reason = redactHarnessText(reason);
+      log = redactHarnessText(log);
       this.store.appendActivity(member.id, "system", `완료 차단: ${log}`);
       this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind, detail: log, refType: "task", refId: taskId });
       throw new ApiError(400, reason);
@@ -4046,13 +4051,14 @@ export class Orchestrator implements OrchestratorApi {
       refuse(`업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 contract_rev 와 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`);
     }
     const now = formatContract(contract, { forTaskId: taskId });
+    if (declaredRev != null && declaredRev > contract.rev) refuse(`계약 r${declaredRev} 은 아직 확정되지 않았습니다. 현재 확정 판은 r${contract.rev} 입니다. 이 판으로 검사하거나 새 판 확인을 기다리세요`);
     if (declaredRev != null && declaredRev !== contract.rev) refuse(`완료로 올릴 수 없습니다. 업무 #${contract.taskId} 계약이 r${declaredRev} 에서 r${contract.rev} 로 바뀌었습니다. 옛 판의 검사로는 받지 않습니다. 지금 판의 기준으로 다시 검사하세요.\n${now}`, `옛 판 r${declaredRev} 의 검사(지금 r${contract.rev})`);
     const reasons = [...(declaredRev == null ? [`검사가 따른 계약 판을 contract_rev 로 밝히지 않았습니다(지금 판 r${contract.rev})`] : []), ...completionGate(contract, checks), ...researchGate(contract, claims)];
     if (reasons.length) refuse(`완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}). ${reasons.join(" / ")}. 고쳐서 다시 검사한 뒤 완료로 올리거나, 막힘으로 올리고 unverified 에 확인하지 못한 것을 적으세요${declaredRev == null ? `\n${now}` : ""}`, reasons.join(" / "));
     // 실행 증거: 이 세션의 제공자 기록에서 계약 시각 뒤의 실행만 본다(옛 판·다른 업무·실패·없는 실행은 받지 않는다).
     const log = this.contextLog(member);
     const evidence = readProviderEvidence(member.cli, log ? { ...log, root: providerLogRoot(member.cli, log.home) } : null, contract.at);
-    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; });
+    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd);
     const verified = verifyClaims(claims, evidence, source => {
       const file = /^f_[A-Za-z0-9_-]+$/.test(source) ? this.store.getFile(source) : null;
       // 자기가 올린 자료는 자기 글이다. 대표·다른 직원의 자료 본문만 원문으로 친다.
@@ -4102,7 +4108,7 @@ export class Orchestrator implements OrchestratorApi {
     const contract = harness?.contractTaskId ? this.store.getTaskContract(harness.contractTaskId) : null;
     const checksLine = [harness ? formatChecksLine(harness.checks, harness.contractRev, harness.reviewNeeded, contract) : "",
       harness?.gate === "no_contract" ? (contract ? `하네스: 확인 전 직원 계약(완료 판정 밖, 작성자 보고만). 기준이 맞으면 task(task_id "${contract.taskId}", confirm_contract_rev ${contract.rev})로 확인하세요` : "하네스: 계약 없는 완료(완료 판정 밖, 작성자 보고만). 기준이 필요한 일이면 task 의 contract 로 계약을 정하고 다시 맡기세요") : "",
-      harness?.claims.length ? `조사 주장 ${harness.claims.length}건: 사실 ${harness.claims.filter(c => c.basis === "fact").length}(인용 대조 ${harness.claims.filter(c => c.verified).length}) · 해석 ${harness.claims.filter(c => c.basis === "interpretation").length}` : ""].filter(Boolean).join("\n");
+      harness?.claims.length ? `조사 주장 ${harness.claims.length}건: 사실 ${harness.claims.filter(c => c.basis === "fact").length}(인용 대조 ${harness.claims.filter(c => c.quoteMatched).length}) · 해석 ${harness.claims.filter(c => c.basis === "interpretation").length}. 인용 존재·출처 열람만 대조하며, 주장 의미는 별도 검토` : ""].filter(Boolean).join("\n");
     return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}${checksLine ? `\n${checksLine}` : ""}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
   }
 
@@ -5818,17 +5824,10 @@ function staffSubagent(cli: CliProvider, ranks: Settings["ranks"], codexRanks: S
   return { subagentModel: ranks.staff.model, subagentEffort: ranks.staff.effort };
 }
 
-/** 백업 목록(가볍게): 만들 때 확인한 manifest 값만 읽는다. 파일을 다시 해시하지 않고, 폴더 경로는 싣지 않는다. */
-function readBackupManifests(backupDir: string, limit: number): { id: string; createdAt: string; schemaVersion: number; databaseBytes: number; verified: boolean; appVersion: string }[] {
-  let names: string[] = [];
-  try { names = readdirSync(backupDir).filter(n => /^snapshot-\d{13}-[a-f0-9-]{36}$/.test(n)); } catch { return []; }
-  const out: { id: string; createdAt: string; schemaVersion: number; databaseBytes: number; verified: boolean; appVersion: string }[] = [];
-  for (const n of names) {
-    try {
-      const m = JSON.parse(readFileSync(join(backupDir, n, "manifest.json"), "utf8")) as { id?: string; createdAt?: string; schemaVersion?: number; database?: { size?: number }; verification?: Record<string, string>; applicationVersion?: string };
-      if (m.id !== n || typeof m.createdAt !== "string") continue;
-      out.push({ id: n, createdAt: m.createdAt, schemaVersion: Number(m.schemaVersion ?? 0), databaseBytes: Number(m.database?.size ?? 0), verified: !!m.verification && Object.values(m.verification).every(v => v === "ok"), appVersion: String(m.applicationVersion ?? "") });
-    } catch { /* 망가진 후보는 건너뛴다 */ }
-  }
-  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+/** 명세의 주장만 믿지 않고 파일·해시·DB를 현재 검증한 같은 원본의 백업만 반환한다. */
+function readVerifiedBackups(backupDir: string, limit: number, sourceHome: string): { id: string; createdAt: string; schemaVersion: number; databaseBytes: number; verified: boolean; appVersion: string }[] {
+  const home = normalizeHome(sourceHome);
+  return listBackups(backupDir).filter(s => s.manifest.sourceHome === home && s.manifest.database.size > 0).slice(0, limit).map(({manifest:m}) => ({
+    id: m.id, createdAt: m.createdAt, schemaVersion: m.schemaVersion, databaseBytes: m.database.size, verified: true, appVersion: m.applicationVersion,
+  }));
 }

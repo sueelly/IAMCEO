@@ -1,3 +1,5 @@
+import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
+import { claimObservation } from "./harness-evidence.ts";
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -3108,13 +3110,16 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   getEffectiveContract(taskId: string): TaskContract | null {
     const seen = new Set<string>();
     let id: string | null | undefined = taskId;
+    let pending: TaskContract | null = null;
     while (id && !seen.has(id) && seen.size < 32) {
       seen.add(id);
-      const own = this.getTaskContract(id);
-      if (own) return own;
+      // 최신 제안과 현재 확정 판은 다르다. 제안만으로 기존 확정 판/부모 계약을 가릴 수 없다.
+      const bound = this.row("SELECT * FROM task_contracts WHERE task_id = ? AND (author_kind <> 'worker' OR confirmed_at IS NOT NULL) ORDER BY rev DESC LIMIT 1", id);
+      if (bound) return toContract(bound);
+      pending ??= this.getTaskContract(id);
       id = this.getTask(id)?.parentTaskId ?? null;
     }
-    return null;
+    return pending;
   }
 
   /** 계약을 새 판으로 남긴다. 옛 판은 지우지 않는다(어느 판으로 일했는지 검사 기록이 가리킨다). */
@@ -3140,6 +3145,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판, 검사마다 대조한 실행 증거, 조사 주장을 함께 남긴다. */
   recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
+    checks = publicHarness(checks);
+    extra = publicHarness(extra);
     const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
     this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at);
     checks.forEach((c, i) => {
@@ -3187,12 +3194,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 보고의 조사 주장과 대조 결과. */
   listReportClaims(messageId: string): ClaimResult[] {
-    return this.rows("SELECT * FROM report_claims WHERE message_id = ? ORDER BY idx", messageId).map(r => ({ text: r.text as string, basis: r.basis as ClaimResult["basis"], source: (r.source as string | null) ?? null, quote: (r.quote as string | null) ?? null, criterion: (r.criterion as number | null) ?? null, verified: !!r.verified, via: (r.via as string | null) ?? null }));
+    return this.rows("SELECT * FROM report_claims WHERE message_id = ? ORDER BY idx", messageId).map(r => publicHarness(claimObservation({ text: r.text as string, basis: r.basis as ClaimResult["basis"], source: (r.source as string | null) ?? null, quote: (r.quote as string | null) ?? null, criterion: (r.criterion as number | null) ?? null }, (r.via as string | null) ?? null)));
   }
 
   /** 개선 후보 한 줄. 규칙·권한을 바꾸지 않는 기록이다(총괄이 보고 개발 기억에 남길지 정한다). */
   recordHarnessFinding(input: Omit<HarnessFinding, "id" | "at">): void {
-    this.run("INSERT INTO harness_findings (project_id, task_id, member_id, kind, detail, ref_type, ref_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", input.projectId, input.taskId, input.memberId, input.kind, input.detail.slice(0, 2000), input.refType, input.refId, nowIso());
+    this.run("INSERT INTO harness_findings (project_id, task_id, member_id, kind, detail, ref_type, ref_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", input.projectId, input.taskId, input.memberId, input.kind, redactHarnessText(input.detail).slice(0, 2000), input.refType, input.refId, nowIso());
   }
 
   listHarnessFindings(projectId: string, opts: { taskId?: string | null; since?: string | null; limit?: number } = {}): HarnessFinding[] {
@@ -3201,7 +3208,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (opts.since) { where.push("at >= ?"); args.push(opts.since); }
     return this.rows(`SELECT * FROM harness_findings WHERE ${where.join(" AND ")} ORDER BY at DESC, id DESC LIMIT ?`, ...args, Math.max(1, Math.min(opts.limit ?? 50, 200))).map(r => ({
       id: r.id as number, projectId: r.project_id as string, taskId: (r.task_id as string | null) ?? null, memberId: (r.member_id as string | null) ?? null,
-      kind: r.kind as HarnessFinding["kind"], detail: r.detail as string, refType: (r.ref_type as string | null) ?? null, refId: (r.ref_id as string | null) ?? null, at: r.at as string,
+      kind: r.kind as HarnessFinding["kind"], detail: redactHarnessText(r.detail as string), refType: (r.ref_type as string | null) ?? null, refId: (r.ref_id as string | null) ?? null, at: r.at as string,
     }));
   }
 
@@ -3220,13 +3227,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.message_id = ?", messageId);
     if (!h) return null;
     const checks = this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", messageId).map(r => toCheck(r, h));
-    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: (h.review_needed as string | null) ?? null, memberId: h.member_id as string,
+    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: h.review_needed ? redactHarnessText(h.review_needed as string) : null, memberId: h.member_id as string,
       gate: (h.gate as HarnessGate | null) ?? null, evidenceStatus: (h.evidence_status as string | null) ?? null, checks, claims: this.listReportClaims(messageId) };
   }
 
-  /** 이 계약(계약이 붙은 업무·판)으로 완료 판정을 받은 보고가 있는지. 갈래 업무의 완료도 위 업무의 계약으로 센다(완료 글은 판정을 통과해야만 남는다). */
+  /** 이 계약(계약이 붙은 업무·판)으로 완료 판정을 받은 보고가 있는지. 갈래 업무의 완료도 위 업무의 계약으로 센다(실제로 contract 판정을 받은 보고만 센다. 확인 전 완료는 소급 승격하지 않는다). */
   hasPassedCompletion(contractTaskId: string, rev: number): boolean {
-    return !!this.row("SELECT 1 FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.contract_task_id = ? AND h.contract_rev = ? AND m.kind = '완료' LIMIT 1", contractTaskId, rev);
+    return !!this.row("SELECT 1 FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.contract_task_id = ? AND h.contract_rev = ? AND h.gate = 'contract' AND m.kind = '완료' LIMIT 1", contractTaskId, rev);
   }
 
   /** 그 업무의 가장 최근 검사 보고(누가 올렸든). 재개·다음 직원의 지시에 '지난 검사'로 싣는다. */
@@ -3426,7 +3433,7 @@ function toContract(r: Row): TaskContract {
 }
 
 function toCheck(r: Row, h: Row): ReportCheck {
-  return {
+  return publicHarness({
     messageId: r.message_id as string, name: r.name as string, kind: r.kind as ReportCheck["kind"], result: r.result as ReportCheck["result"],
     evidence: r.evidence as string, command: (r.command as string | null) ?? null, criterion: (r.criterion as number | null) ?? null,
     taskId: (h.task_id as string | null) ?? null, memberId: h.member_id as string, who: h.who as string, runId: (h.run_id as string | null) ?? null,
@@ -3434,5 +3441,5 @@ function toCheck(r: Row, h: Row): ReportCheck {
     contractRev: (h.contract_rev as number | null) ?? null, at: h.at as string,
     execStatus: (r.exec_status as ReportCheck["execStatus"]) ?? null, execRef: (r.exec_ref as string | null) ?? null, execExit: (r.exec_exit as number | null) ?? null,
     execAt: (r.exec_at as string | null) ?? null, execOutputSha: (r.exec_output_sha as string | null) ?? null, execCommand: (r.exec_command as string | null) ?? null,
-  };
+  });
 }

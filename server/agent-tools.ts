@@ -1,3 +1,4 @@
+import { publicHarness } from "./harness-redaction.ts";
 // 에이전트 도구 정의와 처리기(spec §7). 스키마는 zod 하나로 검증과 JSON 스키마를 함께 낸다.
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -68,7 +69,7 @@ const claimSchema = z.strictObject({
   text: z.string().trim().min(1).max(400).describe("주장 한 문장"),
   basis: z.enum(["fact", "interpretation"]).describe("fact 출처에 그대로 있는 사실 · interpretation 출처를 읽고 낸 해석"),
   source: z.string().trim().max(500).optional().describe("출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요"),
-  quote: z.string().trim().max(600).optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 서버가 계약 뒤 그 출처를 연 도구 결과나 대표·다른 직원 자료 본문과 대조한다"),
+  quote: z.string().trim().max(600).optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 주장이 뒷받침하는 합격 기준 번호"),
 });
 
@@ -440,7 +441,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         // 하네스 기록: 실행·계약 판·검사(작성자 자기 확인)·검토 요청. 계약은 그 보고가 따른 판이다.
         const harness = orch.store.getReportHarness(source.id);
         const contract = harness?.contractRev && harness.contractTaskId ? orch.store.getTaskContract(harness.contractTaskId) : null;
-        return reply(JSON.stringify({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) }));
+        return reply(JSON.stringify(publicHarness({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) })));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
       const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
