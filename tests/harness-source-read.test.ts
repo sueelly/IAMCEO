@@ -51,6 +51,15 @@ test("다른 조건이 정상인 미열람 출처 하나만 거절하고 실제 
   expect(refused.text).toContain("주장 2"); expect(refused.text).not.toContain("주장 1"); expect(refused.text).not.toContain("명령 자리");
   expect((await s.read(1)).isError).toBeUndefined(); expect((await s.submit()).isError).toBeUndefined();
 });
+test("원 세 주장이 정상인 상태에서 README 미열람 해석 하나만 거절한다",async()=>{
+  const s=await setup();for(let i=0;i<2;i++)expect((await s.read(i)).isError).toBeUndefined();
+  const source=join(s.project.cwd,"README.md");writeFileSync(source,"# Synthetic documentation\n권한 제한 설명은 별도 검토합니다.\n");
+  const claims=[...s.claims,{text:"검증용 미열람 해석: README의 권한 제한 설명이 충분한지는 원문 검토가 더 필요하다.",basis:"interpretation",source,quote:"",criterion:2}];
+  const rejected=await s.submit(claims);expect(rejected.isError).toBe(true);expect(rejected.text).toContain("주장 4");
+  for(const i of [1,2,3])expect(rejected.text).not.toContain("주장 "+i);
+  const normal=await s.submit();expect(normal.isError).toBeUndefined();
+  observations.push({label:"readme-unread-only",claims,rejected,normal,harness:s.store.getReportHarness(id(normal,"msg"))});
+});
 test("셸 stdout과 자기 자료의 두 원인용만으로 열람을 만들 수 없다", async () => {
   const s=await setup(); (s.rows[1]!.payload as any).item.aggregated_output=s.claims.map(c=>c.source+"\n"+c.quote).join("\n");
   writeFileSync(s.log,s.rows.map(r=>JSON.stringify(r)).join("\n")+"\n");
