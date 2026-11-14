@@ -37,6 +37,22 @@ export interface CoreRunnerDeps {
   submitKeyVerified?: boolean;
   compactStore?: { load(memberId: string): CoreCompactState | null; save(memberId: string, state: CoreCompactState): void };
 }
+/** Read-only observations, never an authorization or reusable token for input. */
+export interface CoreSleepRetryInspection {
+  outcome: "refused" | "requires_protocol";
+  reason: "not_attached" | "identity_changed" | "not_sleep_error" | "manual_control" | "input_unsettled" | "composer_unknown" | "composer_not_empty" | "observation_changed" | "observation_unavailable" | "atomic_retry_unavailable";
+  automaticSend: false;
+  identity: RunnerTerminalIdentity | null;
+  turn: number | null;
+  inputEpoch: number | null;
+}
+const CLAUDE_SLEEP_ERROR = "API Error: Your computer went to sleep mid-response. The response above may be incomplete.";
+function isClaudeSleepError(terminal: CoreTerminal): boolean {
+  return terminal.state === "live" && terminal.status?.state === "error" && terminal.status.app === "claude-code" && terminal.status.msg === CLAUDE_SLEEP_ERROR;
+}
+function sleepRetryRefused(reason: CoreSleepRetryInspection["reason"]): CoreSleepRetryInspection {
+  return { outcome: "refused", reason, automaticSend: false, identity: null, turn: null, inputEpoch: null };
+}
 interface Track {
   statusKey: string | null;
   setupAttempted: string | null;
@@ -390,6 +406,64 @@ export class CoreRunner implements Runner {
     const observedQuiet = track.status === "idle"; // includes done; a blocked CLI may be paused mid-turn and still counts
     return track.pending || track.completing || track.status === "working" || compacting || (track.uncertain && !observedQuiet);
   }
+  /** Generation 1 has no atomic error/composer/identity conditional. This method never writes. */
+  async inspectSleepRetry(member: RunnerMember): Promise<CoreSleepRetryInspection> {
+    let release: () => void;
+    try { release = this.reserve(member.id); } catch { return sleepRetryRefused("input_unsettled"); }
+    try { return await this.inspectSleepRetryLocked(member); } finally { release(); }
+  }
+  private async inspectSleepRetryLocked(member: RunnerMember): Promise<CoreSleepRetryInspection> {
+    const track = this.tracks.get(member.id);
+    if (!track) return sleepRetryRefused("not_attached");
+    const fence = (): CoreSleepRetryInspection["reason"] | null => {
+      const saved = this.deps.recoveryStore?.inputState(member.id);
+      if (this.manualLease(member.id) || saved?.lease && saved.lease.expiresAt > Date.now()) return "manual_control";
+      if (this.configuring.has(member.id) || track.pending || track.uncertain || track.completing ||
+          track.compact && !["failed", "succeeded"].includes(track.compact.phase) ||
+          saved?.unresolvedDispatches.some(dispatch => dispatch.transportState !== "rejected")) return "input_unsettled";
+      return null;
+    };
+    try {
+      this.assertMember(track, member);
+      const blocked = fence();
+      if (blocked) return sleepRetryRefused(blocked);
+      await this.refresh(track);
+      const identity = this.identity(track);
+      if (providerFor(member) !== "claude" || !isClaudeSleepError(track.terminal)) return sleepRetryRefused("not_sleep_error");
+      if (!member.sessionId || member.sessionId !== identity.sessionId || !member.paneId || member.paneId !== identity.terminalId ||
+          !Number.isSafeInteger(member.sessionGeneration) || member.sessionGeneration! < 0 || !identity.process ||
+          !Number.isSafeInteger(identity.process.pid) || identity.process.pid <= 0 || track.terminal.labels["iamceo.session"] !== identity.sessionId) return sleepRetryRefused("identity_changed");
+      const turn = track.terminal.turn;
+      if (!Number.isSafeInteger(turn)) return sleepRetryRefused("observation_unavailable");
+      const epoch = track.epoch;
+      const unchanged = () => {
+        this.validateTrack(track); this.assertMember(track, member);
+        return this.sameIdentity(identity, this.identity(track)) && track.terminal.labels["iamceo.session"] === identity.sessionId &&
+          track.terminal.turn === turn && track.epoch === epoch && isClaudeSleepError(track.terminal);
+      };
+      let previousScreen: string | null = null;
+      for (let check = 0; check < 2; check++) {
+        const before = fence();
+        if (before) return sleepRetryRefused(before);
+        const screen = await this.call<{ text: string; complete?: boolean }>("terminal.read", { terminal: track.terminal.address, lines: 0 });
+        await this.refresh(track);
+        const after = fence();
+        if (after) return sleepRetryRefused(after);
+        if (!unchanged()) return sleepRetryRefused("observation_changed");
+        if (screen.complete !== true || typeof screen.text !== "string") return sleepRetryRefused("composer_unknown");
+        const draft = exactComposer(screen.text, "claude");
+        if (draft === null) return sleepRetryRefused("composer_unknown");
+        if (draft !== "") return sleepRetryRefused("composer_not_empty");
+        if (previousScreen !== null && previousScreen !== screen.text) return sleepRetryRefused("observation_changed");
+        previousScreen = screen.text;
+      }
+      // An unchanged pair of reads is still non-atomic with a later write.
+      // Never infer a new vendor capability from a method name or send without `if`.
+      return { outcome: "requires_protocol", reason: "atomic_retry_unavailable", automaticSend: false, identity, turn: turn!, inputEpoch: epoch };
+    } catch (error) {
+      return sleepRetryRefused(error instanceof CoreError && error.kind === "conflict" ? "identity_changed" : "observation_unavailable");
+    }
+  }
   async send(member: RunnerMember, text: string, opts: StartOpts, _urgent = false): Promise<SendResult> {
     if (!cleanText(text).trim()) return unsupported("Message is empty");
     if (this.configuring.has(member.id)) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written", detail: "CLI configuration is being reloaded" };
@@ -407,6 +481,11 @@ export class CoreRunner implements Runner {
       const state = terminal.status?.state;
       if (state === "working") return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
       if (state === "blocked") return { ok: false, reason: "blocked", retryable: true, deliveryEffect: "not_written", detail: `Complete the CLI dialog with iamceo attach ${member.id}` };
+      if (providerFor(member) === "claude" && isClaudeSleepError(terminal)) {
+        const inspection = await this.inspectSleepRetryLocked(member);
+        return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written",
+          detail: `Claude sleep retry refused (${inspection.reason}). Core generation 1 cannot atomically verify error, identity and empty composer; existing session and queued input are preserved.` };
+      }
       if (!["idle", "done"].includes(state || "")) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written", detail: `No trustworthy idle OSC 7501 status; inspect CLI setup with iamceo attach ${member.id}` };
       const inputEpoch = track.epoch;
       const screen = await this.call<{ text: string }>("terminal.read", { terminal: terminal.address, lines: 0 });
