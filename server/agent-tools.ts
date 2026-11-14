@@ -1,4 +1,5 @@
 import { publicHarness } from "./harness-redaction.ts";
+import { CODE_SOURCES, CODE_LINES } from "./harness-source-read.ts";
 // 에이전트 도구 정의와 처리기(spec §7). 스키마는 zod 하나로 검증과 JSON 스키마를 함께 낸다.
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -256,6 +257,18 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       check_index: z.number().int().min(0).max(63).describe("그 보고 checks 안의 실패 실행 검사 번호(0부터 시작)"),
     }),
     (orch, member, a) => reply(JSON.stringify(orch.execDiagnose(member, a.task_id, a.report_id, a.check_index))),
+  ),
+
+  code_read: tool(
+    "현재 확정 조사 계약에서 두 프로젝트 코드 출처의 실제 줄 조각을 읽습니다. 전체 파일·의미 검증이 아닙니다. 업무/직원/판/시각에 묶인 서버 관찰을 보관하며 원 출처의 인용 대조에 씁니다. 외부 경로·URL·비밀·셸 출력은 받지 않습니다.",
+    z.strictObject({
+      task_id: z.string().regex(/^tk_[A-Za-z0-9_-]+$/).max(64),
+      contract_rev: z.number().int().min(1),
+      source: z.enum(CODE_SOURCES),
+      start_line: z.number().int().min(1),
+      end_line: z.number().int().min(1),
+    }).refine(a => a.end_line >= a.start_line && a.end_line - a.start_line < CODE_LINES, "허용 줄 범위를 요청하세요"),
+    (orch, member, a) => reply(JSON.stringify(orch.readCode(member, a.task_id, a.contract_rev, a.source, a.start_line, a.end_line))),
   ),
 
   harness_findings: tool(
@@ -860,6 +873,7 @@ export async function handleAgentTool(orch: Orchestrator, member: Member, name: 
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {
+    if (name === "code_read") return { text: "코드 열람 인자나 허용 범위가 맞지 않습니다", isError: true };
     const issues = parsed.error.issues.map((i) => `${i.path.join(".") || "인자"}: ${i.message}`).join("; ");
     return { text: `인자가 잘못되었습니다. ${issues}`, isError: true };
   }

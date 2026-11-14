@@ -1,5 +1,6 @@
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { claimObservation } from "./harness-evidence.ts";
+import { CODE_READ_KIND, validCodeRead, type CodeReadScope, type CodeReadObservation } from "./harness-source-read.ts";
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -2916,6 +2917,23 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.run("INSERT INTO agent_operation_receipts (operation_id, member_id, project_id, tool_name, request_json, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", operationId, memberId, member.projectId, toolName, stableJson(request), JSON.stringify(result), nowIso());
       return result;
     });
+  }
+
+  /** 외부 operation ID에는 ':'가 없어 이 서버 소유 관찰 namespace를 만들 수 없다. */
+  codeReads(scope: CodeReadScope): CodeReadObservation[] {
+    return this.rows("SELECT operation_id, result_json FROM agent_operation_receipts WHERE project_id = ? AND member_id = ? AND tool_name = ? AND request_json = ? AND operation_id LIKE 'code-read:%' ORDER BY rowid DESC LIMIT 129",
+      scope.projectId, scope.memberId, CODE_READ_KIND, stableJson(scope)).flatMap(r => {
+        try {
+          const value = json<unknown>(r.result_json);
+          return validCodeRead(value, scope) && value.id === r.operation_id ? [value] : [];
+        } catch { return []; }
+      });
+  }
+
+  saveCodeRead(scope: CodeReadScope, observation: CodeReadObservation): CodeReadObservation {
+    if (this.codeReads(scope).length >= 128) throw new ApiError(429, "이 계약의 코드 열람 관찰 한도에 도달했습니다");
+    if (!validCodeRead(observation, scope) || this.requireMember(scope.memberId).projectId !== scope.projectId) throw new ApiError(403, "코드 열람 관찰의 범위가 맞지 않습니다");
+    return this.agentOperation(scope.memberId, CODE_READ_KIND, observation.id, scope, () => observation);
   }
 
   // ---- lease / 입력 fence ----

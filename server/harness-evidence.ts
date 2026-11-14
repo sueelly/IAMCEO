@@ -9,6 +9,7 @@ import type { CliProvider } from "../shared/types.ts";
 import { jsonObject, providerLogPath } from "./runner/delivery-evidence.ts";
 import { CHECK_LABEL, type CheckKind, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import { observeExecWindow } from "./harness-exec-diagnostics.ts";
+import type { CodeReadObservation } from "./harness-source-read.ts";
 
 /** 실행으로 증명해야 하는 검사. real(화면·캡처)·조사 검사는 명령이 아니라 자료·출처로 본다. */
 export const EXEC_CHECKS: ReadonlySet<CheckKind> = new Set<CheckKind>(["behavior", "typecheck", "regression"]);
@@ -297,7 +298,7 @@ function readsSource(t: ToolText, source: string): boolean {
 }
 
 /** 인용 존재/출처 열람만 검사한다. 주장과 인용의 의미 일치·진위는 별도 검토에 남긴다. */
-export function verifyClaims(claims: ClaimInput[], evidence: ProviderEvidence, projectFiles: (source: string) => string | null): { reasons: string[]; results: ClaimResult[] } {
+export function verifyClaims(claims: ClaimInput[], evidence: ProviderEvidence, projectFiles: (source: string) => string | null, codeReads: readonly CodeReadObservation[] = []): { reasons: string[]; results: ClaimResult[] } {
   const reasons: string[] = [];
   const results = claims.map((claim, i) => {
     const label = `주장 ${i + 1}('${claim.text.slice(0, 40)}')`;
@@ -308,6 +309,8 @@ export function verifyClaims(claims: ClaimInput[], evidence: ProviderEvidence, p
     }
     const quote = squash(claim.quote ?? "");
     if (claim.basis === "fact" && quote.length < 8) { reasons.push(`${label}의 인용이 너무 짧습니다(8자 이상의 원문 그대로)`); return none(); }
+    const observed = codeReads.find(o => o.source === source && (claim.quote?.trim() ? o.text.includes(claim.quote.trim()) : claim.basis === "interpretation"));
+    if (observed) return claimObservation(claim, (claim.basis === "fact" ? QUOTE_SCOPE : READ_SCOPE) + `서버 코드 조각 ${observed.id}; 줄${observed.startLine}-${observed.endLine}; snapshot=${observed.snapshotSha256}; 읽음=${observed.observedAt}; 현재 파일 동일성은 별도 확인`);
     const file = projectFiles(source);
     const hit = evidence.texts.find(t => readsSource(t, source) && (claim.basis !== "fact" || squash(t.text).includes(quote)));
     if (claim.basis === "interpretation" && (file !== null || hit)) return claimObservation(claim, READ_SCOPE + (file !== null ? "자료 본문" : `${hit!.tool} 결과`));

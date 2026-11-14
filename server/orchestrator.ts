@@ -1,5 +1,6 @@
 import { redactHarnessText } from "./harness-redaction.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
+import { readCodeSource, type CodeReadScope } from "./harness-source-read.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { ModelCatalogReader } from "./models.ts";
 import { DeliveryRecovery } from "./delivery-recovery.ts";
@@ -1039,6 +1040,20 @@ export class Orchestrator implements OrchestratorApi {
       observation: { kind: "current_requery", at: new Date().toISOString(), provider: target.cli,
         original: { status: "not_recorded", note: "당시미확인: 거절 당시 선택 세션·읽은 범위·검사별 관찰은 기록돼 있지 않습니다" } },
       selection, ...observed };
+  }
+
+  /** 확정 조사 계약에서 승인된 코드 조각만 서버가 직접 읽는다. */
+  readCode(member: Member, taskId: string, rev: number, source: string, start: number, end: number) {
+    const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
+    const contract = this.store.getEffectiveContract(task.id);
+    if (!bindingContract(contract) || contract!.rev !== rev || !(contract!.kind === "research" || contract!.checks.includes("source"))) throw new ApiError(403, "현재 확정된 조사 계약으로 코드 열람을 요청하세요");
+    const scope = this.codeReadScope(member, task.id, contract!);
+    return this.store.saveCodeRead(scope, readCodeSource(scope, source, start, end, this.protectedFileRoots));
+  }
+
+  private codeReadScope(member: Member, taskId: string, contract: TaskContract): CodeReadScope {
+    return { projectId: member.projectId, memberId: member.id, taskId, contractTaskId: contract.taskId, contractRev: contract.rev,
+      contractAt: contract.at, root: this.store.requireProject(member.projectId).cwd };
   }
 
   /** 개선 후보 목록(총괄). 규칙·권한을 바꾸지 않는다. 개발 기억에 남길지는 총괄이 정하고 memory_record 로 남긴다. */
@@ -4099,7 +4114,7 @@ export class Orchestrator implements OrchestratorApi {
       const file = /^f_[A-Za-z0-9_-]+$/.test(source) ? this.store.getFile(source) : null;
       // 자기가 올린 자료는 자기 글이다. 대표·다른 직원의 자료 본문만 원문으로 친다.
       return file && file.projectId === member.projectId && file.memberId !== member.id ? `${file.title}\n${file.summary}\n${file.body}` : null;
-    });
+    }, claims.length && taskId ? this.store.codeReads(this.codeReadScope(member, taskId, contract)) : []);
     const missing = [...exec.reasons, ...verified.reasons];
     if (missing.length) refuse(`완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}, 실행 증거). ${missing.join(" / ")}`, missing.join(" / "), "evidence_missing");
     return { gate: "contract", evidenceStatus: evidence.status, evidence: exec.results, claims: verified.results };
