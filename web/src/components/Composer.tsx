@@ -270,6 +270,8 @@ export default function Composer() {
   const tasksRef = useRef<HTMLDivElement>(null);
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [pinned, setPinned] = useState<string | null>(null);
+  /** '전체' 칩 폭. 고른 칩은 '전체' 옆 남은 폭까지만 넓어져, 이름이 줄보다 길어도(폰) 둘째 줄로 밀려 가려지지 않는다. */
+  const [allWidth, setAllWidth] = useState(0);
   const pinnedId = task && pinned === task.id ? pinned : null;
   const lineTasks = pinnedId ? [shownTasks.find((t) => t.id === pinnedId)!, ...shownTasks.filter((t) => t.id !== pinnedId)].filter(Boolean) : shownTasks;
   const lineKey = lineTasks.map((t) => `${t.id}:${t.title}`).join("|");
@@ -281,6 +283,7 @@ export default function Composer() {
       const top = row.querySelector<HTMLElement>(".cmp-task")?.offsetTop ?? 0;
       const hidden = chips.filter((c) => c.offsetTop > top + 2).map((c) => c.dataset.id!);
       setHiddenIds((cur) => (cur.join() === hidden.join() ? cur : hidden));
+      setAllWidth(row.querySelector<HTMLElement>(".cmp-task")?.offsetWidth ?? 0);
       if (task && hidden.includes(task.id)) setPinned(task.id);
     };
     measure();
@@ -507,6 +510,7 @@ export default function Composer() {
                       className="cmp-task"
                       data-id={t.id}
                       aria-pressed={task?.id === t.id}
+                      style={task?.id === t.id && allWidth ? { maxWidth: `calc(100% - ${allWidth + 4}px)` } : undefined}
                       aria-hidden={off ? "true" : undefined}
                       tabIndex={off ? -1 : undefined}
                       title={[t.title, t.branch].filter(Boolean).join(" · ")}

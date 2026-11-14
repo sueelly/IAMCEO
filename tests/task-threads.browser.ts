@@ -248,6 +248,10 @@ describe("웹 작업별 대화", () => {
   }, 120_000);
 
   test("폰 폭: 업무가 많으면 한 줄에 들어가는 만큼 이름 전체를 보이고, '+N'으로 전체 목록을 열어 고른다. 업무를 둔 채 받는 사람만 바꿔 보낸다", async () => {
+    // 폰 한 줄보다 긴 이름의 업무(가장 덜 최근)
+    const long = orch.saveTask(pay, { title: "폰 한 줄보다 훨씬 긴 업무 이름이라서 맨 앞 칩 옆에 다 들어가지 않는 업무", branch: "feat/long" }).task;
+    await orch.recordPost(pay, { kind: "진행", title: "긴 이름 업무 시작", taskId: long.id });
+    await settle();
     for (let i = 1; i <= 7; i++) {
       const who = i % 2 ? pay : search;
       const t = orch.saveTask(who, { title: `추가 작업 ${i}번 제목이 조금 길다`, branch: `feat/extra-${i}` }).task;
@@ -286,6 +290,17 @@ describe("웹 작업별 대화", () => {
     await menu.locator(".cmp-menu__item", { hasText: "환불 기능" }).tap();
     await expect(menu.count()).resolves.toBe(0);
     // 고른 업무는 가려져 있었어도 줄 앞으로 와서 보인다
+    await expect(chip(page, "환불 기능").getAttribute("aria-hidden")).resolves.toBeNull();
+    // 이름이 '전체' 옆 남은 폭보다 길어도 둘째 줄로 밀려 가려지지 않는다(남은 폭에서 끝을 줄인다)
+    await selectTask(page, "폰 한 줄보다 훨씬 긴 업무", "tap");
+    await expect(chip(page, "폰 한 줄보다 훨씬 긴 업무").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(chip(page, "폰 한 줄보다 훨씬 긴 업무").getAttribute("aria-hidden")).resolves.toBeNull();
+    const longLine = await lineState(page);
+    expect(longLine.inside).toBe(true);
+    expect(longLine.shown).toBe(2);
+    await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+    await page.screenshot({ path: join(SHOTS, "4c-phone-long.png") });
+    await selectTask(page, "환불 기능", "tap");
     await expect(chip(page, "환불 기능").getAttribute("aria-hidden")).resolves.toBeNull();
     await page.locator(".th-task").waitFor();
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
