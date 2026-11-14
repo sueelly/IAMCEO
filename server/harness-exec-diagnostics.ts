@@ -20,16 +20,27 @@ export interface EvidenceReadRange {
   wholeWindowFragment?: boolean;
 }
 type Row = Record<string, unknown>;
+type NumericObservation = { status: "absent" | "consistent" | "conflict" | "invalid"; fieldCount: number; invalidCount: number; hasConflict: boolean };
 type Candidate = {
+  origin: { line: number; item: number };
   rawRef: string; format: "claude_bash" | "codex_command_execution" | "codex_function_call" | "codex_exec_event";
   command: string; cwd: string | null; callAt: string | null; resultAt: string | null;
   callObserved: boolean; resultObserved: boolean; combined: boolean; parserSupported: boolean;
+  pairAmbiguous: boolean; duplicateReference: boolean;
   completion: "completed" | "failed" | "in_progress" | "returned" | "unknown";
   numericExit: number | null;
+  numericObservation: NumericObservation;
 };
 const instant = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(Date.parse(v)).toISOString() : null;
 const text = (v: unknown) => typeof v === "string" ? v : null;
 const numeric = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= 255 ? v as number : null;
+function observeNumeric(...sources: (Row | null | undefined)[]) {
+  const fields = sources.flatMap(s => s ? ["exitCode", "exit_code"].filter(k => Object.hasOwn(s, k)).map(k => s[k]) : []);
+  const valid = fields.map(numeric), invalidCount = valid.filter(n => n === null).length;
+  const hasConflict = new Set(valid.filter(n => n !== null)).size > 1;
+  const status: NumericObservation["status"] = !fields.length ? "absent" : invalidCount ? "invalid" : hasConflict ? "conflict" : "consistent";
+  return { numericExit: status === "consistent" ? valid[0]! : null, numericObservation: { status, fieldCount: fields.length, invalidCount, hasConflict } };
+}
 const state = (v: unknown): Candidate["completion"] => v === "completed" || v === "failed" || v === "in_progress" ? v : "unknown";
 const fingerprint = (v: string) => createHash("sha256").update("exec-diagnostic\0" + v).digest("hex").slice(0, 24);
 function codexCommand(v: unknown): string | null {
@@ -43,12 +54,21 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
   command: string; cwd: string; since: string; commandRedacted: boolean; matched: boolean }) {
   const candidates = new Map<string, Candidate>(), resultKeys = new Set<string>(), kinds: Record<string, number> = {};
   let invalidLines = 0;
-  const parsed = new Map(input.all.map(e => [e.ref, e]));
-  const current = new Set(input.current.map(e => e.ref));
+  const originKey = (origin: ExecRecord["origin"]) => origin ? `${origin.line}:${origin.item}` : "";
+  const parsed = new Map(input.all.filter(e => e.origin).map(e => [originKey(e.origin), e]));
+  const current = new Map(input.current.filter(e => e.origin).map(e => [originKey(e.origin), e]));
+  const referenceCounts = new Map<string, number>(), duplicateReferences = new Set<string>();
+  const observeReference = (key: string, role: "call" | "result") => {
+    const part = `${key}\0${role}`, n = (referenceCounts.get(part) ?? 0) + 1;
+    referenceCounts.set(part, n); if (n > 1) duplicateReferences.add(key);
+  };
   const count = (kind: string) => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
-  const fresh = (rawRef: string, format: Candidate["format"], command: string, cwd: string | null, at: string | null): Candidate =>
-    ({ rawRef, format, command, cwd, callAt: at, resultAt: null, callObserved: true, resultObserved: false, combined: false, parserSupported: false, completion: "unknown", numericExit: null });
+  let lineIndex = -1;
+  const fresh = (rawRef: string, format: Candidate["format"], command: string, cwd: string | null, at: string | null, callObserved = true): Candidate =>
+    ({ origin: { line: lineIndex, item: 0 }, rawRef, format, command, cwd, callAt: callObserved ? at : null, resultAt: null, callObserved, resultObserved: false, combined: false, parserSupported: false,
+      pairAmbiguous: false, duplicateReference: false, completion: "unknown", ...observeNumeric() });
   for (const line of input.text.split("\n")) {
+    lineIndex++;
     if (!line.trim()) continue;
     let r: Row | null;
     try { r = jsonObject(JSON.parse(line)); } catch { invalidLines++; continue; }
@@ -57,18 +77,20 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
     if (input.cli === "claude") {
       count(r.type === "assistant" ? "claude_assistant" : r.type === "user" ? "claude_user" : "other");
       const message = jsonObject(r.message), content = Array.isArray(message?.content) ? message.content : [];
-      for (const c of content) {
+      for (const [itemIndex, c] of content.entries()) {
         const item = jsonObject(c); if (!item) continue;
         if (r.type === "assistant" && item.type === "tool_use" && item.name === "Bash" && typeof item.id === "string") {
           const args = jsonObject(item.input); if (typeof args?.command !== "string") continue;
           const key = `claude:${item.id}`;
-          candidates.set(key, { ...fresh(key, "claude_bash", args.command, text(r.cwd), at), parserSupported: true });
+          observeReference(key, "call");
+          candidates.set(key, { ...fresh(key, "claude_bash", args.command, text(r.cwd), at), origin: { line: lineIndex, item: itemIndex }, parserSupported: true });
         }
         if (r.type === "user" && item.type === "tool_result" && typeof item.tool_use_id === "string") {
           const key = `claude:${item.tool_use_id}`; resultKeys.add(key); const c = candidates.get(key); if (!c) continue;
+          observeReference(key, "result"); c.origin = { line: lineIndex, item: itemIndex };
           c.resultObserved = true; c.resultAt = at;
           const result = jsonObject(r.toolUseResult);
-          c.numericExit = numeric(result?.exitCode ?? result?.exit_code ?? item.exitCode ?? item.exit_code);
+          Object.assign(c, observeNumeric(item, result));
           c.completion = result?.interrupted === true || result?.backgroundTaskId ? "in_progress" : "returned";
         }
       }
@@ -79,15 +101,17 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
     if (item?.type === "CommandExecution" && typeof item.id === "string" && (isCompleted || isStarted)) {
       count(isEnvelope ? (isCompleted ? "codex_command_completed" : "codex_command_started") : "codex_command_other_envelope");
       const key = `codex:${text(p?.thread_id) ?? "?"}:${item.id}`;
+      observeReference(key, isCompleted ? "result" : "call");
       if (isCompleted) resultKeys.add(key);
       const command = codexCommand(item.command);
       const old = candidates.get(key);
       if (command === null && !old) continue;
       const c = old ?? fresh(key, "codex_command_execution", command ?? "", text(item.cwd), isStarted ? at : null);
+      c.origin = { line: lineIndex, item: 0 };
       if (command !== null) c.command = command;
       if (typeof item.cwd === "string") c.cwd = item.cwd;
       c.parserSupported = isEnvelope && isCompleted;
-      c.completion = state(item.status); c.numericExit = numeric(item.exit_code);
+      c.completion = state(item.status); Object.assign(c, observeNumeric(item));
       if (isCompleted) { c.resultObserved = true; c.resultAt = at; c.combined = c.callAt === null; }
       candidates.set(key, c);
       continue;
@@ -95,6 +119,7 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
     if (r.type === "response_item" && p && (p.type === "function_call" || p.type === "function_call_output")) {
       count(p.type === "function_call" ? "codex_function_call" : "codex_function_result");
       if (typeof p.call_id !== "string") continue; const key = `function:${p.call_id}`;
+      observeReference(key, p.type === "function_call" ? "call" : "result");
       if (p.type === "function_call") {
         if (p.name !== "exec_command" && p.name !== "command") continue;
         let args = jsonObject(p.arguments);
@@ -102,17 +127,27 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
         const command = text(args?.cmd ?? args?.command); if (command === null) continue;
         candidates.set(key, fresh(key, "codex_function_call", command, text(args?.workdir ?? args?.cwd), at));
       } else {
-        resultKeys.add(key); const c = candidates.get(key); if (c) { c.resultObserved = true; c.resultAt = at; c.completion = "returned"; }
+        resultKeys.add(key); const c = candidates.get(key); if (c) { c.origin = { line: lineIndex, item: 0 }; c.resultObserved = true; c.resultAt = at; c.completion = "returned"; }
       }
       continue;
     }
     if (isEnvelope && p && (p.type === "exec_command_begin" || p.type === "exec_command_end")) {
       count(p.type === "exec_command_begin" ? "codex_exec_begin" : "codex_exec_end");
       if (typeof p.call_id !== "string") continue; const key = `exec:${p.call_id}`;
+      observeReference(key, p.type === "exec_command_begin" ? "call" : "result");
       const command = codexCommand(p.command), old = candidates.get(key);
       if (command === null && !old) { if (p.type === "exec_command_end") resultKeys.add(key); continue; }
-      const c = old ?? fresh(key, "codex_exec_event", command ?? "", text(p.cwd), at);
-      if (p.type === "exec_command_end") { c.resultObserved = true; c.resultAt = at; c.numericExit = numeric(p.exit_code); c.completion = "returned"; }
+      const begin = p.type === "exec_command_begin";
+      const c = old ?? fresh(key, "codex_exec_event", command ?? "", text(p.cwd), at, begin);
+      c.origin = { line: lineIndex, item: 0 };
+      if (old) {
+        const repeated = begin ? old.callObserved : old.resultObserved;
+        c.duplicateReference ||= repeated;
+        c.pairAmbiguous ||= repeated || (begin && old.resultObserved) ||
+          (command !== null && command !== old.command) || (typeof p.cwd === "string" && old.cwd !== null && p.cwd !== old.cwd);
+      }
+      if (begin) { c.callObserved = true; c.callAt ??= at; }
+      else { resultKeys.add(key); c.resultObserved = true; c.resultAt = at; Object.assign(c, observeNumeric(p)); c.completion = "returned"; }
       candidates.set(key, c); continue;
     }
     count(r.type === "session_meta" ? "codex_session_meta" : item?.type === "McpToolCall" ? "codex_mcp_item"
@@ -125,12 +160,16 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
     if (proof.commandMatch !== true && !proof.sameExecutable) continue;
     const times = [c.callAt, c.resultAt].filter((t): t is string => t !== null).map(t => Date.parse(t));
     const contractTime = !times.length ? "unknown" : times.some(t => t < since) && times.some(t => t >= since) ? "spans" : times.every(t => t < since) ? "before" : "after";
-    const e = parsed.get(c.rawRef);
-    const sameParsed = c.parserSupported && e?.command === c.command && e.cwd === c.cwd && Date.parse(e.at) === Date.parse(c.resultAt ?? c.callAt ?? "");
-    related.push({ ref: fingerprint(c.rawRef), format: c.format, parserSupported: c.parserSupported,
-      callObserved: c.callObserved, resultObserved: c.resultObserved, pair: c.combined ? "combined" : c.resultObserved ? "paired" : "missing_result",
-      callAt: c.callAt, resultAt: c.resultAt, contractTime, commandMatch: proof.commandMatch, cwdMatch: proof.cwdMatch, proof: proof.proof,
-      completion: c.completion, numericExit: c.numericExit, parsedExit: sameParsed ? numeric(e?.exitCode) : null, inCurrentParser: sameParsed && current.has(c.rawRef) });
+    const e = parsed.get(originKey(c.origin));
+    const sameEvent = (entry: ExecRecord | undefined) => c.parserSupported && entry?.ref === c.rawRef && entry.command === c.command && entry.cwd === c.cwd && Date.parse(entry.at) === Date.parse(c.resultAt ?? c.callAt ?? "");
+    const sameParsed = sameEvent(e), sameCurrent = sameEvent(current.get(originKey(c.origin)));
+    const duplicateReference = c.duplicateReference || duplicateReferences.has(c.rawRef);
+    const pairAmbiguous = c.pairAmbiguous || (!c.combined && duplicateReference);
+    related.push({ ref: fingerprint(`${c.rawRef}\0${originKey(c.origin)}`), format: c.format, parserSupported: c.parserSupported,
+      callObserved: c.callObserved, resultObserved: c.resultObserved, pair: pairAmbiguous ? "ambiguous" : c.combined ? "combined" : !c.callObserved ? "missing_call" : c.resultObserved ? "paired" : "missing_result",
+      duplicateReference, identityAmbiguous: c.pairAmbiguous || duplicateReference,
+      callAt: pairAmbiguous ? null : c.callAt, resultAt: c.resultAt, contractTime, commandMatch: proof.commandMatch, cwdMatch: proof.cwdMatch, proof: proof.proof,
+      completion: c.completion, numericExit: c.numericExit, numericObservation: c.numericObservation, parsedExit: sameParsed ? numeric(e?.exitCode) : null, inCurrentParser: sameCurrent });
   }
   const runs = input.current.map(e => ({ e, ...commandObservation(e.command, input.command, e.cwd, input.cwd) })).filter(e => e.proof !== "absent");
   const last = runs.at(-1);
@@ -141,5 +180,5 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
   const { bytesComplete, ...range } = input.range;
   return { read: { ...range, tail, invalidLines, complete: bytesComplete && range.stable && !range.headTruncated && tail === "newline" && invalidLines === 0 },
     comparison: { scope: "observed_window_only", commandRedacted: input.commandRedacted, status },
-    events: { kinds, candidates: related.slice(-24), omittedCandidates: Math.max(0, related.length - 24), orphanResults: [...resultKeys].filter(k => !candidates.has(k)).length } };
+    events: { kinds, candidates: related.slice(-24), omittedCandidates: Math.max(0, related.length - 24), orphanResults: [...resultKeys].filter(k => !candidates.get(k)?.callObserved).length } };
 }

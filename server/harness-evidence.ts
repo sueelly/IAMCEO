@@ -14,6 +14,8 @@ import { observeExecWindow } from "./harness-exec-diagnostics.ts";
 export const EXEC_CHECKS: ReadonlySet<CheckKind> = new Set<CheckKind>(["behavior", "typecheck", "regression"]);
 
 export interface ExecRecord {
+  /** 같은 읽기 창 안의 원 이벤트 위치. 진단의 행 대조에만 사용하며 성공 기준·실행 ref는 바꾸지 않는다. */
+  origin?: { line: number; item: number };
   /** 제공자 안에서 한 번뿐인 실행 표지(Claude tool_use id, Codex item id). 한 실행은 한 업무의 증거로만 쓴다. */
   ref: string;
   command: string;
@@ -80,10 +82,10 @@ function readLogWindow(root: string, path: string, limit: number) {
 function readLog(root: string, path: string): string | null { return readLogWindow(root, path, MAX_LOG_BYTES)?.text ?? null; }
 
 /** must 중 하나를 품은 줄만 JSON 으로 푼다(100MB 기록도 1초 안에 본다). */
-function* records(text: string, must: string[]): Generator<Record<string, unknown>> {
-  for (const line of text.split("\n")) {
+function* records(text: string, must: string[]): Generator<{ value: Record<string, unknown>; line: number }> {
+  for (const [lineIndex, line] of text.split("\n").entries()) {
     if (!line.trim() || !must.some(m => line.includes(m))) continue;
-    try { const v = jsonObject(JSON.parse(line)); if (v) yield v; } catch { /* 쓰는 중인 마지막 줄 */ }
+    try { const v = jsonObject(JSON.parse(line)); if (v) yield { value: v, line: lineIndex }; } catch { /* 쓰는 중인 마지막 줄 */ }
   }
 }
 
@@ -117,17 +119,17 @@ export function parseClaudeLog(text: string, since: string | null): Pick<Provide
   const execs: ExecRecord[] = [];
   const texts: ToolText[] = [];
   const after = since ? Date.parse(since) : -Infinity;
-  for (const r of records(text, ['"tool_use"', '"tool_result"'])) {
+  for (const { value: r, line } of records(text, ['"tool_use"', '"tool_result"'])) {
     const at = time(r.timestamp);
     const message = jsonObject(r.message);
     const content = Array.isArray(message?.content) ? message!.content : [];
     if (r.type === "assistant") {
-      for (const c of content) {
+      for (const [itemIndex, c] of content.entries()) {
         const item = jsonObject(c);
         if (item?.type !== "tool_use" || typeof item.id !== "string" || typeof item.name !== "string") continue;
         const call = { name: item.name, input: jsonObject(item.input) ?? {}, at: at ?? "", cwd: typeof r.cwd === "string" ? r.cwd : null, exec: undefined as ExecRecord | undefined };
         if (call.name === "Bash" && typeof call.input.command === "string" && at && Date.parse(at) >= after) {
-          call.exec = { ref: `claude:${item.id}`, command: call.input.command, cwd: call.cwd, exitCode: null, at, outputSha: sha(""), outputHead: "" };
+          call.exec = { ref: `claude:${item.id}`, command: call.input.command, cwd: call.cwd, exitCode: null, at, outputSha: sha(""), outputHead: "", origin: { line, item: itemIndex } };
           execs.push(call.exec);
         }
         calls.set(item.id, call);
@@ -135,7 +137,7 @@ export function parseClaudeLog(text: string, since: string | null): Pick<Provide
       continue;
     }
     if (r.type !== "user" || !at || Date.parse(at) < after) continue;
-    for (const c of content) {
+    for (const [itemIndex, c] of content.entries()) {
       const item = jsonObject(c);
       if (item?.type !== "tool_result" || typeof item.tool_use_id !== "string") continue;
       const call = calls.get(item.tool_use_id);
@@ -147,7 +149,7 @@ export function parseClaudeLog(text: string, since: string | null): Pick<Provide
       const single = content.filter(c => jsonObject(c)?.type === "tool_result").length === 1;
       const exitCode = single && call.input.run_in_background !== true ? claudeExit(item, result) : null;
       const output = result && typeof result.stdout === "string" ? `${result.stdout}\n${typeof result.stderr === "string" ? result.stderr : ""}` : out;
-      if (call.exec) Object.assign(call.exec, { exitCode, at, outputSha: sha(output), outputHead: head(output) });
+      if (call.exec) Object.assign(call.exec, { exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: itemIndex } });
     }
   }
   return { execs, texts };
@@ -158,7 +160,7 @@ export function parseCodexLog(text: string, since: string | null): Pick<Provider
   const execs: ExecRecord[] = [];
   const texts: ToolText[] = [];
   const after = since ? Date.parse(since) : -Infinity;
-  for (const r of records(text, ['"CommandExecution"', '"McpToolCall"'])) {
+  for (const { value: r, line } of records(text, ['"CommandExecution"', '"McpToolCall"'])) {
     const at = time(r.timestamp);
     if (!at || Date.parse(at) < after || r.type !== "event_msg") continue;
     const payload = jsonObject(r.payload);
@@ -172,7 +174,7 @@ export function parseCodexLog(text: string, since: string | null): Pick<Provider
       const code = Number.isSafeInteger(item.exit_code) && (item.exit_code as number) >= 0 ? item.exit_code as number : null;
       const exitCode = item.status === "completed" || (item.status === "failed" && code !== 0) ? code : null;
       texts.push({ tool: "CommandExecution", input: command, text: output, at });
-      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: typeof item.cwd === "string" ? item.cwd : null, exitCode, at, outputSha: sha(output), outputHead: head(output) });
+      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: typeof item.cwd === "string" ? item.cwd : null, exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: 0 } });
     } else if (item.type === "McpToolCall") {
       const result = jsonObject(item.result);
       texts.push({ tool: `${String(item.server ?? "")}/${String(item.tool ?? "")}`, input: JSON.stringify(item.arguments ?? {}), text: contentText(result?.content), at, successful: result?.isError !== true });
