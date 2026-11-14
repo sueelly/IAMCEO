@@ -79,9 +79,33 @@ function* records(text: string, must: string[]): Generator<Record<string, unknow
   }
 }
 
-/** Claude 세션 기록: assistant 의 tool_use(Bash input.command) ↔ user 의 tool_result(is_error, "Exit code N"). */
+/**
+ * Claude의 관찰된 전경 완료 모양만 0으로 인정한다. 해석 문구는 상태 코드가 아니므로 읽어서 추측하지 않는다.
+ * 숫자 필드가 추가된 기록은 정수·상호 일치 여부도 검사한다. 이 필드가 실제 CLI에 항상 있다는 뜻은 아니다.
+ */
+function claudeExit(item: Record<string, unknown>, result: Record<string, unknown> | null): number | null {
+  const status = [item, ...(result ? [result] : [])];
+  if (status.some(s => "returnCodeInterpretation" in s ||
+    ("status" in s && s.status !== "completed") || (s.error != null && s.error !== false) ||
+    ("is_error" in s && s.is_error !== false && s !== item))) return null;
+  if (result && (result.interrupted !== false ||
+    result.backgroundTaskId != null || typeof result.stdout !== "string" || typeof result.stderr !== "string" ||
+    ("status" in result && result.status !== "completed"))) return null;
+  const codes = status.flatMap(s => ["exitCode", "exit_code"].filter(k => k in s).map(k => s[k]));
+  if (codes.some(n => !Number.isSafeInteger(n) || (n as number) < 0) || new Set(codes).size > 1) return null;
+  if (item.is_error === true) {
+    // 오류 응답의 구조화된 실패 접두어만 쓴다. 오류 플래그와 0의 조합은 성공이 아니다.
+    const m = /^Exit code ([1-9]\d*)\b/.exec(contentText(item.content).trim());
+    const code = m ? Number(m[1]) : null;
+    return code !== null && Number.isSafeInteger(code) && (!codes.length || codes[0] === code) ? code : null;
+  }
+  if (item.is_error !== false || !result) return null;
+  return codes.length ? codes[0] as number : 0;
+}
+
+/** Claude 세션 기록: tool_use ↔ 단독 tool_result와 완결된 toolUseResult. 결과 없는 마지막 호출도 미확인 실행으로 남긴다. */
 export function parseClaudeLog(text: string, since: string | null): Pick<ProviderEvidence, "execs" | "texts"> {
-  const calls = new Map<string, { name: string; input: Record<string, unknown>; at: string; cwd: string | null }>();
+  const calls = new Map<string, { name: string; input: Record<string, unknown>; at: string; cwd: string | null; exec?: ExecRecord }>();
   const execs: ExecRecord[] = [];
   const texts: ToolText[] = [];
   const after = since ? Date.parse(since) : -Infinity;
@@ -92,7 +116,13 @@ export function parseClaudeLog(text: string, since: string | null): Pick<Provide
     if (r.type === "assistant") {
       for (const c of content) {
         const item = jsonObject(c);
-        if (item?.type === "tool_use" && typeof item.id === "string" && typeof item.name === "string") calls.set(item.id, { name: item.name, input: jsonObject(item.input) ?? {}, at: at ?? "", cwd: typeof r.cwd === "string" ? r.cwd : null });
+        if (item?.type !== "tool_use" || typeof item.id !== "string" || typeof item.name !== "string") continue;
+        const call = { name: item.name, input: jsonObject(item.input) ?? {}, at: at ?? "", cwd: typeof r.cwd === "string" ? r.cwd : null, exec: undefined as ExecRecord | undefined };
+        if (call.name === "Bash" && typeof call.input.command === "string" && at && Date.parse(at) >= after) {
+          call.exec = { ref: `claude:${item.id}`, command: call.input.command, cwd: call.cwd, exitCode: null, at, outputSha: sha(""), outputHead: "" };
+          execs.push(call.exec);
+        }
+        calls.set(item.id, call);
       }
       continue;
     }
@@ -101,20 +131,15 @@ export function parseClaudeLog(text: string, since: string | null): Pick<Provide
       const item = jsonObject(c);
       if (item?.type !== "tool_result" || typeof item.tool_use_id !== "string") continue;
       const call = calls.get(item.tool_use_id);
-      if (!call || (call.at && Date.parse(call.at) < after)) continue;
+      if (!call || !call.at || Date.parse(call.at) < after || Date.parse(at) < Date.parse(call.at)) continue;
       const out = contentText(item.content);
       texts.push({ tool: call.name, input: JSON.stringify(call.input), text: out, at, successful: item.is_error !== true });
       if (call.name !== "Bash" || typeof call.input.command !== "string") continue;
       const result = jsonObject(r.toolUseResult);
-      let exitCode: number | null = null;
-      if (item.is_error === true) {
-        const m = /^Exit code (\d+)/.exec(out.trim());
-        exitCode = m ? Number(m[1]) : null;
-      } else if (result && result.interrupted !== true && !result.backgroundTaskId && typeof result.stdout === "string") {
-        exitCode = 0;
-      }
+      const single = content.filter(c => jsonObject(c)?.type === "tool_result").length === 1;
+      const exitCode = single && call.input.run_in_background !== true ? claudeExit(item, result) : null;
       const output = result && typeof result.stdout === "string" ? `${result.stdout}\n${typeof result.stderr === "string" ? result.stderr : ""}` : out;
-      execs.push({ ref: `claude:${item.tool_use_id}`, command: call.input.command, cwd: call.cwd, exitCode, at, outputSha: sha(output), outputHead: head(output) });
+      if (call.exec) Object.assign(call.exec, { exitCode, at, outputSha: sha(output), outputHead: head(output) });
     }
   }
   return { execs, texts };
@@ -136,7 +161,8 @@ export function parseCodexLog(text: string, since: string | null): Pick<Provider
       // ["/bin/zsh", "-lc", "<스크립트>"] 이면 스크립트가 직원이 부른 명령이다.
       const command = argv.length >= 3 && /^-l?c$/.test(argv[argv.length - 2]!) ? argv[argv.length - 1]! : argv.join(" ");
       const output = typeof item.aggregated_output === "string" ? item.aggregated_output : "";
-      const exitCode = item.status === "completed" || item.status === "failed" ? (Number.isInteger(item.exit_code) ? item.exit_code as number : null) : null;
+      const code = Number.isSafeInteger(item.exit_code) && (item.exit_code as number) >= 0 ? item.exit_code as number : null;
+      const exitCode = item.status === "completed" || (item.status === "failed" && code !== 0) ? code : null;
       texts.push({ tool: "CommandExecution", input: command, text: output, at });
       execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: typeof item.cwd === "string" ? item.cwd : null, exitCode, at, outputSha: sha(output), outputHead: head(output) });
     } else if (item.type === "McpToolCall") {

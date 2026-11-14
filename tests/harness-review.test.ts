@@ -162,7 +162,7 @@ test('F1: 실제 기록의 작업 위치가 없거나 다르면 성공 종료도
   const at=new Date().toISOString();
   const records=(cwd?:string)=>[
     {type:'assistant',timestamp:at,cwd,message:{content:[{type:'tool_use',id:'cwd',name:'Bash',input:{command:'bun test behavior'}}]}},
-    {type:'user',timestamp:at,cwd,message:{content:[{type:'tool_result',tool_use_id:'cwd',content:'ok',is_error:false}]},toolUseResult:{stdout:'ok',interrupted:false}}
+    {type:'user',timestamp:at,cwd,message:{content:[{type:'tool_result',tool_use_id:'cwd',content:'ok',is_error:false}]},toolUseResult:{stdout:'ok',stderr:'',interrupted:false}}
   ].map(r=>JSON.stringify(r)).join('\n');
   for(const cwd of [undefined,'/other','/target']){
     const evidence={status:'ok' as const,code:'ok',...parseClaudeLog(records(cwd),null)};
