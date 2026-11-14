@@ -73,15 +73,11 @@ AI agent,coding agent,AI team,developer,remote,approval,inbox,CLI,terminal,autom
 
 ## whatsNew
 
-What's New in 0.2.5 (up to 4,000 characters). iPhone 0.2.4 was not released on the App Store, so this also lists its iPhone changes.
+What's New in 0.2.6 (up to 4,000 characters). The new features need a Mac server on 0.2.6 or later, so each item says so.
 
 ```text
-• iPhone notifications. Update the IAMCEO server on your Mac to 0.2.5 or later and you'll be notified when a decision or a tool approval is waiting, a staff member is stuck, or work is done.
-• The app is now in English, too. Choose the language in Settings → General → Language (or on the first screen before you connect); a new install starts in the language of your App Store country. The sample is in English as well.
-• When the connection drops, the app keeps showing the last screen it received, and messages you write while offline are sent in order once you reconnect to the server you wrote them for. Messages over a day old wait for your review, and are deleted after 30 days.
-• Allow or deny a staff member's tool approval request from the Inbox.
-• See usage (cost and tokens) for the lead and each staff member, and your account's limit usage, in Settings.
-• Each device paired with a QR code gets its own key. Disconnect this iPhone here; other devices are disconnected on the Mac that runs the server.
-• If Tailscale is off on this iPhone, the app tells you instead of sending, and reconnects when you turn it back on.
-• The waiting reason now shows why a staff member actually stopped.
+• Chat shows when someone is replying. After you send a message to your lead or a staff member, a line at the bottom of the conversation shows whether they are replying (three animated dots), finishing earlier work, waking up, or ended without replying. It needs the IAMCEO server 0.2.6 or later on your Mac.
+• Text the server writes itself (system lines in the chat, the decision cards it posts and their options, staff activity, delivery notes) now shows in the app language. Requires Mac server 0.2.6 or later.
+• iPhone notifications use this iPhone's app language. Requires Mac server 0.2.6 or later, including through the notification relay.
+• Fixed the time and kind wrapping onto two lines in the activity list in English.
 ```
