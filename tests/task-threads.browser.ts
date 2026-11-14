@@ -116,6 +116,29 @@ const chipNoWorker = async (page: Page) => {
   for (const [all, title] of texts) expect(all).toBe(title);
 };
 const rows = (page: Page) => page.locator(".th-list .th-row");
+/** 업무 고르기: 한 줄에 보이는 칩이면 누르고, 가려졌으면 '+N'으로 전체 목록을 열어 고른다(대표 2026-11-14). */
+async function selectTask(page: Page, name: string, how: "click" | "tap" = "click") {
+  const c = chip(page, name);
+  if ((await c.getAttribute("aria-hidden")) !== "true") return how === "tap" ? c.tap() : c.click();
+  const more = page.locator(".cmp-task--more");
+  await (how === "tap" ? more.tap() : more.click());
+  const item = page.locator(".cmp-menu--tasks .cmp-menu__item", { hasText: name });
+  await (how === "tap" ? item.tap() : item.click());
+}
+/** 한 줄에 보이는 칩(가려지지 않은 것)이 줄 안에 다 들어가 있고, 이름이 잘리지 않았는지 */
+const lineState = (page: Page) => page.evaluate(() => {
+  const row = document.querySelector<HTMLElement>(".cmp-tasks")!;
+  const box = row.getBoundingClientRect();
+  const shown = [...row.querySelectorAll<HTMLElement>(".cmp-task")].filter((c) => c.getAttribute("aria-hidden") !== "true");
+  return {
+    overflowX: getComputedStyle(row).overflowX,
+    scrolls: row.scrollWidth > row.clientWidth + 1,
+    inside: shown.every((c) => { const r = c.getBoundingClientRect(); return r.left >= box.left - 1 && r.right <= box.right + 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1; }),
+    cut: shown.filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.textContent),
+    shown: shown.length,
+    hidden: row.querySelectorAll('.cmp-task[aria-hidden="true"]').length,
+  };
+});
 const listText = (page: Page) => page.locator(".th-list").innerText();
 
 describe("웹 작업별 대화", () => {
@@ -140,7 +163,7 @@ describe("웹 작업별 대화", () => {
     await page.screenshot({ path: join(SHOTS, "1-all.png") });
 
     // 1) 업무A(환불)를 고르면 그 업무 글만 보이고, 받는 사람은 그대로(총괄)
-    await chip(page, "환불 기능").click();
+    await selectTask(page, "환불 기능");
     await page.locator(".th-task").waitFor();
     await expect(page.locator(".th-task").innerText()).resolves.toContain("feat/refund");
     await expect(target()).resolves.toBe("총괄");
@@ -161,7 +184,7 @@ describe("웹 작업별 대화", () => {
     await expect(chip(page, "환불 기능").getAttribute("aria-pressed")).resolves.toBe("true");
 
     // 2) 업무B(검색)로 옮겨도 받는 사람(결제 연동)은 그대로. 그 사이 결제 직원의 늦은 보고는 원래 업무(환불)에 붙는다
-    await chip(page, "검색 속도").click();
+    await selectTask(page, "검색 속도");
     await expect(target()).resolves.toBe("@결제 연동");
     await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 넣음", taskId: taskPay.id });
     // 업무를 밝히지 않은 늦은 보고는 받지 않는다(화면에서 보고 있는 검색 업무에도 붙지 않는다)
@@ -189,7 +212,7 @@ describe("웹 작업별 대화", () => {
     await expect(page.locator(".th-task", { hasText: "검색 속도" }).count()).resolves.toBe(1);
 
     // 4) 같은 업무(환불)를 다른 직원(검색 개선)에게도 보낸다 → 같은 업무 id 로 남는다
-    await chip(page, "환불 기능").click();
+    await selectTask(page, "환불 기능");
     await expect(target()).resolves.toBe("@검색 개선");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
     await page.getByLabel("입력칸").fill("환불 화면의 검색도 봐 주세요");
@@ -224,7 +247,7 @@ describe("웹 작업별 대화", () => {
     await page.close();
   }, 120_000);
 
-  test("폰 폭: 업무가 많으면 가로로 밀어 고르고, 업무를 둔 채 받는 사람만 바꿔 보낸다", async () => {
+  test("폰 폭: 업무가 많으면 한 줄에 들어가는 만큼 이름 전체를 보이고, '+N'으로 전체 목록을 열어 고른다. 업무를 둔 채 받는 사람만 바꿔 보낸다", async () => {
     for (let i = 1; i <= 7; i++) {
       const who = i % 2 ? pay : search;
       const t = orch.saveTask(who, { title: `추가 작업 ${i}번 제목이 조금 길다`, branch: `feat/extra-${i}` }).task;
@@ -235,18 +258,35 @@ describe("웹 작업별 대화", () => {
     }
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
     await openThread(page);
-    const strip = page.locator(".cmp-tasks");
-    const box = await strip.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth, overflowX: getComputedStyle(el).overflowX }));
-    expect(box.scroll).toBeGreaterThan(box.client);
-    expect(box.overflowX).toBe("auto");
+    // 옆으로 미는 줄이 아니다. 보이는 칩은 줄 안에 다 들어가고, 넘친 업무 수는 '+N'에 보인다
+    const line = await lineState(page);
+    expect(line.overflowX).toBe("hidden");
+    expect(line.scrolls).toBe(false);
+    expect(line.inside).toBe(true);
+    expect(line.hidden).toBeGreaterThan(0);
+    await expect(page.locator(".cmp-task--more").innerText()).resolves.toBe(`+${line.hidden}`);
     // 페이지 자체는 가로로 넘치지 않는다
     await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
     await expect(chips(page).first().innerText()).resolves.toBe("전체");
     await expect(chips(page).nth(1).locator(".cmp-task__title").innerText()).resolves.toBe("추가 작업 7번 제목이 조금 길다");
     await page.screenshot({ path: join(SHOTS, "4-phone-start.png") });
-    // 뒤쪽(덜 최근인 환불 기능)까지 밀어서 고른다
-    await strip.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    await chip(page, "환불 기능").click();
+    // '+N'을 누르면 전체 목록이 입력칸 위에 뜬다(최근 글 순, 맨 위는 '전체')
+    await page.locator(".cmp-task--more").tap();
+    const menu = page.locator(".cmp-menu--tasks");
+    await menu.waitFor();
+    const names = await menu.locator(".cmp-menu__name").allInnerTexts();
+    expect(names[0]).toBe("전체");
+    expect(names[1]).toBe("추가 작업 7번 제목이 조금 길다");
+    expect(names).toContain("환불 기능");
+    expect(names.length).toBe(line.shown + line.hidden);
+    const mb = await menu.boundingBox();
+    const ib = await page.getByLabel("입력칸").boundingBox();
+    expect(mb!.y + mb!.height).toBeLessThanOrEqual(ib!.y);
+    await page.screenshot({ path: join(SHOTS, "4b-phone-list.png") });
+    await menu.locator(".cmp-menu__item", { hasText: "환불 기능" }).tap();
+    await expect(menu.count()).resolves.toBe(0);
+    // 고른 업무는 가려져 있었어도 줄 앞으로 와서 보인다
+    await expect(chip(page, "환불 기능").getAttribute("aria-hidden")).resolves.toBeNull();
     await page.locator(".th-task").waitFor();
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
     await expect(page.getByLabel("입력칸").isVisible()).resolves.toBe(true);
@@ -339,12 +379,12 @@ describe("웹 작업별 대화", () => {
     await expect(inView("환불 기준 보고")).resolves.toBe(true);
     await expect(inView("환불 진행 40")).resolves.toBe(false);
     await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("총괄");
-    // 작업이 많아 칩 목록이 밀려 있어도 고른 칩이 보인다
-    await expect(page.evaluate(() => {
+    // 업무가 많아 줄에서 가려진 업무여도 고른 칩은 줄 안에 보인다
+    await page.waitForFunction(() => {
       const strip = document.querySelector(".cmp-tasks")!.getBoundingClientRect();
       const on = document.querySelector('.cmp-task[aria-pressed="true"]')!.getBoundingClientRect();
-      return on.left >= strip.left - 1 && on.right <= strip.right + 1;
-    })).resolves.toBe(true);
+      return on.left >= strip.left - 1 && on.right <= strip.right + 1 && on.top >= strip.top - 1 && on.bottom <= strip.bottom + 1;
+    });
     text = await listText(page);
     expect(text).not.toContain("전체 글");
     expect(text).not.toContain("검색 색인");
@@ -384,7 +424,7 @@ describe("웹 작업별 대화", () => {
     await chip(page, "전체").click();
     await expect(chip(page, "끝난 일").count()).resolves.toBe(1);
     // 칩으로 눌러도 지난 대화가 보인다
-    await chip(page, "끝난 일").click();
+    await selectTask(page, "끝난 일");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("끝난 일 보고"));
     await chip(page, "전체").click();
 
@@ -463,14 +503,14 @@ describe("웹 작업별 대화", () => {
     await page.locator(".cmp-menu__item", { hasText: "결제 연동" }).click();
     await expect(chipTitles(page)).resolves.toEqual(all);
     await page.screenshot({ path: join(SHOTS, "6-worker-chips.png") });
-    await chip(page, "환불 정산 확인").click();
+    await selectTask(page, "환불 정산 확인");
     await page.waitForFunction(() => ["정산 확인 맡김", "정산 숫자 뽑는 중", "정산 검색 조건 확인"].every((t) => document.querySelector(".th-list")?.textContent?.includes(t)));
     // 업무 머리에도 직원 이름이 없다
     const head = await page.locator(".th-task").innerText();
     for (const n of ["결제 연동", "검색 개선"]) expect(head).not.toContain(n);
     await chip(page, "전체").click();
     // 업무를 골라도 받는 사람은 결제 연동 그대로
-    await chip(page, "환불 정산 확인").click();
+    await selectTask(page, "환불 정산 확인");
     await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@결제 연동");
     await page.getByLabel("입력칸").fill("정산 숫자 확인해 주세요");
     await page.getByLabel("입력칸").press("Enter");
@@ -484,6 +524,99 @@ describe("웹 작업별 대화", () => {
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("정산 화면 검색도 봐 주세요"));
     expect(await stored("정산 화면 검색도 봐 주세요")).toMatchObject({ taskId: `tk_${item.id}`, targetMemberId: search.id });
+    await page.close();
+  }, 90_000);
+  // 대표 2026-11-14: "직원 선택하는 것처럼 만들자 … 마우스 호버하고 1초 후에 전체 리스트가 위에 떠서 거기서 스크롤 … 최신 업데이트 순 … 직원 선택도 그렇게 … '/'을 누르면 작업 리스트"
+  test("PC: 업무 줄에 1초 올려 두면 최근 순 전체 목록이 위에 뜨고, 받는 사람 칩도 같다. 입력칸의 '/'로 업무를 골라 보낸다", async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openThread(page);
+    const line = await lineState(page);
+    expect(line.scrolls).toBe(false);
+    expect(line.inside).toBe(true);
+    // 줄에 보이는 칩은 이름이 잘리지 않는다
+    expect(line.cut).toEqual([]);
+    expect(line.hidden).toBeGreaterThan(0);
+    const menu = page.locator(".cmp-menu--tasks");
+    // 1) 업무 줄에 마우스를 올려도 1초 전에는 뜨지 않는다
+    const bar = await page.locator(".cmp-tasks").boundingBox();
+    await page.mouse.move(bar!.x + bar!.width - 20, bar!.y + bar!.height / 2);
+    await page.waitForTimeout(500);
+    await expect(menu.count()).resolves.toBe(0);
+    await menu.waitFor({ timeout: 1500 });
+    const names = await menu.locator(".cmp-menu__name").allInnerTexts();
+    const chipOrder = (await chipTitles(page)).map((t) => t?.trim());
+    expect(names).toEqual(chipOrder.slice(0, 1).concat(names.slice(1)));
+    expect(names.length).toBe(line.shown + line.hidden);
+    // 순서는 서버가 아는 마지막 글 시각 순(최근 먼저)
+    const latest = (title: string) => {
+      const t = store.listTasks(project.id).find((x) => x.title === title)!;
+      return store.listMessages(project.id).filter((m) => m.taskId === t.id).reduce((a, m) => (m.at > a ? m.at : a), "");
+    };
+    const times = names.slice(1).map(latest);
+    expect([...times].sort().reverse()).toEqual(times);
+    // 목록은 입력칸 위에 뜨고, 길면 그 안에서 스크롤한다
+    const box = await menu.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight, oy: getComputedStyle(el).overflowY, bottom: el.getBoundingClientRect().bottom }));
+    expect(box.oy).toBe("auto");
+    const ib = await page.getByLabel("입력칸").boundingBox();
+    expect(box.bottom).toBeLessThanOrEqual(ib!.y);
+    await page.screenshot({ path: join(SHOTS, "12-hover-task-list.png") });
+    // 마우스를 목록으로 옮겨도 닫히지 않고, 목록 안에서 스크롤해 맨 아래 업무를 고른다
+    const mb = await menu.boundingBox();
+    await page.mouse.move(mb!.x + mb!.width / 2, mb!.y + 20, { steps: 4 });
+    await page.mouse.wheel(0, 2000);
+    await page.waitForTimeout(400);
+    await expect(menu.count()).resolves.toBe(1);
+    const lastName = names[names.length - 1]!;
+    await menu.locator(".cmp-menu__item", { hasText: lastName }).click();
+    await expect(menu.count()).resolves.toBe(0);
+    await expect(chip(page, lastName).getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(chip(page, lastName).getAttribute("aria-hidden")).resolves.toBeNull();
+    // 마우스를 치우면 hover 로 연 목록은 닫힌다
+    await page.mouse.move(bar!.x + bar!.width - 20, bar!.y + bar!.height / 2);
+    await menu.waitFor({ timeout: 2000 });
+    await page.mouse.move(640, 200);
+    await menu.waitFor({ state: "detached", timeout: 2000 });
+    await chip(page, "전체").click();
+
+    // 2) 받는 사람 칩도 1초 올려 두면 직원 목록이 뜬다
+    const tb = await page.locator(".cmp-chip--target").boundingBox();
+    await page.mouse.move(tb!.x + tb!.width / 2, tb!.y + tb!.height / 2);
+    await page.waitForTimeout(500);
+    await expect(page.locator(".cmp-menu").count()).resolves.toBe(0);
+    await page.locator(".cmp-menu", { hasText: "결제 연동" }).waitFor({ timeout: 1500 });
+    await page.screenshot({ path: join(SHOTS, "13-hover-target-list.png") });
+    await page.locator(".cmp-menu__item", { hasText: "검색 개선" }).click();
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    await page.mouse.move(640, 200);
+
+    // 3) 입력칸에서 '/'를 치면 업무 목록이 뜨고, 친 글로 거른다. Enter 로 고르면 '/글'은 지워지고 업무가 바뀐다
+    const input = page.getByLabel("입력칸");
+    await input.click();
+    await input.pressSequentially("정산 건 /");
+    await menu.waitFor();
+    await expect(menu.locator(".cmp-menu__name").first().innerText()).resolves.toBe("전체");
+    await input.pressSequentially("정산");
+    await expect(menu.locator(".cmp-menu__name").allInnerTexts()).resolves.toEqual(["환불 정산 확인"]);
+    await page.screenshot({ path: join(SHOTS, "14-slash-filter.png") });
+    await input.press("Enter");
+    await expect(menu.count()).resolves.toBe(0);
+    await expect(input.inputValue()).resolves.toBe("정산 건 ");
+    await expect(chip(page, "환불 정산 확인").getAttribute("aria-pressed")).resolves.toBe("true");
+    await expect(page.locator(".cmp-chip--target").innerText()).resolves.toBe("@검색 개선");
+    await input.pressSequentially("다시 봐 주세요");
+    await input.press("Enter");
+    const sent = await stored("정산 건 다시 봐 주세요");
+    expect(sent.taskId).toBe(store.listTasks(project.id).find((t) => t.title === "환불 정산 확인")!.id);
+    expect(sent.targetMemberId).toBe(search.id);
+    // 글자 뒤의 '/'(주소·나눗셈)는 목록을 띄우지 않고, Esc 로 닫은 '/'는 그대로 글로 보낸다
+    await input.pressSequentially("a/b 그리고 /");
+    await menu.waitFor();
+    await input.press("Escape");
+    await expect(menu.count()).resolves.toBe(0);
+    await expect(input.inputValue()).resolves.toBe("a/b 그리고 /");
+    await input.fill("https://example.com/a");
+    await expect(menu.count()).resolves.toBe(0);
+    await input.fill("");
     await page.close();
   }, 90_000);
 });

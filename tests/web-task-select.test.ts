@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Message, Task } from "../shared/types";
 import { SubmissionManager, type MessageAttempt } from "../web/src/lib/submissions";
-import { chipTasks, withTask } from "../web/src/lib/tasks";
+import { chipTasks, filterTasks, findSlash, withTask } from "../web/src/lib/tasks";
 
 class MemoryStorage implements Storage {
   values = new Map<string, string>();
@@ -74,5 +74,32 @@ describe("작업 고르기", () => {
     expect(lead.snapshot("p1").draft).toMatchObject({ taskId: "tk_a", targetId: null });
     const before = lead.snapshot("p1").draft;
     expect(withTask(before, "tk_a")).toBe(before);
+  });
+});
+
+// 대표 2026-11-14: 입력칸에서 '/'를 치면 업무 목록이 떠서 거기서 고른다.
+describe("'/' 업무 부르기", () => {
+  test("글 맨 앞이나 빈칸 뒤의 '/'만 부른다. 주소·나눗셈 같은 글자 뒤 '/'는 부르지 않는다", () => {
+    expect(findSlash("/", 1)).toEqual({ start: 0, query: "" });
+    expect(findSlash("/환불", 3)).toEqual({ start: 0, query: "환불" });
+    expect(findSlash("이거 /Feat", 8)).toEqual({ start: 3, query: "feat" });
+    expect(findSlash("a/b", 3)).toBeNull();
+    expect(findSlash("https://x.y/z", 13)).toBeNull();
+    // '/' 뒤에 빈칸을 치면 닫힌다(그냥 글로 쓴 '/')
+    expect(findSlash("/ 다음", 4)).toBeNull();
+    // 커서 앞까지만 본다
+    expect(findSlash("/환불 정산", 3)).toEqual({ start: 0, query: "환불" });
+  });
+
+  test("이름·브랜치로 거르고, 순서(최근 글 순)는 그대로 둔다", () => {
+    const tasks = [
+      { id: "a", title: "환불 정산 확인", branch: null },
+      { id: "b", title: "검색 속도", branch: "feat/refund-search" },
+      { id: "c", title: "알림 개선", branch: "fix/notice" },
+    ];
+    expect(filterTasks(tasks, "").map((t) => t.id)).toEqual(["a", "b", "c"]);
+    expect(filterTasks(tasks, "환불").map((t) => t.id)).toEqual(["a"]);
+    expect(filterTasks(tasks, "REFUND").map((t) => t.id)).toEqual(["b"]);
+    expect(filterTasks(tasks, "없음")).toEqual([]);
   });
 });
