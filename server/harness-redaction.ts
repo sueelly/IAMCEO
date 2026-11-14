@@ -7,12 +7,14 @@ const assignments = new RegExp(String.raw`\b(${name}\s*[:=]\s*)${word}`, 'gi');
 const flags = new RegExp(String.raw`(--${name}(?:=|\s+))${word}`, 'gi');
 const jsonValues = new RegExp(String.raw`("${name}"\s*:\s*)"(?:\\.|[^"\\])*"`, 'gi');
 interface ShellWord { start: number; end: number; value: string }
+// Literal 셸 구문은 ASCII space/tab/LF와 연산자에서만 나뉜다. NBSP·CR 등은 값 안 문자다.
+const SHELL_WORD_BREAK = /[ \t\n;|&()<>]/;
 /** 공개용 범위 찾기 전용. 실행·변수 확장 없이 literal 따옴표 연결과 역슬래시를 푼다. */
 function shellWords(text: string): ShellWord[] {
   const words: ShellWord[] = [];
   let i = 0;
   while (i < text.length) {
-    if (/[\s;|&()<>]/.test(text[i]!)) { i++; continue; }
+    if (SHELL_WORD_BREAK.test(text[i]!)) { i++; continue; }
     const start = i;
     let value = "", quote = "";
     while (i < text.length) {
@@ -28,7 +30,7 @@ function shellWords(text: string): ShellWord[] {
           i++;
         } else value += c;
       } else {
-        if (/[\s;|&()<>]/.test(c)) break;
+        if (SHELL_WORD_BREAK.test(c)) break;
         i++;
         if (c === "'" || c === '"') quote = c;
         else if (c === "\\" && i < text.length) {
@@ -58,7 +60,10 @@ function redactShellArguments(text: string): string {
         if (eq >= 0) hide(i); else hide(i + 1);
       }
     }
-    if (/^-[uU]/.test(v)) { if (v.length > 2) hide(i); else hide(i + 1); }
+    // -u/-U는 뒤의 값을 받고, -su/-sU도 같은 인증 옵션이다.
+    // 선행 짧은 옵션의 프로그램별 의미는 실행하지 않는다. 공개 시 u/U까지의 문자 묶음을 보수적으로 받는다.
+    const shortAuth = /^-[A-Za-z]*?[uU]/.exec(v);
+    if (shortAuth) { if (v.length > shortAuth[0].length) hide(i); else hide(i + 1); }
     const header = authenticationHeader.exec(v);
     if (header) {
       hide(i);
