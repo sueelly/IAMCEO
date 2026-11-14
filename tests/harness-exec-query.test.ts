@@ -269,6 +269,8 @@ test("진단 짝: 명령 없는 완료만 있으면 해당 호출로 연결하�
   const s = await setup(), rows = codexRows(s); delete rows[1].payload.item.command; put(s, rows);
   const d = await data(s); expect(d.events.candidates).toEqual([]); expect(d.events.orphanResults).toBe(1);
   const start = codexRows(s)[1]; start.payload.type = "item_started"; start.payload.item.status = "in_progress";
+  // 정상 순서 대조군: 새로 만든 시작의 시각이 앞서 만든 결과보다 늦어지지 않게 고정한다.
+  start.timestamp = rows[1].timestamp;
   put(s, [rows[0], start, rows[1]]);
   expect((await data(s)).events.candidates[0]).toMatchObject({ pair: "paired", parsedExit: null, inCurrentParser: false });
 });

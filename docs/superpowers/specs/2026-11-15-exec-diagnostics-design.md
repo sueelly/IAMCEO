@@ -31,9 +31,11 @@ MCP 공통 operation 응답 보관은 다른 조회 도구와 같다. 그 공통
 
 ## 독립 검토 뒤 표시 보완
 
-종료만 관찰한 exec 이벤트는 callObserved=false, callAt=null, pair=missing_call로 둔다. 반복·상충 시작/결과는 pair=ambiguous와 identityAmbiguous로 구분한다. 실제 하나의 begin/end 정상군은 paired, 통합 CommandExecution 완료는 combined다.
+종료만 관찰한 exec 이벤트는 callObserved=false, callAt=null, pair=missing_call로 둔다. startObserved는 별도 시작 이벤트를 실제로 보았는지 나타낸다. 기존 callObserved는 통합 CommandExecution 안의 명령 관찰도 포함하므로, 단독 통합 완료는 callObserved=true/startObserved=false/callAt=null/combined다. 시작 시각 누락을 단독 통합 완료로 추론하지 않는다. 실제 시작·결과가 있어도 어느 시각이 누락됐으면 contractTime=unknown이다.
+반복·상충 시작/결과와 결과 뒤 시작은 pair=ambiguous와 identityAmbiguous로 구분하며 completion=unknown으로 둔다. 시작이 결과보다 늦은 시각도 모호함이다. 모호한 짝의 callAt=null은 유일한 시작 시각을 확정하지 않는다는 뜻이며, 원래 시각 존재 여부를 새 성공 근거로 삼지 않는다. 실제 하나의 시작/결과 정상군은 paired다. 같은 ID의 완료만 반복되면 마지막 통합 기록을 combined로 표시하되 identityAmbiguous=true이며 별도 짝을 확인한 뜻이 아니다.
+후보 대표 이벤트의 명령·위치가 상충 값으로 바뀌어도 그 사실을 먼저 남긴다. 어느 관찰에서든 대상 명령과 관계가 있던 모호한 후보를 버리지 않는다. 원값·출력을 반환하지 않고 대표 항목의 대조값과 모호함을 함께 표시한다. Claude/함수 결과에는 명령·위치가 없으므로 본문을 해석해 비교값을 만들지 않는다. 해당 결과가 먼저 나온 뒤 시작이 관찰되면 모호함을 남기며 결과를 소급 결합하지 않는다. 같은 ID를 다른 Claude 도구나 함수 이름이 재사용해도 중복 모호함을 알린다. MCP·사용자 도구 등 종류만 세는 분기는 실행 짝을 생성하지 않는다. inCurrentParser·parsedExit·comparison은 기존 파서/관문의 관찰이며, 모호한 짝의 독립 성공 보증을 뜻하지 않는다.
 내부 origin(같은 관찰 창의 줄·항목 위치)은 기존 파서가 어느 이벤트를 읽었는지 대조하는 보조 정보다. 완료 판정 ref·순서·성공 조건은 바꾸지 않는다. inCurrentParser는 동일 origin과 ref·명령·위치·시각을 모두 대조한다. 반복 ID는 duplicateReference로 알리고 후보 지문에 이벤트 위치도 포함한다. 지문은 창 안의 참조이며 영속 호출 ID가 아니다. 같은 ID의 반복은 기존 후보 집계 방식에 따라 마지막 대표 항목으로 표시하고 모호함을 붙인다. 후보 수는 개별 실행 총수가 아니다.
-numericObservation은 알려진 exitCode/exit_code 필드를 모아 absent/consistent/conflict/invalid로 나눈다. Claude는 tool_result와 toolUseResult 양쪽을 본다. 충돌 또는 잘못된 값이면 numericExit=null이고 hasConflict/invalidCount를 표시한다. 단일·일치하는 정상 숫자는 유지한다. parsedExit는 기존 파서 결과이며 원 숫자 관찰과 별개다.
+numericObservation은 알려진 exitCode/exit_code 필드를 모아 absent/consistent/conflict/invalid로 나눈다. Claude는 tool_result와 toolUseResult 양쪽을 본다. 충돌 또는 잘못된 값이면 numericExit=null이고 hasConflict/invalidCount를 표시한다. 단일·일치하는 정상 숫자는 유지한다. parsedExit는 기존 파서 결과의 진단 표시이며 원 숫자 관찰과 별개다. numericExit와 parsedExit 모두0~255로 표시 범위가 제한된다. 기존 파서가256을 보존해도 진단 parsedExit는null이므로, 파서의 모든 정수를 무손실 복사한 값이 아니다. 기존 파서와 완료 성공 판정의 숫자 범위는 바꾸지 않는다.
 
 ## 검증
 
