@@ -21,7 +21,8 @@ import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, 
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { bindingContract, completionGate, formatChecksLine, formatContract, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheckInput, type TaskContract } from "./harness.ts";
-import { matchExecChecks, readProviderEvidence, researchGate, verifyClaims, type CheckEvidence, type ClaimInput, type ClaimResult } from "./harness-evidence.ts";
+import { EXEC_CHECKS, inspectProviderEvidence, matchExecChecks, readProviderEvidence, researchGate, verifyClaims, type CheckEvidence, type ClaimInput, type ClaimResult } from "./harness-evidence.ts";
+import type { LogSelectionObservation } from "./harness-exec-diagnostics.ts";
 import type {
   AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
   AdoptPreview,
@@ -1012,6 +1013,32 @@ export class Orchestrator implements OrchestratorApi {
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
       findings: this.store.listHarnessFindings(member.projectId, { taskId: task.id, limit: 30 }).map(f => ({ id: f.id, kind: f.kind, who: name(f.memberId), detail: f.detail, at: f.at })),
     };
+  }
+
+  /** 서버에 저장된 실패 검사에서만 범위를 얻는다. 조회는 보고·근거·개선 후보·실행 기록을 갱신하지 않는다. */
+  execDiagnose(caller: Member, taskId: string, reportId: string, checkIndex: number): Record<string, unknown> {
+    const task = this.store.resolveTask(this.requireTaskInProject(caller, taskId));
+    const report = this.store.getMessage(reportId), harness = this.store.getReportHarness(reportId);
+    if (!report || report.projectId !== caller.projectId || report.mine || report.taskId !== task.id || !harness || harness.memberId !== report.memberId) throw new ApiError(404, "그 업무의 검사 보고를 찾을 수 없습니다");
+    if (caller.kind !== "conductor" && caller.id !== harness.memberId) throw new ApiError(403, "직원은 자신의 실패 검사만 진단할 수 있습니다");
+    const check = harness.checks[checkIndex];
+    if (!check || check.result !== "fail" || !EXEC_CHECKS.has(check.kind) || !check.command) throw new ApiError(400, "명령이 있는 실패 실행 검사 번호를 고르세요(0부터 시작)");
+    const contract = harness.contractTaskId && harness.contractRev ? this.store.listTaskContracts(harness.contractTaskId).find(c => c.rev === harness.contractRev) : null;
+    if (!bindingContract(contract)) throw new ApiError(400, "확정된 계약 판을 가진 실패 검사만 진단합니다");
+    const target = this.store.requireMember(harness.memberId);
+    if (target.projectId !== caller.projectId) throw new ApiError(404, "해당 직원의 진단 범위를 찾을 수 없습니다");
+    const selection: LogSelectionObservation = { code: "no_matching_session", registeredSession: !!target.sessionId,
+      source: target.cli === "codex" ? "codex_session_meta" : target.cli === "claude" ? "claude_session_filename" : "unsupported",
+      sessionMatch: null, cwdMatch: null, matchingFiles: 0, metadataReadLimitBytes: target.cli === "codex" ? 1024 * 1024 : null };
+    const log = target.cli === "antigravity" ? null : this.contextLog(target, selection);
+    if (target.cli === "antigravity") selection.code = "unsupported";
+    const observed = inspectProviderEvidence(target.cli, log ? { ...log, root: providerLogRoot(target.cli, log.home) } : null,
+      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; });
+    return { scope: { taskId: task.id, reportId, checkIndex, memberId: target.id,
+      contract: { taskId: contract!.taskId, rev: contract!.rev, at: contract!.at } },
+      observation: { kind: "current_requery", at: new Date().toISOString(), provider: target.cli,
+        original: { status: "not_recorded", note: "당시미확인: 거절 당시 선택 세션·읽은 범위·검사별 관찰은 기록돼 있지 않습니다" } },
+      selection, ...observed };
   }
 
   /** 개선 후보 목록(총괄). 규칙·권한을 바꾸지 않는다. 개발 기억에 남길지는 총괄이 정하고 memory_record 로 남긴다. */
@@ -3490,8 +3517,8 @@ export class Orchestrator implements OrchestratorApi {
     this.runtime(member.id).compactRequest = focus;
   }
 
-  private contextLog(member: Member): { path: string; home: string } | null {
-    if (!this.providerHomes || !member.sessionId) return null;
+  private contextLog(member: Member, observation?: LogSelectionObservation): { path: string; home: string } | null {
+    if (!this.providerHomes || !member.sessionId) { if (observation) observation.code = !this.providerHomes ? "provider_homes_missing" : "session_missing"; return null; }
     if (member.cli === "antigravity") {
       if (!this.providerHomes.antigravityRoot) return null;
       const home = antigravityMemberHome(this.providerHomes.antigravityRoot, member.id);
@@ -3501,16 +3528,19 @@ export class Orchestrator implements OrchestratorApi {
     const home = member.cli === "codex" ? this.providerHomes.codexHome : this.providerHomes.claudeHome;
     if (member.cli !== "codex") {
       const path = findSessionFile(home, member.cwd, member.sessionId);
+      if (observation) { observation.code = path ? "selected" : "no_matching_session"; observation.sessionMatch = !!path; observation.matchingFiles = path ? 1 : 0; }
       return path ? { path, home } : null;
     }
     const root = join(home, "sessions");
     try {
       const paths = [...new Bun.Glob("**/rollout-*.jsonl").scanSync({ cwd: root, absolute: true, onlyFiles: true, followSymlinks: false })].filter(path => {
         const meta = parseCodexSessionMeta(readJsonlRange(root, path, null, { maxBytes: 1024 * 1024 }).records[0]?.value);
+        if (observation && meta?.sessionId === member.sessionId) { observation.sessionMatch = true; if (meta.cwd === member.cwd) observation.cwdMatch = true; else observation.cwdMatch ??= false; }
         return meta?.sessionId === member.sessionId && meta.cwd === member.cwd;
       });
+      if (observation) { observation.matchingFiles = paths.length; observation.code = paths.length === 1 ? "selected" : paths.length > 1 ? "ambiguous" : observation.sessionMatch ? "cwd_mismatch" : "no_matching_session"; observation.sessionMatch ??= false; }
       return paths.length === 1 ? { path: paths[0]!, home } : null;
-    } catch { return null; }
+    } catch (e) { if (observation) observation.code = (e as NodeJS.ErrnoException).code === "ENOENT" ? "no_matching_session" : "lookup_failed"; return null; }
   }
 
   private invalidateCoreMeasurement(member: Member): void {

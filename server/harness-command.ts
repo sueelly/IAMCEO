@@ -76,3 +76,13 @@ export function commandProof(executed:string,want:string,actualCwd:string|null=n
   }
   return 'ok';
 }
+
+/** 진단 전용 관찰. 같은 파서로 인자와 위치를 나눠 설명하며 성공 판정 함수는 바꾸지 않는다. */
+export function commandObservation(executed:string,want:string,actualCwd:string|null,wantedCwd:string|null){
+  const actual=sequence(executed,actualCwd),expected=sequence(want,wantedCwd);
+  if(!actual?.commands.length || !expected?.commands.length)return {commandMatch:executed===want?true:null,sameExecutable:false,cwdMatch:'unknown' as const,proof:'absent' as const};
+  const a=actual.commands,w=expected.commands;
+  const commandMatch=a.length>=w.length && w.every((y,i)=>{const x=a[i]!;return x.words.length===y.words.length && y.words.every((v,j)=>v===x.words[j]) && (i===w.length-1 || x.sep===y.sep);});
+  const cwdMatch=actualCwd===null && wantedCwd!==null?'missing' as const:!commandMatch?'unknown' as const:w.every((y,i)=>a[i]!.cwd===y.cwd)?'match' as const:'different' as const;
+  return {commandMatch,sameExecutable:a[0]!.words[0]===w[0]!.words[0],cwdMatch,proof:actualCwd===null && wantedCwd!==null?'absent' as const:commandProof(executed,want,actualCwd,wantedCwd)};
+}
