@@ -248,6 +248,16 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     (orch, member, a) => reply(JSON.stringify(orch.taskTrace(member, a.task_id))),
   ),
 
+  exec_diagnose: tool(
+    "저장된 실패 실행 검사를 최소 메타데이터로 진단합니다. 현재 재조회이며 원래 거절 당시의 관찰은 미확인입니다. 총괄은 같은 프로젝트, 직원은 자기 보고만 조회합니다. 원문·출력·경로·세션은 반환하지 않고 완료를 재제출하지 않습니다.",
+    z.strictObject({
+      task_id: z.string().regex(/^tk_[A-Za-z0-9_-]+$/).max(64).describe("실패 보고가 속한 업무 id"),
+      report_id: z.string().regex(/^msg_[A-Za-z0-9_-]+$/).max(64).describe("이미 저장된 진행/막힘 보고의 원본 id. 실패 검사에서 직원·계약·명령을 정합니다"),
+      check_index: z.number().int().min(0).max(63).describe("그 보고 checks 안의 실패 실행 검사 번호(0부터 시작)"),
+    }),
+    (orch, member, a) => reply(JSON.stringify(orch.execDiagnose(member, a.task_id, a.report_id, a.check_index))),
+  ),
+
   harness_findings: tool(
     "하네스 개선 후보를 본다(총괄): 완료 차단·실행 증거 없음·증거 미지원 제공자·대표 직접 개입·대표 거절(글자 추정). 기록일 뿐 규칙·권한을 바꾸지 않는다. 되풀이되는 것만 memory_record 로 개발 기억에 남기고, 규칙을 바꿀 일은 대표에게 결재로 묻는다.",
     z.strictObject({ task_id: z.string().trim().min(1).max(64).optional().describe("한 업무만 볼 때"), limit: z.number().int().min(1).max(200).optional() }),

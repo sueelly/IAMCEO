@@ -8,6 +8,7 @@ import { commandProof } from "./harness-command.ts";
 import type { CliProvider } from "../shared/types.ts";
 import { jsonObject, providerLogPath } from "./runner/delivery-evidence.ts";
 import { CHECK_LABEL, type CheckKind, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { observeExecWindow } from "./harness-exec-diagnostics.ts";
 
 /** 실행으로 증명해야 하는 검사. real(화면·캡처)·조사 검사는 명령이 아니라 자료·출처로 본다. */
 export const EXEC_CHECKS: ReadonlySet<CheckKind> = new Set<CheckKind>(["behavior", "typecheck", "regression"]);
@@ -35,6 +36,7 @@ export interface ProviderEvidence {
 }
 
 const MAX_LOG_BYTES = 192 * 1024 * 1024;
+export const DIAGNOSTIC_LOG_BYTES = 1024 * 1024;
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const time = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v)) ? v : null;
 // 셸 원문을 문장처럼 다듬지 않는다. 인용 안 공백과 줄바꿈도 인자 데이터다.
@@ -48,7 +50,7 @@ function contentText(value: unknown): string {
 }
 
 /** 기록 파일을 읽기만 한다. 제공자 폴더 밖을 가리키는 링크는 열지 않는다. */
-function readLog(root: string, path: string): string | null {
+function readLogWindow(root: string, path: string, limit: number) {
   const target = providerLogPath(root, path);
   if (!target) return null;
   let fd: number;
@@ -56,7 +58,7 @@ function readLog(root: string, path: string): string | null {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return null;
-    const size = Math.min(stat.size, MAX_LOG_BYTES);
+    const size = Math.min(stat.size, limit);
     const buf = Buffer.alloc(size);
     let read = 0;
     const start = stat.size - size;
@@ -65,11 +67,17 @@ function readLog(root: string, path: string): string | null {
       if (n <= 0) break;
       read += n;
     }
-    const text = buf.subarray(0, read).toString("utf8");
+    const raw = buf.subarray(0, read).toString("utf8");
+    const after = fstatSync(fd);
+    const text = start > 0 ? raw.slice(raw.indexOf("\n") + 1) : raw;
     // 앞을 잘라 읽었으면 첫 줄은 조각이다.
-    return start > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+    return { text, range: { limitBytes: limit, gateLimitBytes: MAX_LOG_BYTES, fileBytes: stat.size, bytesRead: read,
+      startOffset: start, endOffset: start + read, headTruncated: start > 0, leadingFragmentDiscarded: start > 0 && raw.includes("\n"),
+      stable: stat.size === after.size && stat.mtimeMs === after.mtimeMs, bytesComplete: read === size } };
   } catch { return null; } finally { closeSync(fd); }
 }
+
+function readLog(root: string, path: string): string | null { return readLogWindow(root, path, MAX_LOG_BYTES)?.text ?? null; }
 
 /** must 중 하나를 품은 줄만 JSON 으로 푼다(100MB 기록도 1초 안에 본다). */
 function* records(text: string, must: string[]): Generator<Record<string, unknown>> {
@@ -182,6 +190,27 @@ export function readProviderEvidence(cli: CliProvider, log: { path: string; home
   if (text === null) return { status: "missing", code: "log_unreadable", execs: [], texts: [] };
   const parsed = cli === "codex" ? parseCodexLog(text, since) : parseClaudeLog(text, since);
   return { status: "ok", code: "ok", ...parsed };
+}
+
+/** 조회 범위만 관찰한다. 기존 증거 수집/완료 판정에 이 1MiB 제한을 적용하거나 결과를 커밋하지 않는다. */
+export function inspectProviderEvidence(cli: CliProvider, log: { path: string; home: string; root: string } | null, since: string, command: string, cwd: string, usedElsewhere: (ref: string) => string | null) {
+  const empty = { read: { limitBytes: DIAGNOSTIC_LOG_BYTES, gateLimitBytes: MAX_LOG_BYTES, fileBytes: null, bytesRead: 0,
+    startOffset: null, endOffset: null, headTruncated: false, leadingFragmentDiscarded: false, complete: false, tail: "unknown", invalidLines: 0, stable: null },
+    events: { kinds: {}, candidates: [], omittedCandidates: 0, orphanResults: 0 } };
+  const unavailable = (status: string) => ({ ...empty, comparison: { scope: "observed_window_only", commandRedacted: false, status } });
+  if (cli === "antigravity") return unavailable("unsupported");
+  if (!log) return unavailable("missing");
+  const window = readLogWindow(log.root, log.path, DIAGNOSTIC_LOG_BYTES);
+  if (!window) return unavailable("unreadable");
+  // 완료 관문의 기존 읽기 의미는 유지한다. 진단에서는 줄 시작을 못 본 조각 전체를 관찰에서 뺀다.
+  const wholeWindowFragment = window.range.headTruncated && !window.range.leadingFragmentDiscarded;
+  const text = wholeWindowFragment ? "" : window.text;
+  const parse = cli === "codex" ? parseCodexLog : parseClaudeLog;
+  const current = parse(text, since), all = parse(text, null);
+  const commandRedacted = redactHarnessText(command) !== command || command.includes("[가림]");
+  const match = commandRedacted ? null : matchExecChecks([{ name: "진단", kind: "behavior", result: "pass", command, evidence: "읽기 조회" }], { status: "ok", code: "ok", ...current }, usedElsewhere, cwd);
+  return observeExecWindow({ cli, text, range: { ...window.range, wholeWindowFragment }, all: all.execs, current: current.execs, command,
+    cwd, since, commandRedacted, matched: !!match?.results.some(r => r.status === "matched") });
 }
 
 export interface CheckEvidence {
