@@ -1,3 +1,4 @@
+import { redactHarnessText } from "./harness-redaction.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { ModelCatalogReader } from "./models.ts";
@@ -16,9 +17,11 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //   handleAgentTool(orch, member, name, args): Promise<AgentToolResult>
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { bindingContract, completionGate, formatChecksLine, formatContract, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { matchExecChecks, readProviderEvidence, researchGate, verifyClaims, type CheckEvidence, type ClaimInput, type ClaimResult } from "./harness-evidence.ts";
 import type {
   AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
   AdoptPreview,
@@ -64,7 +67,9 @@ import type {
   WorkSec,
 } from "../shared/types.ts";
 import { adoptRefusal, memberConfig, memberRank } from "../shared/types.ts";
-import type { Config } from "./config.ts";
+import { VERSION, type Config } from "./config.ts";
+import { listBackups, type BackupManager } from "./backup.ts";
+import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderRole } from "./roles.ts";
@@ -87,7 +92,7 @@ import { exactSource, measureContext, validWindow } from "./runner/context.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, RunnerStartResult, RunnerTerminalIdentity, DeliveryRepair } from "./runner/types.ts";
 import { ApiError, provisionalTaskTitle, type AppliedConfig, type ExecutionJournal, type MemoryCapture, type NewDelivery, type Store } from "./store.ts";
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
-import { newId } from "./db.ts";
+import { MIGRATIONS, newId } from "./db.ts";
 import { datedTitle, taskTitleFrom } from "./task-names.ts";
 import { clip, DevMemory, devMemoryConfigFromEnv, findSensitive, memoryKindLabel, memoryTaskId, MemoryError, redactSensitive, stableEventId, type Experience, type ExperienceInput } from "./integrations/dev-memory.ts";
 import { conductorHandle, conductorName } from "./text.ts";
@@ -164,6 +169,24 @@ export function formatTaskLine(task: Task | null): string {
   const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
   const naming = provisionalTaskTitle(task) ? ` 이 이름은 서버가 글에서 지은 임시 이름이다. 목적이 드러나는 이름(40자 안)으로 task 도구(task_id "${task.id}", title)로 바꾸고, 대화 중 목적이 정해지거나 바뀌면 다시 바꾼다` : "";
   return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다${naming ? `.${naming}` : ""}`;
+}
+
+/** 명령은 실행 데이터이므로 원문을 보존한다. 설명만 정리한다. 미확인 목록은 'unverified' 검사 한 줄로 붙인다(없다고 적은 것도 기록이다). */
+function harnessChecks(input: PostInput): ReportCheckInput[] {
+  const clean = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
+  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: clean(c.evidence), command: c.command ?? null, criterion: c.criterion ?? null }));
+  const unverified = (input.unverified ?? []).map(clean).filter(Boolean);
+  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, criterion: null });
+  return checks;
+}
+
+/** 계약 글의 제어 문자·빈 줄을 걷는다. 빈 합격 기준은 계약이 아니다. */
+function cleanContract(input: ContractInput): ContractInput {
+  const one = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
+  const list = (v: string[] | undefined) => (v ?? []).map(one).filter(Boolean);
+  const contract = { kind: input.kind, goal: one(input.goal), acceptance: list(input.acceptance), scope: input.scope ? one(input.scope) || null : null, forbidden: list(input.forbidden), evidence: list(input.evidence), ...(input.checks ? { checks: input.checks } : {}) };
+  if (!contract.goal || !contract.acceptance.length) throw new ApiError(400, "계약에는 goal(원하는 결과)과 acceptance(합격 기준) 1개 이상이 필요합니다");
+  return contract;
 }
 
 /** 결재 답·할 일 알림 끝에 붙는 작업 표지. 옛 카드(작업 없음)는 붙이지 않는다. */
@@ -387,6 +410,8 @@ export interface AssignInput {
   attachmentIds?: string[];
   /** 이 지시가 속한 작업. 없으면 받는 직원의 지금 작업을 비운다. */
   taskId?: string | null;
+  /** 업무 시작 계약. 주면 그 업무의 새 판으로 남기고 지시에 싣는다. */
+  contract?: ContractInput;
 }
 
 export interface AssignResult {
@@ -411,6 +436,16 @@ export interface PostInput {
   ownerAction?: string | null;
   /** 생략하면 직원의 지금 작업. null 이면 전체(작업 없음). */
   taskId?: string | null;
+  /** 실제로 돌린 검사. 계약이 있는 업무의 완료는 이것으로 판정한다. */
+  checks?: ReportCheckInput[];
+  /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
+  unverified?: string[];
+  /** 검사가 따른 계약 판 번호. 계약이 있는 업무의 완료는 지금 판과 같아야 받는다. */
+  contractRev?: number | null;
+  /** 조사 주장. 사실 주장은 출처·원문 인용이 직원이 본 도구 결과나 자료 본문과 맞아야 한다. */
+  claims?: ClaimInput[];
+  /** 독립 검토가 필요하면 확인할 변경과 수용 기준. 총괄이 기존 다른 직원에게 검토를 맡길 근거다. */
+  reviewNeeded?: string | null;
 }
 
 export interface AskInput {
@@ -918,6 +953,71 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 서버가 실제 포트로 뜬 뒤 부른다. MCP 설정 파일에 들어간다. */
+  private backups: BackupManager | null = null;
+  /** 서버가 띄운 정기 백업. 직원은 데이터 폴더를 직접 복사하지 않고 server_backup 도구로 이 관리자에게 맡긴다. */
+  setBackups(manager: BackupManager | null): void { this.backups = manager; }
+
+  /**
+   * 직원이 데이터 폴더를 직접 읽지 않고 볼 수 있는 서버 상태: 앱 판, DB 판, 하네스 적용, 최근 백업(만들 때 확인한 값), 마지막 백업 오류,
+   * 이 직원 세션의 실행 기록 대조 가능 여부. 경로·토큰·접속 코드는 싣지 않는다.
+   */
+  serverCheck(member: Member): Record<string, unknown> {
+    const schemaVersion = this.store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    const settings = this.store.getSettings();
+    const log = this.contextLog(member);
+    return {
+      version: VERSION, schema: { version: schemaVersion, supportedVersion: MIGRATIONS.length, ok: schemaVersion === MIGRATIONS.length },
+      harness: { mode: settings.harnessMode, requiredSince: settings.harnessRequiredSince },
+      backups: this.backups ? { recent: readVerifiedBackups(this.backups.options.backupDir, 5, this.backups.options.home), lastError: this.backups.lastError?.message ?? null } : { recent: [], lastError: null, note: "이 서버에는 정기 백업 관리자가 없습니다" },
+      execEvidence: member.cli === "antigravity" ? "unsupported" : log ? "available" : "log_not_found",
+    };
+  }
+
+  /** 서버가 자기 데이터 폴더를 백업한다(검증 포함, 보관 규칙대로 정리). 10분 안에 만든 백업이 있으면 새로 만들지 않고 그것을 알린다. */
+  async serverBackup(member: Member): Promise<Record<string, unknown>> {
+    if (!this.backups) throw new ApiError(503, "이 서버에는 백업 관리자가 없습니다. 대표에게 iamceo backup 을 부탁하세요");
+    const recent = readVerifiedBackups(this.backups.options.backupDir, 1, this.backups.options.home)[0];
+    if (recent && Date.now() >= Date.parse(recent.createdAt) && Date.now() - Date.parse(recent.createdAt) < 10 * 60_000) return { created: false, reason: "10분 안에 만든 백업이 있습니다", backup: recent };
+    const snapshot = await this.backups.run(true);
+    this.store.appendActivity(member.id, "system", `서버 백업 요청: ${snapshot?.manifest.id ?? "만들지 않음"}`);
+    const made = snapshot ? readVerifiedBackups(this.backups.options.backupDir, 5, this.backups.options.home).find(b => b.id === snapshot.manifest.id) ?? null : null;
+    if (!snapshot || !made) throw new ApiError(503, "새 백업을 검증하지 못했습니다. 백업을 재사용하지 않습니다");
+    return { created: true, backup: made };
+  }
+
+  /** 업무 한 건의 시작→지시→보고 사슬(읽기만). 계약 판·전달·검사와 실행 증거·조사 주장·열린 결재·개선 후보. 글 본문은 싣지 않는다. */
+  taskTrace(member: Member, taskId: string): Record<string, unknown> {
+    const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
+    const name = (id: string | null) => (id ? this.store.getMember(id)?.name : null) ?? id;
+    const effective = this.store.getEffectiveContract(task.id);
+    const reports = this.store.listTaskHarnessReports(task.id).map(id => {
+      const m = this.store.getMessage(id);
+      const h = this.store.getReportHarness(id);
+      return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
+        checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null })) ?? [],
+        claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
+    });
+    return {
+      task: { id: task.id, title: task.title, createdAt: task.createdAt, origin: task.origin ?? null, parent: task.parentTaskId ?? null },
+      contract: effective ? { on: effective.taskId, rev: effective.rev, binding: bindingContract(effective), author: effective.author, authorKind: effective.authorKind, confirmedBy: effective.confirmedBy ?? null } : null,
+      contractRevs: this.store.listTaskContracts(task.id).map(c => ({ rev: c.rev, author: c.author, authorKind: c.authorKind, confirmed: !!c.confirmedAt, at: c.at, acceptance: c.acceptance.length, checks: c.checks })),
+      deliveries: this.store.listTaskDeliveries(task.id).map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
+      reports,
+      openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
+      findings: this.store.listHarnessFindings(member.projectId, { taskId: task.id, limit: 30 }).map(f => ({ id: f.id, kind: f.kind, who: name(f.memberId), detail: f.detail, at: f.at })),
+    };
+  }
+
+  /** 개선 후보 목록(총괄). 규칙·권한을 바꾸지 않는다. 개발 기억에 남길지는 총괄이 정하고 memory_record 로 남긴다. */
+  harnessFindings(member: Member, opts: { taskId?: string | null; limit?: number }): Record<string, unknown> {
+    const taskId = opts.taskId ? this.store.resolveTask(this.requireTaskInProject(member, opts.taskId)).id : null;
+    const items = this.store.listHarnessFindings(member.projectId, { taskId, limit: opts.limit ?? 30 });
+    const counts: Record<string, number> = {};
+    for (const f of items) counts[f.kind] = (counts[f.kind] ?? 0) + 1;
+    return { counts, items: items.map(f => ({ id: f.id, kind: f.kind, task: f.taskId, who: f.memberId ? this.store.getMember(f.memberId)?.name ?? f.memberId : null, detail: f.detail, ref: f.refId ? `${f.refType}:${f.refId}` : null, at: f.at })),
+      howTo: "되풀이되는 것만 memory_record(kind lesson·mistake, basis verified, evidence 에 후보 id·보고 id)로 남깁니다. 규칙·권한·계약 기본값은 대표 결재 없이 바꾸지 않습니다" };
+  }
+
   setServerUrl(url: string): void {
     this.serverUrl = url;
   }
@@ -2248,6 +2348,10 @@ export class Orchestrator implements OrchestratorApi {
       return intents;
     });
     if (booting) await (booting as Promise<void>).catch(e => console.warn(`${project.name} 총괄을 띄우지 못했습니다:`, (e as Error).message));
+    // 총괄이 맡긴 업무에 대표가 직원에게 바로 끼어들었으면 개선 후보로 남긴다(지시가 모자랐거나 판이 늦었을 수 있다). 규칙은 바꾸지 않는다.
+    if (target?.kind === "worker" && message.taskId && (this.store.hasInstruction(target.id, message.taskId) || bindingContract(this.store.getEffectiveContract(message.taskId)))) {
+      this.store.recordHarnessFinding({ projectId, taskId: message.taskId, memberId: target.id, kind: "owner_intervened", detail: `대표가 총괄이 맡긴 업무에 ${target.name}에게 직접 지시했습니다(#${message.id})`, refType: "message", refId: message.id });
+    }
     await Promise.all([...new Set(deliveries.map(d => d.memberId))].map(id => this.pump(id)));
     return this.store.requireMessage(message.id);
   }
@@ -2279,7 +2383,8 @@ export class Orchestrator implements OrchestratorApi {
         }
         return { ...a, path: dest };
       } catch {
-        return a; // 원본이 사라졌으면 그대로 알린다. 읽는 쪽에서 오류가 보인다.
+        // 원본이 사라졌거나 잇지 못했다. 데이터 폴더의 원본 경로(하네스가 막는 곳)를 넘기지 않고 받을 자리를 그대로 알린다. 읽는 쪽에서 '없음'이 보인다.
+        return { ...a, path: dest };
       }
     });
   }
@@ -2305,6 +2410,7 @@ export class Orchestrator implements OrchestratorApi {
     });
     if (!changed) return decision;
     this.queueDecisionMemory(decision);
+    this.noteOwnerRejection(decision);
     if (booting) await (booting as Promise<void>).catch(e => console.warn("결재 답을 받을 총괄을 띄우지 못했습니다:", (e as Error).message));
     this.wakeAll(this.askWaiters, decisionId);
     if (decision.memberId) this.wakeAll(this.inboxWaiters, decision.memberId);
@@ -2312,6 +2418,19 @@ export class Orchestrator implements OrchestratorApi {
     const asker = decision.memberId ? this.store.getMember(decision.memberId) : null;
     if (asker && asker.origin !== "manual") this.refreshWaiting(asker.id);
     return this.store.requireDecision(decisionId);
+  }
+
+  /**
+   * 대표가 결재에 거절·다시·보류로 보이는 답을 했으면 개선 후보로 남긴다. 글자로 짐작한 것이라 '추정'이라 쓴다.
+   * 후보는 기록일 뿐 규칙·권한을 바꾸지 않는다(총괄이 보고 개발 기억에 남길지 정한다).
+   */
+  private noteOwnerRejection(decision: Decision): void {
+    if (!decision.taskId) return;
+    const option = decision.options.find(o => o.k === decision.choice);
+    const said = [option?.label, decision.note].filter(Boolean).join(" / ");
+    if (!said || !/반려|거절|다시|아니|안 ?돼|보류|중단|멈춰|하지 ?마|틀렸|빠졌|부족/.test(said)) return;
+    this.store.recordHarnessFinding({ projectId: decision.projectId, taskId: decision.taskId, memberId: decision.memberId, kind: "owner_rejected",
+      detail: `대표가 '${decision.title.slice(0, 80)}'에 '${said.slice(0, 160)}'로 답했습니다(거절·다시로 보임, 글자 추정)`, refType: "decision", refId: decision.id });
   }
 
   async setTodoDone(todoId: string, done: boolean): Promise<Todo> {
@@ -3158,7 +3277,7 @@ export class Orchestrator implements OrchestratorApi {
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
-        const taskLine = this.taskLineFor(projectId, firstTask?.id ?? null);
+        const taskLine = this.instructionTaskLines(projectId, firstTask?.id ?? null);
         return [{ projectId, memberId: member.id, kind: "instruction", text: [formatInstruction(member.name, input.firstInstruction, quote), ...(taskLine ? [taskLine] : [])].join("\n"), taskId: firstTask?.id ?? null }];
       });
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
@@ -3277,8 +3396,10 @@ export class Orchestrator implements OrchestratorApi {
       return attachment;
     });
     const task = this.instructionTaskFor(projectId, input.taskId);
+    if (input.contract && !task) throw new ApiError(400, "계약은 업무에 붙습니다. task_id 를 함께 넣으세요");
     const delivery = this.store.transaction(() => {
-      const taskLine = this.taskLineFor(projectId, task?.id ?? null);
+      if (input.contract && task) this.store.saveTaskContract(task.id, cleanContract(input.contract), { author: assignedBy?.name ?? "대표 화면", authorMemberId: assignedBy?.id ?? null, authorKind: !assignedBy ? "owner" : assignedBy.kind === "worker" ? "worker" : "conductor", sourceMessageId: quote?.verified ? quote.source?.id ?? null : null });
+      const taskLine = this.instructionTaskLines(projectId, task?.id ?? null);
       const delivery = this.store.enqueue({
         projectId,
         memberId: target.id,
@@ -3678,12 +3799,39 @@ export class Orchestrator implements OrchestratorApi {
 
   // ---- 작업 ----
   /** 직원이 작업을 등록하거나 고친다. 이후 그 직원의 출력은 task_id 를 밝혀야 한다. */
-  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null; parentTaskId?: string | null }): { task: Task; created: boolean } {
-    return this.store.transaction(() => {
+  saveTask(member: Member, input: { taskId?: string; title?: string; branch?: string | null; worktree?: string | null; parentTaskId?: string | null; contract?: ContractInput; confirmContractRev?: number }): { task: Task; created: boolean; contract: TaskContract | null } {
+    const contract = input.contract ? cleanContract(input.contract) : null;
+    if (input.confirmContractRev !== undefined) {
+      // 직원이 단 계약의 확인은 총괄(과 본사)만 한다. 확인한 판만 완료 판정에 묶인다.
+      if (member.kind === "worker") throw new ApiError(403, "계약 확인(confirm_contract_rev)은 총괄만 합니다. 직원은 contract 로 제안하고 총괄 확인을 기다립니다");
+      if (!input.taskId || contract) throw new ApiError(400, "confirm_contract_rev 는 task_id 와 함께, contract 없이 줍니다");
+      const task = this.store.resolveTask(this.requireTaskInProject(member, input.taskId));
+      const confirmed = this.store.confirmTaskContract(task.id, input.confirmContractRev, { name: member.name, memberId: member.id });
+      this.store.appendActivity(member.id, "system", `업무 #${task.id} 계약 r${confirmed.rev} 확인(작성 ${confirmed.author})`);
+      return { task, created: false, contract: confirmed };
+    }
+    const saved = this.store.transaction(() => {
       if (input.taskId) this.requireTaskInProject(member, input.taskId);
       const parent = input.parentTaskId ? this.store.resolveTask(this.requireTaskInProject(member, input.parentTaskId)).id : null;
-      return this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
+      // 갈래 업무는 위 업무의 계약을 따른다. 직원은 총괄·대표·다른 직원이 정한 계약(이어받은 것 포함)을 고치거나 덮어 기준을 낮추지 못한다.
+      const under = input.taskId ?? parent;
+      const current = contract && under ? this.store.getEffectiveContract(under) : null;
+      if (current && member.kind === "worker" && current.authorMemberId !== member.id) {
+        throw new ApiError(409, `업무 #${current.taskId} 계약 r${current.rev} 은 ${current.author}이(가) 정했습니다${!input.taskId || current.taskId !== input.taskId ? "(갈래 업무는 이 계약을 이어받습니다)" : ""}. 직원은 바꾸거나 덮지 않습니다. 바꿔야 하면 총괄에게 보고하세요`);
+      }
+      const saved = this.store.saveTask({ id: input.taskId, projectId: member.projectId, memberId: member.id, who: member.name, title: input.title, branch: input.branch, worktree: input.worktree, parentTaskId: parent });
+      const by = { author: member.name, authorMemberId: member.id, authorKind: member.kind === "worker" ? "worker" as const : "conductor" as const };
+      return { ...saved, contract: contract ? this.store.saveTaskContract(saved.task.id, contract, by) : this.store.getEffectiveContract(saved.task.id) };
     });
+    // 직원이 계약을 제안했으면 총괄에게 확인을 부탁한다. 고친 판도 다시 확인을 받는다(느슨하게 고쳐 통과하지 못하게).
+    const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
+    if (contract && saved.contract && conductor && conductor.id !== member.id) {
+      const previous = saved.contract.rev > 1 ? this.store.listTaskContracts(saved.contract.taskId).find(c => c.rev === saved.contract!.rev - 1) : null;
+      const change = previous ? `\n바로 전 판 r${previous.rev}(${previous.confirmedAt ? `${previous.confirmedBy ?? "총괄"} 확인` : "확인 전"}): 합격 기준 ${previous.acceptance.length}개 → ${saved.contract.acceptance.length}개, 필수 검사 ${previous.checks.join("·") || "없음"} → ${saved.contract.checks.join("·") || "없음"}` : "";
+      void this.deliver({ projectId: member.projectId, memberId: conductor.id, kind: "system", wake: true, taskId: saved.task.id,
+        text: formatSystem(`계약 확인 요청: ${member.name}이(가) 업무 #${saved.task.id} 에 계약 r${saved.contract.rev} 을 제안했습니다. 맞으면 task(task_id "${saved.task.id}", confirm_contract_rev ${saved.contract.rev})로 확인하세요. 기준을 바꿔야 하면 task 의 contract 로 총괄이 새 판을 정합니다. 확인 전 새 제안은 적용하지 않습니다. 기존 확정 계약이 있으면 그 판으로 검사합니다.${change}`) + `\n${formatContract(saved.contract)}` }).catch(() => {});
+    }
+    return saved;
   }
 
   private requireTaskInProject(member: Member, taskId: string): Task {
@@ -3784,6 +3932,15 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
+  /** 지시 글의 업무 줄. 계약이 있는 업무면 계약 판·원문 참조·최근 검사·열린 결재를 덧붙인다(대화 전량은 넘기지 않는다). */
+  private instructionTaskLines(projectId: string, taskId: string | null | undefined): string | null {
+    const line = this.taskLineFor(projectId, taskId);
+    const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
+    if (!contract || !taskId) return line;
+    const openDecisions = this.store.listOpenDecisions(projectId).filter(d => d.taskId === taskId).map(d => ({ id: d.id, title: d.title }));
+    return [line, formatContract(contract, { latest: this.store.latestTaskChecks(taskId), openDecisions, forTaskId: taskId })].filter(Boolean).join("\n");
+  }
+
   private taskLineFor(projectId: string, taskId: string | null | undefined): string | null {
     const task = taskId ? this.store.getTask(taskId) : null;
     if (task) return formatTaskLine(task);
@@ -3823,6 +3980,12 @@ export class Orchestrator implements OrchestratorApi {
       ...files.map((f) => f.taskId),
       input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
     ]);
+    const checks = harnessChecks(input);
+    const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
+    const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).replace(/\s+/g, " ").trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
+    const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims) : null;
+    // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
+    const recordRev = contract ? (input.contractRev && input.contractRev >= 1 && input.contractRev <= contract.rev ? input.contractRev : contract.rev) : null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
       projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
@@ -3831,11 +3994,92 @@ export class Orchestrator implements OrchestratorApi {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
+      if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
+        gate: gate?.gate ?? null, evidenceStatus: gate?.evidenceStatus ?? null, evidence: gate?.evidence, claims: gate?.claims ?? claims.map(c => ({ ...c, verified: false, via: null })) });
+      if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind), refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
     await Promise.all(deliveries.map(d => this.pump(d.memberId)));
     return message;
+  }
+
+  /**
+   * 완료 판정. 계약은 업무에 붙고 갈래 업무는 위 업무의 계약을 따른다(getEffectiveContract).
+   * 판정에 묶이는 계약(bindingContract)은 총괄·대표가 정했거나, 직원이 단 것을 총괄·대표가 확인한 것이다.
+   * 1) 직원이 이번 턴에 받았거나 받고서 아직 마감하지 않은 업무에 계약이 있으면, 받지 않은 계약 없는 업무(직원이 새로 만든 업무 포함)로 완료를 올리지 못한다.
+   * 2) 설정 harnessMode 가 required 면, 그 시각 뒤에 만든 업무는 묶이는 계약이 있어야 직원·총괄 완료를 받는다. 그 전 업무와 label 모드는 '계약 없는 완료'로 표시만 한다.
+   * 3) 검사는 지금 판(contract_rev)을 밝혀야 받는다. 옛 판의 기준 번호로 새 판을 통과시키지 않는다.
+   * 4) 실행 검사의 통과는 이 세션의 제공자 기록에서 계약 시각 뒤 그 명령의 마지막 실행(종료 0)과 맞아야 하고, 다른 업무에 쓴 실행은 쓰지 않는다.
+   *    조사 계약은 사실 주장의 원문 인용이 직원이 본 도구 결과나 다른 사람의 자료 본문에 있어야 한다. 기록 형식을 모르는 제공자(Antigravity)는 '미지원'으로 남긴다.
+   * 5) 총괄·본사는 자기 검사가 없으면 이 계약 판으로 통과한 완료 보고가 있어야 한다. 자기 검사를 붙이면 같은 증거 대조를 받는다.
+   * 거절된 완료는 글이 아니므로 보고 의무가 남는다(막힘으로 올리면 마감된다). 거절은 개선 후보로 남는다.
+   */
+  private gateCompletion(member: Member, taskId: string | null, contract: TaskContract | null, checks: ReportCheckInput[], declaredRev: number | null, claims: ClaimInput[]): { gate: HarnessGate; evidenceStatus: string | null; evidence: CheckEvidence[]; claims: ClaimResult[] } {
+    const refuse = (reason: string, log = reason, kind: HarnessFinding["kind"] = "completion_refused"): never => {
+      reason = redactHarnessText(reason);
+      log = redactHarnessText(log);
+      this.store.appendActivity(member.id, "system", `완료 차단: ${log}`);
+      this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind, detail: log, refType: "task", refId: taskId });
+      throw new ApiError(400, reason);
+    };
+    const none = (gate: HarnessGate) => ({ gate, evidenceStatus: null, evidence: [], claims: claims.map(c => ({ ...c, verified: false, via: null })) });
+    if (!this.usesTasks(member.projectId)) return none("exempt");
+    if (!contract || !bindingContract(contract)) {
+      if (member.kind === "worker") {
+        const received = [...new Set([...this.turnTasks(this.runtime(member.id).turn?.deliveries), ...this.store.openAssignedTasks(member.id, (a, b) => this.isTaskUnder(a, b))])].map(id => this.store.getTask(id)).filter((t): t is Task => !!t).map(t => this.store.resolveTask(t).id);
+        const boundReceived = received.map(id => this.store.getEffectiveContract(id)).filter((c): c is TaskContract => bindingContract(c));
+        if (boundReceived.length && taskId && !received.some(id => this.isTaskUnder(taskId, id))) {
+          const list = [...new Set(boundReceived.map(c => `#${c.taskId} 계약 r${c.rev}`))].join(", ");
+          refuse(`받은 업무(${list})는 계약이 있고 아직 완료·막힘으로 마감하지 않았습니다. 그 일의 완료는 그 업무 id 와 contract_rev·checks 로 올리세요. 받지 않은 업무 #${taskId} 의 완료는 계약 없이 받지 않습니다. 정말 다른 일이면 진행·알림으로 남기고 총괄에게 계약을 받으세요`, `받은 업무(${list}) 대신 계약 없는 업무 #${taskId} 로 완료`);
+        }
+      }
+      // 필수 적용(required): 그 시각 뒤에 만든 업무는 직원도 총괄도 묶이는 계약 없이 완료를 올리지 못한다. 옛 업무는 표시만 한다.
+      const settings = this.store.getSettings();
+      const task = taskId ? this.store.getTask(taskId) : null;
+      if (settings.harnessMode === "required" && task && settings.harnessRequiredSince && task.createdAt >= settings.harnessRequiredSince) {
+        const how = member.kind === "worker" ? "task 도구의 contract 로 계약을 제안하면 총괄이 확인합니다" : "task 도구의 contract 로 계약을 정하세요(총괄이 정한 계약은 바로 묶입니다)";
+        refuse(contract
+          ? `업무 #${contract.taskId} 계약 r${contract.rev} 은 직원이 단 계약이고 아직 총괄 확인 전입니다. 총괄이 확인(task 의 confirm_contract_rev)해야 완료를 받습니다. 기다리는 동안은 진행·막힘으로 올리세요`
+          : `업무 #${taskId} 에 계약이 없습니다. 이 업무는 하네스 필수 적용(${settings.harnessRequiredSince}) 뒤에 생겨 계약이 있어야 완료를 받습니다. ${how}. 그동안은 진행·막힘으로 올리세요`,
+          contract ? `확인 전 직원 계약 r${contract.rev} 로 완료` : `필수 적용 뒤 업무 #${taskId} 를 계약 없이 완료(${member.kind === "worker" ? "직원" : "총괄"})`);
+      }
+      return none("no_contract");
+    }
+    if (member.kind !== "worker" && !checks.length) {
+      if (this.store.hasPassedCompletion(contract.taskId, contract.rev)) return none("contract");
+      refuse(`업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 contract_rev 와 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`);
+    }
+    const now = formatContract(contract, { forTaskId: taskId });
+    if (declaredRev != null && declaredRev > contract.rev) refuse(`계약 r${declaredRev} 은 아직 확정되지 않았습니다. 현재 확정 판은 r${contract.rev} 입니다. 이 판으로 검사하거나 새 판 확인을 기다리세요`);
+    if (declaredRev != null && declaredRev !== contract.rev) refuse(`완료로 올릴 수 없습니다. 업무 #${contract.taskId} 계약이 r${declaredRev} 에서 r${contract.rev} 로 바뀌었습니다. 옛 판의 검사로는 받지 않습니다. 지금 판의 기준으로 다시 검사하세요.\n${now}`, `옛 판 r${declaredRev} 의 검사(지금 r${contract.rev})`);
+    const reasons = [...(declaredRev == null ? [`검사가 따른 계약 판을 contract_rev 로 밝히지 않았습니다(지금 판 r${contract.rev})`] : []), ...completionGate(contract, checks), ...researchGate(contract, claims)];
+    if (reasons.length) refuse(`완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}). ${reasons.join(" / ")}. 고쳐서 다시 검사한 뒤 완료로 올리거나, 막힘으로 올리고 unverified 에 확인하지 못한 것을 적으세요${declaredRev == null ? `\n${now}` : ""}`, reasons.join(" / "));
+    // 실행 증거: 이 세션의 제공자 기록에서 계약 시각 뒤의 실행만 본다(옛 판·다른 업무·실패·없는 실행은 받지 않는다).
+    const log = this.contextLog(member);
+    const evidence = readProviderEvidence(member.cli, log ? { ...log, root: providerLogRoot(member.cli, log.home) } : null, contract.at);
+    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd);
+    const verified = verifyClaims(claims, evidence, source => {
+      const file = /^f_[A-Za-z0-9_-]+$/.test(source) ? this.store.getFile(source) : null;
+      // 자기가 올린 자료는 자기 글이다. 대표·다른 직원의 자료 본문만 원문으로 친다.
+      return file && file.projectId === member.projectId && file.memberId !== member.id ? `${file.title}\n${file.summary}\n${file.body}` : null;
+    });
+    const missing = [...exec.reasons, ...verified.reasons];
+    if (missing.length) refuse(`완료로 올릴 수 없습니다(업무 #${contract.taskId} 계약 r${contract.rev}, 실행 증거). ${missing.join(" / ")}`, missing.join(" / "), "evidence_missing");
+    return { gate: "contract", evidenceStatus: evidence.status, evidence: exec.results, claims: verified.results };
+  }
+
+  /** taskId 가 root 이거나 root 의 갈래(parent 를 따라 올라가 root 에 닿는다)인지. */
+  private isTaskUnder(taskId: string, root: string): boolean {
+    const seen = new Set<string>();
+    let id: string | null | undefined = taskId;
+    while (id && !seen.has(id) && seen.size < 32) {
+      if (id === root) return true;
+      seen.add(id);
+      const task = this.store.getTask(id);
+      id = task ? this.store.resolveTask(task).parentTaskId ?? null : null;
+    }
+    return false;
   }
 
   /**
@@ -3860,7 +4104,12 @@ export class Orchestrator implements OrchestratorApi {
   private reportText(message: Message): string {
     const refs = this.reportReferences(message.projectId, message.id);
     const direct = message.title.startsWith("(직접) ");
-    return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
+    const harness = this.store.getReportHarness(message.id);
+    const contract = harness?.contractTaskId ? this.store.getTaskContract(harness.contractTaskId) : null;
+    const checksLine = [harness ? formatChecksLine(harness.checks, harness.contractRev, harness.reviewNeeded, contract) : "",
+      harness?.gate === "no_contract" ? (contract ? `하네스: 확인 전 직원 계약(완료 판정 밖, 작성자 보고만). 기준이 맞으면 task(task_id "${contract.taskId}", confirm_contract_rev ${contract.rev})로 확인하세요` : "하네스: 계약 없는 완료(완료 판정 밖, 작성자 보고만). 기준이 필요한 일이면 task 의 contract 로 계약을 정하고 다시 맡기세요") : "",
+      harness?.claims.length ? `조사 주장 ${harness.claims.length}건: 사실 ${harness.claims.filter(c => c.basis === "fact").length}(인용 대조 ${harness.claims.filter(c => c.quoteMatched).length}) · 해석 ${harness.claims.filter(c => c.basis === "interpretation").length}. 인용 존재·출처 열람만 대조하며, 주장 의미는 별도 검토` : ""].filter(Boolean).join("\n");
+    return `${formatReport(message.who, direct ? `(직접) ${message.kind}` : message.kind, direct ? message.title.slice(5) : message.title, message.body)}${checksLine ? `\n${checksLine}` : ""}\n보고 원본 #${refs.sourceMessageId} · 작성 ${refs.authoredAt} · 순번 ${refs.sequence}\n자료: ${refs.fileIds.join(", ") || "없음"} · 결재: ${refs.decisionIds.join(", ") || "없음"}${refs.correctsMessageId ? ` · 정정 대상 #${refs.correctsMessageId}` : ""}`;
   }
 
   private async reportToConductor(member: Member, kind: string, title: string, body: string, wake: boolean): Promise<void> {
@@ -3968,7 +4217,7 @@ export class Orchestrator implements OrchestratorApi {
           const source = this.store.requireMessage(followUp.sourceMessageId);
           // 후속 지시는 닫은 결재 카드의 작업을 잇는다(카드가 전체면 대표 원문 글의 작업). 칩에서 시작한 일이 전체로 새지 않게 한다.
           const taskId = decision.taskId ?? source.taskId ?? null;
-          const taskLine = this.taskLineFor(member.projectId, taskId);
+          const taskLine = this.instructionTaskLines(member.projectId, taskId);
           const delivery = this.store.enqueue({ projectId: member.projectId, memberId: followUp.memberId, kind: "instruction", text: [formatInstruction(member.name, `${followUp.text}\n결재 #${decision.id} 닫기의 후속 지시`, { text: input.userQuote ?? source.body, verified: true, source: { id: source.id, text: source.body, at: source.at } }), ...(taskLine ? [taskLine] : [])].join("\n"), taskId });
           this.store.noteDelegation(member.id, delivery, this.isBusy(this.store.requireMember(followUp.memberId)));
           this.store.afterCommit(() => { void this.pump(followUp.memberId); });
@@ -5421,7 +5670,7 @@ export class Orchestrator implements OrchestratorApi {
     // Claude only (also legacy rows without a cli): Codex and Antigravity take their settings as launch arguments.
     if (member.cli !== "codex" && member.cli !== "antigravity") {
       settingsFile = join(dir, `${member.id}.settings.json`);
-      const settings = { statusLine: writeStatuslineWrapper(this.config.home),
+      const settings = { statusLine: writeStatuslineWrapper(this.config.home), hooks: guardHooks(this.config.home),
         ...(this.store.getSettings().permissionMode === "bypassPermissions" ? { skipDangerousModePermissionPrompt: true } : {}) };
       writeFileSync(settingsFile, `${JSON.stringify(settings)}\n`, { mode: 0o600 });
     }
@@ -5551,6 +5800,17 @@ export function cliCommand(): string {
   return [command, ...args.slice(0, -1)].map(shellQuote).join(" ");
 }
 
+/** Claude 직원의 PreToolUse 훅 명령(셸 한 줄). 개발 실행은 서버 없이 판정 모듈만 읽는 진입 파일을 쓴다. */
+export function guardCommand(home: string): string {
+  const base = import.meta.path.startsWith("/$bunfs/") ? [process.execPath, "guard"] : [process.execPath, resolve(import.meta.dir, "..", "bin", "iamceo-guard.ts")];
+  return [...base, "--home", home].map(shellQuote).join(" ");
+}
+
+/** IAMCEO 가 띄우는 Claude 세션에만 넘기는 훅 설정. 지우기·게시는 묻고 비밀 파일은 거절한다(server/harness-guard.ts). */
+export function guardHooks(home: string): Record<string, unknown> {
+  return { PreToolUse: [{ matcher: "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob", hooks: [{ type: "command", command: guardCommand(home), timeout: 10 }] }] };
+}
+
 /** 컴파일 실행이면 자기 자신, 아니면 bun 으로 CLI 를 띄운다. */
 export function mcpCommand(): { command: string; args: string[] } {
   if (import.meta.path.startsWith("/$bunfs/")) return { command: process.execPath, args: ["mcp"] };
@@ -5562,4 +5822,12 @@ function staffSubagent(cli: CliProvider, ranks: Settings["ranks"], codexRanks: S
   if (cli === "codex") return { subagentModel: codexRanks.staff.model, subagentEffort: null };
   if (cli === "antigravity") return { subagentModel: null, subagentEffort: null };
   return { subagentModel: ranks.staff.model, subagentEffort: ranks.staff.effort };
+}
+
+/** 명세의 주장만 믿지 않고 파일·해시·DB를 현재 검증한 같은 원본의 백업만 반환한다. */
+function readVerifiedBackups(backupDir: string, limit: number, sourceHome: string): { id: string; createdAt: string; schemaVersion: number; databaseBytes: number; verified: boolean; appVersion: string }[] {
+  const home = normalizeHome(sourceHome);
+  return listBackups(backupDir).filter(s => s.manifest.sourceHome === home && s.manifest.database.size > 0).slice(0, limit).map(({manifest:m}) => ({
+    id: m.id, createdAt: m.createdAt, schemaVersion: m.schemaVersion, databaseBytes: m.database.size, verified: true, appVersion: m.applicationVersion,
+  }));
 }

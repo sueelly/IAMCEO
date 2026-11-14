@@ -573,7 +573,15 @@ export interface Settings {
   notifyMac: boolean;
   /** 총괄에게 판 정리(결재·내 할 일·진행판·지금 상황)를 맡기는 간격(시간). 0 이면 끈다. 기본 6. */
   boardTidyHours: number;
+  /**
+   * 공통 하네스 적용. label(기본): 계약 없는 완료도 받되 '계약 없는 완료'로 표시·기록한다.
+   * required: harnessRequiredSince 뒤에 만든 업무는 총괄·대표가 정했거나 확인한 계약이 있어야 직원 완료를 받는다(그 전 업무는 표시만).
+   */
+  harnessMode: HarnessMode;
+  /** required 로 바꾼 시각. 이 뒤에 만든 업무부터 계약이 필요하다. 처음 required 로 바꿀 때 서버가 채운다. */
+  harnessRequiredSince: string | null;
 }
+export type HarnessMode = "label" | "required";
 
 export interface RuntimeInfo { backend: "core"; core: { installed: boolean; available: boolean; version: string | null; detail: string | null }; providers: Record<CliProvider, { installed: boolean }>; memory?: MemoryServiceInfo }
 
@@ -749,7 +757,7 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
-export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close"] as const;
-export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board"] as const;
+export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close", "server_check", "server_backup", "task_trace"] as const;
+export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;
 export const MANUAL_TOOLS = ["wait"] as const;

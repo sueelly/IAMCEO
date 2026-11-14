@@ -761,6 +761,95 @@ export const MIGRATIONS: string[] = [
      settled_at TEXT
    );
    ALTER TABLE messages ADD COLUMN about_message_id TEXT;`,
+  // v31: 공통 하네스. 업무 시작 계약(판마다 한 줄, 고치면 판이 오른다)과 완료 보고의 검사 기록.
+  // 검사는 글·직원·실행·계약 판을 함께 남겨, 같은 업무를 여러 직원이 다뤄도 누가 무엇을 확인했는지 섞이지 않는다.
+  `CREATE TABLE task_contracts (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     rev INTEGER NOT NULL,
+     kind TEXT NOT NULL,
+     goal TEXT NOT NULL,
+     acceptance TEXT NOT NULL,
+     scope TEXT,
+     forbidden TEXT NOT NULL DEFAULT '[]',
+     evidence TEXT NOT NULL DEFAULT '[]',
+     checks TEXT NOT NULL DEFAULT '[]',
+     author TEXT NOT NULL,
+     author_member_id TEXT,
+     author_kind TEXT NOT NULL DEFAULT 'conductor',
+     source_message_id TEXT,
+     at TEXT NOT NULL,
+     PRIMARY KEY (task_id, rev)
+   );
+   CREATE TABLE report_harness (
+     message_id TEXT PRIMARY KEY,
+     task_id TEXT,
+     member_id TEXT NOT NULL,
+     run_id TEXT,
+     contract_task_id TEXT,
+     contract_rev INTEGER,
+     review_needed TEXT,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE report_checks (
+     message_id TEXT NOT NULL,
+     idx INTEGER NOT NULL,
+     name TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     result TEXT NOT NULL,
+     evidence TEXT NOT NULL,
+     command TEXT,
+     criterion INTEGER,
+     PRIMARY KEY (message_id, idx)
+   );
+   CREATE INDEX report_harness_task ON report_harness(task_id, at);
+   CREATE INDEX report_harness_contract ON report_harness(contract_task_id, contract_rev);`,
+  // v32: 하네스 기본 적용. 직원이 단 계약의 총괄 확인, 검사마다 대조한 실행 증거(제공자 기록의 실행 표지·종료 코드·출력 지문),
+  // 한 실행은 한 업무의 증거로만 쓰는 표, 조사 주장(사실/해석·출처·인용)과 대조 결과, 보고의 판정 종류,
+  // 개선 후보(완료 차단·증거 없음·대표 개입·거절). 후보는 기록일 뿐 규칙·권한을 바꾸지 않는다.
+  `ALTER TABLE task_contracts ADD COLUMN confirmed_by TEXT;
+   ALTER TABLE task_contracts ADD COLUMN confirmed_by_member_id TEXT;
+   ALTER TABLE task_contracts ADD COLUMN confirmed_at TEXT;
+   ALTER TABLE report_harness ADD COLUMN gate TEXT;
+   ALTER TABLE report_harness ADD COLUMN evidence_status TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_status TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_ref TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_exit INTEGER;
+   ALTER TABLE report_checks ADD COLUMN exec_at TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_output_sha TEXT;
+   ALTER TABLE report_checks ADD COLUMN exec_command TEXT;
+   CREATE TABLE harness_exec_refs (
+     exec_ref TEXT PRIMARY KEY,
+     message_id TEXT NOT NULL,
+     contract_task_id TEXT,
+     task_id TEXT,
+     member_id TEXT NOT NULL,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE report_claims (
+     message_id TEXT NOT NULL,
+     idx INTEGER NOT NULL,
+     text TEXT NOT NULL,
+     basis TEXT NOT NULL,
+     source TEXT,
+     quote TEXT,
+     criterion INTEGER,
+     verified INTEGER NOT NULL DEFAULT 0,
+     via TEXT,
+     PRIMARY KEY (message_id, idx)
+   );
+   CREATE TABLE harness_findings (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     project_id TEXT NOT NULL,
+     task_id TEXT,
+     member_id TEXT,
+     kind TEXT NOT NULL,
+     detail TEXT NOT NULL,
+     ref_type TEXT,
+     ref_id TEXT,
+     at TEXT NOT NULL
+   );
+   CREATE INDEX harness_findings_project ON harness_findings(project_id, at);
+   CREATE INDEX harness_findings_task ON harness_findings(task_id, at);`,
 ];
 
 export function openDb(path: string): Database {

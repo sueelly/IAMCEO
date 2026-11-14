@@ -1,3 +1,4 @@
+import { publicHarness } from "./harness-redaction.ts";
 // 에이전트 도구 정의와 처리기(spec §7). 스키마는 zod 하나로 검증과 JSON 스키마를 함께 낸다.
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,6 +7,7 @@ import { z } from "zod";
 import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
+import { CHECK_KINDS, formatContract } from "./harness.ts";
 import { toStorageError } from "./storage-errors.ts";
 import type { AgentToolDef, AgentToolResult, OrchestratorApi } from "./orchestrator-api.ts";
 import type { AgentWorkflowService } from "./service-contracts.ts";
@@ -51,6 +53,34 @@ const memberRef = text.describe("핸들 또는 화면 이름");
 const userQuote = z.string().optional().describe("대표가 한 말 중 이 일에 해당하는 부분을 글자 그대로. 서버가 대조해 '서버 확인' 또는 '미확인'을 붙인다");
 /** 첫 지시(first_instruction)의 업무. team_assign 의 task_id 와 같은 규칙이다. 첫 지시가 없으면 쓰지 않는다. */
 const firstTaskId = z.string().trim().min(1).max(64).nullable().optional().describe("첫 지시가 속한 업무 id. 대표 글에 '작업 #' 줄이 있으면 그 업무, 업무가 없는 새 일이면 task 도구로 만든 업무 id. 빼거나 null 이면 인용한 대표 글·결재의 업무이고, 없으면 거절된다(첫 지시가 없으면 쓰지 않는다)");
+
+/** 업무 시작 계약. 업무에 붙고, 다시 주면 새 판이 된다. */
+const contractSchema = z.strictObject({
+  kind: z.enum(["coding", "research", "other"]).describe("coding 코딩 · research 조사 · other 그 밖"),
+  goal: z.string().trim().min(1).max(600).describe("원하는 결과 한두 문장"),
+  acceptance: z.array(z.string().trim().min(1).max(400)).min(1).max(12).describe("통과·실패로 판단할 합격 기준. 번호가 붙고, 완료 보고의 검사가 이 번호(criterion)를 가리켜야 한다"),
+  scope: z.string().trim().max(600).optional().describe("자율로 해도 되는 범위"),
+  forbidden: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("하지 말 것"),
+  evidence: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("완료 보고에 남길 증거"),
+  checks: z.array(z.enum(CHECK_KINDS)).max(8).optional().describe("필수 검사 종류. 비우면 coding: behavior·typecheck·regression·real, research: source·fact·unverified, other: 없음"),
+}).describe("업무 시작 계약. 계약이 있는 업무의 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
+
+const claimSchema = z.strictObject({
+  text: z.string().trim().min(1).max(400).describe("주장 한 문장"),
+  basis: z.enum(["fact", "interpretation"]).describe("fact 출처에 그대로 있는 사실 · interpretation 출처를 읽고 낸 해석"),
+  source: z.string().trim().max(500).optional().describe("출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요"),
+  quote: z.string().trim().max(600).optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다"),
+  criterion: z.number().int().min(1).max(12).optional().describe("이 주장이 뒷받침하는 합격 기준 번호"),
+});
+
+const checkSchema = z.strictObject({
+  name: z.string().trim().min(1).max(200).describe("검사 이름"),
+  kind: z.enum(CHECK_KINDS).describe("behavior 관련 동작 · typecheck 코드 검사 · regression 회귀 · real 실제 화면·실행 · source 주장별 출처 · fact 사실과 해석 구분 · unverified 미확인 · other"),
+  result: z.enum(["pass", "fail", "not_run"]).describe("실제 결과. 돌리지 않았으면 not_run"),
+  evidence: z.string().trim().min(1).max(1000).describe("근거: 통과·실패 수, 출처, 확인한 화면. 명령이 끝났다는 사실만으로 통과라 하지 않는다"),
+  command: z.string().max(500).optional().describe("실행한 명령. behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)"),
+  criterion: z.number().int().min(1).max(12).optional().describe("이 검사가 확인한 합격 기준 번호"),
+});
 
 interface Tool<S extends z.ZodType = z.ZodType> {
   description: string;
@@ -188,13 +218,40 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       branch: oneLineOpt(200).optional().describe("git 브랜치 이름"),
       worktree: oneLineOpt(500).optional().describe("워크트리 경로(절대 경로)"),
       parent_task_id: oneLine(64).optional().describe("새로 만들 때만: 이 업무가 갈라져 나온 업무 id(받은 글의 '작업 #' 줄). 갈라진 관계가 남는다"),
+      contract: contractSchema.optional(),
+      confirm_contract_rev: z.number().int().min(1).max(10_000).optional().describe("총괄만: 직원이 제안한 계약의 지금 판 번호를 확인한다(task_id 와 함께, contract 없이). 확인한 판만 완료 판정에 묶인다"),
     }),
     (orch, member, a) => {
       if (!a.task_id && !a.title) throw new ApiError(400, "새 업무에는 title 이 필요합니다");
       if (a.task_id && a.parent_task_id) throw new ApiError(400, "parent_task_id 는 새로 만들 때만 넣습니다");
-      const { task, created } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree, parentTaskId: a.parent_task_id });
-      return reply(`${created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다`);
+      const { task, created, contract } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree, parentTaskId: a.parent_task_id, contract: a.contract, confirmContractRev: a.confirm_contract_rev });
+      const proposed = a.contract && member.kind === "worker" && contract?.authorKind === "worker" && !contract.confirmedAt ? "\n직원이 단 계약은 총괄 확인 전까지 완료 판정에 묶이지 않습니다. 총괄에게 확인 요청을 보냈습니다" : "";
+      return reply(`${a.confirm_contract_rev ? `계약 r${contract?.rev} 을 확인했습니다` : created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다${contract ? `\n${formatContract(contract)}` : ""}${proposed}`);
     },
+  ),
+
+  server_check: tool(
+    "서버 상태를 본다: 앱 판, DB 판(지원 판과 같은지), 하네스 적용 방식, 최근 백업(만들 때 확인한 값)과 마지막 백업 오류, 이 세션의 실행 기록 대조 가능 여부. 데이터 폴더·DB 를 직접 읽거나 sqlite 로 열지 말고 이것을 쓴다. 경로·토큰은 싣지 않는다.",
+    z.strictObject({}),
+    (orch, member) => reply(JSON.stringify(orch.serverCheck(member))),
+  ),
+
+  server_backup: tool(
+    "서버가 자기 데이터 폴더(DB·설정·첨부)를 백업하고 검증한다. 대표 화면 반영·DB 판 올리기 전에 쓴다. 데이터 폴더를 cp·sqlite 로 직접 복사하지 않는다. 10분 안에 만든 백업이 있으면 그것을 알려 준다. 보관 규칙(일 7·주 4)대로 옛 백업이 정리된다.",
+    z.strictObject({}),
+    async (orch, member) => reply(JSON.stringify(await orch.serverBackup(member))),
+  ),
+
+  task_trace: tool(
+    "업무 한 건의 시작→지시→보고 사슬을 읽는다(바꾸지 않는다): 계약 판(작성·확인), 누구에게 어떤 글이 갔는지, 보고마다 검사·실행 증거 대조·조사 주장 대조, 열린 결재, 개선 후보. 글 본문은 싣지 않는다.",
+    z.strictObject({ task_id: z.string().trim().min(1).max(64).describe("볼 업무 id(tk_...)") }),
+    (orch, member, a) => reply(JSON.stringify(orch.taskTrace(member, a.task_id))),
+  ),
+
+  harness_findings: tool(
+    "하네스 개선 후보를 본다(총괄): 완료 차단·실행 증거 없음·증거 미지원 제공자·대표 직접 개입·대표 거절(글자 추정). 기록일 뿐 규칙·권한을 바꾸지 않는다. 되풀이되는 것만 memory_record 로 개발 기억에 남기고, 규칙을 바꿀 일은 대표에게 결재로 묻는다.",
+    z.strictObject({ task_id: z.string().trim().min(1).max(64).optional().describe("한 업무만 볼 때"), limit: z.number().int().min(1).max(200).optional() }),
+    (orch, member, a) => reply(JSON.stringify(orch.harnessFindings(member, { taskId: a.task_id ?? null, limit: a.limit }))),
   ),
 
   memory_search: tool(
@@ -356,11 +413,16 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
+      checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
+      contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),
+      claims: z.array(claimSchema).max(40).optional().describe("조사 결과의 주장. 조사 계약의 완료에 필요하다. 사실은 출처·원문 인용, 해석은 기댄 출처"),
+      unverified: z.array(z.string().trim().min(1).max(300)).max(20).optional().describe("확인하지 못한 것. 없으면 빈 배열"),
+      review_needed: z.string().trim().min(1).max(600).optional().describe("독립 검토가 필요하면 확인할 변경과 수용 기준. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다"),
       about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
-        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
+        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id, a.checks, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
     }),
     async (orch, member, a) => {
@@ -376,10 +438,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         });
         // 이 보고를 확인한 글(총괄 확인 등)도 함께 돌려준다. 원보고와 확인을 한 결과로 읽게 한다.
         const confirmations = orch.store.listMessagesAbout(member.projectId, source.id).map(m => ({ id: m.id, who: m.who, kind: m.kind, title: m.title, at: m.at }));
-        return reply(JSON.stringify({ ...refs, source, files, confirmations }));
+        // 하네스 기록: 실행·계약 판·검사(작성자 자기 확인)·검토 요청. 계약은 그 보고가 따른 판이다.
+        const harness = orch.store.getReportHarness(source.id);
+        const contract = harness?.contractRev && harness.contractTaskId ? orch.store.getTaskContract(harness.contractTaskId) : null;
+        return reply(JSON.stringify(publicHarness({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) })));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
-      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id });
+      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),
@@ -551,12 +616,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
+      contract: contractSchema.optional(),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 지시가 속한 업무 id. 대표 글에 '작업 #' 줄이 있으면 그 업무. 진행판 일 항목의 일이면 맡기기 전에 work_set 으로 만든 항목의 대화 작업 id(tk_w_…). 업무가 없는 새 일이면 task 도구로 만든 업무 id. 대표가 업무를 고르지 않아 서버가 만든 업무의 대표 글을 user_quote 로 인용하고 다른 업무 id 를 넣으면, 그 대표 글을 그 업무로 분류한다. 빼거나 null 이면 인용한 대표 글·결재의 업무이고, 없으면 거절된다"),
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
       const taskId = orch.instructionTask(member, a.task_id, a.user_quote);
-      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
+      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId, contract: a.contract }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
     },
   ),
 

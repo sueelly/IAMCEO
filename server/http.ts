@@ -269,6 +269,8 @@ const SettingsSchema = z
     notifyMac: z.boolean(),
     // 0 이면 끈다. 화면은 끔·3·6·12·24 를 고르게 한다.
     boardTidyHours: z.number().int().min(0).max(168),
+    harnessMode: z.enum(["label", "required"]),
+    harnessRequiredSince: z.iso.datetime().nullable(),
   })
   .partial()
   .strict();
@@ -344,7 +346,7 @@ function operationResponse(receipt: OperationReceipt): Response {
       const { memberId, action, claimId, sessionGeneration, inputSequence, leaseId, expiresAt } = receipt.result;
       result = { memberId, action, claimId, sessionGeneration, inputSequence, leaseId, expiresAt }; break;
     }
-    case "settings": result = { settings: publicFields(receipt.result.settings, ["backend", "permissionMode", "ranks", "codexRanks", "maxConcurrentTurns", "compactAtPct", "contextWindowDefault", "contextWindows", "maxAwakeWorkers", "notifyMac", "boardTidyHours"]), revision: receipt.result.revision }; break;
+    case "settings": result = { settings: publicFields(receipt.result.settings, ["backend", "permissionMode", "ranks", "codexRanks", "maxConcurrentTurns", "compactAtPct", "contextWindowDefault", "contextWindows", "maxAwakeWorkers", "notifyMac", "boardTidyHours", "harnessMode", "harnessRequiredSince"]), revision: receipt.result.revision }; break;
     case "member_config": result = { member: receiptMember(receipt.result.member), configRevision: receipt.result.configRevision, sessionGeneration: receipt.result.sessionGeneration }; break;
     case "todo_done": result = { todo: publicFields(receipt.result.todo, ["id", "projectId", "memberId", "who", "title", "detail", "done", "doneAt", "createdAt", "outcome", "closeReason", "closedBy"]), revision: receipt.result.revision }; break;
   }
