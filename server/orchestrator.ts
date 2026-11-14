@@ -990,10 +990,15 @@ export class Orchestrator implements OrchestratorApi {
     const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
     const name = (id: string | null) => (id ? this.store.getMember(id)?.name : null) ?? id;
     const effective = this.store.getEffectiveContract(task.id);
+    const basis = effective ? this.store.completionEvidence(effective.taskId, effective.rev) : [];
+    const sources = basis.filter(b => b.status === "passed").map(b => b.messageId);
+    const byMessage = new Map(basis.map(b => [b.messageId, b]));
     const reports = this.store.listTaskHarnessReports(task.id).map(id => {
       const m = this.store.getMessage(id);
       const h = this.store.getReportHarness(id);
       return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
+        correctsMessageId: this.store.getReportReferences(member.projectId, id)?.correctsMessageId ?? null,
+        completionBasis: m?.kind === "완료" ? byMessage.get(id) ?? { messageId: id, eligible: false, status: "not_current", correctedBy: null } : null,
         checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null })) ?? [],
         claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
     });
@@ -1003,6 +1008,7 @@ export class Orchestrator implements OrchestratorApi {
       contractRevs: this.store.listTaskContracts(task.id).map(c => ({ rev: c.rev, author: c.author, authorKind: c.authorKind, confirmed: !!c.confirmedAt, at: c.at, acceptance: c.acceptance.length, checks: c.checks })),
       deliveries: this.store.listTaskDeliveries(task.id).map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
       reports,
+      currentCompletion: { eligible: sources.length > 0, sources },
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
       findings: this.store.listHarnessFindings(member.projectId, { taskId: task.id, limit: 30 }).map(f => ({ id: f.id, kind: f.kind, who: name(f.memberId), detail: f.detail, at: f.at })),
     };

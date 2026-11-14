@@ -62,6 +62,14 @@ import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
 import { cleanName, cleanText, conductorName } from "./text.ts";
 
+/** 과거 gate는 보존한다. 현재 승계에 쓸 수 있는 근거는 별도 계산한다. */
+export interface CompletionEvidence {
+  messageId: string;
+  eligible: boolean;
+  status: "passed" | "inherited" | "superseded" | "missing_basis" | "not_passed";
+  correctedBy: string | null;
+}
+
 export interface MemoryUpload {
   eventId: string;
   projectId: string;
@@ -3236,9 +3244,35 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       gate: (h.gate as HarnessGate | null) ?? null, evidenceStatus: (h.evidence_status as string | null) ?? null, checks, claims: this.listReportClaims(messageId) };
   }
 
-  /** 이 계약(계약이 붙은 업무·판)으로 완료 판정을 받은 보고가 있는지. 갈래 업무의 완료도 위 업무의 계약으로 센다(실제로 contract 판정을 받은 보고만 센다. 확인 전 완료는 소급 승격하지 않는다). */
+  /**
+   * 같은 작성자·프로젝트·업무·계약 판에서 뒤에 쓴 명시적 정정만 근거를 대체한다.
+   * 정정을 다시 정정해도 옛 성공이 부활하지 않는다. 새 검사를 통과한 완료가 새 근거다.
+   * 검사를 생략한 총괄 승계 보고는 독립 근거가 아니다(원 직원의 정정을 세탁하지 않는다).
+   */
+  completionEvidence(contractTaskId: string, rev: number): CompletionEvidence[] {
+    const rows = this.rows(`SELECT h.message_id, h.gate, m.kind,
+      EXISTS (SELECT 1 FROM report_checks c WHERE c.message_id = m.id) AS has_checks,
+      (SELECT n.id FROM report_references r
+        JOIN messages n ON n.id = r.source_message_id JOIN report_harness nh ON nh.message_id = n.id
+        WHERE r.corrects_message_id = m.id AND r.project_id = m.project_id
+          AND n.project_id = m.project_id AND n.member_id = m.member_id AND n.mine = 0
+          AND n.task_id IS m.task_id AND nh.member_id = h.member_id
+          AND nh.contract_task_id = h.contract_task_id AND nh.contract_rev = h.contract_rev
+          AND n.rowid > m.rowid ORDER BY n.rowid DESC LIMIT 1) AS corrected_by
+      FROM report_harness h JOIN messages m ON m.id = h.message_id
+      WHERE h.contract_task_id = ? AND h.contract_rev = ? AND m.mine = 0 AND m.member_id = h.member_id
+      ORDER BY m.rowid`, contractTaskId, rev);
+    const direct = rows.some(r => r.gate === "contract" && r.kind === "완료" && r.has_checks && !r.corrected_by);
+    return rows.map(r => {
+      const status: CompletionEvidence["status"] = r.gate !== "contract" || r.kind !== "완료" ? "not_passed"
+        : r.corrected_by ? "superseded" : r.has_checks ? "passed" : direct ? "inherited" : "missing_basis";
+      return { messageId: r.message_id as string, eligible: status === "passed" || status === "inherited", status, correctedBy: (r.corrected_by as string | null) ?? null };
+    });
+  }
+
+  /** 실제 계약 판정을 받은, 정정되지 않은 검사 완료만 센다. 확인 전·총괄 승계 완료는 독립 근거가 아니다. */
   hasPassedCompletion(contractTaskId: string, rev: number): boolean {
-    return !!this.row("SELECT 1 FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.contract_task_id = ? AND h.contract_rev = ? AND h.gate = 'contract' AND m.kind = '완료' LIMIT 1", contractTaskId, rev);
+    return this.completionEvidence(contractTaskId, rev).some(r => r.status === "passed");
   }
 
   /** 그 업무의 가장 최근 검사 보고(누가 올렸든). 재개·다음 직원의 지시에 '지난 검사'로 싣는다. */
