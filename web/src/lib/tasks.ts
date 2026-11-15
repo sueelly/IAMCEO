@@ -38,6 +38,14 @@ export function withTask<D extends { taskId?: string | null }>(draft: D, taskId:
 }
 
 /**
+ * 자료 화면의 업무 거르기(대표 2026-11-16): 입력칸에서 고른 업무의 자료만 남긴다. 고르지 않았으면('전체') 그대로다.
+ * 업무가 없는 옛 자료는 '전체'에서만 보인다(대화와 같은 규칙). 순서는 받은 그대로.
+ */
+export function taskFiles<F extends { taskId?: string | null }>(files: readonly F[], taskId: string | null): F[] {
+  return taskId ? files.filter((f) => f.taskId === taskId) : [...files];
+}
+
+/**
  * 입력칸의 '/업무' 부르기(대표 2026-11-14): 글 맨 앞이나 빈칸 뒤의 '/'부터 커서까지. 주소(a/b)처럼 글자 뒤의 '/'는 부르지 않는다.
  * start 는 '/'의 자리, query 는 '/' 뒤에 친 글(소문자).
  */
