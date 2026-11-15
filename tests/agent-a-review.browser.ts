@@ -120,8 +120,20 @@ async function open(page: Page, fileId: string) {
   catch (e) { await page.screenshot({ path: join(SHOTS, "fail-open.png"), fullPage: true }); console.log(await page.locator("body").innerText()); throw e; }
 }
 const shot = (page: Page, name: string) => page.screenshot({ path: join(SHOTS, `${name}.png`) });
+/** 앞선 부드러운 스크롤(목차·댓글 고르기)이 끝날 때까지 기다린다. 끝나기 전에 옮기면 그 스크롤이 다시 덮어쓴다. */
+async function scrollSettled(page: Page) {
+  let last = "";
+  let same = 0;
+  for (let i = 0; i < 80 && same < 4; i++) {
+    const now = await page.evaluate(() => `${document.querySelector(".aar-scroll")?.scrollTop ?? 0}:${document.querySelector("[data-scroll-root]")?.scrollTop ?? 0}:${window.scrollY}`);
+    same = now === last ? same + 1 : 0;
+    last = now;
+    await page.waitForTimeout(100);
+  }
+}
 /** 본문에서 글이 든 자리. 먼저 그 글이 보이게 옮기고(부드러운 스크롤이 끝난 뒤) 자리를 잰다. */
 async function rectOf(page: Page, text: string) {
+  await scrollSettled(page);
   const find = `(needle) => {
     const root = document.querySelector(".aar-doc");
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -139,11 +151,14 @@ async function rectOf(page: Page, text: string) {
   if (!found) throw new Error(`본문에 없는 글: ${text}`);
   // 앞선 부드러운 스크롤(목차·댓글 고르기)이 끝나 자리가 멈출 때까지 기다린다
   let last = "";
-  for (let i = 0; i < 40; i++) {
+  let same = 0;
+  for (let i = 0; i < 60; i++) {
     const now = await page.evaluate(`(() => { const b = (${find})(${JSON.stringify(text)}).getBoundingClientRect(); return JSON.stringify({ x0: b.left + 1, x1: b.right - 1, y: b.top + b.height / 2 }); })()`) as string;
-    if (now === last) return JSON.parse(now) as { x0: number; x1: number; y: number };
+    same = now === last ? same + 1 : 0;
+    // 세 번 이어서 같아야 멈춘 것으로 본다(부드러운 스크롤은 시작이 늦을 수 있다)
+    if (same >= 3) return JSON.parse(now) as { x0: number; x1: number; y: number };
     last = now;
-    await page.waitForTimeout(80);
+    await page.waitForTimeout(100);
   }
   throw new Error(`자리가 멈추지 않음: ${text}`);
 }
