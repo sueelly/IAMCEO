@@ -1,12 +1,15 @@
 // 자료: 데스크톱은 목록+읽기 두 칸, 그보다 좁으면 목록→상세. 고른 자료는 주소(#/p/<id>/files/<fileId>)가 정한다.
+// 입력칸에서 업무를 골랐으면 목록은 그 업무의 자료만 보인다(대화와 같은 업무 고르기, 대표 2026-11-16).
 // 종류별 보기는 components/viewers, 아티팩트는 components/ArtifactFrame.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FileDoc, FileKind } from "@shared/types";
+import type { FileDoc, FileKind, Task } from "@shared/types";
 import type { AgentADocSummary, AgentAProjectInfo } from "@shared/agent-a";
 import { Glass } from "../glass";
 import { api, fileUrl } from "../lib/api";
 import { AgentAReview } from "../components/AgentAReview";
 import { routeHash, useProject, useRoute } from "../lib/store";
+import { chooseTask, useSubmissionDraft } from "../lib/submission-client";
+import { taskFiles } from "../lib/tasks";
 import { Empty, MQ_DESKTOP, Time, copyText, useMediaQuery } from "../components/ui";
 import { FileViewer, KIND_LABEL, KIND_ORDER } from "../components/viewers";
 import "../styles/files.css";
@@ -115,7 +118,18 @@ function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProj
   );
 }
 
-function Reader({ file, agentA, ready = true, list }: { file: FileDoc; agentA?: AgentAProjectInfo | null; ready?: boolean; list?: { open: boolean; toggle: () => void } }) {
+/** 목록 위: 지금 거르는 업무. 맡은 직원은 적지 않는다(업무에는 여러 직원이 붙는다). */
+function TaskNote({ task }: { task: Task }) {
+  return (
+    <div className="fl-task" role="note">
+      <span className="fl-task__label">업무</span>
+      <span className="fl-task__title">{task.title}</span>
+    </div>
+  );
+}
+
+/** otherTask: 이 자료의 업무가 지금 거르는 업무와 다를 때(전체 보기·링크로 연 자료)만 온다. 누르면 그 업무의 자료만 본다. */
+function Reader({ file, agentA, ready = true, list, otherTask, onTask }: { file: FileDoc; agentA?: AgentAProjectInfo | null; ready?: boolean; list?: { open: boolean; toggle: () => void }; otherTask?: Task | null; onTask?: (task: Task) => void }) {
   const linked = agentA?.docs.some((d) => d.fileId === file.id) ?? false;
   return (
     <article className="fl-doc" data-kind={file.kind} data-agent-a={linked ? "" : undefined}>
@@ -130,6 +144,11 @@ function Reader({ file, agentA, ready = true, list }: { file: FileDoc; agentA?: 
         </span>
         {file.who ? <span className="fl-doc__who">{file.who}</span> : null}
         <Time iso={file.createdAt} />
+        {otherTask ? (
+          <button type="button" className="fl-doc__task" title={`업무 ${otherTask.title}의 자료만 보기`} onClick={() => onTask?.(otherTask)}>
+            <span className="fl-doc__task-text">{otherTask.title}</span>
+          </button>
+        ) : null}
       </p>
       <h2 className="fl-doc__title">{file.title}</h2>
       {file.summary ? <p className="fl-doc__summary">{file.summary}</p> : null}
@@ -209,6 +228,10 @@ export default function Files() {
   const projectId = route.projectId;
   const sub = route.sub;
   const { info: agentA, ready: agentAReady } = useAgentA(projectId);
+  // 입력칸에서 고른 업무(대화와 같은 초안). 목록에 없는 업무 id 면 '전체'로 본다.
+  const { draft } = useSubmissionDraft(projectId);
+  const tasks = project?.project.id === projectId ? project.tasks ?? [] : [];
+  const task = draft.taskId ? tasks.find((t) => t.id === draft.taskId) ?? null : null;
   // Agent-A 문서를 볼 때 '자료 목록'으로 편 목록. 다른 자료를 고르면 다시 접어 본문을 넓게 본다(그리는 중에 맞춘다).
   const [listOpen, setListOpen] = useState(false);
   const [listFor, setListFor] = useState(sub);
@@ -218,12 +241,15 @@ export default function Files() {
   }
 
   // 새 자료는 이벤트로 목록 끝에 붙으므로 서버와 같은 순서(최신 먼저)로 다시 맞춘다
-  const files = useMemo(() => [...(project?.files ?? [])].sort((a, b) => b.order - a.order), [project?.files]);
-  // 거르던 종류의 자료가 사라지면(다른 프로젝트로 옮김) 전체로 본다
+  const all = useMemo(() => [...(project?.files ?? [])].sort((a, b) => b.order - a.order), [project?.files]);
+  const files = useMemo(() => taskFiles(all, task?.id ?? null), [all, task?.id]);
+  // 거르던 종류의 자료가 사라지면(다른 프로젝트로 옮김·다른 업무를 고름) 전체로 본다
   const activeKind = kind && files.some((f) => f.kind === kind) ? kind : null;
   const shown = useMemo(() => (activeKind ? files.filter((f) => f.kind === activeKind) : files), [files, activeKind]);
-  // 링크로 온 자료는 거르기와 상관없이 연다
-  const selected = sub ? (files.find((f) => f.id === sub) ?? null) : desktop ? (shown[0] ?? null) : null;
+  // 링크로 온 자료는 거르기(종류·업무)와 상관없이 연다
+  const selected = sub ? (all.find((f) => f.id === sub) ?? null) : desktop ? (shown[0] ?? null) : null;
+  const otherTask = selected?.taskId && selected.taskId !== task?.id ? tasks.find((t) => t.id === selected.taskId) ?? null : null;
+  const pickTask = (next: Task) => chooseTask(projectId, next);
   const linkedSelected = Boolean(selected && agentA?.docs.some((d) => d.fileId === selected.id));
 
   // 다른 자료를 열면 처음부터 읽는다. 폰에서 목록으로 돌아오면 보던 자리로.
@@ -238,7 +264,7 @@ export default function Files() {
     prevSub.current = sub;
   }, [sub, desktop]);
 
-  if (files.length === 0) {
+  if (all.length === 0) {
     return (
       <div ref={rootRef}>
         <Empty title="아직 올린 자료가 없습니다">직원이 자료를 올리면 여기에 모입니다.</Empty>
@@ -246,15 +272,31 @@ export default function Files() {
     );
   }
 
+  // 고른 업무에 자료가 없고 링크로 연 자료도 없으면 빈 두 칸 대신 안내만 보인다
+  if (task && files.length === 0 && sub === null) {
+    return (
+      <div ref={rootRef} className="fl">
+        <TaskNote task={task} />
+        <Empty title="이 업무에 올린 자료가 없습니다">모든 자료는 입력칸 위 ‘전체’에서 봅니다.</Empty>
+        {agentA ? <AgentANotice info={agentA} files={all} projectId={projectId} selectedId={null} /> : null}
+      </div>
+    );
+  }
+
   const list = (
     <Glass level="regular" tint className="fl-panel fl-panel--list">
       <div className="fl-listbox">
+        {task ? <TaskNote task={task} /> : null}
         <KindChips files={files} kind={activeKind} onPick={setKind} />
-        <ul className="fl-list" aria-label="자료 목록">
-          {shown.map((f) => (
-            <FileRow key={f.id} file={f} projectId={projectId} current={f.id === selected?.id} agentA={agentA?.docs.find((d) => d.fileId === f.id)} />
-          ))}
-        </ul>
+        {shown.length > 0 ? (
+          <ul className="fl-list" aria-label={task ? `자료 목록: 업무 ${task.title}` : "자료 목록"}>
+            {shown.map((f) => (
+              <FileRow key={f.id} file={f} projectId={projectId} current={f.id === selected?.id} agentA={agentA?.docs.find((d) => d.fileId === f.id)} />
+            ))}
+          </ul>
+        ) : (
+          <p className="fl-none">이 업무에 올린 자료가 없습니다.</p>
+        )}
       </div>
     </Glass>
   );
@@ -267,10 +309,10 @@ export default function Files() {
         {list}
         <Glass level="regular" tint className="fl-panel fl-panel--reader">
           <div ref={readerRef} className="fl-reader">
-            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} list={linkedSelected ? { open: listOpen, toggle: () => setListOpen((v) => !v) } : undefined} /> : <Missing />}
+            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} list={linkedSelected ? { open: listOpen, toggle: () => setListOpen((v) => !v) } : undefined} otherTask={otherTask} onTask={pickTask} /> : <Missing />}
           </div>
         </Glass>
-        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
+        {agentA ? <AgentANotice info={agentA} files={all} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
       </div>
     );
   }
@@ -279,7 +321,7 @@ export default function Files() {
     return (
       <div ref={rootRef} className="fl">
         {list}
-        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={null} /> : null}
+        {agentA ? <AgentANotice info={agentA} files={all} projectId={projectId} selectedId={null} /> : null}
       </div>
     );
   }
@@ -293,9 +335,9 @@ export default function Files() {
         자료
       </a>
       <Glass level="regular" tint className="fl-panel fl-panel--phone">
-        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} /> : <Missing />}
+        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} otherTask={otherTask} onTask={pickTask} /> : <Missing />}
       </Glass>
-      {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
+      {agentA ? <AgentANotice info={agentA} files={all} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
     </div>
   );
 }
