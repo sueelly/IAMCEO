@@ -306,7 +306,7 @@ function isTidy(d: Pick<Delivery, "kind" | "text">): boolean {
 
 // ---- 공개 타입 ----
 export interface AgentToolsImpl {
-  listAgentTools(member: Member, opts?: { memory?: boolean }): AgentToolDef[] | Promise<AgentToolDef[]>;
+  listAgentTools(member: Member, opts?: { memory?: boolean; agentA?: boolean }): AgentToolDef[] | Promise<AgentToolDef[]>;
   handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult>;
 }
 
@@ -681,6 +681,8 @@ export class Orchestrator implements OrchestratorApi {
   private readonly herdr: HerdrQueries | null;
   private agentTools: AgentToolsImpl | null;
   readonly devMemory: DevMemory | null;
+  /** Agent-A 연결(체험판). 서버 시작 때 붙인다. 있으면 직원에게 agent_a_submit 도구가 보인다. */
+  agentA: import("./integrations/agent-a.ts").AgentAService | null = null;
   private memoryReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
@@ -2913,7 +2915,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async listAgentTools(member: Member): Promise<AgentToolDef[]> {
-    return (await this.tools()).listAgentTools(member, { memory: this.memoryEnabledFor(member) });
+    return (await this.tools()).listAgentTools(member, { memory: this.memoryEnabledFor(member), agentA: Boolean(this.agentA) });
   }
 
   // ---- 개발 기억 ----
@@ -4704,7 +4706,7 @@ export class Orchestrator implements OrchestratorApi {
    */
   private toolSignature(member: Member): string | null {
     if (!this.agentTools) return null;
-    const tools = this.agentTools.listAgentTools(member, { memory: this.memoryEnabledFor(member) });
+    const tools = this.agentTools.listAgentTools(member, { memory: this.memoryEnabledFor(member), agentA: Boolean(this.agentA) });
     return createHash("sha256").update(JSON.stringify(tools)).digest("hex").slice(0, 16);
   }
 

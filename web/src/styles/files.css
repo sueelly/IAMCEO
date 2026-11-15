@@ -152,6 +152,8 @@
 .afr[open] .afr-stage { flex:1; min-height:0; border-radius:0; box-shadow:none; }
 /* width:1px + min-width:100%: iOS 사파리가 칸을 내용 폭으로 늘리는 것을 막는다 */
 .afr-frame { display:block; width:1px; min-width:100%; height:100%; border:0; background:var(--bg); }
+/* Agent-A 연결 정보를 처음 받기 전: 일반 보기로 잠깐 그렸다 바꾸지 않는다 */
+.fl-wait { padding:48px 0; text-align:center; font-size:14px; color:var(--ink-2); }
 .afr-loading { position:absolute; inset:0; display:grid; place-items:center; font-size:14px; color:var(--ink-2); background:var(--bg); pointer-events:none; }
 .afr-link { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; padding:8px 10px; border-radius:12px; background:var(--soft); box-shadow:var(--soft-ring); }
 .afr[open] .afr-link { flex:none; border-radius:0; }

@@ -1,6 +1,7 @@
 // 앱 틀: 프로젝트 목록 · 유리 탭 · 연결 끊김 띠 · 입력칸 자리. 데스크톱(≥1024)은 왼쪽 패널 + 위 탭, 그보다 좁으면 위 제목 + 아래 탭.
 // 본문은 유리 탭·입력칸 밑으로 지나가며 스크롤한다(유리가 진짜로 비치도록). 그만큼의 여백은 --top-h · --bottom-h 로 잰다.
 // 본문 스크롤 요소에는 data-scroll-root 가 있다(대화 화면의 맨 아래 붙이기 등).
+// 데스크톱 왼쪽 패널은 접을 수 있다. 자료 화면에 들어오면 먼저 접혀 자료가 넓게 보이고, 위 줄의 '프로젝트'로 다시 연다.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ProjectSummary } from "@shared/types";
 import { Glass, GlassTabs, LocalLight, type GlassTab } from "../glass";
@@ -271,20 +272,76 @@ function SettingsLink({ onPicked }: { onPicked?: () => void }) {
   );
 }
 
+const RAIL_KEY = "iamceo.railOpen";
+
+function readRailPref(): boolean {
+  try {
+    return localStorage.getItem(RAIL_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 데스크톱 왼쪽 패널(프로젝트 목록)을 펼칠지.
+ * - 자료 화면에 들어올 때마다 먼저 접는다(자료를 넓게). 그 안에서 대표가 다시 열면 자료 화면을 떠날 때까지 연 채로 둔다.
+ * - 다른 화면에서는 대표가 마지막으로 고른 대로 둔다(이 기기에만 기억).
+ * 들어오는 순간은 그리는 중에 맞춘다: 효과로 맞추면 펼친 패널이 한 번 보였다가 접힌다.
+ */
+function useRail(): { open: boolean; toggle: () => void } {
+  const route = useRoute();
+  const inFiles = route.tab === "files" && !route.settings;
+  const [pref, setPref] = useState(readRailPref);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [wasInFiles, setWasInFiles] = useState(inFiles);
+  if (wasInFiles !== inFiles) {
+    setWasInFiles(inFiles);
+    if (inFiles) setFilesOpen(false);
+  }
+  const toggle = () => {
+    if (inFiles) {
+      setFilesOpen((v) => !v);
+      return;
+    }
+    const next = !pref;
+    setPref(next);
+    try {
+      localStorage.setItem(RAIL_KEY, next ? "1" : "0");
+    } catch {
+      // 저장이 막힌 브라우저에서도 지금 화면에서는 접히고 펴진다
+    }
+  };
+  return { open: inFiles ? filesOpen : pref, toggle };
+}
+
+function RailIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2.25" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M6 3v10" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
 function DesktopShell({ onAdd }: { onAdd: () => void }) {
   const route = useRoute();
   const summary = useSummary();
+  const rail = useRail();
   const topRef = useMeasuredVar("--top-h");
   const bottomRef = useMeasuredVar("--bottom-h");
   const title = route.settings ? "설정" : (summary?.name ?? "");
   // 홈·팀 화면은 지금 상황을 판으로 크게 보여 주므로 머리줄에 또 쓰지 않는다
   const now = route.settings || route.tab === "team" || route.tab === "home" ? "" : plainNow(summary?.now ?? "");
   return (
-    <div className="shell shell--desk">
-      <Glass as="aside" level="regular" className="rail" aria-label="프로젝트 목록">
+    <div className="shell shell--desk" data-rail={rail.open ? undefined : "closed"}>
+      <Glass as="aside" id="shell-rail" level="regular" className="rail" aria-label="프로젝트 목록" hidden={!rail.open}>
         <div className="rail__brand">
           <BrandMark />
           IAMCEO
+          <button type="button" className="rail__fold" aria-expanded="true" aria-controls="shell-rail" title="프로젝트 목록 접기" onClick={rail.toggle}>
+            <RailIcon />
+            접기
+          </button>
         </div>
         <div className="rail__scroll">
           <ProjectList onAdd={onAdd} />
@@ -299,9 +356,17 @@ function DesktopShell({ onAdd }: { onAdd: () => void }) {
         <LocalLight tone="orchid" x="66%" y="100%" size="min(860px, 70%)" aspect={0.38} strength={0.28} />
         <Scroller />
         <div ref={topRef} className="shell__top">
-          <div className="shell__headline">
-            <h1 className="shell__title">{title}</h1>
-            {now ? <p className="shell__now" title={now}>{now}</p> : null}
+          <div className="shell__lead">
+            {rail.open ? null : (
+              <button type="button" className="rail-open" aria-expanded="false" aria-controls="shell-rail" onClick={rail.toggle}>
+                <RailIcon />
+                프로젝트
+              </button>
+            )}
+            <div className="shell__headline">
+              <h1 className="shell__title">{title}</h1>
+              {now ? <p className="shell__now" title={now}>{now}</p> : null}
+            </div>
           </div>
           {route.settings ? <span /> : <ProjectTabs refract />}
           <span className="shell__top-spacer" />

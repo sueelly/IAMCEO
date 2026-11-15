@@ -30,6 +30,7 @@ import type {
   StopReq,
   StopResult,
 } from "@shared/types";
+import type { AgentAProjectInfo } from "@shared/agent-a";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
 
@@ -246,6 +247,12 @@ export const api = {
 
   /** 아티팩트 원본. 격리 칸(ArtifactFrame)에만 넣는다. */
   artifact: (fileId: string) => get<{ html: string }>(`/api/files/${seg(fileId)}/artifact`),
+
+  // ---- Agent-A 연결(체험판). 같은 opId 는 서버가 한 번만 처리한다(중복 클릭·응답 유실). ----
+  agentAInfo: (projectId: string, signal?: AbortSignal) => get<AgentAProjectInfo>(`/api/projects/${seg(projectId)}/agent-a`, signal),
+  agentARead: (fileId: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/read`),
+  /** 원래 화면 입장권 경로(IAMCEO 주소 아래). Agent-A 주소·열쇠는 오지 않는다. */
+  agentAUiSession: () => post<{ base: string; expiresAt: string }>("/api/agent-a/ui-session"),
 
   patchMember: (memberId: string, patch: PatchMemberReq) => request<Member>("PATCH", `/api/members/${seg(memberId)}`, patch, SLOW_TIMEOUT_MS),
   putSettings: (patch: SettingsPatch) => request<Settings>("PUT", "/api/settings", patch),
