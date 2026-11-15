@@ -211,6 +211,15 @@ describe("Agent-A 문서 화면", () => {
     await expect(page.locator("iframe").count()).resolves.toBe(0);
     await expect(page.getByRole("button", { name: "실행" }).count()).resolves.toBe(0);
     await expect(page.locator(".fl-doc[data-agent-a]").count()).resolves.toBe(1);
+    // Agent-A 앱을 대신 전해 주던 길과 입장권은 서버에서 없어졌다: 입장권 발급은 404 이고,
+    // 옛 경로는 아무 뜻 없는 주소와 똑같이 IAMCEO 화면 틀만 돌려준다(Agent-A 의 응답이 아니다).
+    const auth = { Authorization: `Bearer ${CODE}` };
+    const ticket = await fetch(`${base}/api/agent-a/ui-session`, { method: "POST", headers: auth });
+    expect(ticket.status).toBe(404);
+    const [old, any] = await Promise.all([fetch(`${base}/agent-a-ui/s/${"a".repeat(43)}/api/config`, { headers: auth }), fetch(`${base}/no-such-path/api/config`, { headers: auth })]);
+    const [oldBody, anyBody] = await Promise.all([old.text(), any.text()]);
+    expect(oldBody).not.toContain("adapter_enabled");
+    expect([old.status, old.headers.get("content-type"), oldBody]).toEqual([any.status, any.headers.get("content-type"), anyBody]);
     // 본문이 IAMCEO 글꼴·마크다운으로 그려진다: 머리말·목록·표·그림
     const text = await docText(page);
     for (const s of ["배경", "배경 문장 하나.", "목록 둘째", "설계", "남은 일"]) expect(text).toContain(s);

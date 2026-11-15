@@ -525,7 +525,7 @@ export class AgentAService {
         kind: "알림",
         who: "Agent-A",
         title: failed ? `'${file.title}' 댓글의 답을 받지 못했습니다` : `'${file.title}' 댓글에 답이 왔습니다`,
-        body: `${quote}자료를 열면 오른쪽 '내 차례'에서 그 댓글로 갑니다.\n\n[자료 열기](${link})`,
+        body: `${quote}자료를 열면 댓글 칸의 '내 차례'에서 그 댓글로 갑니다.\n\n[자료 열기](${link})`,
         fileId: d.file_id as string,
         taskId: null,
       });
