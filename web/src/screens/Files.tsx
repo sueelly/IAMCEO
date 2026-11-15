@@ -1,12 +1,11 @@
 // 자료: 데스크톱은 목록+읽기 두 칸, 그보다 좁으면 목록→상세. 고른 자료는 주소(#/p/<id>/files/<fileId>)가 정한다.
 // 종류별 보기는 components/viewers, 아티팩트는 components/ArtifactFrame.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import type { FileDoc, FileKind } from "@shared/types";
 import type { AgentADocSummary, AgentAProjectInfo } from "@shared/agent-a";
 import { Glass } from "../glass";
 import { api, fileUrl } from "../lib/api";
-import { AgentAFrame } from "../components/AgentAFrame";
+import { AgentAReview } from "../components/AgentAReview";
 import { routeHash, useProject, useRoute } from "../lib/store";
 import { Empty, MQ_DESKTOP, Time, copyText, useMediaQuery } from "../components/ui";
 import { FileViewer, KIND_LABEL, KIND_ORDER } from "../components/viewers";
@@ -31,7 +30,7 @@ function PathLine({ path }: { path: string }) {
   );
 }
 
-// 프로젝트별 마지막 Agent-A 연결 정보. 자료 화면을 다시 열 때 첫 그림부터 Agent-A 화면으로 띄운다.
+// 프로젝트별 마지막 Agent-A 연결 정보. 자료 화면을 다시 열 때 첫 그림부터 Agent-A 문서 화면으로 띄운다.
 const agentAInfoCache = new Map<string, AgentAProjectInfo>();
 /** 첫 정보를 이만큼 기다려도 안 오면 일반 보기로 연다(연결이 느린 서버가 자료 화면을 막지 않게). */
 const AGENT_A_FIRST_WAIT_MS = 3_000;
@@ -90,8 +89,8 @@ function useAgentA(projectId: string): { info: AgentAProjectInfo | null; ready: 
   return { info: info?.enabled ? info : null, ready: state.ready && state.projectId === projectId };
 }
 
-/** 다른 자료를 보는 동안 앞 자료의 댓글에 답이 오면 한 줄로 알린다. 누르면 그 자료를 열고, 원래 화면의 '내 차례'에서 그 댓글로 간다. */
-function AgentANotice({ info, files, projectId, selectedId, host }: { info: AgentAProjectInfo; files: FileDoc[]; projectId: string; selectedId: string | null; host?: HTMLElement | null }) {
+/** 다른 자료를 보는 동안 앞 자료의 댓글에 답이 오면 한 줄로 알린다. 누르면 그 자료를 열고, 댓글 칸의 '내 차례'에서 그 댓글로 간다. */
+function AgentANotice({ info, files, projectId, selectedId }: { info: AgentAProjectInfo; files: FileDoc[]; projectId: string; selectedId: string | null }) {
   const seen = useRef<Map<string, number> | null>(null);
   const [notice, setNotice] = useState<{ doc: AgentADocSummary; title: string } | null>(null);
   useEffect(() => {
@@ -103,8 +102,7 @@ function AgentANotice({ info, files, projectId, selectedId, host }: { info: Agen
     if (grown) setNotice({ doc: grown, title: files.find((f) => f.id === grown.fileId)?.title ?? "자료" });
   }, [info, files, selectedId]);
   if (!notice) return null;
-  // 전체 화면(최상위 층의 <dialog>) 안에서는 그 안에 띄운다. 밖에 두면 전체 화면 뒤에 가려진다.
-  const box = (
+  return (
     <div className="aa-notice" role="status">
       <span>'{notice.title}' 댓글에 답이 왔습니다</span>
       <a className="aa-btn" href={routeHash({ projectId, tab: "files", sub: notice.doc.fileId })} onClick={() => setNotice(null)}>
@@ -115,10 +113,9 @@ function AgentANotice({ info, files, projectId, selectedId, host }: { info: Agen
       </button>
     </div>
   );
-  return host ? createPortal(box, host) : box;
 }
 
-function Reader({ file, agentA, ready = true, onFull, list }: { file: FileDoc; agentA?: AgentAProjectInfo | null; ready?: boolean; onFull?: (host: HTMLDialogElement | null) => void; list?: { open: boolean; toggle: () => void } }) {
+function Reader({ file, agentA, ready = true, list }: { file: FileDoc; agentA?: AgentAProjectInfo | null; ready?: boolean; list?: { open: boolean; toggle: () => void } }) {
   const linked = agentA?.docs.some((d) => d.fileId === file.id) ?? false;
   return (
     <article className="fl-doc" data-kind={file.kind} data-agent-a={linked ? "" : undefined}>
@@ -139,7 +136,7 @@ function Reader({ file, agentA, ready = true, onFull, list }: { file: FileDoc; a
       {/* 아티팩트는 그림이 주인공이다. 원본 경로는 다른 종류에서만 보여 준다. */}
       {file.path && file.kind !== "artifact" ? <PathLine path={file.path} /> : null}
       {linked && agentA ? (
-        <AgentAFrame fileId={file.id} title={file.title} info={agentA} onFull={onFull} />
+        <AgentAReview fileId={file.id} title={file.title} info={agentA} />
       ) : ready ? (
         <FileViewer file={file} />
       ) : (
@@ -212,8 +209,6 @@ export default function Files() {
   const projectId = route.projectId;
   const sub = route.sub;
   const { info: agentA, ready: agentAReady } = useAgentA(projectId);
-  // Agent-A 전체 화면 칸. 열려 있으면 답 알림을 그 안에 띄운다.
-  const [fullHost, setFullHost] = useState<HTMLDialogElement | null>(null);
   // Agent-A 문서를 볼 때 '자료 목록'으로 편 목록. 다른 자료를 고르면 다시 접어 본문을 넓게 본다(그리는 중에 맞춘다).
   const [listOpen, setListOpen] = useState(false);
   const [listFor, setListFor] = useState(sub);
@@ -265,17 +260,17 @@ export default function Files() {
   );
 
   if (desktop) {
-    // Agent-A 문서는 댓글 칸까지 펴지려면 폭이 넉넉해야 한다(약 1000px). 그래서 목록을 접고 읽기 판을 넓힌다. '자료 목록'으로 다시 편다.
+    // Agent-A 문서는 본문 옆에 댓글 칸이 펴져 폭이 넉넉해야 한다. 그래서 목록을 접고 읽기 판을 넓힌다. '자료 목록'으로 다시 편다.
     const focus = linkedSelected && !listOpen;
     return (
       <div ref={rootRef} className="fl fl--desk" data-wide={selected?.kind === "artifact" || linkedSelected ? "" : undefined} data-focus={focus ? "" : undefined}>
         {list}
         <Glass level="regular" tint className="fl-panel fl-panel--reader">
           <div ref={readerRef} className="fl-reader">
-            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} onFull={setFullHost} list={linkedSelected ? { open: listOpen, toggle: () => setListOpen((v) => !v) } : undefined} /> : <Missing />}
+            {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} list={linkedSelected ? { open: listOpen, toggle: () => setListOpen((v) => !v) } : undefined} /> : <Missing />}
           </div>
         </Glass>
-        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} host={fullHost} /> : null}
+        {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
       </div>
     );
   }
@@ -298,9 +293,9 @@ export default function Files() {
         자료
       </a>
       <Glass level="regular" tint className="fl-panel fl-panel--phone">
-        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} onFull={setFullHost} /> : <Missing />}
+        {selected ? <Reader key={selected.id} file={selected} agentA={agentA} ready={agentAReady} /> : <Missing />}
       </Glass>
-      {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} host={fullHost} /> : null}
+      {agentA ? <AgentANotice info={agentA} files={files} projectId={projectId} selectedId={selected?.id ?? null} /> : null}
     </div>
   );
 }

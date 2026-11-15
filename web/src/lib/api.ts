@@ -30,7 +30,17 @@ import type {
   StopReq,
   StopResult,
 } from "@shared/types";
-import type { AgentAProjectInfo } from "@shared/agent-a";
+import type {
+  AgentAProjectInfo,
+  AgentAProposalStatus,
+  AgentAReviewCommentReq,
+  AgentAReviewComments,
+  AgentAReviewDoc,
+  AgentAReviewManage,
+  AgentAReviewProposal,
+  AgentAReviewVersion,
+  AgentAReviewWriteResult,
+} from "@shared/agent-a";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
 
@@ -251,8 +261,31 @@ export const api = {
   // ---- Agent-A 연결(체험판). 같은 opId 는 서버가 한 번만 처리한다(중복 클릭·응답 유실). ----
   agentAInfo: (projectId: string, signal?: AbortSignal) => get<AgentAProjectInfo>(`/api/projects/${seg(projectId)}/agent-a`, signal),
   agentARead: (fileId: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/read`),
-  /** 원래 화면 입장권 경로(IAMCEO 주소 아래). Agent-A 주소·열쇠는 오지 않는다. */
-  agentAUiSession: () => post<{ base: string; expiresAt: string }>("/api/agent-a/ui-session"),
+  // ---- Agent-A 검토 화면(IAMCEO 화면 부품). 화면은 이 길만 부른다. Agent-A 주소·열쇠는 오지 않는다. ----
+  agentAReview: {
+    open: (fileId: string, resume?: string | null, signal?: AbortSignal) => get<AgentAReviewDoc>(`/api/agent-a/docs/${seg(fileId)}/review${resume ? `?resume=${seg(resume)}` : ""}`, signal),
+    /** 바뀐 것이 없으면 null(서버 204). */
+    comments: async (fileId: string, session: string, since: number | null, signal?: AbortSignal) =>
+      (await get<AgentAReviewComments | undefined>(`/api/agent-a/docs/${seg(fileId)}/review/comments?session=${seg(session)}${since !== null ? `&since=${since}` : ""}`, signal)) ?? null,
+    addComment: (fileId: string, session: string, req: AgentAReviewCommentReq) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/comments`, { session, ...req }),
+    reply: (fileId: string, session: string, inReplyTo: string, text: string) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/replies`, { session, inReplyTo, text }),
+    resolve: (fileId: string, session: string, id: string, resolved: boolean) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/resolve`, { session, id, resolved }),
+    remove: (fileId: string, session: string, id: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/remove`, { session, id }),
+    retry: (fileId: string, session: string, id: string) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/retry`, { session, id }),
+    fork: (fileId: string, session: string, id: string) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/fork`, { session, id }),
+    proposals: (fileId: string, session: string, signal?: AbortSignal) => get<AgentAReviewProposal[]>(`/api/agent-a/docs/${seg(fileId)}/review/proposals?session=${seg(session)}`, signal),
+    approve: (fileId: string, session: string, annotationId: string, proposalId: string) =>
+      post<{ ok: true; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/proposals/approve`, { session, annotationId, proposalId }),
+    versions: (fileId: string, session: string) => get<AgentAReviewVersion[]>(`/api/agent-a/docs/${seg(fileId)}/review/versions?session=${seg(session)}`),
+    version: (fileId: string, session: string, v: number) => get<{ version: number; markdown: string }>(`/api/agent-a/docs/${seg(fileId)}/review/version?session=${seg(session)}&v=${v}`),
+    /** 본문 그림의 주소. 헤더 인증으로 받아야 하므로 fetchAttachment 에 넘겨 blob 으로 그린다. */
+    imageUrl: (fileId: string, session: string, src: string) => `/api/agent-a/docs/${seg(fileId)}/review/image?session=${seg(session)}&src=${seg(src)}`,
+    manage: (fileId: string) => get<AgentAReviewManage>(`/api/agent-a/docs/${seg(fileId)}/review/manage`),
+    decide: (fileId: string, proposalId: string, decision: "apply" | "held" | "rejected", opId: string) =>
+      post<{ ok: true; status: AgentAProposalStatus; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/decide`, { proposalId, decision, opId }),
+    restore: (fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/restore`, input),
+    edit: (fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/edit`, input),
+  },
 
   patchMember: (memberId: string, patch: PatchMemberReq) => request<Member>("PATCH", `/api/members/${seg(memberId)}`, patch, SLOW_TIMEOUT_MS),
   putSettings: (patch: SettingsPatch) => request<Settings>("PUT", "/api/settings", patch),

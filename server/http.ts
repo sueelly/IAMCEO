@@ -26,7 +26,7 @@ import { checkLocalImportPath, readLocalFile } from "./local-files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { GitHub } from "./github.ts";
 import type { AgentAService } from "./integrations/agent-a.ts";
-import { AGENT_A_UI_ROOT, AgentAUiTickets, proxyAgentAUi, splitAgentAUiPath } from "./integrations/agent-a-ui.ts";
+import { AgentAReview } from "./integrations/agent-a-review.ts";
 
 export interface ServerContext {
   config: Config;
@@ -533,6 +533,13 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     if (!ctx.agentA) throw new ApiError(404, "Agent-A 연결이 켜져 있지 않습니다", "AGENT_A_DISABLED");
     return ctx.agentA;
   };
+  // 검토 화면(IAMCEO 화면 부품)이 쓰는 길. Agent-A 연결이 켜져 있을 때만 있다.
+  const agentAReview = ctx.agentA ? new AgentAReview(ctx.agentA) : null;
+  const requireReview = (): AgentAReview => {
+    if (!agentAReview) throw new ApiError(404, "Agent-A 연결이 켜져 있지 않습니다", "AGENT_A_DISABLED");
+    return agentAReview;
+  };
+  const reviewSession = (url: URL): string => url.searchParams.get("session") ?? "";
   const activeProject = (id: string): void => {
     if (store.requireProject(id).archived) throw new ApiError(404, "프로젝트를 찾을 수 없습니다");
   };
@@ -613,6 +620,61 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await agentA.createDoc(id!, body));
     }),
     route("POST", "/api/agent-a/docs/:id/read", async (_req, _url, [id]) => Response.json(requireAgentA().markRead(id!))),
+    // ---- 검토 화면: Agent-A 앱을 칸에 넣지 않고 IAMCEO 화면 부품이 이 길만 부른다. 문서·검토 머리와 열쇠는 서버가 붙인다. ----
+    route("GET", "/api/agent-a/docs/:id/review", async (_req, url, [id]) => Response.json(await requireReview().open(id!, url.searchParams.get("resume")))),
+    route("GET", "/api/agent-a/docs/:id/review/comments", async (_req, url, [id]) => {
+      const raw = url.searchParams.get("since");
+      const since = raw !== null && /^\d{1,16}$/.test(raw) ? Number(raw) : null;
+      const out = await requireReview().comments(id!, reviewSession(url), since);
+      return out ? Response.json(out) : new Response(null, { status: 204 });
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/comments", async (req, _url, [id]) => {
+      const box = z.strictObject({ x: z.number().int(), y: z.number().int(), w: z.number().int(), h: z.number().int() });
+      const region = z.strictObject({ v: z.literal(1), src: z.string().max(2048), sourceLine: z.number().int().nullable(), naturalWidth: z.number().int(), naturalHeight: z.number().int(), box });
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional() }));
+      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null }));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/replies", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000) }));
+      return Response.json(await requireReview().reply(id!, body.session, { inReplyTo: body.inReplyTo, text: body.text }));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/resolve", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), resolved: z.boolean() }));
+      return Response.json(await requireReview().setResolved(id!, body.session, body.id, body.resolved));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/remove", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200) }));
+      return Response.json(await requireReview().remove(id!, body.session, body.id));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/retry", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200) }));
+      return Response.json(await requireReview().retry(id!, body.session, body.id));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/fork", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200) }));
+      return Response.json(await requireReview().fork(id!, body.session, body.id));
+    }),
+    route("GET", "/api/agent-a/docs/:id/review/proposals", async (_req, url, [id]) => Response.json(await requireReview().proposals(id!, reviewSession(url)))),
+    route("POST", "/api/agent-a/docs/:id/review/proposals/approve", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), annotationId: z.string().max(200), proposalId: z.string().max(200) }));
+      return Response.json(await requireReview().approve(id!, body.session, { annotationId: body.annotationId, proposalId: body.proposalId }));
+    }),
+    route("GET", "/api/agent-a/docs/:id/review/versions", async (_req, url, [id]) => Response.json(await requireReview().versions(id!, reviewSession(url)))),
+    route("GET", "/api/agent-a/docs/:id/review/version", async (_req, url, [id]) => Response.json(await requireReview().version(id!, reviewSession(url), Number(url.searchParams.get("v"))))),
+    route("GET", "/api/agent-a/docs/:id/review/image", async (_req, url, [id]) => requireReview().image(id!, reviewSession(url), url.searchParams.get("src") ?? "")),
+    route("GET", "/api/agent-a/docs/:id/review/manage", async (_req, _url, [id]) => Response.json(await requireReview().manage(id!))),
+    route("POST", "/api/agent-a/docs/:id/review/manage/decide", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ proposalId: z.string().max(200), decision: z.enum(["apply", "held", "rejected"]), opId: z.string().max(100), reason: z.string().max(1000).optional() }));
+      return Response.json(await requireReview().decide(id!, body.proposalId, body.decision, body.opId, body.reason ?? ""));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/restore", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), historyRevision: z.number().int(), opId: z.string().max(100) }));
+      return Response.json(await requireReview().restore(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/edit", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), title: z.string().max(500), body: z.string().max(500_000), opId: z.string().max(100) }));
+      return Response.json(await requireReview().edit(id!, body));
+    }),
     route("GET", "/api/agent-a/docs/:id", async (_req, _url, [id]) => Response.json(await requireAgentA().view(id!))),
     route("PATCH", "/api/agent-a/docs/:id", async (req, _url, [id]) => {
       const agentA = requireAgentA();
@@ -1225,7 +1287,7 @@ function pageHeaders(host: string): Record<string, string> {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     `connect-src 'self' ws://${host} wss://${host}`,
-    "frame-src 'self' blob:", // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다). Agent-A 원래 화면도 같은 주소 아래(/agent-a-ui/s/)다.
+    "frame-src 'self' blob:", // 아티팩트 빈 칸과 PDF(blob, 형식은 화면이 application/pdf 로 정한다)
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -1265,7 +1327,6 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
   const realtimeSecret = randomBytes(32);
   const realtimeCredential = () => createHmac("sha256", realtimeSecret).update(config.accessCode).digest("hex");
   // Agent-A 원래 화면 입장권. 접속 코드를 바꾸면 모두 버린다.
-  const agentATickets = new AgentAUiTickets();
   let boundPort = 0;
   const pairing = new Pairing();
   const terminalStreams = new TerminalStreams(config, store, ctx.orch);
@@ -1351,14 +1412,6 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (path === "/api/files-session" && req.method === "POST") {
         return new Response(null, { status: 204, headers: { "Set-Cookie": filesCookie(url, filesCookieValue(config.accessCode), FILES_COOKIE_MAX_AGE) } });
       }
-      // Agent-A 원래 화면 입장권: 접속 코드로 인증한 화면만 받는다. 경로(/agent-a-ui/s/<입장권>)만 주고 Agent-A 주소·열쇠는 주지 않는다.
-      if (path === "/api/agent-a/ui-session") {
-        strictQuery(url, []);
-        if (req.method !== "POST") return fail(405, "허용되지 않는 메서드입니다");
-        if (!ctx.agentA) return fail(404, "Agent-A 연결이 켜져 있지 않습니다", "AGENT_A_DISABLED");
-        const { base, expiresAt } = agentATickets.mint();
-        return Response.json({ base, expiresAt: new Date(expiresAt).toISOString() });
-      }
       return dispatch(routes, req, url);
     }
     if (path.startsWith("/files/")) {
@@ -1368,15 +1421,6 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       const byCookie = cookie !== null && safeEqual(cookie, filesCookieValue(config.accessCode));
       if (!byCookie && !hasAccessCode(req, url, false)) return fail(401, "인증이 필요합니다");
       return filesResponse(url, ctx);
-    }
-    if (path.startsWith("/agent-a-ui/")) {
-      const parts = splitAgentAUiPath(path);
-      if (!ctx.agentA || !parts) return fail(404, "없는 경로입니다");
-      if (!agentATickets.valid(parts.ticket)) {
-        const h = new Headers({ "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" });
-        return new Response("Agent-A 화면 입장 시간이 지났습니다. 자료를 다시 열어 주세요.", { status: 401, headers: h });
-      }
-      return proxyAgentAUi(req, url, parts.prefix, parts.rest, ctx.agentA.client);
     }
     if (path === "/artifact-frame") return artifactFrameResponse();
     if (path === "/agent/join") return handleJoin(req, ctx);
@@ -1423,7 +1467,6 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     // 저장부터 인증 교체·QR 폐기·구독 해제까지 await 없이 한 번에 적용한다.
     config.accessCode = accessCode;
     authGeneration++;
-    agentATickets.clear();
     pairing.invalidate();
     closedEpochSockets ||= sockets.size > 0;
     for (const ws of sockets) {
@@ -1457,9 +1500,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     };
     if (!isIpAllowed(server.requestIP(req)?.address, ipRule)) return noStore(fail(403, "허용되지 않은 주소입니다"));
     if (!isHostAllowed(req.headers.get("host"), config.hosts)) return noStore(fail(403, "허용되지 않은 주소입니다"));
-    // Agent-A 원래 화면은 격리 칸(출처 'null')에서 돈다. 그 경로만 'null' 출처를 받는다(입장권으로 인증하고 CORS 로 답한다).
-    const sandboxedAgentA = url.pathname.startsWith(AGENT_A_UI_ROOT) && req.headers.get("origin") === "null";
-    if (!originMatchesHost(req) && !sandboxedAgentA) return noStore(fail(403, "허용되지 않은 출처입니다"));
+    if (!originMatchesHost(req)) return noStore(fail(403, "허용되지 않은 출처입니다"));
     try {
       return noStore(await route(req, url, server));
     } catch (e) {

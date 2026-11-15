@@ -77,7 +77,7 @@ export class AgentAError extends Error {
   }
 }
 
-interface AState {
+export interface AState {
   id: string;
   title: string;
   project_id: string | null;
@@ -153,25 +153,9 @@ export class AgentAClient {
     return this.config.baseUrl;
   }
 
-  /** 열쇠 방식이면 원래 화면 요청에 서버가 열쇠를 붙일 수 있다(브라우저에는 주지 않는다). */
+  /** 열쇠 방식이면 검토 길의 요청에 서버가 열쇠를 붙인다(브라우저에는 주지 않는다). */
   get hasAppToken(): boolean {
     return this.config.appToken !== null;
-  }
-
-  /**
-   * 원래 화면(격리 칸)의 요청 하나를 그대로 넘긴다. 받는 쪽 주소는 늘 이 설정의 Agent-A 다.
-   * 출처 머리는 Agent-A 자신의 주소로 둔다(Agent-A 는 다른 출처의 저장 요청을 막는다). 열쇠 방식이면 열쇠를 붙인다.
-   */
-  async forward(pathAndQuery: string, init: { method: string; headers: Record<string, string>; body?: ArrayBuffer }): Promise<Response> {
-    if (!pathAndQuery.startsWith("/") || pathAndQuery.startsWith("//")) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
-    const headers: Record<string, string> = { ...init.headers };
-    if (!["GET", "HEAD"].includes(init.method)) headers.origin = this.config.baseUrl;
-    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
-    try {
-      return await this.transport(`${this.config.baseUrl}${pathAndQuery}`, { method: init.method, headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(60_000) });
-    } catch {
-      return new Response("Agent-A 서버에 닿지 않습니다", { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } });
-    }
   }
 
   private async call<T>(method: string, path: string, body?: unknown, as: "user" | "agent" = "user", extra: Record<string, string> = {}): Promise<T> {
@@ -235,6 +219,44 @@ export class AgentAClient {
   uploadAsset(body: { name: string; media_type: string; base64: string }): Promise<AAsset> {
     return this.call("POST", "/api/assets", body);
   }
+  /**
+   * 검토 규약(Agent-A 원래 화면이 쓰는 API) 호출. 상태와 JSON 을 그대로 돌려준다: 404·409 의 뜻은 길마다 달라 부르는 쪽이 읽는다.
+   * 닿지 않으면 AgentAError(unreachable). 받는 쪽 주소는 늘 이 설정의 Agent-A 이고, 문서·검토 머리는 서버가 붙인다.
+   */
+  async reviewCall(method: string, path: string, ctx: { artifactId: string; sessionId?: string | null }, body?: unknown): Promise<{ status: number; json: unknown }> {
+    if (!path.startsWith("/api/") || path.includes("..")) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
+    const headers: Record<string, string> = { "x-enouv-artifact": ctx.artifactId };
+    if (ctx.sessionId) headers["x-enouv-review-session"] = ctx.sessionId;
+    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
+    if (body !== undefined) headers["content-type"] = "application/json";
+    let res: Response;
+    try {
+      res = await this.transport(`${this.config.baseUrl}${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, redirect: "manual", signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch {
+      throw new AgentAError("unreachable", 0, "unreachable", "Agent-A 서버에 닿지 않았습니다");
+    }
+    if (res.status === 304) return { status: 304, json: null };
+    const text = await res.text().catch(() => "");
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    return { status: res.status, json };
+  }
+
+  /** 검토 본문의 그림 하나. Agent-A 가 이 검토의 그림으로 아는 경로만 내준다. */
+  async reviewImage(src: string, ctx: { artifactId: string; sessionId: string }): Promise<Response> {
+    const headers: Record<string, string> = { "x-enouv-artifact": ctx.artifactId, "x-enouv-review-session": ctx.sessionId };
+    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
+    try {
+      return await this.transport(`${this.config.baseUrl}/api/image?path=${encodeURIComponent(src)}`, { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch {
+      throw new AgentAError("unreachable", 0, "unreachable", "Agent-A 서버에 닿지 않았습니다");
+    }
+  }
+
   /** Agent-A 원래 화면이 문서를 열 때 쓰는 검토 세션. 같은 판이면 Agent-A 가 기존 세션을 돌려준다. */
   reviewSession(artifactId: string): Promise<{ id: string }> {
     return this.call("POST", "/api/plannotator/sessions", { artifact_id: artifactId });
@@ -557,6 +579,17 @@ export class AgentAService {
     return r;
   }
 
+  /** 자료에 이어진 Agent-A 문서(검토 길이 쓴다). 이어지지 않은 자료면 404. */
+  docOf(fileId: string): { fileId: string; projectId: string; artifactId: string; createdAt: string; title: string } {
+    const r = this.docRow(fileId);
+    return { fileId, projectId: r.project_id as string, artifactId: r.artifact_id as string, createdAt: r.created_at as string, title: this.store.getFile(fileId)?.title ?? "" };
+  }
+
+  /** 정본을 읽는다. 닿지 않거나 없으면 일상어 오류. */
+  readState(fileId: string): Promise<AState> {
+    return this.read(this.docRow(fileId).artifact_id as string);
+  }
+
   isLinked(fileId: string): boolean {
     return this.db.query("SELECT 1 FROM agent_a_docs WHERE file_id = ?").get(fileId) !== null;
   }
@@ -586,7 +619,7 @@ export class AgentAService {
       .listMembers(projectId)
       .filter((m) => m.kind === "worker")
       .map((m) => ({ id: m.id, name: m.name }));
-    // 원래 화면은 IAMCEO 주소 아래로 이어 준다. 열쇠 방식이면 이 서버가 열쇠를 붙이므로 열쇠가 설정돼 있어야 한다.
+    // 검토 화면은 이 서버가 Agent-A 검토 규약을 대신 부른다. 열쇠 방식이면 이 서버가 열쇠를 붙이므로 열쇠가 설정돼 있어야 한다.
     const ui = this.reach.ok && (!this.reach.authRequired || this.client.hasAppToken);
     const uiBlocked = !this.reach.ok ? this.reach.error : ui ? null : "Agent-A 가 열쇠를 요구하는데 IAMCEO 서버에 Agent-A 사용자 열쇠가 설정되지 않았습니다";
     return { enabled: true, reachable: this.reach.ok, error: this.reach.error, ui, uiBlocked, docs, staff };
@@ -1142,7 +1175,7 @@ function opResult(op: Row): AgentAOpResult {
   };
 }
 
-function verifyApplied(state: AState, p: AState["proposals"][number]): boolean {
+export function verifyApplied(state: AState, p: AState["proposals"][number]): boolean {
   return p.operations.every((op) => {
     const b = state.blocks.find((x) => x.id === op.block_id);
     if (!b) return false;
@@ -1158,7 +1191,7 @@ function blockBodyAt(state: AState, blockId: string, revision: number): string |
   return b.history.find((h) => h.revision === revision)?.content.body ?? null;
 }
 
-function proposalView(p: AState["proposals"][number], state: AState): AgentAProposal {
+export function proposalView(p: AState["proposals"][number], state: AState): AgentAProposal {
   let stale: string | null = null;
   if (p.context_revision !== state.context_revision) stale = "문서 목표·조건이 바뀌었습니다";
   for (const read of p.read_set) {
@@ -1198,7 +1231,7 @@ const CONTENT_EVENTS: Record<string, string> = {
 };
 
 /** 정본 판의 이력. 이벤트로 판을 다시 세고, 센 값이 실제 판과 다르면 그 사실을 남긴다. */
-function versionsOf(state: AState, createdAt: string): AgentAVersion[] {
+export function versionsOf(state: AState, createdAt: string): AgentAVersion[] {
   const out: AgentAVersion[] = [{ revision: 1, at: createdAt, cause: "처음 연결한 판" }];
   let rev = 1;
   for (const e of state.events) {

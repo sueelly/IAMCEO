@@ -1,5 +1,4 @@
-/* Agent-A 원래 기능을 붙인 자료. 접두 aa. */
-.aa-src { font-weight:650; color:var(--ink-1); }
+/* Agent-A 문서 화면. 접두 aa(자료 목록·알림) · aar(검토 화면). IAMCEO 의 색·글꼴·모서리·버튼(vw-btn·gbtn·badge·dialog)을 그대로 쓴다. */
 .aa-warn { font-size:13px; line-height:1.5; color:var(--ink-1); padding:8px 10px; border-radius:10px; background:rgb(var(--danger-rgb) / .08); }
 .aa-tag { display:inline-block; padding:1px 7px; border-radius:6px; font-size:11.5px; font-weight:600; line-height:1.5; color:var(--ink-1); background:var(--soft); box-shadow:var(--soft-ring); white-space:nowrap; }
 .aa-chip { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; font-weight:650; line-height:1.6; white-space:nowrap; color:var(--ink-1); background:var(--soft); }
@@ -9,31 +8,161 @@
 .aa-btn:hover { background:var(--btn-soft-hover); }
 .aa-link { display:inline-flex; align-items:center; min-height:32px; padding:0 4px; font-size:13px; font-weight:600; color:var(--link); background:none; text-decoration:none; }
 
-/* 원래 기능 칸: 자료 칸 높이를 거의 다 쓴다. 칸 자체는 IAMCEO 판(둥근 모서리·옅은 테두리)이고 안은 skin.css 로 같은 색을 쓴다. */
-.aa-frame__stage { position:relative; min-width:0; overflow:hidden; border-radius:14px; background:#fff; box-shadow:inset 0 0 0 1px var(--line-strong); }
-.aa-frame__view { display:block; width:100%; height:max(560px, calc(var(--app-h, 100vh) - 230px)); border:0; background:#fff; }
-/* 데스크톱: 읽기 판이 따로 스크롤하지 않게 원래 기능 칸이 판의 남은 높이를 채운다(칸 안에서만 스크롤). 드래그 중 판이 밀리지 않는다. */
-.fl--desk .fl-reader:has(> .fl-doc[data-agent-a]) { overflow:hidden; }
-.fl--desk .fl-doc[data-agent-a] { height:100%; padding-bottom:14px; }
-.fl--desk .fl-doc[data-agent-a] .fl-doc__summary { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
-.fl--desk .fl-doc[data-agent-a] > .aa-frame:not([open]) { flex:1; min-height:0; }
-.fl--desk .aa-frame:not([open]) .aa-frame__stage { flex:1; min-height:0; }
-.fl--desk .aa-frame:not([open]) .aa-frame__view { height:100%; min-height:420px; }
-.aa-frame[open] .aa-frame__stage { flex:1; min-height:0; border-radius:0; box-shadow:none; }
-.aa-frame[open] .aa-frame__view { height:100%; }
-/* 원래 기능이 자료 칸을 넉넉히 쓰게 읽기 판의 폭 제한을 푼다. */
-.fl-doc[data-agent-a] { max-width:none; }
-.aa-frame:not([open]) { display:flex; flex-direction:column; }
-.fl-doc[data-agent-a] .fl-doc__meta, .fl-doc[data-agent-a] .fl-doc__title { padding-right:112px; }
-.fl-panel--phone .fl-doc[data-agent-a] .aa-frame__view { height:calc(var(--app-h, 100vh) - 200px); min-height:480px; }
-
 .aa-notice { position:fixed; left:50%; bottom:calc(var(--bottom-h, 0px) + 18px); transform:translateX(-50%); z-index:40; display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
   max-width:calc(100vw - 32px); padding:10px 12px 10px 16px; border-radius:16px; font-size:14px; font-weight:600; color:var(--ink-1); background:var(--menu-bg); box-shadow:var(--menu-ring), var(--menu-shadow); }
-.aa-frame[open] .aa-notice { bottom:18px; }
 
-/* Agent-A 문서를 볼 때는 자료 목록을 접고 읽기 판을 넓힌다(원래 기능의 댓글 칸이 펴지는 폭). */
+/* Agent-A 문서를 볼 때는 자료 목록을 접고 읽기 판을 넓힌다(본문 옆에 댓글 칸이 펴지는 폭). */
 .shell--desk .shell__column:has(> .fl--desk[data-focus]) { width:min(100%, 1480px); }
 .fl--desk[data-focus] { grid-template-columns:minmax(0, 1fr); }
 .fl--desk[data-focus] > .fl-panel--list { display:none; }
 .fl-listtoggle { min-height:32px; margin:-4px 4px -4px -4px; padding:0 10px; border-radius:10px; font-size:13px; font-weight:600; color:var(--link); background:var(--btn-soft); box-shadow:var(--soft-ring); }
 @media (hover:hover) { .fl-listtoggle:hover { background:var(--btn-soft-hover); } }
+
+/* 데스크톱: 읽기 판은 스크롤하지 않고, 본문 칸과 댓글 칸이 각자 스크롤한다(댓글을 읽는 동안 본문 자리가 밀리지 않는다). */
+.fl-doc[data-agent-a] { max-width:none; }
+.fl--desk .fl-reader:has(> .fl-doc[data-agent-a]) { overflow:hidden; }
+.fl--desk .fl-doc[data-agent-a] { height:100%; padding-bottom:14px; }
+.fl--desk .fl-doc[data-agent-a] .fl-doc__summary { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
+.fl--desk .fl-doc[data-agent-a] > .aar { flex:1; min-height:0; }
+
+/* ── 검토 화면 틀 ── */
+.aar { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.aar-bar { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; }
+.aar-bar__state { flex:1; min-width:0; padding:0 4px; font-size:12.5px; color:var(--ink-2); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.aar-bar__count { margin-left:6px; color:var(--link); }
+.aar-bar__comments { gap:6px; }
+.aar-banner { flex:none; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:2px 12px; padding:6px 8px 6px 12px; border-radius:12px; font-size:13px; line-height:1.45; color:var(--ink-1); background:var(--soft); box-shadow:var(--soft-ring); }
+.aar-banner[data-quiet] { color:var(--ink-2); background:none; box-shadow:inset 0 0 0 1px var(--line); }
+.aar-body { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; min-width:0; }
+.aar-scroll { position:relative; min-width:0; }
+.fl--desk .aar-body { flex:1; min-height:0; }
+.fl--desk .aar[data-panel] .aar-body { grid-template-columns:minmax(0, 1fr) minmax(300px, 360px); }
+.fl--desk .aar[data-toc] .aar-body { grid-template-columns:210px minmax(0, 1fr); }
+.fl--desk .aar[data-toc][data-panel] .aar-body { grid-template-columns:210px minmax(0, 1fr) minmax(300px, 360px); }
+.fl--desk .aar-scroll, .fl--desk .aar-toc { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.fl--desk .aar-scroll { border-radius:14px; background:var(--card-bg); box-shadow:inset 0 0 0 1px var(--line); }
+.fl--desk .aar-side { min-height:0; display:flex; flex-direction:column; border-radius:14px; background:var(--card-bg); box-shadow:inset 0 0 0 1px var(--line); overflow:hidden; }
+
+/* ── 목차 ── */
+.aar-toc { padding:4px 0; }
+.aar-toc__list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px; }
+.aar-toc__list button { display:block; width:100%; min-height:36px; padding:6px 10px; border-radius:10px; font-size:13.5px; line-height:1.4; text-align:left; color:var(--ink-1); overflow-wrap:anywhere; }
+.aar-toc__list button:hover { background:var(--hover); }
+.aar-toc__list li[data-level="1"] button { font-weight:650; }
+.aar-toc__list li[data-level="3"] button { padding-left:24px; font-size:13px; color:var(--ink-2); }
+
+/* ── 본문 ── */
+.aar-doc { position:relative; max-width:780px; margin:0 auto; padding:18px 22px 48px; }
+.fl-panel--phone .aar-doc { padding:6px 2px 32px; }
+.aar-md { font-size:15.5px; line-height:1.75; }
+.aar-md + .aar-md, .aar-fig + .aar-md, .aar-md + .aar-fig, .aar-fig + .aar-fig { margin-top:1.1em; }
+.aar-md h1 { font-size:1.45em; }
+.aar-md h2 { font-size:1.2em; padding-top:.5em; border-top:1px solid var(--line); scroll-margin-top:8px; }
+.aar-md h1, .aar-md h3 { scroll-margin-top:8px; }
+.aar-md table { display:block; max-width:100%; overflow-x:auto; }
+/* 댓글이 달린 문장. 본문 DOM 은 바꾸지 않고 칠만 한다. 색 변수가 닿지 않는 브라우저가 있어 값을 적는다(IAMCEO 보라). */
+::highlight(aa-quote) { background-color:rgb(122 91 255 / .18); }
+::highlight(aa-quote-done) { background-color:rgb(23 19 43 / .08); }
+::highlight(aa-quote-active) { background-color:rgb(122 91 255 / .4); }
+.aar-pick { position:absolute; z-index:3; transform:translateX(-50%); min-height:36px; padding:0 14px; border-radius:999px; font-size:13.5px; font-weight:650; color:#fff; background:var(--accent-fill); box-shadow:var(--menu-shadow); white-space:nowrap; }
+@media (pointer:coarse) { .aar-pick { min-height:44px; padding:0 18px; } }
+
+/* ── 그림과 영역 ── */
+.aar-fig { margin:0; display:flex; flex-direction:column; gap:6px; min-width:0; }
+.aar-fig__frame { position:relative; width:100%; max-height:none; border-radius:12px; overflow:hidden; background:rgb(var(--ink-rgb) / .05); box-shadow:inset 0 0 0 1px var(--line); }
+.aar-fig__img { display:block; width:100%; height:100%; object-fit:fill; user-select:none; -webkit-user-select:none; -webkit-user-drag:none; }
+.aar-fig__wait { display:grid; place-items:center; min-height:80px; height:100%; padding:10px; font-size:13px; color:var(--ink-2); }
+.aar-fig__layer { position:absolute; inset:0; }
+.aar-fig[data-drawing] .aar-fig__layer { cursor:crosshair; touch-action:none; }
+.aar-fig__mark { position:absolute; display:block; padding:0; border-radius:4px; background:rgb(var(--violet-rgb) / .12); box-shadow:inset 0 0 0 2px var(--focus); cursor:pointer; }
+.aar-fig__mark span { position:absolute; left:-2px; top:-2px; min-width:20px; height:20px; padding:0 5px; border-radius:6px 0 6px 0; font-size:12px; font-weight:700; line-height:20px; text-align:center; color:#fff; background:var(--focus); }
+.aar-fig__mark[data-done] { background:rgb(var(--ink-rgb) / .06); box-shadow:inset 0 0 0 2px rgb(var(--ink-rgb) / .4); }
+.aar-fig__mark[data-done] span { background:rgb(var(--ink-rgb) / .55); }
+.aar-fig__mark[data-active] { background:rgb(var(--violet-rgb) / .28); box-shadow:inset 0 0 0 3px var(--link); }
+.aar-fig__draft { position:absolute; border-radius:4px; background:rgb(var(--violet-rgb) / .2); box-shadow:inset 0 0 0 2px var(--link), 0 0 0 1px #fff; pointer-events:none; }
+.aar-fig__cap { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; }
+.aar-fig__alt { min-width:0; font-size:13px; color:var(--ink-2); overflow-wrap:anywhere; }
+.aar-fig__hint { font-size:13px; color:var(--link); }
+
+/* ── 댓글 칸 ── */
+.aar-pane { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.fl--desk .aar-side .aar-pane { height:100%; }
+.aar-pane__head { flex:none; display:flex; align-items:center; gap:8px; min-height:48px; padding:6px 10px 6px 12px; font-size:14.5px; }
+.aar-pane__head strong { flex:1; min-width:0; font-weight:650; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.aar-pane__tools { flex:none; display:flex; flex-wrap:wrap; gap:6px; padding:0 10px 8px; }
+.aar-pane__tools .vw-btn { min-height:36px; padding:0 11px; font-size:13px; }
+.aar-pane__body { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:10px; padding:4px 12px 12px; }
+.aar-pane__foot { flex:none; margin:0 12px 12px; }
+.dialog__body .aar-pane__body { overflow:visible; padding-inline:2px; }
+.dialog__body .aar-pane__head { padding-inline:2px; }
+.dialog__body .aar-pane__tools { padding-inline:2px; }
+.aar-back { flex:none; display:grid; place-items:center; width:36px; height:36px; margin-left:-6px; border-radius:50%; font-size:17px; color:var(--ink-2); }
+.aar-back:hover { background:var(--hover); color:var(--ink-1); }
+.aar-note { font-size:13px; line-height:1.5; color:var(--ink-2); overflow-wrap:anywhere; }
+.aar-error { font-size:13px; line-height:1.5; color:var(--danger); padding:8px 10px; border-radius:10px; background:rgb(var(--danger-rgb) / .08); overflow-wrap:anywhere; }
+.aar-quote { margin:0; padding:8px 12px; border-radius:10px; font-size:13.5px; line-height:1.55; color:var(--ink-1); background:rgb(var(--violet-rgb) / .1); box-shadow:inset 3px 0 0 var(--focus); white-space:pre-wrap; overflow-wrap:anywhere; max-height:9.5em; overflow-y:auto; }
+.vw-btn[data-armed] { color:var(--danger); box-shadow:inset 0 0 0 1px rgb(var(--danger-rgb) / .6), var(--lift); }
+
+.aar-turn { display:flex; flex-direction:column; gap:4px; padding:10px; border-radius:14px; background:var(--soft); box-shadow:var(--soft-ring); }
+.aar-turn__title { font-size:12.5px; font-weight:650; color:var(--link); }
+.aar-turn__row { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:40px; padding:6px 8px; border-radius:10px; font-size:13.5px; line-height:1.4; text-align:left; color:var(--ink-1); overflow-wrap:anywhere; }
+.aar-turn__row:hover { background:var(--btn-soft-hover); }
+.aar-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
+.aar-row { display:flex; flex-direction:column; gap:4px; width:100%; min-height:56px; padding:10px 12px; border-radius:14px; text-align:left; transition:background-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out); }
+@media (hover:hover) { .aar-row:hover { background:var(--row-hover); box-shadow:var(--row-lift); } }
+.aar-row__meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; font-size:12px; color:var(--ink-2); }
+.aar-row__count { margin-left:auto; }
+.aar-row__text { font-size:14px; font-weight:600; line-height:1.4; color:var(--ink-1); overflow-wrap:anywhere; }
+.aar-row__quote { font-size:12.5px; line-height:1.45; color:var(--ink-2); overflow-wrap:anywhere; padding-left:8px; box-shadow:inset 2px 0 0 rgb(var(--violet-rgb) / .45); }
+.aar-more { align-self:flex-start; min-height:36px; padding:0 10px; border-radius:10px; font-size:13px; font-weight:600; color:var(--ink-2); }
+.aar-more:hover { background:var(--hover); }
+
+.aar-msg { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border-radius:14px; background:var(--field); box-shadow:var(--field-ring); min-width:0; }
+.aar-msg[data-ai] { background:var(--soft); box-shadow:var(--soft-ring); }
+.aar-msg__who { font-size:12px; font-weight:650; color:var(--ink-2); }
+.aar-msg[data-ai] .aar-msg__who { color:var(--link); }
+.aar-msg__text { font-size:14.5px; line-height:1.6; color:var(--ink-1); white-space:pre-wrap; overflow-wrap:anywhere; }
+.aar-msg__body { font-size:14.5px; line-height:1.6; }
+.aar-msg__writing { font-size:13.5px; color:var(--link); }
+.aar-msg__error { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.5; color:var(--danger); background:rgb(var(--danger-rgb) / .08); }
+.aar-msg__code { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; color:var(--ink-2); }
+
+.aar-proposal { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:14px; background:var(--field); box-shadow:inset 0 0 0 1px rgb(var(--violet-rgb) / .35); min-width:0; }
+.aar-proposal[data-state="applied"] { box-shadow:inset 0 0 0 1px rgb(var(--ok-rgb) / .5); }
+.aar-proposal[data-state="rejected"] { box-shadow:var(--field-ring); opacity:.8; }
+.aar-proposal__head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:13px; }
+.aar-proposal__reason { font-size:13.5px; line-height:1.5; color:var(--ink-2); overflow-wrap:anywhere; }
+.aar-proposal__title { font-size:13px; font-weight:650; color:var(--ink-1); }
+.aar-proposal__after { padding:8px 10px; border-radius:10px; font-size:14px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; background:rgb(var(--ok-rgb) / .07); max-height:16em; overflow-y:auto; }
+.aar-proposal__op { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.aar-proposal__compare summary { min-height:32px; font-size:13px; font-weight:600; color:var(--link); cursor:pointer; }
+.aar-proposal__foot { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.aar-diff { padding:8px 10px; border-radius:10px; font-size:13.5px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--pre-bg); max-height:18em; overflow-y:auto; }
+.aar-diff ins { text-decoration:none; background:rgb(var(--ok-rgb) / .22); border-radius:3px; }
+.aar-diff del { color:var(--ink-2); background:rgb(var(--danger-rgb) / .16); border-radius:3px; }
+
+.aar-compose { flex:none; display:flex; align-items:flex-end; gap:8px; padding:8px 10px 10px; box-shadow:inset 0 1px 0 var(--line); }
+.dialog__body .aar-compose { padding-inline:2px; }
+.aar-compose__input { flex:1; min-width:0; min-height:44px; max-height:160px; padding:10px 12px; border-radius:14px; font:inherit; font-size:15px; line-height:1.5; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); resize:none; }
+.aar-compose__input:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+
+/* ── 문서 관리·판 ── */
+.aar-manage { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.aar-manage .fl-chips { padding:0; }
+.aar-manage .fl-chip { min-height:36px; }
+.dialog__panel:has(.aar-manage) { width:min(100%, 760px); }
+.aar-card { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:14px; background:var(--field); box-shadow:var(--field-ring); min-width:0; }
+.aar-card__head { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 10px; font-size:14.5px; overflow-wrap:anywhere; }
+.aar-card__meta { font-size:12.5px; color:var(--ink-2); }
+.aar-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.aar-fold summary { min-height:32px; font-size:13px; font-weight:600; color:var(--link); cursor:pointer; }
+.aar-history { display:flex; flex-direction:column; gap:6px; padding:8px 0; border-top:1px solid var(--line); }
+.aar-history__title { font-size:13px; font-weight:650; }
+.aar-edit { display:flex; flex-direction:column; gap:8px; }
+.aar-field { display:flex; flex-direction:column; gap:4px; font-size:12.5px; font-weight:600; color:var(--ink-2); }
+.aar-field input, .aar-field textarea { padding:9px 11px; border-radius:12px; font:inherit; font-size:14.5px; font-weight:400; line-height:1.55; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); }
+.aar-field textarea { min-height:160px; resize:vertical; }
+.aar-versions { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
+.aar-versions li { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; min-height:44px; padding:6px 2px; border-top:1px solid var(--line); font-size:13.5px; }
+.aar-versions li:first-child { border-top:0; }
+.aar-versions li > :last-child:is(button, .badge) { margin-left:auto; }

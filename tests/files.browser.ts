@@ -1059,7 +1059,7 @@ describe("앱 틀: 자료 화면의 프로젝트 패널", () => {
     await page.close();
   });
 
-  test("Agent-A 자료: 실행 없이 Agent-A 칸으로 열고, 목록은 '자료 목록'으로 펴며 다른 자료를 고르면 다시 접는다", async () => {
+  test("Agent-A 자료: 실행 없이 Agent-A 문서 화면으로 열고, 목록은 '자료 목록'으로 펴며 다른 자료를 고르면 다시 접는다", async () => {
     const a = await upload({ title: "Agent-A 연결 가", html: "<h1>가</h1><script>document.body.dataset.ran='1'</script>" });
     const b = await upload({ title: "Agent-A 연결 나", html: "<h1>나</h1><script>document.body.dataset.ran='1'</script>" });
     const plain = await upload({ title: "연결 안 된 아티팩트", html: "<h1>일반</h1><script>document.body.dataset.ran='1'</script>" });
