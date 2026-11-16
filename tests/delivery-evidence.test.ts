@@ -24,6 +24,32 @@ function fixture(cli: "claude" | "codex" = "claude", rows: unknown[] = []): Deli
   return { cli, home, path, cwd: runtime.paths.work, sessionId: "session", sessionGeneration: 3, markers: [{ deliveryId: "d1", marker }, { deliveryId: "d2", marker: other }] };
 }
 
+test("metadata-only scans stop at the first record and resume without losing the buffered tail", () => {
+  const header = meta();
+  const next = codex("x".repeat(200_000));
+  const opts = fixture("codex", [header, next, codex("last")]);
+  const root = join(opts.home, "sessions");
+  const first = readJsonlRange(root, opts.path, null, { maxBytes: 1024 * 1024, maxRecords: 1 });
+  expect(first.records.map(record => record.value)).toEqual([header]);
+  expect(first.bytesRead).toBeLessThanOrEqual(64 * 1024);
+  expect(first.cursor).toMatchObject({ offset: Buffer.byteLength(line(header)), readOffset: Buffer.byteLength(line(header)), pending: "" });
+  expect(first.complete).toBe(false);
+  const rest = readJsonlRange(root, opts.path, first.cursor);
+  expect(rest.records.map(record => record.value)).toEqual([next, codex("last")]);
+  expect(rest.complete).toBe(true);
+});
+
+test("record-limited scans retain a long split UTF-8 metadata record and validate the record budget", () => {
+  const header = meta("session", { base_instructions: "한글🙂".repeat(20_000) });
+  const opts = fixture("codex", [header, codex()]);
+  const root = join(opts.home, "sessions");
+  let result = readJsonlRange(root, opts.path, null, { maxBytes: 7001, maxRecords: 1 });
+  for (let i = 0; i < 100 && result.records.length === 0; i++) result = readJsonlRange(root, opts.path, result.cursor, { maxBytes: 7001, maxRecords: 1 });
+  expect(result.records.map(record => record.value)).toEqual([header]);
+  expect(result.cursor?.readOffset).toBe(Buffer.byteLength(line(header)));
+  expect(readJsonlRange(root, opts.path, null, { maxRecords: 0 })).toMatchObject({ records: [], complete: false, code: "invalid_budget" });
+});
+
 describe("direct user evidence", () => {
   test("Claude string/text arrays count; sidechain, meta, roles, tools and quotes do not", () => {
     for (const row of [claude(marker, { isSidechain: true }), claude(marker, { isMeta: true }), claude(marker, { type: "assistant" }),

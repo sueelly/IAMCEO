@@ -3565,7 +3565,7 @@ export class Orchestrator implements OrchestratorApi {
     const root = join(home, "sessions");
     try {
       const paths = [...new Bun.Glob("**/rollout-*.jsonl").scanSync({ cwd: root, absolute: true, onlyFiles: true, followSymlinks: false })].filter(path => {
-        const meta = parseCodexSessionMeta(readJsonlRange(root, path, null, { maxBytes: 1024 * 1024 }).records[0]?.value);
+        const meta = parseCodexSessionMeta(readJsonlRange(root, path, null, { maxBytes: 1024 * 1024, maxRecords: 1 }).records[0]?.value);
         if (observation && meta?.sessionId === member.sessionId) { observation.sessionMatch = true; if (meta.cwd === member.cwd) observation.cwdMatch = true; else observation.cwdMatch ??= false; }
         return meta?.sessionId === member.sessionId && meta.cwd === member.cwd;
       });

@@ -43,7 +43,7 @@ function anchorAt(fd: number, offset: number): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 /** Bounded, serializable forward scan. Oversized/corrupt lines permanently invalidate absence. */
-export function readJsonlRange(root: string, path: string, cursor?: JsonlCursor | null, options: { maxBytes?: number; startOffset?: number; fileIdentity?: string | null; maxLineBytes?: number } = {}): JsonlRange {
+export function readJsonlRange(root: string, path: string, cursor?: JsonlCursor | null, options: { maxBytes?: number; startOffset?: number; fileIdentity?: string | null; maxLineBytes?: number; maxRecords?: number } = {}): JsonlRange {
   const unknown = (code: string): JsonlRange => ({ cursor: cursor ?? null, records: [], complete: false, code, bytesRead: 0 });
   const target = providerLogPath(root, path);
   if (!target) return unknown("path_unavailable");
@@ -69,14 +69,18 @@ export function readJsonlRange(root: string, path: string, cursor?: JsonlCursor 
     const maxBytes = Math.min(4 * 1024 * 1024, Math.max(0, Math.floor(options.maxBytes ?? 4 * 1024 * 1024)));
     const maxLine = Math.min(4 * 1024 * 1024, Math.max(1, Math.floor(options.maxLineBytes ?? 4 * 1024 * 1024)));
     if (!Number.isFinite(maxBytes) || !Number.isFinite(maxLine)) return unknown("invalid_budget");
+    const maxRecords = options.maxRecords ?? Infinity;
+    if (options.maxRecords !== undefined && (!Number.isSafeInteger(maxRecords) || maxRecords < 1)) return unknown("invalid_budget");
     let remaining = Math.min(maxBytes, stat.size - next.readOffset), bytesRead = 0;
     let pending = Buffer.from(next.pending, "base64");
     if ((!next.dropping && pending.length !== next.readOffset - next.offset) || pending.length > maxLine) return unknown("invalid_cursor");
     const records: JsonlRecord[] = [];
-    while (remaining > 0) {
+    scan: while (remaining > 0) {
       const bytes = Buffer.alloc(Math.min(64 * 1024, remaining));
       const length = readSync(fd, bytes, 0, bytes.length, next.readOffset);
       if (!length) return { cursor: next, records: [], complete: false, code: "short_read", bytesRead };
+      remaining -= length;
+      bytesRead += length;
       let from = 0;
       for (let at = 0; at < length; at++) {
         if (bytes[at] !== 10) continue;
@@ -94,13 +98,17 @@ export function readJsonlRange(root: string, path: string, cursor?: JsonlCursor 
         pending = Buffer.alloc(0);
         next.dropping = false;
         from = at + 1;
+        if (records.length >= maxRecords) {
+          // Discard read-ahead bytes, but resume exactly after this record.
+          // Metadata lookup must not decode the rest of every transcript.
+          next.readOffset = next.offset;
+          break scan;
+        }
       }
       const piece = bytes.subarray(from, length);
       if (!next.dropping && pending.length + piece.length <= maxLine) pending = Buffer.concat([pending, piece]);
       else { next.dropping = true; next.invalid = true; pending = Buffer.alloc(0); }
       next.readOffset += length;
-      remaining -= length;
-      bytesRead += length;
     }
     next.pending = pending.toString("base64");
     next.anchor = anchorAt(fd, next.readOffset);
