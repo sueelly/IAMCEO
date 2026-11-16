@@ -79,20 +79,20 @@ function useTaskHistory(projectId: string, taskId: string | null) {
 function TaskBar({ task }: { task: Task }) {
   return (
     <div className="th-task" role="note">
-      <span className="th-task__label">작업</span>
+      <span className="th-task__label">업무</span>
       <span className="th-task__title">{task.title}</span>
       <span className="th-task__meta">{[task.who, task.branch, task.worktree].filter(Boolean).join(" · ")}</span>
     </div>
   );
 }
 
-/** 빈 작업 칩의 안내. 진행판 항목에서 생긴 칩은 '이 작업으로 보낸 글만 모인다'는 것을 먼저 알린다(전체에서 보낸 글은 옮기지 않는다). */
-function emptyTaskText(task: Task, members: readonly Member[]): string {
-  const worker = task.memberId ? members.find((m) => m.kind === "worker" && m.id === task.memberId) : undefined;
+/** 빈 업무 칩의 안내. 받는 사람은 업무가 아니라 입력칸에서 고른 사람이다. 일 목록에서 생긴 칩은 '이 업무로 보낸 글만 모인다'를 먼저 알린다. */
+function emptyTaskText(task: Task, members: readonly Member[], targetId: string | null): string {
+  const worker = targetId ? members.find((m) => m.kind === "worker" && m.id === targetId) : undefined;
   const to = worker?.name ?? members.find((m) => m.kind === "root" || m.kind === "conductor")?.name ?? "총괄";
-  const send = `아래 입력칸에 적으면 이 작업으로 ${to}에게 갑니다.`;
+  const send = `아래 입력칸에 적으면 이 업무로 ${to}에게 갑니다.`;
   if (!workIdOf(task)) return `${send} 전체 대화는 입력칸 위 ‘전체’에서 봅니다.`;
-  return `팀 화면 일 목록에서 생긴 작업입니다. 이 작업으로 보낸 글·지시·보고만 여기에 모입니다. 전체에서 보낸 글은 ‘전체’에 남습니다. ${send}`;
+  return `팀 화면 일 목록에서 생긴 업무입니다. 이 업무로 보낸 글·지시·보고만 여기에 모입니다. 전체에서 보낸 글은 ‘전체’에 남습니다. ${send}`;
 }
 
 function decisionLinkText(d: Decision | undefined): string {
@@ -141,7 +141,7 @@ function RetryButton({ m }: { m: Message }) {
   );
 }
 
-/** 전체에서 글이 속한 작업. 누르면 그 작업의 글만 본다(입력칸의 작업도 같이 바뀐다). */
+/** 전체에서 글이 속한 업무. 누르면 그 업무의 글만 본다(입력칸의 업무도 같이 바뀐다. 받는 사람은 그대로). */
 type OnTask = (taskId: string, messageId: string) => void;
 
 function MineRow({ m, taskTitle, onTask }: { m: Message; taskTitle?: string; onTask?: OnTask }) {
@@ -155,8 +155,8 @@ function MineRow({ m, taskTitle, onTask }: { m: Message; taskTitle?: string; onT
             {m.targetName ? `${m.targetName}에게` : null}
             {m.targetName && taskId ? " · " : null}
             {taskId ? (
-              <button type="button" className="th-mine__task" title={`작업 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(taskId, m.id)}>
-                작업 {taskTitle}
+              <button type="button" className="th-mine__task" title={`업무 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(taskId, m.id)}>
+                업무 {taskTitle}
               </button>
             ) : null}
           </p>
@@ -220,7 +220,7 @@ function ReportRow({ m, decision, file, taskTitle, onTask }: { m: Message; decis
           <Badge tone={kindTone(m.kind)}>{m.kind}</Badge>
           <span className="th-card__who">{m.who}</span>
           {taskTitle && m.taskId ? (
-            <button type="button" className="th-card__task" title={`작업 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(m.taskId!, m.id)}>
+            <button type="button" className="th-card__task" title={`업무 ${taskTitle}의 글만 보기`} onClick={() => onTask?.(m.taskId!, m.id)}>
               <span className="th-card__task-text">{taskTitle}</span>
             </button>
           ) : null}
@@ -325,7 +325,7 @@ export default function Thread() {
     const next = tasks.find((t) => t.id === taskId);
     if (!next) return;
     focus.current = { taskId, messageId };
-    chooseTask(projectId, next, (project?.members ?? []).filter((m) => m.kind === "worker"));
+    chooseTask(projectId, next);
   };
   const onTask = useCallback<OnTask>((taskId, messageId) => pickRef.current(taskId, messageId), []);
   const row = (m: Message) => (
@@ -487,9 +487,9 @@ export default function Thread() {
       {messages.length === 0 ? (
         task ? (
           history.busy ? (
-            <Empty title="불러오는 중">이 작업의 대화를 불러오고 있습니다.</Empty>
+            <Empty title="불러오는 중">이 업무의 대화를 불러오고 있습니다.</Empty>
           ) : (
-            <Empty title="이 작업의 대화가 아직 없습니다">{emptyTaskText(task, project?.members ?? [])}</Empty>
+            <Empty title="이 업무의 대화가 아직 없습니다">{emptyTaskText(task, project?.members ?? [], draft.targetId)}</Empty>
           )
         ) : (
           <Empty title="아직 대화가 없습니다">아래 입력칸에 지시를 적으면 여기에 이어집니다.</Empty>
@@ -504,7 +504,7 @@ export default function Thread() {
               </GlassButton>
             </div>
           ) : null}
-          <div className="th-list" role="log" aria-label={task ? `대화: 작업 ${task.title}` : "대화"}>
+          <div className="th-list" role="log" aria-label={task ? `대화: 업무 ${task.title}` : "대화"}>
             {items.map((item) =>
               item.type === "message" ? (
                 row(item.message)
