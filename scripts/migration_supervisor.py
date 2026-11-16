@@ -374,7 +374,7 @@ def observe_target_handoff(api, members):
         error = (member.get('statusObservation') or {}).get('error') or {}
         result[spec['member_id']] = {'project_id': spec['project_id'],
             'delivery': message.get('delivery'),
-            'blocked_reason': (error.get('code') or 'unclassified') if member.get('status') in {'blocked', 'waiting'} else None}
+            'blocked_reason': (error.get('code') or 'unclassified') if message.get('delivery') != 'delivered' and member.get('status') in {'blocked', 'waiting'} else None}
     return {'reachable': True, 'members': result}
 
 

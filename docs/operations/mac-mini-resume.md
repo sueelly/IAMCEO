@@ -80,7 +80,7 @@ python3 scripts/migration_supervisor.py --config "$CONFIG" rollback
 
 최종 운영 주소로 전환한 뒤에도 총괄의 폴더 신뢰 확인이 남을 수 있다. private 설정의 선택 항목 `target_handoff`에 `origin`(HTTPS), `credential_file`, `members` 목록을 넣는다. 각 항목은 이미 시작한 직원의 `member_id`, `project_id`, 이미 등록한 재개 글의 `message_id`다. 실제 ID와 인증 자료는 Git에 넣지 않는다.
 
-감독은 GET으로 직원/글의 ID와 프로젝트를 대조하고 전달 상태와 blocked/waiting 원인 코드만 비교한다. 글 본문·prompt 내용·시각·PID·일하는 중/대기 중 전환은 재개 fingerprint에 추가하지 않는다. 잘못된 ID·접속 실패는 성공으로 처리하지 않는다. 승인에 응답하거나 글을 재등록하지 않으며, 사람이 확인을 마치면 기존 앱의 큐 수명주기가 글을 전달한다. 같은 세션 소유 PID 종료와 terminal event, 영속 중복 방지 잠금은 그대로 적용한다.
+감독은 GET으로 직원/글의 ID와 프로젝트를 대조하고 전달 상태와 미전달 직원의 blocked/waiting 원인 코드만 비교한다. 재개 글이 delivered인 직원의 이후 업무 질문은 이전 재개 조건에서 제외한다. 글 본문·prompt 내용·시각·PID·일하는 중/대기 중 전환은 재개 fingerprint에 추가하지 않는다. 잘못된 ID·접속 실패는 성공으로 처리하지 않는다. 승인에 응답하거나 글을 재등록하지 않으며, 사람이 확인을 마치면 기존 앱의 큐 수명주기가 글을 전달한다. 같은 세션 소유 PID 종료와 terminal event, 영속 중복 방지 잠금은 그대로 적용한다.
 
 운영 주소/build로 설정을 갱신한 뒤 현재 소유자가 새 관측을 검토하고 acknowledge한다. 남은 글이 실제 delivered이고 실행 근거가 확인돼야 전체 재개를 완료로 기록한다. 그전에는 감독을 유지하고 완료된 경계 감시·빈 점검 서버만 정리한다. 운영 서비스/진행 직원은 감독 교체로 중단하지 않는다. 최종 data 홈의 재시작 검증은 실제 업무 시작 전에 완료했으며 재부팅 시험과 구분한다.
 

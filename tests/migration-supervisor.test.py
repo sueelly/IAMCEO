@@ -81,6 +81,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(state['pending']),1);state['pending']=[]
         api.status='idle';obs=copy.deepcopy(obs);obs['conditions']['target_handoff']=s.observe_target_handoff(api,members);s.record_observation(state,obs,300,120)
         self.assertFalse(state['pending'])
+        # Later business approvals belong to that project, not migration resume.
+        api.status='waiting';obs=copy.deepcopy(obs);obs['conditions']['target_handoff']=s.observe_target_handoff(api,members);s.record_observation(state,obs,400,120)
+        self.assertFalse(state['pending'])
     def test_target_handoff_rejects_wrong_project_identity_and_unavailable_reads(self):
         class Target:
             def request(self,method,path,body=None):return {'id':'m-one','projectId':'other-project'}
