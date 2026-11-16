@@ -584,13 +584,16 @@ export class AgentAReview {
   }
 
   /**
-   * 검토 제출(원래 화면 머리의 Save): 이 판의 초안에 든 주석을 분기의 질문으로 넘기고 검토를 닫는다. 정본은 바뀌지 않는다.
+   * 검토 제출: 이 판의 초안에 든 주석을 분기의 질문으로 넘기고 검토를 닫는다. 정본은 바뀌지 않는다.
+   * decision 은 원래 화면의 두 단추다: approved = 머리의 Save(확인하고 저장), feedback = 의견 보내기. Agent-A 가 하는 일은 같고 남는 결정 이름만 다르다.
    * revision 은 화면이 본 초안 판이다. 그 뒤 다른 화면이 초안을 바꿨으면 제출하지 않는다(그 댓글이 분기가 되지 못한 채 닫히지 않게).
    * 같은 내용으로 다시 보내면 Agent-A 가 처음 결과를 돌려준다.
    */
-  async submit(fileId: string, sessionId: string, input: { revision: number }): Promise<AgentAReviewSubmitResult> {
+  async submit(fileId: string, sessionId: string, input: { revision: number; decision?: "feedback" | "approved" }): Promise<AgentAReviewSubmitResult> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
+    const decision = input.decision ?? "feedback";
+    if (decision !== "feedback" && decision !== "approved") throw new ApiError(400, "결정이 올바르지 않습니다");
     const doc = this.service.docOf(fileId);
     const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: doc.artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
     const cur = await this.call(fileId, sid, "GET", "/api/draft");
@@ -613,7 +616,7 @@ export class AgentAReview {
       ...(nothing ? { nothingToSend: true } : {}),
       ifDraftRevision: input.revision,
     };
-    const sent = await this.call(fileId, sid, "POST", "/api/feedback", payload);
+    const sent = await this.call(fileId, sid, "POST", decision === "approved" ? "/api/approve" : "/api/feedback", payload);
     if (sent.status !== 200 || !obj(sent.json)) {
       if (sent.status === 409 && obj(sent.json) && sent.json.code === "draft_conflict") throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
       refuse(sent.status, sent.json, "검토를 제출하지 못했습니다");
@@ -859,7 +862,8 @@ export class AgentAReview {
     let child: Record<string, unknown> = {};
     if (input.parent) {
       if (!ANNOTATION.test(input.parent.branchId) || !ANNOTATION.test(input.parent.messageId)) throw new ApiError(400, "분기 id 가 올바르지 않습니다");
-      target = { kind: "message", branch_id: input.parent.branchId, message_id: input.parent.messageId };
+      // Agent-A 의 명령 형식: 답변 전체를 가리킬 때는 exact 를 null 로 싣는다(답변의 한 구절만 가리키는 기능은 쓰지 않는다).
+      target = { kind: "message", branch_id: input.parent.branchId, message_id: input.parent.messageId, exact: null };
       child = { parent_branch_id: input.parent.branchId, origin_message_id: input.parent.messageId };
     } else {
       const block = state.blocks.find((b) => b.id === input.blockId && !b.archived);
@@ -895,7 +899,8 @@ export class AgentAReview {
     const doc = this.service.docOf(fileId);
     let receipt: { result?: Record<string, unknown> };
     try {
-      receipt = await this.service.client.command(doc.artifactId, { command_id: `iamceo-review-close-${input.opId}`, type: "close_branch", branch_id: input.branchId, reason: (input.reason ?? "").slice(0, 1000) });
+      // Agent-A 는 닫는 사유가 비면 받지 않는다. 대표가 사유를 적지 않았으면 '닫음'으로 남긴다.
+      receipt = await this.service.client.command(doc.artifactId, { command_id: `iamceo-review-close-${input.opId}`, type: "close_branch", branch_id: input.branchId, reason: (input.reason ?? "").trim().slice(0, 1000) || "닫음" });
     } catch (e) {
       if (!(e instanceof AgentAError)) throw e;
       if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 응답을 받지 못했습니다. 다시 누르면 같은 요청으로 결과를 확인합니다", "AGENT_A_UNKNOWN");

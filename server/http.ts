@@ -657,8 +657,8 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await requireReview().saveDraft(id!, body.session, { markdown: body.markdown, revision: body.revision }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/submit", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ session: z.string(), revision: z.number().int().nonnegative() }));
-      return Response.json(await requireReview().submit(id!, body.session, { revision: body.revision }));
+      const body = await parseBody(req, z.strictObject({ session: z.string(), revision: z.number().int().nonnegative(), decision: z.enum(["feedback", "approved"]).optional() }));
+      return Response.json(await requireReview().submit(id!, body.session, { revision: body.revision, decision: body.decision }));
     }),
     // 문서 대화(Ask AI)
     route("GET", "/api/agent-a/docs/:id/review/chat", async (_req, url, [id]) => Response.json(await requireReview().chatHistory(id!, reviewSession(url), url.searchParams.get("conversation")))),

@@ -35,14 +35,18 @@ export function ChatPanel({ fileId, session, quote, onQuoteUsed, catalog, ai, on
   const log = useRef<HTMLDivElement>(null);
   useAutoGrow(input, draft);
 
+  /** 대화 불러오기의 차례. 불러오는 사이 질문을 보내거나 다른 대화를 고르면 늦게 온 응답은 버린다(방금 쓴 질문을 지우지 않게). */
+  const loadSeq = useRef(0);
   const load = useCallback(async (id?: string | null) => {
+    const mine = ++loadSeq.current;
     try {
       const h = await api.agentAReview.chat(fileId, session, id);
+      if (mine !== loadSeq.current) return;
       setConversation(h.conversationId);
       setEntries(h.entries);
       setError(null);
     } catch (e) {
-      setError(errorText(e));
+      if (mine === loadSeq.current) setError(errorText(e));
     }
   }, [fileId, session]);
   useEffect(() => {
@@ -61,12 +65,18 @@ export function ChatPanel({ fileId, session, quote, onQuoteUsed, catalog, ai, on
     const id = pending.current.id;
     setAsking(true);
     setError(null);
+    // 아직 오고 있는 '대화 불러오기' 응답은 이 질문보다 옛 상태다. 버린다.
+    loadSeq.current++;
+    let asked: string | null = conversation;
     setEntries((cur) => [...(cur ?? []).filter((e) => e.id !== id), { id, prompt, quote, createdAt: Date.now(), answer: "", writing: true, error: null, provider: null }]);
     const patch = (change: (e: AgentAChatEntry) => AgentAChatEntry) => setEntries((cur) => (cur ?? []).map((e) => (e.id === id ? change(e) : e)));
     abort.current = new AbortController();
     try {
       await api.agentAReview.chatAsk(fileId, session, { id, prompt, quote, ai }, (event) => {
-        if (event.type === "start") setConversation(event.conversationId);
+        if (event.type === "start") {
+          asked = event.conversationId;
+          setConversation(event.conversationId);
+        }
         else if (event.type === "delta") patch((e) => ({ ...e, answer: e.answer + event.text }));
         else if (event.type === "error") patch((e) => ({ ...e, error: event.message, writing: false }));
         else if (event.type === "done") patch((e) => ({ ...e, writing: false, answer: e.answer || event.text }));
@@ -74,6 +84,8 @@ export function ChatPanel({ fileId, session, quote, onQuoteUsed, catalog, ai, on
       pending.current = null;
       setDraft("");
       onQuoteUsed();
+      // 서버에 남은 대화로 맞춘다(이 질문보다 앞선 질문·답이 아직 화면에 없을 수 있다).
+      await load(asked);
     } catch (e) {
       // 보내지 못했거나 끊겼다. 쓴 글은 그대로 둔다. 이미 받은 질문이면(같은 id) 대화를 다시 읽어 답을 보인다.
       setError(errorText(e));
@@ -100,7 +112,7 @@ export function ChatPanel({ fileId, session, quote, onQuoteUsed, catalog, ai, on
         <strong>문서에 묻기</strong>
       </header>
       <div className="aar-pane__tools" role="group" aria-label="대화 관리">
-        <button type="button" className="vw-btn" disabled={asking} onClick={() => void api.agentAReview.chatNew(fileId, session).then((h) => { setConversation(h.conversationId); setEntries(h.entries); setSessions(null); setError(null); }, (e) => setError(errorText(e)))}>새 대화</button>
+        <button type="button" className="vw-btn" disabled={asking} onClick={() => { loadSeq.current++; void api.agentAReview.chatNew(fileId, session).then((h) => { setConversation(h.conversationId); setEntries(h.entries); setSessions(null); setError(null); }, (e) => setError(errorText(e))); }}>새 대화</button>
         <button type="button" className="vw-btn" aria-expanded={sessions !== null} disabled={asking} onClick={() => (sessions ? setSessions(null) : void api.agentAReview.chatSessions(fileId, session).then(setSessions, (e) => setError(errorText(e))))}>앞 대화</button>
         {asking ? <button type="button" className="vw-btn" onClick={() => void stop()}>답 멈춤</button> : null}
       </div>
@@ -110,7 +122,7 @@ export function ChatPanel({ fileId, session, quote, onQuoteUsed, catalog, ai, on
           {[...sessions].reverse().map((c) => (
             <li key={c.conversationId}>
               <button type="button" className="aar-row" aria-current={c.conversationId === conversation ? "true" : undefined} disabled={asking}
-                onClick={() => void api.agentAReview.chatSelect(fileId, session, c.conversationId).then((h) => { setConversation(h.conversationId); setEntries(h.entries); setSessions(null); setError(null); }, (e) => setError(errorText(e)))}>
+                onClick={() => { loadSeq.current++; void api.agentAReview.chatSelect(fileId, session, c.conversationId).then((h) => { setConversation(h.conversationId); setEntries(h.entries); setSessions(null); setError(null); }, (e) => setError(errorText(e))); }}>
                 <span className="aar-row__text">{c.label ? oneLine(c.label, 70) : "빈 대화"}</span>
                 <span className="aar-row__meta">{c.current ? <span className="aa-tag">지금 대화</span> : null}<Time iso={new Date(c.updatedAt || c.createdAt).toISOString()} /></span>
               </button>

@@ -314,6 +314,7 @@ describe("되살린 기능: 본문 직접 고치기(초안)와 검토 제출", (
     expect(manage.feedback[1]!.message).toContain("Delete the selected content.");
     const closed = await s.review.open(s.fileId, s.sid);
     expect(closed.closed).toBe(true);
+    expect(s.fake.sessions[0]!.decision.kind).toBe("feedback");
     // 닫힌 검토에는 새 댓글·초안 고치기를 받지 않는다. 새로 열면 새 검토다.
     expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "after", kind: "global", text: "제출 뒤" }))).toEqual({ status: 409, code: "AGENT_A_ALREADY_DECIDED" });
     expect((await failure(s.review.saveDraft(s.fileId, s.sid, { markdown: "x", revision: 99 }))).status).toBe(409);
@@ -329,7 +330,10 @@ describe("되살린 기능: 본문 직접 고치기(초안)와 검토 제출", (
     expect((await s.review.open(s.fileId, s.sid)).closed).toBe(false);
     expect((await s.review.manage(s.fileId)).branches).toHaveLength(0);
     const again = await s.review.draft(s.fileId, s.sid);
-    expect((await s.review.submit(s.fileId, s.sid, { revision: again.revision })).sent).toBe(3);
+    // 다시 읽은 판으로는 제출된다. 머리의 Save(확인하고 저장)는 approved 결정으로 남는다.
+    expect((await s.review.submit(s.fileId, s.sid, { revision: again.revision, decision: "approved" })).sent).toBe(3);
+    expect(s.fake.sessions[0]!.decision.kind).toBe("approved");
+    expect(s.fake.calls.at(-1)).toEqual({ method: "POST", path: "/api/approve" });
   });
 
   test("제출 글은 주석 목록과 직접 고친 곳을 싣는다", () => {

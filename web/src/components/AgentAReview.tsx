@@ -89,20 +89,22 @@ function DraftEditor({ fileId, session, canonical, onSaved, onClose }: { fileId:
   return (
     <section className="aar-editor" aria-label="본문 고치기">
       <p className="aar-note">고친 글은 이 검토의 초안으로만 남습니다. 정본은 바뀌지 않고, ‘검토 제출’ 때 고친 내용이 함께 넘어갑니다.</p>
-      {error ? <p className="aar-error" role="alert">{error}</p> : null}
+      {!draft && error ? <p className="aar-error" role="alert">{error}</p> : null}
       {!draft && !error ? <p className="aar-note" role="status">초안을 읽는 중…</p> : null}
-      {theirs ? (
-        <div className="aar-card" role="status" aria-label="다른 화면의 초안">
-          <p className="aar-note">다른 화면이 먼저 초안을 저장했습니다. 그 초안은 그대로 있고, 내 글도 아래 입력칸에 그대로 있습니다.</p>
-          <div className="aar-actions">
-            <button type="button" className="vw-btn" disabled={busy} onClick={() => { setDraft(theirs); setText(theirs.editedMarkdown ?? canonical); setTheirs(null); setError(null); }}>다른 화면의 초안으로 바꾸기</button>
-            <button type="button" className="vw-btn" disabled={busy} onClick={() => { const next = theirs; setDraft(next); setTheirs(null); void save(text, next.revision); }}>내 글로 그 초안의 본문 덮기</button>
-          </div>
-        </div>
-      ) : null}
       {draft ? (
         <>
           <textarea className="aar-editor__input" aria-label="본문(마크다운)" value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} />
+          {/* 저장 단추 바로 위에 둔다: 긴 입력칸 아래에서 눌러도 결과가 보이게 */}
+          {error ? <p className="aar-error" role="alert">{error}</p> : null}
+          {theirs ? (
+            <div className="aar-card" role="status" aria-label="다른 화면의 초안">
+              <p className="aar-note">다른 화면이 먼저 초안을 저장했습니다. 그 초안은 그대로 있고, 내 글도 위 입력칸에 그대로 있습니다.</p>
+              <div className="aar-actions">
+                <button type="button" className="vw-btn" disabled={busy} onClick={() => { setDraft(theirs); setText(theirs.editedMarkdown ?? canonical); setTheirs(null); setError(null); }}>다른 화면의 초안으로 바꾸기</button>
+                <button type="button" className="vw-btn" disabled={busy} onClick={() => { const next = theirs; setDraft(next); setTheirs(null); void save(text, next.revision); }}>내 글로 그 초안의 본문 덮기</button>
+              </div>
+            </div>
+          ) : null}
           <div className="aar-actions">
             <GlassButton variant="primary" size="s" disabled={busy || theirs !== null || text === (draft.editedMarkdown ?? canonical)} onClick={() => void save(text, draft.revision)}>{busy ? "저장하는 중" : "초안 저장"}</GlassButton>
             {draft.editedMarkdown !== null ? (
@@ -606,18 +608,21 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
             </p>
           ) : error ? null : <p className="aar-note" role="status">초안을 읽는 중…</p>}
           {error ? <p className="aar-error" role="alert">{error}</p> : null}
+          <p className="aar-note">‘확인하고 저장’은 이 판을 확인했다는 결정으로, ‘의견 보내기’는 고쳐 달라는 의견으로 남습니다. 주석이 분기로 넘어가는 것은 같습니다.</p>
           <div className="aar-actions">
-            <GlassButton variant="primary" size="s" disabled={busy || !submitDraft} onClick={() => void act(async () => {
-              try {
-                const r = await api.agentAReview.submit(fileId, sessionId, submitDraft!.revision);
-                setSubmitOpen(false);
-                toLatest(r.sent ? `검토를 제출했습니다. 질문 ${r.sent}개가 분기로 넘어갔습니다. 정본은 그대로입니다.` : "넘길 것 없이 검토를 닫았습니다. 정본은 그대로입니다.");
-              } catch (e) {
-                // 그사이 다른 화면이 초안을 바꿨으면 제출하지 않고 최신 초안을 다시 보여 준다.
-                if (e instanceof ApiError && e.code === "AGENT_A_DRAFT_CONFLICT") await api.agentAReview.draft(fileId, sessionId).then(setSubmitDraft, () => {});
-                throw e;
-              }
-            })}>{busy ? "제출하는 중" : "검토 제출"}</GlassButton>
+            {(["approved", "feedback"] as const).map((decision) => (
+              <GlassButton key={decision} variant={decision === "approved" ? "primary" : "glass"} size="s" disabled={busy || !submitDraft} onClick={() => void act(async () => {
+                try {
+                  const r = await api.agentAReview.submit(fileId, sessionId, submitDraft!.revision, decision);
+                  setSubmitOpen(false);
+                  toLatest(r.sent ? `검토를 제출했습니다. 질문 ${r.sent}개가 분기로 넘어갔습니다. 정본은 그대로입니다.` : "넘길 것 없이 검토를 닫았습니다. 정본은 그대로입니다.");
+                } catch (e) {
+                  // 그사이 다른 화면이 초안을 바꿨으면 제출하지 않고 최신 초안을 다시 보여 준다.
+                  if (e instanceof ApiError && e.code === "AGENT_A_DRAFT_CONFLICT") await api.agentAReview.draft(fileId, sessionId).then(setSubmitDraft, () => {});
+                  throw e;
+                }
+              })}>{decision === "approved" ? "확인하고 저장" : "의견 보내기"}</GlassButton>
+            ))}
             <GlassButton variant="ghost" size="s" disabled={busy} onClick={() => setSubmitOpen(false)}>닫기</GlassButton>
           </div>
         </div>

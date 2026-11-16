@@ -129,6 +129,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       if (typeof c.branch_id !== "string" || typeof c.title !== "string" || typeof c.message !== "string") return fail(400, "invalid_request");
       if (branch(c.branch_id)) return fail(409, "revision_conflict", "Branch ID already exists");
       const parent = c.parent_branch_id ? branch(c.parent_branch_id) : null;
+      // 실제 Agent-A 의 명령 형식(contracts/command.schema.json): 답변을 가리키는 대상은 exact 칸(글 또는 null)이 꼭 있어야 한다.
+      if (c.target?.kind === "message" && !(c.target.exact === null || typeof c.target.exact === "string")) return fail(400, "invalid_request", "명령 형식이 올바르지 않습니다. 대상과 기준 버전을 확인하세요.");
       if (c.parent_branch_id && (!parent || !parent.messages.some((m: Json) => m.id === c.origin_message_id && m.role === "assistant"))) return fail(400, "invalid_request", "Origin must be an assistant message in the parent branch");
       if (!c.parent_branch_id && c.target?.kind === "block" && block(c.target.block_id)?.revision !== c.target.block_revision) return fail(409, "revision_conflict", "Block changed");
       const b = { id: c.branch_id, target: clone(c.target), parent_branch_id: c.parent_branch_id ?? null, origin_message_id: c.origin_message_id ?? null, title: c.title, status: "open", messages: [] as Json[], created_at: new Date().toISOString() };
@@ -147,6 +149,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       result = { message_id: m.id, decision: m.decision };
     } else if (c.type === "close_branch") {
       const b = branch(c.branch_id);
+      // 실제 형식: 닫는 사유는 한 글자 이상이어야 한다.
+      if (typeof c.reason !== "string" || !c.reason) return fail(400, "invalid_request", "명령 형식이 올바르지 않습니다. 대상과 기준 버전을 확인하세요.");
       if (!b) return fail(404, "not_found");
       b.status = "closed";
       b.close_reason = c.reason ?? "";
@@ -434,7 +438,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       return Response.json({ ok: true }, { headers: revisionHead(s) });
     }
     // ---- 검토 제출(원래 화면 머리의 Save) ----
-    if (path === "/api/feedback" && method === "POST") {
+    if ((path === "/api/feedback" || path === "/api/approve") && method === "POST") {
+      const action = path === "/api/approve" ? "approved" : "feedback";
       if (!body || typeof body !== "object" || (body.annotations !== undefined && !Array.isArray(body.annotations))) return fail(400, "invalid_request", "Invalid feedback body.");
       if (body.serverSession !== s.server_session) return fail(409, "session_mismatch", "This tab belongs to a different review session.");
       const annotations: Json[] = body.annotations ?? [];
@@ -443,7 +448,7 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
         if (!a || !ANNOTATION.test(a.id ?? "") || ids.has(a.id) || !["COMMENT", "GLOBAL_COMMENT", "DELETION"].includes(a.type)) return fail(400, "invalid_request", "Invalid or duplicate annotation.");
         ids.add(a.id);
       }
-      const requestHash = JSON.stringify(["feedback", body.feedback ?? "", annotations, body.nothingToSend === true]);
+      const requestHash = JSON.stringify([action, body.feedback ?? "", annotations, body.nothingToSend === true]);
       if (s.decision) return s.decision.request_hash === requestHash ? Response.json(s.decision.response) : fail(409, "already_decided", "This review was already submitted.");
       if (protocol >= 2 && body.ifDraftRevision !== undefined && body.ifDraftRevision !== (s.draft_revision ?? 0))
         return Response.json({ ok: false, code: "draft_conflict", draftGeneration: s.draft_generation, draftRevision: s.draft_revision ?? 0 }, { status: 409 });
@@ -474,7 +479,7 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       if (String(body.feedback ?? "").trim() && !body.nothingToSend) open("[Full native feedback]", `[Full native feedback; includes comments also stored individually.]\n\n${body.feedback}`, "");
       state.event_seq++;
       state.events.push({ seq: state.event_seq, type: "create_branch", actor_id: "local-user", created_at: new Date().toISOString(), payload: {} });
-      const response = { ok: true, session_id: s.id, artifact_id: s.artifact_id, decision: body.nothingToSend ? "done" : "feedback", canonical_changed: false, draft_preserved: Boolean(s.draft), feedback_ids: feedbackIds, branch_ids: [...new Set(branchIds)] };
+      const response = { ok: true, session_id: s.id, artifact_id: s.artifact_id, decision: action === "feedback" && body.nothingToSend ? "done" : action, canonical_changed: false, draft_preserved: Boolean(s.draft), feedback_ids: feedbackIds, branch_ids: [...new Set(branchIds)] };
       s.decision = { kind: response.decision, created_at: new Date().toISOString(), request_hash: requestHash, original_payload: clone(body), response };
       s.submitted_draft = s.draft;
       s.draft = null;

@@ -81,7 +81,7 @@
 @media (pointer:coarse) { .aar-seg__btn { min-height:36px; padding:0 12px; } }
 /* 본문 직접 고치기 */
 .aar-editor { display:flex; flex-direction:column; gap:10px; padding:12px 0; }
-.aar-editor__input { min-height:60vh; padding:12px 14px; border-radius:14px; font:inherit; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13.5px; line-height:1.6; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); resize:vertical; }
+.aar-editor__input { min-height:46vh; padding:12px 14px; border-radius:14px; font:inherit; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13.5px; line-height:1.6; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); resize:vertical; }
 /* 답에 쓸 AI 고르기 · 그림 붙이기 */
 .aar-ai { display:flex; flex-wrap:wrap; gap:6px; padding:6px 10px 0; }
 .aar-ai select { min-width:0; max-width:100%; min-height:30px; padding:0 8px; border-radius:10px; font:inherit; font-size:12.5px; color:var(--ink-2); background:var(--field); box-shadow:var(--field-ring); }

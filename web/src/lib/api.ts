@@ -296,7 +296,7 @@ export const api = {
     /** 직접 고친 본문을 초안에 저장한다(null 이면 고친 것을 버린다). revision 은 고치기 시작할 때 본 초안 판이다. */
     saveDraft: (fileId: string, session: string, markdown: string | null, revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft`, { session, markdown, revision }),
     /** 검토 제출: 초안의 주석을 분기의 질문으로 넘기고 이 검토를 닫는다. */
-    submit: (fileId: string, session: string, revision: number) => post<AgentAReviewSubmitResult>(`/api/agent-a/docs/${seg(fileId)}/review/submit`, { session, revision }),
+    submit: (fileId: string, session: string, revision: number, decision: "feedback" | "approved") => post<AgentAReviewSubmitResult>(`/api/agent-a/docs/${seg(fileId)}/review/submit`, { session, revision, decision }),
     chat: (fileId: string, session: string, conversation?: string | null, signal?: AbortSignal) =>
       get<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat?session=${seg(session)}${conversation ? `&conversation=${seg(conversation)}` : ""}`, signal),
     chatSessions: (fileId: string, session: string) => get<AgentAChatSession[]>(`/api/agent-a/docs/${seg(fileId)}/review/chat/sessions?session=${seg(session)}`),

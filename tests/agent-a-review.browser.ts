@@ -639,6 +639,7 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await input.fill("내가 고친 본문");
     await page.getByRole("button", { name: "초안 저장" }).click();
     await page.locator('[aria-label="다른 화면의 초안"]').waitFor({ timeout: 15_000 });
+    await page.locator('[aria-label="다른 화면의 초안"]').scrollIntoViewIfNeeded();
     await expect(page.locator(".aar-editor .aar-error").innerText()).resolves.toContain("그사이 다른 화면이 초안을 저장했습니다");
     expect(draftOf()).toMatchObject({ editedMarkdown: "다른 창의 본문", globalAttachments: [{ name: "other.png", path: "/assets/other" }] });
     await expect(input.inputValue()).resolves.toBe("내가 고친 본문");
@@ -660,13 +661,15 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     const dialog = page.locator("dialog[open]");
     await dialog.getByText("넘길 것: 주석 1개 · 직접 고친 본문 · 붙인 그림 1개").waitFor({ timeout: 15_000 });
     await shot(page, "13-desk-submit");
-    await dialog.getByRole("button", { name: "검토 제출" }).click();
+    await expect(dialog.getByRole("button").allInnerTexts()).resolves.toEqual(expect.arrayContaining(["확인하고 저장", "의견 보내기"]));
+    await dialog.getByRole("button", { name: "확인하고 저장" }).click();
     await banner(page, "검토를 제출했습니다. 질문 2개가 분기로 넘어갔습니다. 정본은 그대로입니다.");
     await page.waitForFunction((id) => document.querySelector(".aar")?.getAttribute("data-session") !== id, first);
     expect(state.branches).toHaveLength(2);
     expect(state.feedback.map((f: { state: string }) => f.state)).toEqual(["not_sent", "not_sent"]);
     expect(state.artifact_revision).toBe(1);
-    expect(fake!.sessions.find((s) => s.id === first)!.decision.kind).toBe("feedback");
+    // 머리의 Save 와 같은 결정(approved)으로 남는다
+    expect(fake!.sessions.find((s) => s.id === first)!.decision.kind).toBe("approved");
     // 새 검토에는 초안이 없고 정본 본문이다
     expect(await docText(page)).not.toContain("다른 창의 본문");
     await expect(page.locator(".aar-bar__state").innerText()).resolves.not.toContain("직접 편집 초안");
