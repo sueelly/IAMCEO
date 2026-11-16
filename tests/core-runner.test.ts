@@ -76,6 +76,47 @@ afterEach(async () => { for (const f of fixtures.splice(0)) { await Promise.all(
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 100 && !predicate(); i++) await Bun.sleep(10); expect(predicate()).toBe(true); };
 
 const trustScreen = (cwd = "/tmp", selected = 0) => ` Accessing workspace:\n ${cwd}\n Quick safety check: Is this a project you created or one you trust?\n ${selected === 0 ? "❯" : " "} No, exit\n ${selected === 1 ? "❯" : " "} Yes, I trust this folder\n Enter to confirm · Esc to cancel\n`;
+describe("core Claude missing resume preflight", () => {
+  test("confirmed missing transcript refuses before launching a dead resume", async () => {
+    const f = await fixture(); const runner = f.runner();
+    await expect(runner.start(member({ sessionId: "missing-conversation" }), { ...f.opts, resume: true }))
+      .rejects.toMatchObject({ kind: "session_missing", uncertain: false, deliveryEffect: "not_written", message: expect.stringContaining("No conversation found") });
+    expect(f.calls.some(r => r.method === "terminal.run")).toBe(false);
+  });
+  test("a transcript under a previous cwd still resumes the same conversation", async () => {
+    const f = await fixture(); const runner = f.runner();
+    const path = transcriptPath("/previous/cwd", "existing-conversation", join(f.dir, "claude-home"));
+    mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "{}\n");
+    await runner.start(member({ sessionId: "existing-conversation" }), { ...f.opts, resume: true });
+    expect(f.calls.find(r => r.method === "terminal.run")!.params.argv).toContain("--resume");
+  });
+  test("filesystem inspection errors do not turn into confirmed absence", async () => {
+    const f = await fixture(); const runner = f.runner();
+    writeFileSync(join(f.dir, "claude-home"), "not a readable projects directory");
+    await runner.start(member({ sessionId: "unconfirmed-conversation" }), { ...f.opts, resume: true });
+    expect(f.calls.find(r => r.method === "terminal.run")!.params.argv).toContain("--resume");
+  });
+  test("explicit reopen starts fresh while migrated uncertain deliveries remain held", async () => {
+    const f = await fixture(); const runner = f.runner();
+    const config = loadConfig({ IAMCEO_HOME: join(f.dir, "iamceo"), IAMCEO_PORT: "0", IAMCEO_CORE_SOCKET: f.socketPath,
+      IAMCEO_CLAUDE_BIN: "/fake/claude", IAMCEO_CODEX_BIN: "/fake/codex", IAMCEO_CORE_BIN: "/usr/bin/false" });
+    const db = openDb(config.dbPath); const store = new Store(db, new Bus());
+    const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), timings: { healthMs: 1, tickMs: 60000 } });
+    try {
+      const project = store.createProject({ name: "Resume", cwd: f.dir });
+      const m = await orch.createMember(project.id, { name: "worker", cli: "claude" });
+      const uncertain = store.enqueue({ projectId: project.id, memberId: m.id, kind: "instruction", text: "old uncertain input", wake: false });
+      store.markHeld(uncertain.id, "delivery_unknown");
+      f.terminals.get(m.paneId!)!.state = "finished";
+      store.patchMember(m.id, { status: "offline" });
+      const reopened = await orch.resumeMember(m.id);
+      expect(reopened.sessionId).not.toBe(m.sessionId);
+      expect(f.calls.filter(r => r.method === "terminal.run")).toHaveLength(2);
+      expect(store.requireDelivery(uncertain.id)).toMatchObject({ status: "held", holdReason: "delivery_unknown" });
+      expect(f.calls.some(r => r.method === "terminal.send")).toBe(false);
+    } finally { await orch.shutdown(); db.close(); }
+  });
+});
 describe("core Claude folder trust approval", () => {
   test("real orchestrator and supervisor keep folder trust evidence through reconnect and clear it on unknown screens", async () => {
     const f = await fixture(); const runner = f.runner();
@@ -320,6 +361,8 @@ describe("provider configuration and recovery guards", () => {
   });
   test("Claude configuration reload preserves native session and refuses a draft", async () => {
     const f = await fixture(); const runner = f.runner(10000); const first = await runner.start(member(), f.opts);
+    const path = transcriptPath(member().cwd, first.sessionId!, join(f.dir, "claude-home"));
+    mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "{}\n");
     f.setScreen(composer("leave my draft")); expect(await runner.applyConfig(member({ model: "new-model" }), f.opts)).toMatchObject({ ok: false, reason: "input_busy" }); expect(f.calls.some((request) => request.method === "terminal.kill")).toBe(false);
     f.setScreen(composer()); expect(await runner.applyConfig(member({ model: "new-model" }), f.opts)).toMatchObject({ ok: true });
     const launches = f.calls.filter((request) => request.method === "terminal.run"); expect(launches).toHaveLength(2); expect(launches[1].params.argv).toContain("--resume"); expect(launches[1].params.argv).toContain(first.sessionId); expect(launches[1].params.argv).toContain("new-model");

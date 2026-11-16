@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { loadConfig } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { Bus } from "../server/bus.ts";
@@ -9,6 +11,7 @@ import { CoreRunner } from "../server/runner/core.ts";
 import type { CoreTerminal } from "../server/runner/core-client.ts";
 import type { RunnerEvent } from "../server/runner/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { transcriptPath } from "../server/runner/transcript.ts";
 
 interface Rpc {
   id: string;
@@ -103,6 +106,7 @@ async function fixture(healthMs = 60_000, rpcTimeoutMs = 100) {
   });
   const current = orchestrator();
   return { ...current, store, bus, db, project, config, calls, terminals, runners, orchestrator,
+    saveTranscript: (sessionId: string) => { const path = transcriptPath(project.cwd, sessionId, isolated.paths.claudeHome); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "{}\n"); },
     count: (method: string) => calls.filter(c => c.method === method).length,
     loseRun: (value: boolean) => { runLost = value; }, loseList: (value: boolean) => { listLost = value; }, loseKeys: () => { keysLost = true; },
     loseKill: (value: boolean) => { killLost = value; }, unavailable: (value: boolean) => { getUnavailable = value; },
@@ -127,6 +131,7 @@ test("pre-launch list timeout does not fence the next explicit fresh-session att
 for (const preflight of [true, false]) test(`legacy unknown ${preflight ? "list" : "run"} failure ${preflight ? "recovers absence" : "retains its fence"}`, async () => {
   const f = await fixture(20, 1000);
   const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  f.saveTranscript(member.sessionId!);
   await f.orch.shutdown();
   f.terminals.get(member.paneId!)!.state = "finished";
   f.store.patchMember(member.id, { paneId: null, status: "error", lastError: "새 세션 시작 실패" });
