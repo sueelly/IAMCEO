@@ -34,5 +34,16 @@
   "poll_seconds": 120,
   "idle_interval_seconds": 120,
   "ingress_credential_file": "/private/cloudflared/cert.pem",
-  "docker_socket": "/private/docker/run/docker.sock"
+  "docker_socket": "/private/docker/run/docker.sock",
+  "target_handoff": {
+    "origin": "https://machine.example.ts.net:14443",
+    "credential_file": "/private/target/config.json",
+    "members": [
+      {
+        "member_id": "m_existing",
+        "project_id": "registered-project",
+        "message_id": "existing-resume-message"
+      }
+    ]
+  }
 }

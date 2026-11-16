@@ -363,6 +363,30 @@ def access_mode(preference):
     return explicit
 
 
+def observe_target_handoff(api, members):
+    """Only observe the existing resume messages and human prompt blockers."""
+    result = {}
+    for spec in members:
+        member = api.request('GET', '/api/members/' + urllib.parse.quote(spec['member_id'], safe=''))
+        message = api.request('GET', '/api/messages/' + urllib.parse.quote(spec['message_id'], safe=''))
+        if member.get('id') != spec['member_id'] or member.get('projectId') != spec['project_id'] or message.get('id') != spec['message_id'] or message.get('projectId') != spec['project_id']:
+            raise ValueError('Target handoff identity mismatch')
+        error = (member.get('statusObservation') or {}).get('error') or {}
+        result[spec['member_id']] = {'project_id': spec['project_id'],
+            'delivery': message.get('delivery'),
+            'blocked_reason': (error.get('code') or 'unclassified') if member.get('status') in {'blocked', 'waiting'} else None}
+    return {'reachable': True, 'members': result}
+
+
+def target_handoff_probe(cfg):
+    spec = cfg.get('target_handoff')
+    if not spec: return None
+    try:
+        return observe_target_handoff(API(spec['origin'], spec['credential_file']), spec['members'])
+    except Exception as error:
+        return {'reachable': False, 'error_type': type(error).__name__}
+
+
 def collect(cfg):
     if cfg.get('test_mode') and cfg.get('observation_file'): return read_json(cfg['observation_file'])
     root = Path(cfg['root']); api = API(cfg['source_url'], cfg['source_credential_file'])
@@ -398,7 +422,8 @@ def collect(cfg):
                   'gui_session_available': subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid())], capture_output=True, timeout=5).returncode == 0,
                   'docker_socket_available': Path(cfg['docker_socket']).is_socket() if cfg.get('docker_socket') else False,
                   'target_server': http_probe(cfg['target_health']),
-                  'target_authenticated_readiness': application_ready(cfg['target_readiness'], cfg['source_credential_file'], release.get('build_id'))}
+                  'target_authenticated_readiness': application_ready(cfg['target_readiness'], cfg['source_credential_file'], release.get('build_id')),
+                  'target_handoff': target_handoff_probe(cfg)}
     result = {'at': now_iso(), 'source': source, 'conditions': conditions, 'receipts': receipt_keys(root)}
     result['conditions']['target_prepared'] = target_prepared(cfg, result)
     return result

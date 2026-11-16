@@ -74,3 +74,14 @@ python3 scripts/migration_supervisor.py --config "$CONFIG" rollback
 원본의 오래된 직원 한 명은 이전 실행의 확정 종료 기록이 있지만 native prompt를 분류하지 못하는 상태다. 그 상태와 지시를 보존하며, prompt에 답하거나 완료·수신을 추정하지 않는다. 이 직원은 대상의 자동 실행에서 제외한다. 신규 실행 차단 뒤 진행 실행이 없고 전달 대기 메시지·열린 결정이 없는 경계를 120초 간격으로 두 번 검증해야 최종 요청을 만든다.
 
 등록된 `dev.iamceo.final-sync-drain-20261116`은 모델 없이 경계를 확인한다. 최종 백업 영수증은 기존 같은 세션 감독의 재개 조건이며, 데이터 가져오기·운영 서비스 시작·총괄 시작의 완료 영수증을 대신하지 않는다. 진행 상태와 실제 경로는 Git 밖 이전 루트의 `MANUAL_FINAL_SYNC_PROGRESS.json`, `FINAL_SYNC_BOUNDARY_WATCH_INSTALLED.json`, `GUI_CLI_AUTH_VERIFIED.json`에 둔다. 최종 전환 뒤 점검 서버·임시 HTTPS 경로·완료된 이전 감독을 정리한다.
+
+
+## 최종 복원 뒤 남은 사람 확인 감시
+
+최종 운영 주소로 전환한 뒤에도 총괄의 폴더 신뢰 확인이 남을 수 있다. private 설정의 선택 항목 `target_handoff`에 `origin`(HTTPS), `credential_file`, `members` 목록을 넣는다. 각 항목은 이미 시작한 직원의 `member_id`, `project_id`, 이미 등록한 재개 글의 `message_id`다. 실제 ID와 인증 자료는 Git에 넣지 않는다.
+
+감독은 GET으로 직원/글의 ID와 프로젝트를 대조하고 전달 상태와 blocked/waiting 원인 코드만 비교한다. 글 본문·prompt 내용·시각·PID·일하는 중/대기 중 전환은 재개 fingerprint에 추가하지 않는다. 잘못된 ID·접속 실패는 성공으로 처리하지 않는다. 승인에 응답하거나 글을 재등록하지 않으며, 사람이 확인을 마치면 기존 앱의 큐 수명주기가 글을 전달한다. 같은 세션 소유 PID 종료와 terminal event, 영속 중복 방지 잠금은 그대로 적용한다.
+
+운영 주소/build로 설정을 갱신한 뒤 현재 소유자가 새 관측을 검토하고 acknowledge한다. 남은 두 글이 실제 delivered이고 실행 근거가 확인돼야 전체 재개를 완료로 기록한다. 그전에는 감독을 유지하고 완료된 경계 감시·빈 점검 서버만 정리한다. 운영 서비스/진행 직원은 감독 교체로 중단하지 않는다. 최종 data 홈의 재시작 검증은 실제 업무 시작 전에 완료했으며 재부팅 시험과 구분한다.
+
+2026-11-16 운영 보고: 최종 snapshot의 schema 33·ID와 첨부 275개 해시, 운영 HTTPS 로그인/12개 화면/모바일, 기존 관리 서비스 health가 검증됐다. 본사·Native의 재개 글은 delivered, Design·God는 폴더 신뢰 확인으로 held다. 자동 승인·미확인 글 재전송은 하지 않았다. 감독 단위 검사 25개와 이전 안전 검사 5개가 통과했다. 제품 전체 회귀 실패는 기존 TEST-FAILURES 기록대로 남긴다.
