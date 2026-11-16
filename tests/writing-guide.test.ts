@@ -48,6 +48,19 @@ describe("글 지침", () => {
     expect(renderRole("worker", vars)).toContain("바뀐 파일 목록·해시·경로는 본문에 쓰지 않는다");
   });
 
+  test("대표용 자료는 기본 한 개다: 같은 본문의 html·md 짝을 요구하지 않고, 서로 다른 자료는 막지 않는다", () => {
+    for (const kind of KINDS) {
+      const text = renderRole(kind, vars);
+      for (const old of ["`md` 짝", "md 짝", "(글로 읽기)", "짝을 함께 올린다"]) expect(text).not.toContain(old);
+      expect(text).toContain("대표용 자료는 기본 한 개다. 같은 본문을 `html`과 `md`로 두 번 올리지 않는다.");
+      expect(text).toContain("그림·차트·조작 요소가 있어도 글 판을 따로 만들지 않는다.");
+      expect(text).toContain("내용이 서로 다른 것(원기록·이미지·따로 쓰는 납품물)은 각각 올려도 된다.");
+    }
+    const checklist = WRITING_GUIDE.split("### 끝 확인 12줄")[1]!.split("\n").filter((line) => line.startsWith("- "));
+    expect(checklist).toHaveLength(12);
+    expect(checklist).toContain("- 같은 본문을 자료 두 개로 나눠 올리지 않았는가");
+  });
+
   test("고쳐 쓴 템플릿은 그대로 쓰고, 꺼낸 예시에는 지침이 들어 있다", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-guide-"));
     const paths = exportRoles(dir);

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ApprovalPrompt, Backend, Decision, DecisionOption, Delivery, Member, Project, Todo } from "../shared/types.ts";
@@ -183,6 +183,27 @@ describe("턴 왕복", () => {
     await waitFor("둘째 답", () => t.texts().some((m) => m.body === "둘째답변"));
     expect(t.starts()[1]!.resumeFlag).toBe(lead.sessionId ?? t.member(lead.id).sessionId);
     expect(t.starts()[1]!.sessionFlag).toBeNull();
+  });
+
+  test("역할 규칙 파일은 새 세션과 재개 세션 모두 자료 한 개 지침으로 다시 쓴다", async () => {
+    const t = await setup();
+    await t.orch.sendUserMessage(t.project.id, { text: "첫 일 @fake:text=첫답변" });
+    const lead = t.store.getConductor(t.project.id)!;
+    await t.idle(lead.id);
+    const rulesPath = join(t.home, "run", `${lead.id}.rules.md`);
+    expect(t.starts()[0]!.args).toContain(rulesPath);
+    const fresh = readFileSync(rulesPath, "utf8");
+    expect(fresh).toContain("대표용 자료는 기본 한 개다. 같은 본문을 `html`과 `md`로 두 번 올리지 않는다.");
+    expect(fresh).not.toContain("`md` 짝");
+    // 고치기 전 판이 남긴 규칙 파일(같은 본문의 md 짝 강제)을 흉내 낸다. 재개 턴은 지금 지침으로 다시 쓴다.
+    writeFileSync(rulesPath, "옛 규칙: html 자료에는 같은 내용의 `md` 짝을 함께 올린다.\n");
+    await t.orch.sendUserMessage(t.project.id, { text: "다음 @fake:text=둘째답변" });
+    await waitFor("둘째 답", () => t.texts().some((m) => m.body === "둘째답변"));
+    expect(t.starts()[1]!.resumeFlag).toBe(t.member(lead.id).sessionId);
+    expect(t.starts()[1]!.args).toContain(rulesPath);
+    const resumed = readFileSync(rulesPath, "utf8");
+    expect(resumed).not.toContain("`md` 짝");
+    expect(resumed).toContain("대표용 자료는 기본 한 개다.");
   });
 
   test("시스템 프롬프트·MCP 설정 파일을 계약대로 쓴다", async () => {
