@@ -124,7 +124,7 @@ export function observeCompactBoundary(options: { cli: CliProvider; home: string
   const root = options.cli === "codex" ? join(options.home, "sessions") : join(options.home, "projects");
   if (!providerLogPath(root, baseline.path)) return unknown("path_unavailable");
   if (options.cli === "codex") {
-    const head = readJsonlRange(root, baseline.path, null, { maxBytes: 1024 * 1024, fileIdentity: baseline.fileIdentity });
+    const head = readJsonlRange(root, baseline.path, null, { maxBytes: 1024 * 1024, maxRecords: 1, fileIdentity: baseline.fileIdentity });
     const meta = parseCodexSessionMeta(head.records[0]?.value);
     if (meta?.sessionId !== current.sessionId || meta.cwd !== options.cwd || head.records[0]?.start !== 0) return unknown("session_conflict");
   }

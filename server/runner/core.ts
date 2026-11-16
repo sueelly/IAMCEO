@@ -491,7 +491,7 @@ export class CoreRunner implements Runner {
     }
     try {
       const matches = [...new Bun.Glob(`**/rollout-*-${track.sessionId}.jsonl`).scanSync({ cwd: join(home, "sessions"), absolute: true, onlyFiles: true, followSymlinks: false })].filter((path) => {
-        const meta = parseCodexSessionMeta(readJsonlRange(join(home, "sessions"), path, null, { maxBytes: 1024 * 1024 }).records[0]?.value);
+        const meta = parseCodexSessionMeta(readJsonlRange(join(home, "sessions"), path, null, { maxBytes: 1024 * 1024, maxRecords: 1 }).records[0]?.value);
         return meta?.sessionId === track.sessionId && meta.cwd === track.member.cwd;
       });
       return matches.length === 1 ? matches[0] : null;

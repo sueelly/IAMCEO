@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Message, Task } from "../shared/types";
 import { SubmissionManager, type MessageAttempt } from "../web/src/lib/submissions";
-import { chipTasks, filterTasks, findSlash, withTask } from "../web/src/lib/tasks";
+import { chipTasks, filterTasks, findSlash, taskFiles, withTask } from "../web/src/lib/tasks";
 
 class MemoryStorage implements Storage {
   values = new Map<string, string>();
@@ -101,5 +101,23 @@ describe("'/' 업무 부르기", () => {
     expect(filterTasks(tasks, "환불").map((t) => t.id)).toEqual(["a"]);
     expect(filterTasks(tasks, "REFUND").map((t) => t.id)).toEqual(["b"]);
     expect(filterTasks(tasks, "없음")).toEqual([]);
+  });
+});
+
+// 대표 2026-11-16: "입력창에서 업무 선택하면 자료 볼 때도 그게 적용되면 좋겠어" — 자료 목록은 고른 업무의 자료만 보인다.
+describe("자료의 업무 거르기", () => {
+  const files = [{ id: "f3", taskId: "tk_a" }, { id: "f2", taskId: "tk_b" }, { id: "f1", taskId: null }, { id: "f0" }, { id: "f4", taskId: "tk_a" }];
+  test("업무를 고르면 그 업무의 자료만, 받은 순서 그대로 남는다", () => {
+    expect(taskFiles(files, "tk_a").map((f) => f.id)).toEqual(["f3", "f4"]);
+    expect(taskFiles(files, "tk_b").map((f) => f.id)).toEqual(["f2"]);
+  });
+  test("'전체'면 업무가 없는 옛 자료까지 모두 보이고, 받은 배열을 바꾸지 않는다", () => {
+    const all = taskFiles(files, null);
+    expect(all.map((f) => f.id)).toEqual(["f3", "f2", "f1", "f0", "f4"]);
+    expect(all).not.toBe(files);
+  });
+  test("업무가 없는 옛 자료는 어느 업무를 골라도 보이지 않고, 자료가 없는 업무는 빈 목록이다", () => {
+    expect(taskFiles(files, "tk_a").some((f) => f.id === "f1" || f.id === "f0")).toBe(false);
+    expect(taskFiles(files, "tk_none")).toEqual([]);
   });
 });

@@ -25,6 +25,13 @@
 .fl-chip:hover { background:var(--btn-soft-hover); color:var(--ink-1); }
 .fl-chip[aria-pressed="true"] { color:var(--link); background:var(--btn-sel); box-shadow:var(--sel-ring); }
 
+/* 입력칸에서 고른 업무(대화의 .th-task 와 같은 모양). 목록 칸 안에서는 칩 위에, 자료가 없는 업무에서는 안내 위에 놓인다 */
+.fl-task { flex:none; display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; min-width:0; margin:0 0 12px; padding:8px 12px; border-radius:12px; background:var(--soft); box-shadow:var(--soft-ring); font-size:13px; line-height:1.4; }
+.fl-listbox > .fl-task { margin:10px 10px 0; }
+.fl-task__label { flex:none; font-size:12px; font-weight:600; color:var(--link); }
+.fl-task__title { min-width:0; font-weight:600; color:var(--ink-1); overflow-wrap:anywhere; }
+.fl-none { padding:18px 16px; font-size:13.5px; line-height:1.5; color:var(--ink-2); }
+
 /* ── 목록 ── */
 .fl-list { display:flex; flex-direction:column; padding:6px; }
 .fl-row { display:flex; align-items:flex-start; gap:12px; min-height:64px; padding:11px 12px; border-radius:15px; transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
@@ -50,6 +57,13 @@
 .fl-doc[data-kind="artifact"] .fl-doc__title { font-size:19px; }
 .fl-doc__meta { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:13px; color:var(--ink-2); }
 .fl-doc__who { font-weight:600; color:var(--ink-1); }
+/* 이 자료가 속한 업무(대화의 .th-card__task 와 같은 모양). 누르면 그 업무의 자료만 본다 */
+.fl-doc__task { position:relative; display:flex; flex:0 1 auto; min-width:0; max-width:100%; padding:0; font:inherit; cursor:pointer; }
+.fl-doc__task-text { min-width:0; padding:1px 7px; border-radius:999px; font-size:11.5px; font-weight:500; color:var(--link); background:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  transition:background-color 160ms var(--ease-out); }
+@media (hover:hover) { .fl-doc__task:hover .fl-doc__task-text { background:var(--btn-soft-hover); } }
+/* 작은 표지라 손가락으로 누를 자리를 위아래로 넓힌다(모양은 그대로) */
+@media (pointer:coarse) { .fl-doc__task::after { content:""; position:absolute; inset:-12px -4px; } }
 .fl-doc__title { font-size:22px; font-weight:680; line-height:1.3; letter-spacing:-.018em; }
 .fl-doc__summary { font-size:15px; line-height:1.6; color:var(--ink-1); }
 .fl-doc__body { min-width:0; margin-top:6px; padding-top:16px; border-top:1px solid var(--line); }

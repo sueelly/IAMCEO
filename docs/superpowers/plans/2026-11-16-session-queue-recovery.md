@@ -37,3 +37,10 @@ Use isolated provider/core fixtures. Avoid the full legacy suite on the live hos
 - Added a bounded 16MiB/1024-entry body LRU (bodies are insert-only; metadata is always read fresh) plus v33 covering index and explicit INDEXED BY. Body-cache and actual-query-plan tests observed RED -> GREEN. Independent source review found no Critical/Important blockers.
 - Same public FileDoc response verified by SHA-256 on a private database copy. Repeated old reads 6.65-10.15ms; indexed/cache reads 0.55-0.81ms. Related isolated tests 72/72, migration/backup tests 50/50, typecheck passes. No UI/API payload fields or sort semantics changed.
 - Retain the automatic pre-v33 migration backup: a v32 binary cannot directly reopen v33. Large projects beyond LRU capacity may reread bodies, while memory stays bounded. Full live liveness verification follows deployment.
+
+## Registered Codex metadata scan
+
+- Temporary live SQL timing was removed after use; steady-state reads totaled ~127ms/5s while HTTP still stalled. Direct localhost and tailnet probes delayed together, ruling out proxy routing.
+- contextLog enumerated 537 Codex rollouts and parsed up to 1MiB of each to inspect only the first session_meta record (376MiB per lookup). A real read-only lookup blocked 5239ms.
+- Added optional maxRecords to readJsonlRange, preserving actual byte accounting and resumable exact offsets after read-ahead. Only the three session-header consumers request one record; exhaustive candidate matching, native nonce discovery and full delivery evidence scans keep their prior rules.
+- Stop/resume, long partial UTF-8 header and invalid record-budget regressions RED -> GREEN. Related caller/parser/context/diagnostic tests 103/103; typecheck passes; independent review found no Critical/Important blockers. Same real lookup found the registered session in 234ms.
