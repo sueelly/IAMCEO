@@ -842,6 +842,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     db: Database,
     private readonly bus: Bus,
     private readonly recorder?: DomainRecorder,
+    options: { readOnly?: boolean } = {},
   ) {
     this.sqlTransaction = db.transaction.bind(db);
     // 기존 import의 store.db.transaction도 같은 commit 큐를 사용한다.
@@ -857,8 +858,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    this.ensureHq();
-    this.backfillWorkTasks();
+    if (!options.readOnly) {
+      this.ensureHq();
+      this.backfillWorkTasks();
+    }
   }
 
   /** 동기 SQL 전용. await/외부 I/O는 이 경계 밖에서 한다. 중첩 실패는 해당 savepoint의 알림도 버린다. */

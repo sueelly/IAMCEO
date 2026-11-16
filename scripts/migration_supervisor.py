@@ -310,13 +310,13 @@ def tls_valid(origin):
         return False
 
 
-def application_ready(url, credential_file, expected_build):
+def application_ready(url, credential_file, expected_build, require_read_only=False):
     if not expected_build: return False
     try:
         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + read_json(credential_file)['accessCode']})
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=5) as response:
             value = json.loads(response.read(1024 * 1024))
-            return response.status == 200 and value.get('ok') is True and value.get('daemon', {}).get('ready') is True and value['daemon']['buildId'] == expected_build
+            return response.status == 200 and value.get('ok') is True and value.get('daemon', {}).get('ready') is True and value['daemon']['buildId'] == expected_build and (not require_read_only or value['daemon'].get('readOnly') is True)
     except (OSError, ValueError, KeyError) as error:
         if isinstance(error, urllib.error.HTTPError): error.close()
         return False
@@ -336,6 +336,18 @@ def receipt_keys(root):
     return result
 
 
+def access_mode(preference):
+    modes = {'public', 'tailscale_only'}
+    explicit = preference.get('mode')
+    if 'access_scope' in preference:
+        canonical = {'tailnet_only': 'tailscale_only', 'public_internet': 'public'}.get(preference['access_scope'])
+        if canonical is None or (explicit is not None and explicit != canonical):
+            raise ValueError('Unrecognized or conflicting access preference')
+        return canonical
+    if explicit not in modes: raise ValueError('Unrecognized access preference')
+    return explicit
+
+
 def collect(cfg):
     if cfg.get('test_mode') and cfg.get('observation_file'): return read_json(cfg['observation_file'])
     root = Path(cfg['root']); api = API(cfg['source_url'], cfg['source_credential_file'])
@@ -343,7 +355,8 @@ def collect(cfg):
     except Exception as error: source = {'reachable': False, 'quiescent': False, 'blockers': ['source_unavailable'], 'error_type': type(error).__name__}
     try: preference = read_json(root / 'DOMAIN-PREFERENCE.json') if (root / 'DOMAIN-PREFERENCE.json').exists() else {'mode': 'public', 'assumed': True}
     except (OSError, ValueError): preference = {'mode': 'unrecognized', 'invalid': True}
-    mode = preference.get('mode', 'unrecognized')
+    try: mode = access_mode(preference)
+    except ValueError: mode = 'unrecognized'
     public = cfg.get('public_origin')
     try: release = read_json(cfg['release_manifest'])
     except (OSError, ValueError): release = {}
@@ -351,13 +364,22 @@ def collect(cfg):
     if domain: domain = application_ready(public + '/api/readiness', cfg['source_credential_file'], release.get('build_id'))
     if mode == 'tailscale_only' and cfg.get('tailscale_origin'):
         domain = application_ready(cfg['tailscale_origin'] + '/api/readiness', cfg['source_credential_file'], release.get('build_id'))
+    viewing_ready = False
+    if mode == 'tailscale_only' and cfg.get('tailscale_origin') and cfg.get('viewing_release_manifest'):
+        try:
+            viewing = read_json(cfg['viewing_release_manifest'])
+            if viewing.get('kind') == 'read-only-snapshot-view' and viewing.get('operational_cutover') is False:
+                viewing_ready = application_ready(cfg['tailscale_origin'] + '/api/readiness', cfg['source_credential_file'], viewing.get('build_id'), require_read_only=True)
+        except (OSError, ValueError): pass
     conditions = {'claude_authenticated': command_auth([cfg['claude_bin'], 'auth', 'status', '--json'], 'claude'),
                   'codex_authenticated': command_auth([cfg['codex_bin'], 'login', 'status'], 'codex'),
                   'domain_mode': mode, 'domain_ready': domain,
+                  'initial_viewing_ready': viewing_ready,
+                  'access_origin': cfg.get('tailscale_origin') if mode == 'tailscale_only' else public if mode == 'public' else None,
                   'baseline_services': {name: baseline_probe(spec) for name, spec in cfg.get('baseline_health', {}).items()},
-                  'public_dns_resolves': dns_resolves(public) if public else False,
-                  'public_tls_valid': tls_valid(public) if public else False,
-                  'ingress_credentials_available': Path(cfg['ingress_credential_file']).is_file() if cfg.get('ingress_credential_file') else False,
+                  'public_dns_resolves': dns_resolves(public) if mode == 'public' and public else None,
+                  'public_tls_valid': tls_valid(public) if mode == 'public' and public else None,
+                  'ingress_credentials_available': (Path(cfg['ingress_credential_file']).is_file() if cfg.get('ingress_credential_file') else False) if mode == 'public' else None,
                   'gui_session_available': subprocess.run(['launchctl', 'print', 'gui/' + str(os.getuid())], capture_output=True, timeout=5).returncode == 0,
                   'docker_socket_available': Path(cfg['docker_socket']).is_socket() if cfg.get('docker_socket') else False,
                   'target_server': http_probe(cfg['target_health']),

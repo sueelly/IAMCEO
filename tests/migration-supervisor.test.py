@@ -40,6 +40,26 @@ class Tests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
     def config(self):return {'root':str(self.root),'state_dir':str(self.root/'private'),'thread_id':'11111111-1111-4111-8111-111111111111','project_ids':['hq','project'],'poll_seconds':120,'idle_interval_seconds':120,'test_mode':True}
     def snapshot(self,idle=False):return {'source':{'reachable':True,'quiescent':idle,'stability_key':'idle' if idle else 'busy','blockers':[] if idle else ['source_work_in_progress']},'conditions':{'claude_authenticated':False,'domain_ready':False},'receipts':{}}
+    def test_canonical_tailnet_receipt_is_recognized_without_public_ingress(self):
+        receipt={'access_scope':'tailnet_only','public_ingress_required':False,'public_dns_required':False,'canonical_tailnet_https_acceptable':True,'source_browser_exception':False}
+        self.assertEqual(s.access_mode(receipt),'tailscale_only')
+        self.assertEqual(s.access_mode({'mode':'tailscale_only'}),'tailscale_only')
+        self.assertEqual(s.access_mode({'mode':'public'}),'public')
+        self.assertEqual(s.access_mode({'mode':'public','assumed':True}),'public')
+        with self.assertRaises(ValueError):s.access_mode({'access_scope':'tailnet_only','mode':'public'})
+        with self.assertRaises(ValueError):s.access_mode({'access_scope':'unrecognized'})
+    def test_tailnet_collection_does_not_probe_public_dns_tls_or_ingress(self):
+        from unittest.mock import patch,Mock
+        cfg=self.config();cfg.pop('test_mode');cfg.update(source_url='https://source.example.invalid',source_credential_file='/unused',public_origin='https://public.example.invalid',tailscale_origin='https://machine.example.ts.net:14443',claude_bin='/unused/claude',codex_bin='/unused/codex',target_health='http://127.0.0.1:47879/api/health',target_readiness='http://127.0.0.1:47879/api/readiness',release_manifest=str(self.root/'release.json'))
+        s.private_json(self.root/'DOMAIN-PREFERENCE.json',{'access_scope':'tailnet_only','public_ingress_required':False,'public_dns_required':False});s.private_json(cfg['release_manifest'],{'build_id':'fixture'})
+        with patch.object(s,'observe_source',return_value=self.snapshot()['source']),patch.object(s,'command_auth',return_value=True),patch.object(s,'http_probe',return_value=False),patch.object(s,'application_ready',return_value=True),patch.object(s,'dns_resolves',side_effect=AssertionError('public DNS must not be probed')),patch.object(s,'tls_valid',side_effect=AssertionError('public TLS must not be probed')),patch.object(s.subprocess,'run',return_value=Mock(returncode=1)):
+            result=s.collect(cfg)
+            cfg['viewing_release_manifest']=str(self.root/'view-release.json')
+            s.private_json(cfg['viewing_release_manifest'],{'kind':'read-only-snapshot-view','operational_cutover':False,'build_id':'view-fixture'})
+            with patch.object(s,'command_auth',return_value=False),patch.object(s,'application_ready',side_effect=lambda url,credential,build,require_read_only=False: build=='view-fixture' and require_read_only):
+                view=s.collect(cfg)
+            self.assertTrue(view['conditions']['initial_viewing_ready']);self.assertFalse(view['conditions']['domain_ready']);self.assertFalse(view['conditions']['target_prepared']);self.assertFalse(view['conditions']['claude_authenticated'])
+        self.assertEqual(result['conditions']['domain_mode'],'tailscale_only');self.assertEqual(result['conditions']['access_origin'],cfg['tailscale_origin']);self.assertTrue(result['conditions']['domain_ready']);self.assertIsNone(result['conditions']['public_dns_resolves']);self.assertIsNone(result['conditions']['public_tls_valid']);self.assertIsNone(result['conditions']['ingress_credentials_available']);self.assertFalse(result['conditions']['target_prepared'])
     def test_api_cannot_answer_approvals_or_write_other_source_fields(self):
         api=s.API('https://source.example.invalid',str(self.root/'missing-credentials'))
         for method,path,body in [('POST','/api/decisions/d/answer',{}),('PATCH','/api/decisions/d',{}),('PATCH','/api/projects/p',{'runnerEnabled':False,'cwd':'/other'})]:

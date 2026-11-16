@@ -1,4 +1,5 @@
 import { configuredSecretRoots } from "./secret-paths.ts";
+import { readOnlyRequestAllowed } from "./read-only-policy.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
@@ -40,7 +41,9 @@ export interface ServerContext {
   folderHome?: string;
   /** Isolated fake-clone tests need not depend on host disk availability. */
   githubFreeBytes?: (path: string) => Promise<number>;
-  daemon?: () => { ready: boolean; buildId: string; version: string };
+  daemon?: () => { ready: boolean; buildId: string; version: string; readOnly?: boolean };
+  /** Offline snapshot viewer: explicit read allowlist plus a readonly SQLite connection. */
+  readOnly?: boolean;
 }
 
 export interface HostBinding {
@@ -1244,6 +1247,15 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
 
   const route = (req: Request, url: URL, server: Server<SocketData>): Response | Promise<Response | undefined> | undefined => {
     const path = url.pathname;
+    if (ctx.readOnly) {
+      if (path.startsWith("/api/") && path !== "/api/health" &&
+          !["/api/files-session", "/api/realtime-session"].includes(path) && !hasAccessCode(req, url, false)) {
+        return fail(401, "인증이 필요합니다");
+      }
+      if (!readOnlyRequestAllowed(req.method, path)) {
+        return fail(409, "초기 복원본은 읽기 전용입니다. 변경과 직원 실행은 최종 이전 후 사용할 수 있습니다", "READ_ONLY");
+      }
+    }
     if (path === "/api/health") return Response.json({ ok: true, version: VERSION });
     // 짝 맺기 코드를 낸 폰에만 접속 코드를 준다. 코드 자체가 인증이라 접속 코드 검사 앞에 둔다.
     if (path === "/pair/claim") return handlePairClaim(req, server);
