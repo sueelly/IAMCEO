@@ -11,6 +11,7 @@ import { startReadOnlyView } from "../server/read-only-view.ts";
 const code = "123456"; // Existing snapshots may use a shorter code than today's generated default.
 let home: string, config: Config, view: Awaited<ReturnType<typeof startReadOnlyView>>, origin: string;
 let before: string, filePath: string;
+let memberId: string;
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const request = (path: string, method = "GET", auth = true) => fetch(origin + path, {
   method, headers: auth ? { Authorization: `Bearer ${code}`, "Content-Type": "application/json" } : {},
@@ -23,7 +24,7 @@ beforeAll(async () => {
   config = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0" });
   const db = openDb(config.dbPath); const store = new Store(db, new Bus());
   store.createProject({ id: "p_view", name: "조회 프로젝트", cwd: home });
-  store.createMember({ projectId: "p_view", handle: "lead", name: "조회 직원", kind: "conductor" });
+  memberId = store.createMember({ projectId: "p_view", handle: "lead", name: "조회 직원", kind: "conductor" }).id;
   store.createMessage({ id: "msg_view", projectId: "p_view", kind: "나", mine: true, who: "나", body: "보존한 대화" });
   filePath = join(config.uploadsDir, "fixture.txt"); writeFileSync(filePath, "attachment");
   store.createAttachment({ id: "a_view", name: "fixture.txt", mime: "text/plain", size: 10, path: filePath });
@@ -44,6 +45,9 @@ test("restored fenced data is readable with normal authentication", async () => 
   const ready = await (await request("/api/readiness")).json();
   expect(ready.daemon.readOnly).toBe(true); expect(ready.daemon.buildId).toBe("readonly-test-build");
   expect(ready.core.available).toBe(false);
+  expect(await (await request(`/api/members/${memberId}/prompt`)).json()).toEqual({ prompt: null, context: null });
+  expect(await (await request(`/api/members/${memberId}/approval`)).json()).toEqual({ approval: null });
+  expect((await request(`/api/members/${memberId}/activity`)).status).toBe(200);
 });
 
 test("mutations, external filesystem, pairing, agents and terminal are refused", async () => {

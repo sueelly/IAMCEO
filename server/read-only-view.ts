@@ -15,6 +15,8 @@ function readOnlyPorts(): OrchestratorApi {
     memberSleep: refuse, memberResume: refuse, memberCompact: refuse, memberInterrupt: refuse,
     memberScreen: refuse, adopt: refuse, listAgentTools: refuse, handleAgentTool: refuse, askWait: refuse,
     async herdrAgents() { return []; },
+    async memberNativePrompt() { return { prompt: null, context: null }; },
+    async memberApproval() { return null; },
     async herdrInfo() { return { installed: false, running: false, version: null, protocol: null, compatible: false, warning: null }; },
     async runtimeInfo() { return { backend: "core", core: { installed: false, available: false, version: null, detail: "읽기 전용 복원본" },
       providers: { claude: { installed: false }, codex: { installed: false }, antigravity: { installed: false } } }; },
