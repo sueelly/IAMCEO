@@ -776,6 +776,22 @@ export class Orchestrator implements OrchestratorApi {
             if (current.lastError?.startsWith("starting_unknown") || current.lastError?.startsWith("core 재연결 보류")) this.store.patchMember(member.id, { lastError: null });
             await this.reconcileExecutions(member.id);
           }
+          const pendingStart = this.pendingLifecycle(member.id);
+          const absentPreflight = result.outcome === "not_found" && pendingStart?.intent === "start" && pendingStart.phase === "unknown" &&
+            member.paneId === null && pendingStart.identity.terminalId === null && pendingStart.runId === null && pendingStart.deliveryIds.length === 0 &&
+            /^terminal\.list:/.test(pendingStart.reason ?? "");
+          if (absentPreflight) {
+            // Old releases treated a pre-launch list timeout as an uncertain creation.
+            // A successful owner inventory now proves absence; an uncertain run stays fenced.
+            // No holder/execution exists to reconcile. Finish synchronously so a
+            // concurrent fresh-session request cannot be overwritten after an await.
+            this.store.transaction(() => {
+              this.finishLifecycle(pendingStart!, "refused", "시작 전 목록 조회 실패 후 소유 터미널 부재를 확인했습니다");
+              this.store.patchMember(member.id, { status: "offline", lastError: null });
+            });
+            rt.turn = null;
+            this.releaseSlots();
+          }
           if (result.outcome === "not_found" && member.paneId && !this.pendingLifecycle(member.id)) {
             await this.reconcileAbsentTerminal(member);
             this.store.patchMember(member.id, { status: "offline" });

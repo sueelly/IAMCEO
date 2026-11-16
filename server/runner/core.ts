@@ -194,7 +194,12 @@ export class CoreRunner implements Runner {
   private async startLocked(member: RunnerMember, opts: StartOpts) {
     const availability = await this.available();
     if (!availability.ok) throw new CoreError("unavailable", availability.detail || "Core unavailable");
-    const snapshot = await this.call<{ terminals: CoreTerminal[] }>("terminal.list", {});
+    const snapshot = await this.call<{ terminals: CoreTerminal[] }>("terminal.list", {}).catch(error => {
+      // This is before terminal.run: losing a read reply cannot have created a holder.
+      // Keep the ambiguous-write fence for terminal.run itself, below.
+      if (error instanceof CoreError && error.uncertain) throw new CoreError(error.kind, error.message, false, "not_written", error.causeCode);
+      throw error;
+    });
     const live = snapshot.terminals.filter((terminal) => terminal.state === "live");
     const joined = await this.reattachFrom(member, live);
     if (joined.outcome === "rejoined") return { sessionId: joined.started.sessionId, paneId: joined.started.paneId!, rejoined: true };

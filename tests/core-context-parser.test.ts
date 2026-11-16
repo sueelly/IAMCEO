@@ -181,6 +181,16 @@ describe("compact boundary observation", () => {
     appendFileSync(opts.baseline.path, line(token({ total_tokens: 1 })));
     expect(observeCompactBoundary({ ...opts, settled: true }).outcome).toBe("pending");
   });
+  test("a bound Claude session can compact after changing into its worktree, including an old exhausted cursor", () => {
+    const opts = setup("claude");
+    appendFileSync(opts.baseline.path, line({ type: "system", subtype: "compact_boundary", sessionId: "session",
+      cwd: join(runtime.paths.work, ".claude", "worktrees", "implementation"), isSidechain: false }));
+    const pending = observeCompactBoundary(opts);
+    const legacyCursor = { ...pending.cursor!, boundary: false };
+    delete (legacyCursor as { version?: number }).version;
+    expect(observeCompactBoundary({ ...opts, cursor: legacyCursor, settled: true }).outcome).toBe("succeeded");
+    expect(observeCompactBoundary({ ...opts, settled: true }).outcome).toBe("succeeded");
+  });
   test("Claude and Codex require new complete boundary plus same-owner settled return", () => {
     for (const cli of ["claude", "codex"] as const) {
       const opts = setup(cli);

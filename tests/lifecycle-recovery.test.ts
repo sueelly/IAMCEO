@@ -21,7 +21,7 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(10);
   expect(check()).toBe(true);
 }
-async function fixture(healthMs = 60_000) {
+async function fixture(healthMs = 60_000, rpcTimeoutMs = 100) {
   const isolated = createIsolatedRuntime();
   const config = loadConfig({ IAMCEO_HOME: isolated.paths.iamceoHome, IAMCEO_PORT: "0", IAMCEO_CORE_SOCKET: isolated.socketPath, IAMCEO_CORE_BIN: isolated.bins.coreBin, IAMCEO_CLAUDE_BIN: isolated.bins.claudeBin, IAMCEO_CODEX_BIN: isolated.bins.codexBin });
   const db = openDb(config.dbPath);
@@ -33,12 +33,15 @@ async function fixture(healthMs = 60_000) {
   const sockets = new Set<Socket>();
   let draft = "";
   let runLost = false;
+  let listLost = false;
   let keysLost = false;
   let sendStarted = true;
   let getUnavailable = false;
   let killLost = false;
   let rejectSend = false;
   let unknownSend = false;
+  let holdMissingGet = false;
+  const missingGets: Array<() => void> = [];
   const server = createServer(socket => {
     sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.setEncoding("utf8");
     let buffer = "";
@@ -50,8 +53,16 @@ async function fixture(healthMs = 60_000) {
         buffer = buffer.slice(newline + 1); calls.push(request);
         let result: unknown;
         const terminal = terminals.get(request.params.terminal ?? "");
+        if (request.method === "terminal.get" && !terminal && holdMissingGet) {
+          missingGets.push(() => socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id,
+            error: { code: -32000, message: "not found", data: { kind: "not_found" } } }) + "\n"));
+          continue;
+        }
         if (request.method === "hello") result = { generation: 1, version: "fake", methods: ["terminal.run", "terminal.list", "terminal.get", "terminal.read", "terminal.send", "terminal.keys", "terminal.kill", "terminal.interrupt"], features: [] };
-        if (request.method === "terminal.list") result = { terminals: [...terminals.values()] };
+        if (request.method === "terminal.list") {
+          if (listLost) continue;
+          result = { terminals: [...terminals.values()] };
+        }
         if (request.method === "terminal.run") {
           const created: CoreTerminal = { address: `t${terminals.size + 1}`, argv: request.params.argv!, cwd: request.params.cwd!, labels: request.params.labels!, state: "live", turn: 0, status: { state: "idle", app: "claude-code" } };
           terminals.set(created.address, created); result = created;
@@ -79,7 +90,7 @@ async function fixture(healthMs = 60_000) {
   const orchestrators: Orchestrator[] = [];
   const runners: CoreRunner[] = [];
   function orchestrator() {
-    const runner = new CoreRunner({ ...isolated.runnerOptions(isolated.providerHomes) }, { recoveryStore: store, pollMs: 20, rpcTimeoutMs: 100, sendTimeoutMs: 100 });
+    const runner = new CoreRunner({ ...isolated.runnerOptions(isolated.providerHomes) }, { recoveryStore: store, pollMs: 20, rpcTimeoutMs, sendTimeoutMs: 100 });
     const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), timings: { tickMs: 60_000, healthMs, retryMs: 10, inputBusyRetryMs: 10 } });
     runners.push(runner); orchestrators.push(orch);
     return { orch, runner };
@@ -93,11 +104,76 @@ async function fixture(healthMs = 60_000) {
   const current = orchestrator();
   return { ...current, store, bus, db, project, config, calls, terminals, runners, orchestrator,
     count: (method: string) => calls.filter(c => c.method === method).length,
-    loseRun: (value: boolean) => { runLost = value; }, loseKeys: () => { keysLost = true; },
+    loseRun: (value: boolean) => { runLost = value; }, loseList: (value: boolean) => { listLost = value; }, loseKeys: () => { keysLost = true; },
     loseKill: (value: boolean) => { killLost = value; }, unavailable: (value: boolean) => { getUnavailable = value; },
     rejectSend: (value: boolean) => { rejectSend = value; }, unknownSend: () => { unknownSend = true; },
+    holdMissingGets: () => { holdMissingGet = true; }, releaseMissingGets: () => { holdMissingGet = false; for (const respond of missingGets.splice(0)) respond(); },
     draft: (text: string) => { draft = text; }, started: (value: boolean) => { sendStarted = value; } };
 }
+
+test("pre-launch list timeout does not fence the next explicit fresh-session attempt", async () => {
+  const f = await fixture(60_000, 1000);
+  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  f.loseList(true);
+  await expect(f.orch.freshMemberSession(member.id)).rejects.toThrow("terminal.list");
+  expect(f.count("terminal.run")).toBe(1);
+  expect(f.store.listPendingLifecycleJournals()).toHaveLength(0);
+  f.loseList(false);
+  const recovered = await f.orch.freshMemberSession(member.id);
+  expect(recovered.paneId).toBeTruthy();
+  expect(f.count("terminal.run")).toBe(2);
+});
+
+for (const preflight of [true, false]) test(`legacy unknown ${preflight ? "list" : "run"} failure ${preflight ? "recovers absence" : "retains its fence"}`, async () => {
+  const f = await fixture(20, 1000);
+  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  await f.orch.shutdown();
+  f.terminals.get(member.paneId!)!.state = "finished";
+  f.store.patchMember(member.id, { paneId: null, status: "error", lastError: "새 세션 시작 실패" });
+  const at = new Date().toISOString();
+  f.store.saveLifecycleJournal({ operationId: crypto.randomUUID(), memberId: member.id, projectId: member.projectId,
+    intent: "start", phase: "unknown", identity: { terminalId: null, sessionId: member.sessionId,
+      sessionGeneration: f.store.memberRevisions(member.id).sessionGeneration, process: null },
+    runId: null, deliveryIds: [], baseline: null, reason: `terminal.${preflight ? "list" : "run"}: no reply within 8000ms`, exitCode: null, createdAt: at, updatedAt: at });
+  const next = f.orchestrator();
+  await next.orch.recover();
+  if (preflight) {
+    await until(() => f.store.listPendingLifecycleJournals().length === 0);
+    expect(f.store.requireMember(member.id).status).toBe("offline");
+    const resumed = await next.orch.resumeMember(member.id);
+    expect(resumed.sessionId).toBe(member.sessionId);
+    expect(resumed.paneId).toBeTruthy();
+    expect(f.count("terminal.run")).toBe(2);
+  } else {
+    await Bun.sleep(80);
+    expect(f.store.listPendingLifecycleJournals()).toHaveLength(1);
+    expect(f.count("terminal.run")).toBe(1);
+  }
+});
+
+test("legacy absence recovery cannot overwrite a concurrent explicit fresh generation", async () => {
+  const f = await fixture(60_000, 1000);
+  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  await f.orch.shutdown();
+  f.terminals.get(member.paneId!)!.state = "finished";
+  f.store.patchMember(member.id, { paneId: null, sessionId: null, status: "error" });
+  const at = new Date().toISOString();
+  f.store.saveLifecycleJournal({ operationId: crypto.randomUUID(), memberId: member.id, projectId: member.projectId,
+    intent: "start", phase: "unknown", identity: { terminalId: null, sessionId: null,
+      sessionGeneration: f.store.memberRevisions(member.id).sessionGeneration, process: null },
+    runId: null, deliveryIds: [], baseline: null, reason: "terminal.list: no reply within 8000ms", exitCode: null, createdAt: at, updatedAt: at });
+  f.holdMissingGets();
+  const next = f.orchestrator();
+  const recovery = next.orch.recover();
+  try {
+    await until(() => f.store.listPendingLifecycleJournals().length === 0);
+    const fresh = await next.orch.freshMemberSession(member.id);
+    f.releaseMissingGets();
+    await recovery;
+    expect(f.store.requireMember(member.id)).toMatchObject({ paneId: fresh.paneId, sessionId: fresh.sessionId, status: "idle" });
+    expect(f.count("terminal.run")).toBe(2);
+  } finally { f.releaseMissingGets(); await recovery; }
+});
 
 test("lost creation reply preserves intent/member and restart rejoins labels with no additional run", async () => {
   const f = await fixture(); f.loseRun(true);

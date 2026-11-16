@@ -109,7 +109,7 @@ export function coreContextMeasurement(reading: ContextReading, observed: CoreCo
 }
 
 export interface CompactBoundaryBaseline extends CoreContextIdentity { path: string; fileIdentity: string; offset: number }
-export interface CompactBoundaryCursor { baseline: CompactBoundaryBaseline; queryKey: string; log: JsonlCursor | null; boundary: boolean; invalid: boolean }
+export interface CompactBoundaryCursor { version?: 2; baseline: CompactBoundaryBaseline; queryKey: string; log: JsonlCursor | null; boundary: boolean; invalid: boolean }
 export interface CompactBoundaryResult { outcome: "succeeded" | "pending" | "unknown"; code: string; cursor: CompactBoundaryCursor | null }
 /** Boundary is a candidate; success additionally requires same-owner settled CLI and no provider error. */
 export function observeCompactBoundary(options: { cli: CliProvider; home: string; cwd: string; baseline: CompactBoundaryBaseline; current: CoreContextIdentity; settled: boolean; providerError: boolean; cursor?: CompactBoundaryCursor | null }): CompactBoundaryResult {
@@ -128,15 +128,20 @@ export function observeCompactBoundary(options: { cli: CliProvider; home: string
     const meta = parseCodexSessionMeta(head.records[0]?.value);
     if (meta?.sessionId !== current.sessionId || meta.cwd !== options.cwd || head.records[0]?.start !== 0) return unknown("session_conflict");
   }
-  const range = readJsonlRange(root, baseline.path, options.cursor?.log, { startOffset: baseline.offset, fileIdentity: baseline.fileIdentity, maxBytes: 1024 * 1024 });
+  // Replay pre-v2 cursors once: they may have skipped a real Claude boundary
+  // after the session changed its working directory into an implementation worktree.
+  const previous = options.cursor?.version === 2 ? options.cursor : null;
+  const range = readJsonlRange(root, baseline.path, previous?.log, { startOffset: baseline.offset, fileIdentity: baseline.fileIdentity, maxBytes: 1024 * 1024 });
   if (!range.cursor || !["complete_range", "corrupt_log", "partial_log", "scan_pending"].includes(range.code)) return unknown(range.code);
-  const state: CompactBoundaryCursor = { baseline: { ...baseline }, queryKey, log: range.cursor, boundary: options.cursor?.boundary ?? false, invalid: options.cursor?.invalid ?? false };
+  const state: CompactBoundaryCursor = { version: 2, baseline: { ...baseline }, queryKey, log: range.cursor, boundary: previous?.boundary ?? false, invalid: previous?.invalid ?? false };
   for (const record of range.records) {
     const entry = jsonObject(record.value);
     if (!entry) { state.invalid = true; continue; }
     if (entry.isSidechain || entry.isMeta || entry.isReplay || entry.is_replay) continue;
     if (options.cli === "codex" && entry.type === "session_meta") state.invalid = true;
-    if (options.cli === "claude" && entry.type === "system" && entry.subtype === "compact_boundary" && entry.sessionId === current.sessionId && entry.cwd === options.cwd) state.boundary = true;
+    // The baseline pins the owned terminal, native session and exact log file.
+    // Claude records its *current* cwd here, which may change within that session.
+    if (options.cli === "claude" && entry.type === "system" && entry.subtype === "compact_boundary" && entry.sessionId === current.sessionId && typeof entry.cwd === "string" && isAbsolute(entry.cwd)) state.boundary = true;
     if (options.cli === "codex" && entry.type === "compacted" && (entry.sessionId === undefined || entry.sessionId === current.sessionId)) state.boundary = true;
   }
   if (options.providerError) return { outcome: "unknown", code: "provider_error", cursor: state };
