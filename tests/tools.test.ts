@@ -375,6 +375,42 @@ describe("공통 도구", () => {
     expect(store.listFiles(project.id)).toHaveLength(3);
   });
 
+  test("file 도구 설명은 자료 한 개 기준이고 같은 본문의 html·md 짝을 요구하지 않는다", async () => {
+    const { lead } = await setup();
+    const file = listAgentTools(lead).find((t) => t.name === "file")!;
+    for (const old of ["md 짝", "글로 읽기", "짝을 함께"]) expect(JSON.stringify(file)).not.toContain(old);
+    expect(file.description).toContain("대표용 자료는 기본 한 개다. 같은 본문을 html 과 md 로 두 번 올리지 않는다");
+    expect(file.description).toContain("내용이 다른 원기록·이미지·납품물은 따로 올려도 된다");
+  });
+
+  test("file: html 한 번은 자료 하나만 만들고 글 판을 따로 만들지 않는다. 글·이미지·서로 다른 원기록은 각각 남는다", async () => {
+    const { home, store, project, lead, call } = await setup();
+    const id = (r: AgentToolResult) => /#(f_\S+?)\./.exec(r.text)![1]!;
+    const html = "<main class=\"page\"><h1>결론: 같은 본문</h1><p>비교 그림과 핵심 글이 한 자료에 있다.</p></main>";
+    const visual = await call(lead, "file", { title: "비교 결과", html });
+    expect(visual.isError).toBeUndefined();
+    expect(visual.text).not.toMatch(/짝|글로 읽기/);
+    expect(store.listFiles(project.id)).toHaveLength(1);
+    expect(store.getFile(id(visual))).toMatchObject({ kind: "artifact", body: "", attachments: [] });
+    expect(store.getFileHtml(id(visual))).toBe(html);
+
+    writeFileSync(join(home, "page.html"), html);
+    const fromPath = await call(lead, "file", { title: "경로 자료", path: join(home, "page.html") });
+    expect(store.listFiles(project.id)).toHaveLength(2);
+    expect(store.getFile(id(fromPath))).toMatchObject({ kind: "artifact", body: "" });
+
+    const raw = await call(lead, "file", { title: "실행 원기록", content: "# 실행 원기록\n- 시험 3건 통과" });
+    writeFileSync(join(home, "shot.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+    const shot = await call(lead, "file", { title: "화면 캡처", images: [join(home, "shot.png")] });
+    const all = store.listFiles(project.id);
+    expect(all).toHaveLength(4);
+    expect(all.map((f) => f.id).sort()).toEqual([visual, fromPath, raw, shot].map(id).sort());
+    expect(all.filter((f) => f.kind === "document").map((f) => f.id)).toEqual([id(raw)]);
+    expect(store.getFile(id(raw))).toMatchObject({ body: "# 실행 원기록\n- 시험 3건 통과" });
+    expect(store.getFile(id(shot))!.kind).toBe("image");
+    expect(new Set(all.map((f) => f.taskId))).toEqual(new Set([defaultTaskId(store, project.id)]));
+  });
+
   test("file: 후반의 잘못된 이미지·없는 경로는 첨부와 staging을 전혀 만들지 않는다", async () => {
     const { home, store, lead, call } = await setup();
     const image = join(home, "ok.png");
