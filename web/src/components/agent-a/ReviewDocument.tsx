@@ -4,12 +4,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentAReviewImage, AgentAReviewImageRegion } from "@shared/agent-a";
 import { api, fetchAttachment } from "../../lib/api";
+import { THUMBS_UP, labelText, type QuickLabel } from "../../lib/agent-a-labels";
 import { imageFor, regionOf, regionStyle, splitDoc, squash, type ReviewThread } from "../../lib/agent-a-review";
 import { Markdown } from "../ui";
 import { MermaidBlock } from "./MermaidBlock";
 
-/** 고른 뒤의 동작. 표시: 뜨는 단추에서 고름 · 댓글: 바로 댓글 쓰기 · 삭제 표시: 바로 삭제 표시를 남김. */
-export type ReviewMode = "markup" | "comment" | "redline";
+/** 고른 뒤의 동작. 표시: 뜨는 단추에서 고름 · 댓글: 바로 댓글 쓰기 · 삭제 표시: 바로 삭제 표시를 남김 · 라벨: 바로 라벨 목록을 띄움. */
+export type ReviewMode = "markup" | "comment" | "redline" | "label";
 /** 고르는 방법. 끌기: 글을 끌어 고름 · 요소 지정: 문단·항목·제목을 눌러 통째로 고름. */
 export type ReviewInput = "drag" | "pinpoint";
 const PINPOINT = "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th";
@@ -199,12 +200,18 @@ export interface ReviewDocumentProps {
   onAsk?: (quote: string) => void;
   onRegion: (region: AgentAReviewImageRegion) => void;
   onOpenThread: (threadId: string) => void;
+  /** 빠른 라벨 목록과 붙이기. 없으면 라벨 단추를 보이지 않는다. */
+  labels?: readonly QuickLabel[];
+  onLabel?: (quote: string, label: QuickLabel) => void;
+  onEditLabels?: () => void;
 }
 
-export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onOpenThread }: ReviewDocumentProps) {
+export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onOpenThread, labels, onLabel, onEditLabels }: ReviewDocumentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ranges = useRef(new Map<string, Range>());
-  const [pick, setPick] = useState<{ quote: string; left: number; top: number } | null>(null);
+  /** 고른 글과 뜨는 단추의 자리. menu 면 단추 대신 라벨 목록을 보인다. */
+  const [pick, setPick] = useState<{ quote: string; left: number; top: number; menu?: boolean } | null>(null);
+  const labelList = useMemo(() => (onLabel ? [THUMBS_UP, ...(labels ?? [])] : []), [labels, onLabel]);
   const parts = useMemo(() => splitDoc(markdown), [markdown]);
   const quoteThreads = useMemo(() => threads.filter((t) => t.root.quote && !t.root.region && t.root.kind !== "global"), [threads]);
   /** 고른 글로 할 일. 표시 모드는 단추를 띄우고, 나머지 모드는 바로 한다(pointer 로 고른 때만. 자판으로 고르는 중에는 단추를 띄운다). */
@@ -214,8 +221,27 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
       window.getSelection()?.removeAllRanges();
       return onDelete(quote);
     }
-    setPick({ quote, ...at });
-  }, [mode, onQuote, onDelete]);
+    setPick({ quote, ...at, menu: mode === "label" && Boolean(onLabel) });
+  }, [mode, onQuote, onDelete, onLabel]);
+  const applyLabel = useCallback((quote: string, label: QuickLabel) => {
+    window.getSelection()?.removeAllRanges();
+    setPick(null);
+    onLabel?.(quote, label);
+  }, [onLabel]);
+  // 글을 고른 채 ⌥(Alt)+숫자를 누르면 그 차례의 라벨을 바로 붙인다(1 은 맨 위의 '좋아요').
+  useEffect(() => {
+    if (!pick || !labelList.length) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!e.altKey || e.metaKey || e.ctrlKey) return;
+      const m = /^Digit([1-9])$/.exec(e.code);
+      const label = m ? labelList[Number(m[1]) - 1] : undefined;
+      if (!label) return;
+      e.preventDefault();
+      applyLabel(pick.quote, label);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pick, labelList, applyLabel]);
   const marksBy = useMemo(() => {
     const by = new Map<string, RegionMark[]>();
     for (const t of threads) {
@@ -311,7 +337,7 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
   }, [readSelection]);
 
   // 뜨는 단추 묶음의 반 폭(가운데 맞춤이라 화면 밖으로 나가지 않게 자리를 잡는 데 쓴다). 단추 수는 모드가 정한다.
-  const pickHalf = mode === "markup" ? (onAsk ? 118 : 86) : mode === "redline" ? 56 : 44;
+  const pickHalf = pick?.menu ? 118 : mode === "markup" ? (onAsk ? 118 : 86) + (onLabel ? 30 : 0) : mode === "redline" ? 56 : 44;
   const onClick = (e: { clientX: number; clientY: number; target: EventTarget }) => {
     if (!(e.target instanceof Element) || e.target.closest("a, button, .aar-fig")) return;
     const sel = window.getSelection();
@@ -350,10 +376,21 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
         const draft = regionDraft && regionDraft.src === image.src && (regionDraft.sourceLine ?? image.sourceLine) === image.sourceLine ? regionDraft : null;
         return <ReviewImage key={`i${i}`} fileId={fileId} session={session} image={image} alt={part.alt} marks={marks} active={activeThread} draft={draft} canAsk={canComment} onDraw={onRegion} onOpen={onOpenThread} />;
       })}
-      {pick ? (
+      {pick?.menu ? (
+        <span className="aar-picks aar-picks--menu" role="menu" aria-label="빠른 라벨" style={{ left: Math.min(Math.max(pick.left, pickHalf), Math.max(pickHalf, (rootRef.current?.clientWidth ?? 0) - pickHalf)), top: pick.top }} onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={(e) => e.stopPropagation()}>
+          {labelList.map((label, i) => (
+            <button key={label.id} type="button" role="menuitem" className="aar-labelitem" title={label.tip} onClick={() => applyLabel(pick.quote, label)}>
+              <span className="aar-label" data-tone={label.tone}>{labelText(label)}</span>
+              {i < 9 ? <kbd className="aar-labelitem__key" aria-hidden="true">⌥{i + 1}</kbd> : null}
+            </button>
+          ))}
+          {onEditLabels ? <button type="button" role="menuitem" className="aar-labelitem aar-labelitem--edit" onClick={() => { setPick(null); onEditLabels(); }}>라벨 고치기…</button> : null}
+        </span>
+      ) : pick ? (
         <span className="aar-picks" role="group" aria-label="고른 글로 할 일" style={{ left: Math.min(Math.max(pick.left, pickHalf), Math.max(pickHalf, (rootRef.current?.clientWidth ?? 0) - pickHalf)), top: pick.top }} onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={(e) => e.stopPropagation()}>
-          {mode !== "redline" ? <button type="button" className="aar-pick" onClick={() => { onQuote(pick.quote); setPick(null); }}>댓글</button> : null}
-          {mode !== "comment" ? <button type="button" className="aar-pick2" data-tone="danger" onClick={() => { window.getSelection()?.removeAllRanges(); onDelete(pick.quote); setPick(null); }}>삭제 표시</button> : null}
+          {mode !== "redline" && mode !== "label" ? <button type="button" className="aar-pick" onClick={() => { onQuote(pick.quote); setPick(null); }}>댓글</button> : null}
+          {(mode === "markup" || mode === "label") && onLabel ? <button type="button" className="aar-pick2" aria-haspopup="menu" onClick={() => setPick({ ...pick, menu: true })}>라벨</button> : null}
+          {mode === "markup" || mode === "redline" ? <button type="button" className="aar-pick2" data-tone="danger" onClick={() => { window.getSelection()?.removeAllRanges(); onDelete(pick.quote); setPick(null); }}>삭제 표시</button> : null}
           {mode === "markup" && onAsk ? <button type="button" className="aar-pick2" onClick={() => { onAsk(pick.quote); setPick(null); }}>묻기</button> : null}
         </span>
       ) : null}

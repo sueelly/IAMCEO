@@ -11,6 +11,7 @@ import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap
 import type { OperationReceipt, ServerCapabilities } from "../shared/operations.ts";
 import type { DeliveryRecoveryService } from "./service-contracts.ts";
 import { ARTIFACT_CSP } from "../shared/artifact-kit.ts";
+import { diagramFrameResponse, diagramRunnerResponse, mermaidScriptResponse } from "./diagram-frame.ts";
 import type { Bus } from "./bus.ts";
 import { VERSION, type Config } from "./config.ts";
 import { FilePublication, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, resolveInside, saveUpload, type SavedFile } from "./files.ts";
@@ -636,8 +637,8 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const ai = reviewAi;
       const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
       const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(),
-        images: z.array(image).max(10).optional(), ai: ai.nullable().optional() }));
-      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, images: body.images, ai: body.ai ?? null }));
+        images: z.array(image).max(10).optional(), ai: ai.nullable().optional(), quickLabel: z.strictObject({ tip: z.string().max(2_000).nullable().optional() }).nullable().optional() }));
+      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, images: body.images, ai: body.ai ?? null, quickLabel: body.quickLabel ?? null }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/replies", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000), ai: reviewAi.nullable().optional() }));
@@ -656,6 +657,11 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const body = await parseBody(req, z.strictObject({ session: z.string(), markdown: z.string().max(500_000).nullable(), revision: z.number().int().nonnegative() }));
       return Response.json(await requireReview().saveDraft(id!, body.session, { markdown: body.markdown, revision: body.revision }));
     }),
+    route("POST", "/api/agent-a/docs/:id/review/draft/attachments", async (req, _url, [id]) => {
+      const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
+      const body = await parseBody(req, z.strictObject({ session: z.string(), attachments: z.array(image).max(10), revision: z.number().int().nonnegative() }));
+      return Response.json(await requireReview().saveAttachments(id!, body.session, { attachments: body.attachments, revision: body.revision }));
+    }),
     route("POST", "/api/agent-a/docs/:id/review/submit", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), revision: z.number().int().nonnegative(), decision: z.enum(["feedback", "approved"]).optional() }));
       return Response.json(await requireReview().submit(id!, body.session, { revision: body.revision, decision: body.decision }));
@@ -670,6 +676,14 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("POST", "/api/agent-a/docs/:id/review/chat/select", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200) }));
       return Response.json(await requireReview().chatSelect(id!, body.session, body.conversation));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/chat/fork", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200), questionId: z.string().max(200), point: z.enum(["question", "answer"]) }));
+      return Response.json(await requireReview().chatFork(id!, body.session, { conversationId: body.conversation, questionId: body.questionId, point: body.point }));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/chat/permission", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200), requestId: z.string().min(1).max(500), allow: z.boolean() }));
+      return Response.json(await requireReview().chatPermission(id!, body.session, { conversationId: body.conversation, requestId: body.requestId, allow: body.allow }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/chat/abort", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200) }));
@@ -1535,6 +1549,10 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
       if (!member) return fail(401, "인증이 필요합니다");
       return dispatch(agentRoutes(ctx, member), req, url);
     }
+    // 도식(Mermaid)을 그리는 격리된 칸과 그 스크립트(server/diagram-frame.ts). 화면이 도식이 든 문서를 열 때만 받아 간다.
+    if (path === "/vendor/diagram-frame") return diagramFrameResponse(req, req.headers.get("host") ?? url.host);
+    if (path === "/vendor/diagram-frame.js") return diagramRunnerResponse(req);
+    if (path === "/vendor/mermaid.min.js") return mermaidScriptResponse(req);
     if (webOrigin) return proxyWeb(webOrigin, req, url);
     if (path === "/" && !webIndex) return fail(503, "화면이 아직 빌드되지 않았습니다");
     return fail(404, "없는 경로입니다");

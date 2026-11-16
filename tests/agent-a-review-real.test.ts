@@ -42,6 +42,26 @@ async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: str
   throw new Error(`기다리다 그만둠: ${what}`);
 }
 const lines = async (res: Response) => (await res.text()).trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+/** 답 흐름을 줄 단위로 하나씩 읽는다(끝까지 기다리지 않는다: 허락을 구하는 동안 답은 멈춰 있다). */
+async function* stream(res: Response): AsyncGenerator<Record<string, unknown>> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let at: number;
+    while ((at = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, at);
+      buffer = buffer.slice(at + 1);
+      if (line.trim()) yield JSON.parse(line) as Record<string, unknown>;
+    }
+  }
+  if (buffer.trim()) yield JSON.parse(buffer) as Record<string, unknown>;
+}
+const failed = async (p: Promise<unknown>): Promise<{ status: number; code?: string; message?: string }> =>
+  p.then(() => ({ status: 200 }), (e) => (e instanceof ApiError ? { status: e.status, code: e.code, message: e.message } : { status: -1, message: String(e) }));
 
 describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길", () => {
   test("새 댓글·삭제 표시·고른 AI·붙인 그림이 실제 규약으로 가고, 다른 창의 초안은 남는다", async () => {
@@ -190,6 +210,175 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     expect(await s.review.draft(s.fileId, s.sid)).toMatchObject({ revision: 0, annotations: 0, editedMarkdown: null });
     expect((await s.review.manage(s.fileId)).artifactRevision).toBe(1);
   }, 60_000);
+
+  test("문서 관리의 블록 일: 검토 표시 · 보관과 다시 꺼내기 · 요약 · 새 블록(글·표·도식·그림) · 순서 · 배치 · 목표와 제약", async () => {
+    const s = await setup("실제: 블록");
+    let m = await s.review.manage(s.fileId);
+    const plan = m.blocks.find((b) => b.title === "계획")!;
+    const background = m.blocks.find((b) => b.title === "배경")!;
+    expect([plan.summary, plan.sources, plan.reviewedRevision, plan.layout]).toEqual(["", [], null, null]);
+    // 검토 표시: 본문·정본 판은 그대로. 같은 요청은 처음 결과, 낡은 판은 거절
+    expect(await s.review.blockReview(s.fileId, { blockId: plan.id, revision: 1, opId: "real-reviewed-01" })).toEqual({ ok: true, reviewedRevision: 1 });
+    expect(await s.review.blockReview(s.fileId, { blockId: plan.id, revision: 1, opId: "real-reviewed-01" })).toEqual({ ok: true, reviewedRevision: 1 });
+    expect((await s.review.manage(s.fileId)).artifactRevision).toBe(1);
+    // 요약 고치기: 본문에 제목 아래 글로 실린다. 검토 표시는 지난 판의 것이 된다
+    await s.review.edit(s.fileId, { blockId: plan.id, revision: 1, title: "계획", summary: "세 단계 요약", body: plan.body, opId: "real-summary-01", contextRevision: m.contextRevision });
+    m = await s.review.manage(s.fileId);
+    expect(m.blocks.find((b) => b.id === plan.id)).toMatchObject({ revision: 2, summary: "세 단계 요약", reviewedRevision: 1 });
+    expect((await s.review.open(s.fileId)).markdown).toContain("## 계획\n\n세 단계 요약\n\n계획은 세 단계입니다.");
+    expect(await failed(s.review.blockReview(s.fileId, { blockId: plan.id, revision: 1, opId: "real-reviewed-02" }))).toMatchObject({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+    // 보관: 본문에서 빠진다. 같은 요청은 처음 결과. 보관 전 판으로 다시 꺼낸다
+    const archive = { blockId: background.id, revision: 1, opId: "real-archive-01", contextRevision: m.contextRevision, layoutRevision: m.layoutRevision };
+    const archived = await s.review.blockArchive(s.fileId, archive);
+    expect(await s.review.blockArchive(s.fileId, archive)).toEqual(archived);
+    m = await s.review.manage(s.fileId);
+    expect(m.blocks.find((b) => b.id === background.id)).toMatchObject({ archived: true, revision: 2 });
+    expect((await s.review.open(s.fileId)).markdown).not.toContain("배경 문장 하나.");
+    expect(await failed(s.review.edit(s.fileId, { blockId: background.id, revision: 2, title: "배경", body: "보관된 것", opId: "real-edit-archived" }))).toMatchObject({ status: 404 });
+    await s.review.restore(s.fileId, { blockId: background.id, revision: 2, historyRevision: 1, opId: "real-unarchive-01", contextRevision: m.contextRevision, layoutRevision: m.layoutRevision });
+    m = await s.review.manage(s.fileId);
+    expect(m.blocks.find((b) => b.id === background.id)).toMatchObject({ archived: false, revision: 3 });
+    expect((await s.review.open(s.fileId)).markdown).toContain("배경 문장 하나.");
+    // 새 블록: 글(고른 블록 뒤) · 표 · 도식 · 그림. 같은 요청을 다시 보내도 하나다
+    const insert = { opId: "real-insert-01", afterId: background.id, kind: "markdown" as const, title: "새 근거", body: "새로 더한 문단입니다.", contextRevision: m.contextRevision, layoutRevision: m.layoutRevision };
+    const made = await s.review.blockInsert(s.fileId, insert);
+    expect(await s.review.blockInsert(s.fileId, insert)).toEqual(made);
+    m = await s.review.manage(s.fileId);
+    const order = () => m.blocks.filter((b) => !b.archived).map((b) => b.title);
+    expect(order().slice(order().indexOf("배경"), order().indexOf("배경") + 2)).toEqual(["배경", "새 근거"]);
+    expect(m.blocks.filter((b) => b.title === "새 근거")).toHaveLength(1);
+    const tail = () => ({ afterId: m.blocks.filter((b) => !b.archived).at(-1)!.id, contextRevision: m.contextRevision, layoutRevision: m.layoutRevision });
+    expect(await failed(s.review.blockInsert(s.fileId, { ...tail(), opId: "real-table-bad", kind: "table", title: "표", body: "표가 아님" }))).toMatchObject({ status: 400 });
+    await s.review.blockInsert(s.fileId, { ...tail(), opId: "real-table-01", kind: "table", title: "비교 표", body: '{"headers":["항목","값"],"rows":[["기간","2주"],["비용",0]]}' });
+    m = await s.review.manage(s.fileId);
+    await s.review.blockInsert(s.fileId, { ...tail(), opId: "real-mermaid-01", kind: "mermaid", title: "흐름", body: "flowchart LR\n  A --> B" });
+    m = await s.review.manage(s.fileId);
+    const image = { name: "shot.png", mediaType: "image/png", base64: pngBase64(40, 30) };
+    const picture = await s.review.blockInsert(s.fileId, { ...tail(), opId: "real-image-01", kind: "image", title: "화면 그림", body: "그림 설명", image });
+    expect(await s.review.blockInsert(s.fileId, { ...tail(), opId: "real-image-01", kind: "image", title: "화면 그림", body: "그림 설명", image })).toEqual(picture);
+    m = await s.review.manage(s.fileId);
+    expect(m.blocks.filter((b) => !b.archived).map((b) => b.kind).slice(-3)).toEqual(["table", "mermaid", "image"]);
+    let doc = await s.review.open(s.fileId);
+    expect(doc.markdown).toContain("| 항목 | 값 |\n| --- | --- |\n| 기간 | 2주 |\n| 비용 | 0 |");
+    expect(doc.markdown).toContain("```mermaid\nflowchart LR\n  A --> B\n```");
+    expect(doc.images).toHaveLength(1);
+    expect(doc.images[0]).toMatchObject({ width: 40, height: 30 });
+    // 낡은 배치 판에는 더하지 않는다(그사이 다른 변경을 덮지 않는다)
+    expect(await failed(s.review.blockInsert(s.fileId, { ...insert, opId: "real-insert-stale", title: "늦은 블록" }))).toMatchObject({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+    // 순서: 본문 순서가 바뀌고 정본 판은 그대로다
+    const ids = m.blocks.filter((b) => !b.archived).map((b) => b.id);
+    const swapped = [ids[1]!, ids[0]!, ...ids.slice(2)];
+    const before = m.artifactRevision;
+    const reordered = await s.review.blocksReorder(s.fileId, { opId: "real-order-01", blockIds: swapped, layoutRevision: m.layoutRevision });
+    expect(await s.review.blocksReorder(s.fileId, { opId: "real-order-01", blockIds: swapped, layoutRevision: m.layoutRevision })).toEqual(reordered);
+    const stale = await failed(s.review.blocksReorder(s.fileId, { opId: "real-order-02", blockIds: ids, layoutRevision: m.layoutRevision }));
+    expect(stale).toMatchObject({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+    expect(stale.message).toContain("배치가 바뀌었습니다");
+    m = await s.review.manage(s.fileId);
+    expect([m.blocks.filter((b) => !b.archived).map((b) => b.id), m.artifactRevision]).toEqual([swapped, before]);
+    expect(await failed(s.review.blocksReorder(s.fileId, { opId: "real-order-03", blockIds: swapped.slice(1), layoutRevision: m.layoutRevision }))).toMatchObject({ status: 400 });
+    // 배치: 자리와 크기만 바뀐다
+    const layout = { x: 40, y: 120, width: 480, height: 300 };
+    const placed = await s.review.layoutSet(s.fileId, { opId: "real-layout-01", blockId: plan.id, layout, layoutRevision: m.layoutRevision });
+    expect(await s.review.layoutSet(s.fileId, { opId: "real-layout-01", blockId: plan.id, layout, layoutRevision: m.layoutRevision })).toEqual(placed);
+    expect(await failed(s.review.layoutSet(s.fileId, { opId: "real-layout-02", blockId: plan.id, layout: { ...layout, x: 0 }, layoutRevision: m.layoutRevision }))).toMatchObject({ status: 409 });
+    m = await s.review.manage(s.fileId);
+    expect([m.blocks.find((b) => b.id === plan.id)!.layout, m.artifactRevision]).toEqual([layout, before]);
+    // 목표와 제약: 문맥 판과 정본 판이 오르고 본문에 실린다
+    const context = { opId: "real-context-01", goal: "새 목표입니다", constraints: ["첫째 제약", "둘째 제약"], contextRevision: m.contextRevision };
+    const changed = await s.review.contextUpdate(s.fileId, context);
+    expect(changed).toEqual({ ok: true, contextRevision: m.contextRevision + 1, artifactRevision: before + 1 });
+    expect(await s.review.contextUpdate(s.fileId, context)).toEqual(changed);
+    expect(await failed(s.review.contextUpdate(s.fileId, { ...context, opId: "real-context-02", goal: "덮으려는 목표" }))).toMatchObject({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+    m = await s.review.manage(s.fileId);
+    expect([m.goal, m.constraints]).toEqual(["새 목표입니다", ["첫째 제약", "둘째 제약"]]);
+    doc = await s.review.open(s.fileId);
+    expect(doc.markdown).toContain("새 목표입니다\n\n- 첫째 제약\n- 둘째 제약");
+  }, 90_000);
+
+  test("빠른 라벨과 검토 전체에 붙인 그림: 실제 규약으로 가고, 다른 창의 초안은 남는다", async () => {
+    const s = await setup("실제: 라벨과 첨부");
+    await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: `${s.doc.canonical}\n\n다른 창의 편집` });
+    const label = { id: "real-label-01", kind: "comment" as const, text: "🔍 확인이 필요해요", quote: "배경 문장 하나.", quickLabel: { tip: "근거를 확인해 주세요." } };
+    await s.review.addComment(s.fileId, s.sid, label);
+    expect((await failure(s.review.addComment(s.fileId, s.sid, label))).status).toBe(200);
+    let raw = (await s.other("GET", "/api/draft")).json!;
+    expect(raw.editedMarkdown).toContain("다른 창의 편집");
+    expect(raw.annotations.map((a: Record<string, unknown>) => [a.id, a.text, a.isQuickLabel, a.quickLabelTip])).toEqual([["real-label-01", "🔍 확인이 필요해요", true, "근거를 확인해 주세요."]]);
+    const list = await until(() => s.review.comments(s.fileId, s.sid, null), (c) => Boolean(c?.annotations.some((a) => a.ai && !a.writing)), "라벨의 답");
+    expect(list!.annotations.find((a) => a.id === "real-label-01")).toMatchObject({ label: true, labelTip: "근거를 확인해 주세요.", quote: "배경 문장 하나." });
+    // 검토 전체에 붙이는 그림: 조건 저장. 다른 창의 편집과 내 주석은 그대로다
+    const a = await s.review.upload(s.fileId, s.sid, { name: "a.png", mediaType: "image/png", base64: pngBase64(20, 10) });
+    const b = await s.review.upload(s.fileId, s.sid, { name: "b.png", mediaType: "image/png", base64: pngBase64(30, 10) });
+    let draft = await s.review.draft(s.fileId, s.sid);
+    draft = await s.review.saveAttachments(s.fileId, s.sid, { attachments: [a, b], revision: draft.revision });
+    expect(draft).toMatchObject({ annotations: 1, attachments: [a, b] });
+    expect((await s.review.attachment(s.fileId, s.sid, b.path)).headers.get("content-type")).toBe("image/png");
+    raw = (await s.other("GET", "/api/draft")).json!;
+    expect([raw.editedMarkdown.includes("다른 창의 편집"), raw.annotations.length, raw.globalAttachments]).toEqual([true, 1, [a, b]]);
+    // 그사이 다른 창이 저장했으면 붙이지 않는다. 그 창의 초안은 그대로다
+    await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: raw.annotations, globalAttachments: [a], editedMarkdown: "다른 창이 다시 저장" });
+    expect(await failure(s.review.saveAttachments(s.fileId, s.sid, { attachments: [b], revision: draft.revision }))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
+    raw = (await s.other("GET", "/api/draft")).json!;
+    expect([raw.editedMarkdown, raw.globalAttachments]).toEqual(["다른 창이 다시 저장", [a]]);
+    // 제출하면 붙인 그림과 라벨이 함께 넘어간다(라벨은 머리에 [라벨]로)
+    draft = await s.review.draft(s.fileId, s.sid);
+    await s.review.submit(s.fileId, s.sid, { revision: draft.revision, decision: "feedback" });
+    const manage = await s.review.manage(s.fileId);
+    const full = manage.feedback.map((f) => f.message).find((text) => text.includes("# Plan Feedback"))!;
+    expect(full).toContain('[🔍 확인이 필요해요] Feedback on: "배경 문장 하나."');
+    expect(full).toContain("> 근거를 확인해 주세요.");
+    expect(full).toContain("## Label Summary");
+    expect(full).toContain("(review attachments: 1)");
+  }, 90_000);
+
+  test("문서 대화 가르기와 AI 의 권한 요청: 허용·거절·멈춤", async () => {
+    const s = await setup("실제: 가르기와 권한");
+    for (const [id, prompt] of [["real-f-0001", "첫 질문"], ["real-f-0002", "둘째 질문"]] as const) await lines(await s.review.chatAsk(s.fileId, s.sid, { id, prompt }));
+    const first = await s.review.chatHistory(s.fileId, s.sid);
+    expect(first).toMatchObject({ branchedFrom: null, branchPoint: null });
+    const forked = await s.review.chatFork(s.fileId, s.sid, { conversationId: first.conversationId, questionId: "real-f-0001", point: "answer" });
+    expect(forked).toMatchObject({ branchedFrom: first.conversationId, branchPoint: { questionId: "real-f-0001", point: "answer" } });
+    expect(forked.entries.map((e) => [e.id, e.answer])).toEqual([["real-f-0001", "문서 답: 첫 질문"]]);
+    await lines(await s.review.chatAsk(s.fileId, s.sid, { id: "real-f-0003", prompt: "갈라서 묻기" }));
+    expect((await s.review.chatHistory(s.fileId, s.sid)).entries.map((e) => e.id)).toEqual(["real-f-0001", "real-f-0003"]);
+    expect((await s.review.chatHistory(s.fileId, s.sid, first.conversationId)).entries.map((e) => e.id)).toEqual(["real-f-0001", "real-f-0002"]);
+    const asked = await s.review.chatFork(s.fileId, s.sid, { conversationId: first.conversationId, questionId: "real-f-0002", point: "question" });
+    expect(asked.entries.map((e) => [e.id, e.answer, e.writing])).toEqual([["real-f-0001", "문서 답: 첫 질문", false], ["real-f-0002", "", false]]);
+    expect((await s.review.chatSessions(s.fileId, s.sid)).filter((c) => c.current).map((c) => c.conversationId)).toEqual([asked.conversationId]);
+    expect(await failed(s.review.chatFork(s.fileId, s.sid, { conversationId: first.conversationId, questionId: "no-such-question", point: "answer" }))).toMatchObject({ status: 404 });
+    // 권한 요청: 화면이 읽을 칸만 넘어오고, 허용하면 답이 이어진다
+    const allowed = stream(await s.review.chatAsk(s.fileId, s.sid, { id: "real-perm-01", prompt: "권한이 필요한 질문" }));
+    const start = (await allowed.next()).value as Record<string, unknown>;
+    const request = (await allowed.next()).value as Record<string, unknown>;
+    expect(request).toEqual({ type: "permission", requestId: expect.stringMatching(/^perm-/), tool: "Bash", title: "명령 실행", detail: "ls docs" });
+    expect(await failed(s.review.chatNew(s.fileId, s.sid))).toMatchObject({ status: 409 });
+    await s.review.chatPermission(s.fileId, s.sid, { conversationId: start.conversationId as string, requestId: request.requestId as string, allow: true });
+    const rest: Record<string, unknown>[] = [];
+    for await (const e of allowed) rest.push(e);
+    expect(rest.filter((e) => e.type === "delta").map((e) => e.text).join("")).toBe("허락을 받아 확인했습니다. 문서 답: 권한이 필요한 질문");
+    expect(rest.at(-1)).toMatchObject({ type: "done", ok: true });
+    expect(await failed(s.review.chatPermission(s.fileId, s.sid, { conversationId: start.conversationId as string, requestId: request.requestId as string, allow: true }))).toMatchObject({ status: 409, code: "AGENT_A_PERMISSION_NOT_PENDING" });
+    // 거절
+    const denied = stream(await s.review.chatAsk(s.fileId, s.sid, { id: "real-perm-02", prompt: "권한을 거절할 질문" }));
+    const start2 = (await denied.next()).value as Record<string, unknown>;
+    const request2 = (await denied.next()).value as Record<string, unknown>;
+    await s.review.chatPermission(s.fileId, s.sid, { conversationId: start2.conversationId as string, requestId: request2.requestId as string, allow: false });
+    const rest2: Record<string, unknown>[] = [];
+    for await (const e of denied) rest2.push(e);
+    expect(rest2.filter((e) => e.type === "delta").map((e) => e.text).join("")).toContain("허락을 받지 못해 확인하지 않았습니다.");
+    // 기다리는 중에 멈춤
+    const stopped = stream(await s.review.chatAsk(s.fileId, s.sid, { id: "real-perm-03", prompt: "권한을 기다리다 멈출 질문" }));
+    const start3 = (await stopped.next()).value as Record<string, unknown>;
+    expect(((await stopped.next()).value as Record<string, unknown>).type).toBe("permission");
+    await s.review.chatAbort(s.fileId, s.sid, start3.conversationId as string);
+    const tail: Record<string, unknown>[] = [];
+    for await (const e of stopped) tail.push(e);
+    expect(tail.find((e) => e.type === "error")).toMatchObject({ code: "aborted" });
+    // 대화는 초안도 정본도 바꾸지 않는다
+    expect(await s.review.draft(s.fileId, s.sid)).toMatchObject({ revision: 0, annotations: 0, editedMarkdown: null });
+    expect((await s.review.manage(s.fileId)).artifactRevision).toBe(1);
+  }, 90_000);
 });
 
 describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하지 않은 쓰기를 거절한다", () => {
@@ -215,5 +404,32 @@ describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하�
     const first = await s.review.edit(s.fileId, input);
     expect(await s.review.edit(s.fileId, input)).toEqual(first);
     expect((await failure(s.review.branchCreate(s.fileId, { opId: "orig-branch-01", question: "질문", blockId: manage.blocks[0]!.id }))).status).toBe(200);
+  }, 60_000);
+
+  test("빠른 라벨과 검토 첨부는 거절하고(초안을 건드린다), 문서 관리의 블록 일과 대화 가르기는 그대로 된다", async () => {
+    const s = await setup("원래: 새 기능");
+    await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: "원래 화면의 초안" });
+    const up = await s.review.upload(s.fileId, s.sid, { name: "a.png", mediaType: "image/png", base64: pngBase64(20, 10) });
+    for (const attempt of [
+      () => s.review.addComment(s.fileId, s.sid, { id: "orig-label-1", kind: "comment", text: "👍 좋아요", quote: "배경 문장 하나.", quickLabel: {} }),
+      () => s.review.saveAttachments(s.fileId, s.sid, { attachments: [up], revision: 0 }),
+    ]) expect(await failure(attempt())).toEqual({ status: 409, code: "AGENT_A_UNSUPPORTED" });
+    const draft = (await s.other("GET", "/api/draft")).json!;
+    expect([draft.editedMarkdown, draft.annotations, draft.globalAttachments]).toEqual(["원래 화면의 초안", [], []]);
+    // 문서 관리의 블록 일은 초안과 상관없는 정본 명령이라 원래 Agent-A 에서도 된다
+    let m = await s.review.manage(s.fileId);
+    const plan = m.blocks.find((b) => b.title === "계획")!;
+    expect(await s.review.blockReview(s.fileId, { blockId: plan.id, revision: 1, opId: "orig-reviewed-01" })).toEqual({ ok: true, reviewedRevision: 1 });
+    await s.review.layoutSet(s.fileId, { opId: "orig-layout-01", blockId: plan.id, layout: { x: 10, y: 20, width: 300, height: 200 }, layoutRevision: m.layoutRevision });
+    m = await s.review.manage(s.fileId);
+    await s.review.blockInsert(s.fileId, { opId: "orig-insert-01", afterId: plan.id, kind: "markdown", title: "더한 블록", body: "더한 글", contextRevision: m.contextRevision, layoutRevision: m.layoutRevision });
+    m = await s.review.manage(s.fileId);
+    expect(m.blocks.map((b) => b.title)).toContain("더한 블록");
+    expect(m.blocks.find((b) => b.id === plan.id)).toMatchObject({ reviewedRevision: 1, layout: { x: 10, y: 20, width: 300, height: 200 } });
+    // 대화 가르기도 초안을 건드리지 않는다
+    await lines(await s.review.chatAsk(s.fileId, s.sid, { id: "orig-q-0001", prompt: "첫 질문" }));
+    const first = await s.review.chatHistory(s.fileId, s.sid);
+    const forked = await s.review.chatFork(s.fileId, s.sid, { conversationId: first.conversationId, questionId: "orig-q-0001", point: "answer" });
+    expect(forked.branchedFrom).toBe(first.conversationId);
   }, 60_000);
 });

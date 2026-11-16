@@ -282,6 +282,10 @@ export interface AgentAReviewAnnotation {
   images: AgentAReviewAttachment[];
   /** 이 댓글에 고른 AI 설정(고르지 않았으면 null). */
   aiSettings: AgentAReviewAiSettings | null;
+  /** 빠른 라벨로 남긴 댓글인지(글이 '이모지 이름' 한 줄이다). */
+  label: boolean;
+  /** 라벨에 딸린 지침(검토 제출 때 함께 넘어가는 말). 없으면 null. */
+  labelTip: string | null;
 }
 
 export interface AgentAReviewComments {
@@ -364,12 +368,16 @@ export type AgentAChatEvent =
   | { type: "start"; conversationId: string }
   | { type: "delta"; text: string }
   | { type: "error"; message: string; code: string }
+  /** 답을 쓰는 중에 AI 가 도구를 쓰려고 허락을 구한다. 허용·거절을 보내야 답이 이어진다. */
+  | { type: "permission"; requestId: string; tool: string; title: string; detail: string }
   | { type: "done"; ok: boolean; text: string };
 export interface AgentAChatHistory {
   conversationId: string;
   entries: AgentAChatEntry[];
   /** 다른 대화에서 갈라진 대화면 그 대화 id. */
   branchedFrom: string | null;
+  /** 갈라진 대화면 어느 질문의 어디(질문·답)에서 갈랐는지. */
+  branchPoint: { questionId: string; point: "question" | "answer" } | null;
 }
 export interface AgentAChatSession {
   conversationId: string;
@@ -446,6 +454,8 @@ export interface AgentAReviewCommentReq {
   region?: AgentAReviewImageRegion | null;
   images?: AgentAReviewAttachment[];
   ai?: AgentAReviewAiSettings | null;
+  /** 빠른 라벨로 남기는 댓글이면 준다. 글(text)은 '이모지 이름' 한 줄이고, tip 은 그 라벨에 딸린 지침이다. 고른 글이나 그림 영역이 있어야 한다. */
+  quickLabel?: { tip?: string | null } | null;
 }
 
 export interface AgentAReviewWriteResult {

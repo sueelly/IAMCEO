@@ -4,6 +4,7 @@ import type { AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAnnotat
 import { GlassButton } from "../../glass";
 import { fetchAttachment } from "../../lib/api";
 import { AiPicker } from "./AiPicker";
+import { labelOf, type QuickLabel } from "../../lib/agent-a-labels";
 import { PROPOSAL_LABEL, kindLabel, oneLine, wordDiff, type ReviewThread, type TurnItem } from "../../lib/agent-a-review";
 import { enterSends, isComposing, useAutoGrow } from "../Composer";
 import { Badge, Markdown, useConfirmPress } from "../ui";
@@ -39,7 +40,7 @@ function Compose({ label, placeholder, value, onChange, onSend, busy, send = "�
 }
 
 /** 붙인 그림 하나. 헤더 인증으로 받아 blob 으로 그린다(주소를 그대로 img 에 넣지 않는다). */
-export function Thumb({ url, name, local, onRemove }: { url: string; name: string; /** 방금 고른 파일의 이 브라우저 안 주소. 있으면 서버에서 다시 받지 않는다. */ local?: string | null; onRemove?: () => void }) {
+export function Thumb({ url, name, local, onRemove, onDraw }: { url: string; name: string; /** 방금 고른 파일의 이 브라우저 안 주소. 있으면 서버에서 다시 받지 않는다. */ local?: string | null; onRemove?: () => void; /** 그림 위에 표시를 그린다. */ onDraw?: () => void }) {
   const [src, setSrc] = useState<string | null>(local ?? null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -61,16 +62,17 @@ export function Thumb({ url, name, local, onRemove }: { url: string; name: strin
       {src ? <img src={src} alt={name} draggable={false} /> : <span className="aar-thumb__wait">{failed ? "그림 없음" : "…"}</span>}
       <span className="aar-thumb__name">{name}</span>
       {onRemove ? <button type="button" className="aar-thumb__x" aria-label={`${name} 빼기`} onClick={onRemove}>×</button> : null}
+      {onDraw ? <button type="button" className="aar-thumb__draw" aria-label={`${name} 위에 그리기`} onClick={onDraw}>그리기</button> : null}
     </span>
   );
 }
 
 /** 새 댓글에 붙일 그림 고르기. 고르면 바로 올려 두고, 댓글을 보낼 때 함께 붙는다. */
-function Attach({ images, url, preview, busy, onAdd, onRemove }: { images: AgentAReviewAttachment[]; url: (path: string) => string; preview: (path: string) => string | null; busy: boolean; onAdd: (file: File) => void; onRemove: (path: string) => void }) {
+function Attach({ images, url, preview, busy, onAdd, onRemove, onDraw }: { images: AgentAReviewAttachment[]; url: (path: string) => string; preview: (path: string) => string | null; busy: boolean; onAdd: (file: File) => void; onRemove: (path: string) => void; onDraw: (path: string) => void }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <div className="aar-attach">
-      {images.map((image) => <Thumb key={image.path} url={url(image.path)} local={preview(image.path)} name={image.name} onRemove={() => onRemove(image.path)} />)}
+      {images.map((image) => <Thumb key={image.path} url={url(image.path)} local={preview(image.path)} name={image.name} onRemove={() => onRemove(image.path)} onDraw={busy ? undefined : () => onDraw(image.path)} />)}
       <button type="button" className="vw-btn" disabled={busy || images.length >= 10} onClick={() => input.current?.click()}>그림 붙이기</button>
       <input ref={input} type="file" hidden multiple accept="image/png,image/jpeg,image/webp" aria-label="댓글에 붙일 그림" onChange={(e) => {
         for (const file of [...(e.target.files ?? [])].slice(0, 10 - images.length)) onAdd(file);
@@ -128,7 +130,7 @@ export function ProposalCard({ proposal, busy, onApprove, actions }: { proposal:
   );
 }
 
-function Message({ m, proposals, busy, imageUrl, onRetry, onApprove }: { m: AgentAReviewAnnotation; proposals: AgentAReviewProposal[]; busy: boolean; imageUrl: (path: string) => string; onRetry: () => void; onApprove: (p: AgentAReviewProposal) => void }) {
+function Message({ m, proposals, busy, labels, imageUrl, onRetry, onApprove }: { m: AgentAReviewAnnotation; proposals: AgentAReviewProposal[]; busy: boolean; labels: readonly QuickLabel[]; imageUrl: (path: string) => string; onRetry: () => void; onApprove: (p: AgentAReviewProposal) => void }) {
   const picked = m.aiSettings ? [m.aiSettings.providerId, m.aiSettings.model, m.aiSettings.reasoningEffort].filter(Boolean).join(" · ") : "";
   return (
     <article className="aar-msg" data-ai={m.ai ? "" : undefined} data-message-id={m.id}>
@@ -137,6 +139,11 @@ function Message({ m, proposals, busy, imageUrl, onRetry, onApprove }: { m: Agen
         <p className="aar-msg__writing" role="status">답을 쓰는 중…</p>
       ) : m.ai ? (
         m.text ? <Markdown text={m.text} className="aar-msg__body" /> : null
+      ) : m.label ? (
+        <>
+          <p className="aar-msg__text"><span className="aar-label" data-tone={labelOf(m.text, labels)?.tone ?? "yellow"}>{m.text}</span></p>
+          {m.labelTip ? <p className="aar-card__meta">지침: {m.labelTip}</p> : null}
+        </>
       ) : (
         <p className="aar-msg__text">{m.text || (m.kind === "deletion" ? "이 글을 지우자는 삭제 표시입니다." : "")}</p>
       )}
@@ -185,6 +192,10 @@ export interface CommentPanelProps {
   imagePreview: (path: string) => string | null;
   onAttach: (file: File) => void;
   onDetach: (path: string) => void;
+  /** 붙이려고 올려 둔 그림 위에 표시를 그린다. */
+  onDrawImage: (path: string) => void;
+  /** 빠른 라벨 목록(라벨 댓글의 색을 맞추는 데 쓴다). */
+  labels: readonly QuickLabel[];
   onCreate: (target: Extract<PanelView, { kind: "new" }>["target"], text: string) => void;
   onReply: (threadId: string, text: string) => void;
   onResolve: (threadId: string, resolved: boolean) => void;
@@ -216,7 +227,7 @@ export function CommentPanel(p: CommentPanelProps) {
         </div>
         {p.blocked ? null : (
           <div className="aar-pane__foot">
-            <Attach images={p.images} url={p.imageUrl} preview={p.imagePreview} busy={p.busy} onAdd={p.onAttach} onRemove={p.onDetach} />
+            <Attach images={p.images} url={p.imageUrl} preview={p.imagePreview} busy={p.busy} onAdd={p.onAttach} onRemove={p.onDetach} onDraw={p.onDrawImage} />
             <AiPicker catalog={p.catalog} value={p.ai} onChange={p.onAi} disabled={p.busy} />
             <Compose label="댓글" placeholder="묻거나 고쳐 달라고 적어 주세요" value={text} onChange={(v) => p.setDraft(key, v)} busy={p.busy} autoFocus
               onSend={() => p.onCreate(view.target, text)} />
@@ -265,7 +276,7 @@ export function CommentPanel(p: CommentPanelProps) {
           {thread.root.branchOf ? <p className="aar-note">‘{thread.root.branchOf}’에서 갈라 낸 질문입니다.</p> : null}
           {thread.root.quote ? <blockquote className="aar-quote">{thread.root.quote}</blockquote> : null}
           {thread.messages.map((m) => (
-            <Message key={m.id} m={m} busy={p.busy} imageUrl={p.imageUrl} proposals={thread.proposals.filter((x) => x.annotationId === m.id)} onRetry={() => p.onRetry(m.id)} onApprove={p.onApprove} />
+            <Message key={m.id} m={m} busy={p.busy} labels={p.labels} imageUrl={p.imageUrl} proposals={thread.proposals.filter((x) => x.annotationId === m.id)} onRetry={() => p.onRetry(m.id)} onApprove={p.onApprove} />
           ))}
           {p.error ? <p className="aar-error" role="alert">{p.error}</p> : null}
         </div>
@@ -292,7 +303,7 @@ export function CommentPanel(p: CommentPanelProps) {
           {t.done ? <Badge tone="ok">{t.root.resolved ? "완료" : "저장됨"}</Badge> : null}
           {t.messages.length > 1 ? <span className="aar-row__count t-tabular">글 {t.messages.length}</span> : null}
         </span>
-        <span className="aar-row__text">{oneLine(t.root.text || (t.root.kind === "deletion" ? "삭제 표시" : "(내용 없음)"), 90)}</span>
+        <span className="aar-row__text">{t.root.label ? <span className="aar-label" data-tone={labelOf(t.root.text, p.labels)?.tone ?? "yellow"}>{oneLine(t.root.text, 90)}</span> : oneLine(t.root.text || (t.root.kind === "deletion" ? "삭제 표시" : "(내용 없음)"), 90)}</span>
         {t.root.quote ? <span className="aar-row__quote">{oneLine(t.root.quote, 70)}</span> : null}
       </button>
     </li>

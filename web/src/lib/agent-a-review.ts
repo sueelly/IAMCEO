@@ -283,7 +283,8 @@ export const PROPOSAL_LABEL: Record<AgentAReviewProposal["status"], string> = {
 };
 
 /** 댓글 종류의 화면 글. */
-export function kindLabel(a: Pick<AgentAReviewAnnotation, "kind" | "region">): string {
+export function kindLabel(a: Pick<AgentAReviewAnnotation, "kind" | "region"> & { label?: boolean }): string {
+  if (a.label) return "라벨";
   if (a.region) return "그림 영역";
   return a.kind === "global" ? "전체" : a.kind === "deletion" ? "삭제 표시" : "문장";
 }

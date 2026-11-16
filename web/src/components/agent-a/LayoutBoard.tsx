@@ -46,7 +46,8 @@ export function LayoutBoard({ blocks, busy, board, onOrder, onLayout }: {
   const layoutOf = (b: AgentABlock, index: number): AgentABlockLayout => (draft?.id === b.id ? draft.layout : b.layout ?? defaultLayout(index));
   const layouts = blocks.map(layoutOf);
   const size = { width: Math.max(660, ...layouts.map((l) => l.x + l.width + 30)), height: Math.max(500, ...layouts.map((l) => l.y + l.height + 30)) };
-  const scale = viewWidth > 0 ? Math.min(1, viewWidth / size.width) : 1;
+  // 한눈에 보이게 줄여 그린다(기본 블록 하나가 620×620 이라 그대로 그리면 한 화면에 하나만 보인다). 자리와 크기의 숫자는 줄이지 않은 값이다.
+  const scale = Math.min(0.5, viewWidth > 0 ? viewWidth / size.width : 0.5);
   const picked = blocks.find((b) => b.id === selected) ?? null;
   const pickedIndex = picked ? blocks.indexOf(picked) : -1;
   const saved = (b: AgentABlock, index: number): AgentABlockLayout => b.layout ?? defaultLayout(index);

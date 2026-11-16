@@ -61,6 +61,9 @@ const KNOWN: Record<string, string> = {
   local_only: "Agent-A 가 이 서버의 요청을 받지 않습니다(이 기기 전용 설정)",
   idempotency_conflict: "같은 요청 id 로 다른 내용을 보냈습니다",
   draft_conflict: "그사이 다른 화면이 초안을 저장했습니다. 다시 불러온 초안에서 고쳐 주세요",
+  permission_not_pending: "이미 지난 권한 요청입니다",
+  chat_busy: "답을 쓰는 중입니다. 답이 끝나거나 멈춘 뒤에 해 주세요",
+  chat_not_found: "이 문서의 대화가 아니거나 그 질문을 찾지 못했습니다",
   unsupported: "이 Agent-A 는 초안 보존 규약을 몰라 새 댓글과 초안 고치기를 막았습니다. Agent-A 를 초안 보존 판으로 올려야 합니다",
 };
 const LAYOUT_CONFLICT = "그사이 배치가 바뀌었습니다. 다시 불러온 배치에서 고쳐 주세요";
@@ -122,6 +125,8 @@ export function toAnnotation(raw: unknown): AgentAReviewAnnotation | null {
       ...(str(raw.aiSettings.model) ? { model: str(raw.aiSettings.model) } : {}),
       ...(str(raw.aiSettings.reasoningEffort) ? { reasoningEffort: str(raw.aiSettings.reasoningEffort) } : {}),
     },
+    label: !ai && raw.isQuickLabel === true,
+    labelTip: !ai && raw.isQuickLabel === true && str(raw.quickLabelTip) ? str(raw.quickLabelTip) : null,
   };
 }
 
@@ -164,16 +169,24 @@ function lineDiff(before: string, after: string): string {
  */
 export function feedbackText(markdown: string, annotations: Json[], edited: string | null, attachments: number): string {
   const parts: string[] = ["# Plan Feedback", "", `I've reviewed this document and have ${annotations.length} piece${annotations.length === 1 ? "" : "s"} of feedback:`, ""];
+  // 빠른 라벨은 원래 화면처럼 머리에 [라벨]로 싣고 지침을 인용 줄로 붙인다. 끝에 라벨별 개수를 모아 적는다.
+  const isLabel = (a: Json) => a.type === "COMMENT" && a.isQuickLabel === true && Boolean(str(a.text));
   annotations.forEach((a, i) => {
     const quote = str(a.originalText), text = str(a.text);
+    const label = isLabel(a);
     const head = a.type === "DELETION" ? "Remove this" : a.type === "GLOBAL_COMMENT" || !quote ? "General feedback" : "Feedback on";
-    parts.push(`## ${i + 1}. ${head}${quote && a.type !== "DELETION" ? `: "${quote.replace(/\s+/g, " ").slice(0, 200)}"` : ""}`);
+    parts.push(`## ${i + 1}. ${label ? `[${text.replace(/\s+/g, " ")}] ` : ""}${head}${quote && a.type !== "DELETION" ? `: "${quote.replace(/\s+/g, " ").slice(0, 200)}"` : ""}`);
     if (a.type === "DELETION" && quote) parts.push("```", quote.slice(0, 2000), "```");
-    if (text) parts.push(...text.split("\n").map((l) => `> ${l}`));
+    if (label) {
+      if (str(a.quickLabelTip)) parts.push(`> ${str(a.quickLabelTip).replace(/\s+/g, " ")}`);
+    } else if (text) parts.push(...text.split("\n").map((l) => `> ${l}`));
     if (obj(a.imageRegion)) parts.push(`(image region: ${str(a.imageRegion.src)})`);
     if (Array.isArray(a.images) && a.images.length) parts.push(`(attachments: ${a.images.length})`);
     parts.push("");
   });
+  const labels = new Map<string, number>();
+  for (const a of annotations) if (isLabel(a)) labels.set(str(a.text).replace(/\s+/g, " "), (labels.get(str(a.text).replace(/\s+/g, " ")) ?? 0) + 1);
+  if (labels.size) parts.push("## Label Summary", "", ...[...labels].map(([text, count]) => `- **${text}**: ${count}`), "");
   if (attachments) parts.push(`(review attachments: ${attachments})`, "");
   if (edited !== null && edited !== markdown) parts.push("# Direct Edits", "", "```diff", lineDiff(markdown, edited), "```", "");
   return parts.join("\n").trim().slice(0, 95_000);
@@ -356,6 +369,15 @@ export class AgentAReview {
     }
     const images = attachments(req.images);
     const ai = aiSettings(req.ai);
+    // 빠른 라벨: 고른 글·그림 영역에 한 줄짜리 라벨을 댓글로 남긴다. Agent-A 의 원래 화면과 같은 표시(isQuickLabel·quickLabelTip)를 싣는다.
+    let label: { tip: string } | null = null;
+    if (req.quickLabel != null) {
+      const tip = obj(req.quickLabel) ? req.quickLabel.tip ?? "" : null;
+      if (typeof tip !== "string" || tip.length > 2_000) throw new ApiError(400, "라벨 지침이 올바르지 않습니다");
+      if (req.kind !== "comment" || (!quote.trim() && !region)) throw new ApiError(400, "라벨은 고른 글이나 그림 영역에 붙입니다");
+      if (text.length > 200 || /[\r\n]/.test(text)) throw new ApiError(400, "라벨 글은 한 줄, 200자까지입니다");
+      label = { tip: tip.trim() };
+    }
     // 1) 이 Agent-A 가 초안 보존 규약을 아는지 먼저 본다(초안 판 머리). 모르면 쓰기를 하나도 보내지 않는다.
     const cur = await this.call(fileId, sid, "GET", "/api/draft");
     if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
@@ -373,6 +395,7 @@ export class AgentAReview {
         ...(region ? { imageRegion: region } : {}),
         ...(images.length ? { images } : {}),
         ...(ai ? { aiSettings: ai } : {}),
+        ...(label ? { isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) } : {}),
       },
     });
     if (saved.status === 200) return { ok: true, id: req.id };
@@ -564,20 +587,44 @@ export class AgentAReview {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
     if (input.markdown !== null && (typeof input.markdown !== "string" || input.markdown.length > 500_000)) throw new ApiError(400, "본문이 너무 깁니다");
+    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", (kept) => {
+      const { editedMarkdown: _e, ...rest } = kept;
+      return input.markdown !== null ? { ...rest, editedMarkdown: input.markdown } : rest;
+    });
+  }
+
+  /**
+   * 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). 정본은 바뀌지 않고, 검토 제출 때 함께 넘어간다.
+   * 본문 고치기와 같은 조건 저장이다: revision 뒤에 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않는다. 초안의 다른 칸(주석·고친 본문)은 그대로 둔다.
+   */
+  async saveAttachments(fileId: string, sessionId: string, input: { attachments: unknown; revision: number }): Promise<AgentAReviewDraft> {
+    const sid = this.session(sessionId);
+    if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
+    const list = attachments(input.attachments);
+    if (new Set(list.map((x) => x.path)).size !== list.length) throw new ApiError(400, "같은 그림이 두 번 들어 있습니다");
+    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에는 그림을 붙이지 않습니다. 최신 정본을 열어 주세요", (kept) => ({ ...kept, globalAttachments: list }));
+  }
+
+  /**
+   * 초안의 한 칸만 바꿔 조건 저장한다. 읽은 초안의 다른 칸은 그대로 다시 싣고, revision(화면이 본 초안 판)이 지금 판과 다르면 아무것도 보내지 않는다.
+   * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision).
+   */
+  private async writeDraft(fileId: string, sid: string, revision: number, stale: string, change: (kept: Json) => Json): Promise<AgentAReviewDraft> {
     const doc = this.service.docOf(fileId);
     const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: doc.artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
     if (session.decision) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
-    if (session.stale === true) throw new ApiError(409, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", "AGENT_A_REVISION_CONFLICT");
+    if (session.stale === true) throw new ApiError(409, stale, "AGENT_A_REVISION_CONFLICT");
     const got = await this.readDraft(fileId, sid);
-    if (got.revision !== input.revision) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
-    const { draftGeneration, documents: _d, found: _f, editedMarkdown: _e, ...kept } = got.json;
+    if (got.revision !== revision) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+    const { draftGeneration, documents: _d, found: _f, ...kept } = got.json;
     const body = {
-      ...kept,
-      annotations: Array.isArray(kept.annotations) ? kept.annotations : [],
-      globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
-      ...(input.markdown !== null ? { editedMarkdown: input.markdown } : {}),
+      ...change({
+        ...kept,
+        annotations: Array.isArray(kept.annotations) ? kept.annotations : [],
+        globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
+      }),
       draftGeneration: num(draftGeneration) ?? 0,
-      ifDraftRevision: input.revision,
+      ifDraftRevision: revision,
     };
     const saved = await this.call(fileId, sid, "POST", "/api/draft", body);
     if (saved.status !== 200) {
@@ -649,7 +696,13 @@ export class AgentAReview {
         provider: str(r.providerId) || null,
       }];
     });
-    return { conversationId: str(json.conversationId), entries, branchedFrom: obj(json.origin) ? str(json.origin.conversationId) || null : null };
+    const origin = obj(json.origin) && str(json.origin.conversationId) ? json.origin : null;
+    return {
+      conversationId: str(json.conversationId),
+      entries,
+      branchedFrom: origin ? str(origin.conversationId) : null,
+      branchPoint: origin && str(origin.questionId) ? { questionId: str(origin.questionId), point: origin.point === "question" ? "question" : "answer" } : null,
+    };
   }
   private conversation(id: string): string {
     if (!ANNOTATION.test(id)) throw new ApiError(400, "대화 id 가 올바르지 않습니다");
@@ -673,6 +726,22 @@ export class AgentAReview {
   /** 앞 대화를 골라 이어 간다. */
   async chatSelect(fileId: string, sessionId: string, conversationId: string): Promise<AgentAChatHistory> {
     return this.chatHistoryOf(await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/select", { conversationId: this.conversation(conversationId) }, "대화를 고르지 못했습니다"));
+  }
+  /**
+   * 대화를 한 질문까지(point=question 은 그 질문만, answer 는 그 답까지) 복사해 새 대화로 가른다.
+   * 원래 대화는 그대로 남고 새 대화가 '지금 대화'가 된다. 정본은 바뀌지 않는다. 답을 쓰는 중에는 Agent-A 가 거절한다.
+   */
+  async chatFork(fileId: string, sessionId: string, input: { conversationId: string; questionId: string; point: "question" | "answer" }): Promise<AgentAChatHistory> {
+    if (!ANNOTATION.test(input.questionId)) throw new ApiError(400, "질문 id 가 올바르지 않습니다");
+    if (input.point !== "question" && input.point !== "answer") throw new ApiError(400, "가를 자리가 올바르지 않습니다");
+    return this.chatHistoryOf(await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/fork", { conversationId: this.conversation(input.conversationId), questionId: input.questionId, point: input.point }, "대화를 가르지 못했습니다"));
+  }
+  /** 답을 쓰는 중에 AI 가 구한 허락(도구 실행)에 답한다. 대표가 누른 그대로만 보낸다. 이미 지난 요청이면 Agent-A 가 거절한다. */
+  async chatPermission(fileId: string, sessionId: string, input: { conversationId: string; requestId: string; allow: boolean }): Promise<{ ok: true }> {
+    if (typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 500) throw new ApiError(400, "권한 요청 id 가 올바르지 않습니다");
+    if (typeof input.allow !== "boolean") throw new ApiError(400, "허용·거절을 골라 주세요");
+    await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/permission", { sessionId: this.conversation(input.conversationId), requestId: input.requestId, allow: input.allow }, "권한 응답을 보내지 못했습니다");
+    return { ok: true };
   }
   /** 쓰고 있는 답을 멈춘다. */
   async chatAbort(fileId: string, sessionId: string, conversationId: string): Promise<{ ok: true }> {
@@ -725,6 +794,12 @@ export class AgentAReview {
       if (!obj(event)) return [];
       if (event.type === "text_delta" && typeof event.delta === "string") return [line({ type: "delta", text: event.delta })];
       if (event.type === "error") return [line({ type: "error", message: str(event.error) || "답을 받지 못했습니다", code: str(event.code) || "provider_failed" })];
+      if (event.type === "permission_request" && typeof event.requestId === "string" && event.requestId) {
+        // AI 가 도구를 쓰려고 허락을 구한다. 화면이 읽을 칸만 옮긴다(도구 이름·제목·무엇을 하려는지). 입력 전체는 넘기지 않는다.
+        const input = obj(event.toolInput) ? event.toolInput : {};
+        const detail = str(event.description) || str(input.command) || str(input.file_path) || str(input.path) || str(input.url) || (Object.keys(input).length ? JSON.stringify(input) : "");
+        return [line({ type: "permission", requestId: event.requestId.slice(0, 500), tool: (str(event.displayName) || str(event.toolName) || "도구").slice(0, 200), title: str(event.title).slice(0, 500), detail: detail.slice(0, 2_000) })];
+      }
       if (event.type === "result" && !finished) {
         finished = true;
         return [line({ type: "done", ok: event.success !== false, text: str(event.result) })];

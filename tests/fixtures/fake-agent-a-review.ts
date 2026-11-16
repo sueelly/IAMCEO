@@ -73,6 +73,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
   /** 문서 대화: 문서마다 대화 여럿, 그중 하나가 '지금 대화'. */
   const chats: Json[] = [];
   const chatAborts = new Map<string, () => void>();
+  /** 답을 쓰는 중에 허락을 기다리는 요청: 대화 id → 요청 id 별 답하기. */
+  const chatPermissions = new Map<string, Map<string, (allow: boolean) => void>>();
   const calls: { method: string; path: string }[] = [];
   let enabled = true;
   let down = false;
@@ -642,6 +644,32 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
         chatAborts.get(body?.sessionId)?.();
         return Response.json({ ok: true });
       }
+      if (path === "/api/ai/fork" && method === "POST") {
+        // 실제 Agent-A(src/server/document-chat.js forkConversation)와 같다: 고른 질문까지 복사하고, point 가 question 이면 그 질문의 답은 비운다.
+        if (!body || !["question", "answer"].includes(body.point)) return fail(400, "invalid_chat_request", "Select a question or answer.");
+        const from = mine().find((x) => x.id === body.conversationId);
+        if (!from) return fail(404, "chat_not_found", "This conversation does not belong to the open document.");
+        const index = from.entries.findIndex((e: Json) => e.question.id === body.questionId);
+        if (index < 0) return fail(404, "chat_not_found", "The selected question does not exist.");
+        const live = current();
+        if (live.active || from.active) return fail(409, "chat_busy", "Stop the current answer before branching.");
+        live.current = false;
+        const entries = clone(from.entries.slice(0, index + 1));
+        if (body.point === "question") entries[index].response = { questionId: entries[index].question.id, text: "", isStreaming: false, createdAt: Date.now() };
+        const c = { id: randomUUID(), artifact_id: s.artifact_id, current: true, entries, settings: clone(from.settings), origin: { conversationId: from.id, questionId: body.questionId, point: body.point }, created_at: Date.now(), updated_at: Date.now(), active: false };
+        chats.push(c);
+        return Response.json(history(c));
+      }
+      if (path === "/api/ai/permission" && method === "POST") {
+        const c = mine().find((x) => x.id === body?.sessionId);
+        if (!c) return fail(404, "chat_not_found", "This conversation does not belong to the open document.");
+        const requestId: unknown = body?.requestId, allow: unknown = body?.allow;
+        const answer = typeof requestId === "string" && typeof allow === "boolean" ? chatPermissions.get(c.id)?.get(requestId) : undefined;
+        if (!answer || typeof requestId !== "string" || typeof allow !== "boolean") return fail(409, "permission_not_pending", "This permission request is no longer pending.");
+        chatPermissions.get(c.id)!.delete(requestId);
+        answer(allow);
+        return Response.json({ ok: true });
+      }
       if (path === "/api/ai/query" && method === "POST") {
         const c = mine().find((x) => x.id === body?.sessionId);
         if (!c) return fail(404, "chat_not_found", "This conversation does not belong to the open document.");
@@ -675,6 +703,20 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
             };
             await wait(delay);
             if (String(question.prompt).includes("실패")) return end({ message: "답변을 받지 못했습니다. 다시 요청해 주세요.", code: "provider_failed" });
+            // '권한' 이 든 질문: 도구를 쓰기 전에 허락을 구하고, 답이 올 때까지(또는 멈출 때까지) 기다린다.
+            if (String(question.prompt).includes("권한")) {
+              const requestId = `perm-${randomUUID()}`;
+              const allowed = await new Promise<boolean | null>((resolve) => {
+                const pending = chatPermissions.get(c.id) ?? new Map<string, (allow: boolean) => void>();
+                chatPermissions.set(c.id, pending);
+                pending.set(requestId, resolve);
+                chatAborts.set(c.id, () => { aborted = true; pending.delete(requestId); resolve(null); });
+                controller.enqueue(packet({ type: "permission_request", requestId, toolName: "Bash", toolInput: { command: "ls docs" }, title: "명령 실행", toolUseId: `tool-${requestId}` }));
+              });
+              chatAborts.set(c.id, () => { aborted = true; });
+              if (allowed === null) return end({ message: "This answer was stopped before it finished.", code: "aborted" });
+              pieces.splice(0, pieces.length, allowed ? "허락을 받아 확인했습니다. " : "허락을 받지 못해 확인하지 않았습니다. ", full);
+            }
             for (const piece of pieces) {
               if (aborted) return end({ message: "This answer was stopped before it finished.", code: "aborted" });
               entry.response.text += piece;

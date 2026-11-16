@@ -33,7 +33,15 @@ IAMCEO 만으로는 고칠 수 없다: 조건을 걸 수 있는 쓰기도, 주�
 | 새 댓글·삭제 표시 | `GET /api/draft`(초안 판 머리로 규약 확인) → `POST /api/draft/annotations` | 통째 저장을 하지 않으므로 남는다 |
 | 본문 직접 고치기(초안) | `GET /api/draft` → `POST /api/draft` + `ifDraftRevision`(화면이 고치기 시작할 때 본 판) | 그사이 바뀌었으면 거절하고 대표에게 보인다 |
 | 검토 제출 | `GET /api/draft` → `POST /api/feedback` + `ifDraftRevision` | 그사이 바뀌었으면 제출하지 않는다 |
+| 빠른 라벨 | 새 댓글과 같은 길. 주석에 원래 화면과 같은 표시(`isQuickLabel`·`quickLabelTip`)를 싣는다 | 통째 저장을 하지 않으므로 남는다 |
+| 검토 전체에 붙이는 그림 | `GET /api/draft` → `POST /api/draft` + `ifDraftRevision`(붙인 그림 목록만 바꾼다) | 그사이 바뀌었으면 거절하고 다시 읽은 목록을 보인다 |
 | 답글·완료·지우기·다시 요청·갈래 질문·수정안 저장·판·문서 관리 | 원래 규약 그대로(줄 하나만 바꾸는 쓰기) | 초안을 건드리지 않는다 |
+| 문서 관리의 블록 일(검토 표시·보관·새 블록·순서·배치·목표와 제약) | 정본 명령(`review_block`·`archive_block`·`insert_block`·`reorder_blocks`·`set_layout`·`update_context`) | 초안을 건드리지 않는다 |
+| 문서 대화 가르기·AI 권한 응답 | `POST /api/ai/fork` · `POST /api/ai/permission` | 초안을 건드리지 않는다 |
+
+문서 관리의 블록 일도 직접 고치기와 같은 방식이다: 명령을 요청이 가리킨 판(블록 판·문맥 판·배치 판)으로만 만든다.
+같은 요청을 다시 보내면 같은 명령이 되어 Agent-A 가 처음 결과를 돌려주고, 낡은 판을 가리킨 새 요청은 Agent-A 가 거절한다.
+새 블록의 id 는 요청 id 로 정해 다시 보내도 블록이 하나만 생긴다.
 
 IAMCEO 만으로 고친 것: 직접 고치기·되살리기의 재전송(F2). 명령을 요청이 가리킨 판으로만 만들어, 같은 요청을 다시 보내면
 같은 명령이 되고 Agent-A 가 판 검사보다 먼저 보관한 처음 결과를 돌려준다. 지금 판으로 바꿔 다시 보내지 않는다.
@@ -43,7 +51,7 @@ IAMCEO 만으로 고친 것: 직접 고치기·되살리기의 재전송(F2). �
 | IAMCEO | Agent-A | 결과 |
 | --- | --- | --- |
 | 이 가지 | 초안 규약 2(패치 적용) | 모든 기능 |
-| 이 가지 | 원래 c559881 | 새 댓글·삭제 표시·본문 고치기·검토 제출을 **거절**한다(`AGENT_A_UNSUPPORTED`, 화면에 까닭을 보인다). 읽기·답글·수정안·판·문서 관리·문서에 묻기는 된다. 통째 저장으로 조용히 넘어가지 않는다. |
+| 이 가지 | 원래 c559881 | 새 댓글·삭제 표시·빠른 라벨·본문 고치기·검토 첨부·검토 제출을 **거절**한다(`AGENT_A_UNSUPPORTED`, 화면에 까닭을 보인다). 읽기·답글·수정안·판·문서 관리(블록 일 포함)·문서에 묻기(가르기·권한 응답 포함)는 된다. 통째 저장으로 조용히 넘어가지 않는다. |
 | 예전 가지(칸 방식) | 초안 규약 2 | 원래 화면이 그대로 돈다(더한 것은 안 쓴다) |
 
 지금 켜 둔 체험 Agent-A(4417)는 원래 c559881 이다. 이 가지를 그 Agent-A 에 붙이면 둘째 줄이 된다.
@@ -59,13 +67,34 @@ IAMCEO 만으로 고친 것: 직접 고치기·되살리기의 재전송(F2). �
 ## 확인하는 방법
 
 - Agent-A 쪽: 패치를 적용한 소스에서 `node --test tests/server/draft-protocol.test.js` 와 기존 `npm test`.
-- IAMCEO 쪽: `bun test tests/agent-a-review-preserve.test.ts tests/agent-a-review.test.ts`(가짜 Agent-A, 초안 규약 1·2 둘 다),
+- IAMCEO 쪽(가짜 Agent-A, 초안 규약 1·2 둘 다):
+  `bun test tests/agent-a-review.test.ts tests/agent-a-review-preserve.test.ts tests/agent-a-review-blocks.test.ts tests/agent-a-review-extras.test.ts tests/agent-a-web-libs.test.ts`,
   `bun test ./tests/agent-a-review.browser.ts`(화면).
 - 실제 Agent-A 서버 코드로 대조: 패치한 소스의 `buildApp` 을 새 데이터 폴더·AI 대역으로 띄우고
-  `IAMCEO_AGENT_A_REAL_URL=http://127.0.0.1:<포트> bun test ./tests/agent-a-review.browser.ts`.
+  `IAMCEO_AGENT_A_REAL_URL=http://127.0.0.1:<포트> bun test tests/agent-a-review-real.test.ts ./tests/agent-a-review.browser.ts`.
+  원래 Agent-A(c559881)는 `IAMCEO_AGENT_A_REAL_PROTOCOL=1` 을 함께 준다. AI 대역은 문서에 묻기의 질문에 '권한'이 들면
+  `permission_request` 를 내고 `respondToPermission` 을 기다려야 한다(권한 응답 시험).
 
-## 아직 옮기지 않은 것
+## 도식(Mermaid)을 그리는 방법
 
-- 도식(Mermaid): 원문을 '도식 원문'으로 밝혀 글로 보인다. 그림으로 그리려면 Mermaid 부품(약 5MB, 딸린 패키지 다수)을 IAMCEO 에 넣어야 해서 정하지 않았다.
-- 앱 자신을 고치는 수정안·미리 보기·적용: 문서 검토와 다른 코드 변경·적용 범위라 이 화면에 넣지 않았다(범위 미정).
-- 원래 화면의 빠른 라벨(Label), 그림 위 자유 그리기, 대화 갈래 만들기(문서에 묻기의 fork), 블록 보관·새 블록·배치 보드.
+도식 글은 직원·AI 가 쓴 믿을 수 없는 글이다. 그리는 부품(Mermaid 12.2.0, 약 5MB)은 도식 글의 이름표를 HTML 로 다루는 길이 있어,
+화면 문서에서 돌리면 도식 글이 그 문서의 DOM 에 닿는다(화면의 보안 정책이 스크립트는 막지만, 그 한 줄에만 기대지 않는다).
+
+- 화면은 부품을 직접 싣지 않는다. 도식이 든 문서를 열 때만 보이지 않는 칸(iframe) 하나에 `/vendor/diagram-frame` 을 연다.
+- 그 문서는 `sandbox allow-scripts` 로 열려 출처가 없다(화면의 DOM·저장소·쿠키·접속 코드에 닿지 못한다). 보안 정책은 이 서버의
+  스크립트 두 개(`/vendor/mermaid.min.js`, `/vendor/diagram-frame.js`)만 허락하고 그림·글꼴·연결·다른 칸은 모두 막는다.
+- 화면은 도식 글을 메시지로 보내고 SVG 글만 돌려받아 `<img>`(blob 주소)로 보인다. 그림으로 열린 SVG 는 스크립트가 돌지 않고
+  바깥 주소를 부르지 못한다. 문법이 틀렸거나 부품을 받지 못하면 도식 원문을 글로 보인다.
+- 부품 파일은 `server/vendor-mermaid.ts` 가 파일로 싣는다(컴파일한 실행 파일에도 들어간다). 패키지가 없으면 404 이고 원문을 보인다.
+- 부품과 그 안에 묶인 패키지의 라이선스 고지는 `THIRD-PARTY-NOTICES.md` 의 'Diagram runtime (Mermaid)'에 있다(elkjs 는 EPL-2.0).
+
+## 원래 화면과 다른 점 · 옮기지 않은 것
+
+- 앱 업데이트(Agent-A 앱 자신의 코드를 AI 가 고치는 수정안·미리 보기·적용): 대표 결정(2026-11-16)으로 이 화면에 넣지 않는다.
+  원래 Agent-A 화면에서만 쓴다. 그런 딸린 내용이 있는 답에는 '원래 화면에서만 다룬다'고 적어 보인다.
+- 본문 고치기의 편집기: 원래 화면은 서식을 바로 그려 주는 편집기(CodeMirror 기반)다. 이 화면은 마크다운 글 입력칸에
+  서식 막대(굵게·기울임·취소선·코드·링크·제목·목록·번호·인용·코드 블록)·단축키·미리 보기를 둔다. 저장되는 글은 같은 마크다운이다.
+- 빠른 라벨: 고른 글에만 붙인다(그림 영역에는 붙이지 않는다). 기본 라벨은 우리말로 옮겼고, 고친 라벨은 이 기기 브라우저에만 기억한다.
+- 블록의 근거(출처): 보기만 한다(원래 화면도 고치지 않는다). 요약은 직접 고치기에서 고친다.
+- 배치 보드: 넓은 화면에서만 그린다. 좁은 화면은 읽는 순서만 바꾼다(원래 화면도 모바일은 읽는 순서를 유지한다).
+- 도식의 한 부분을 골라 댓글 달기(원래 화면의 도식 위치 주석): 도식을 그림으로만 보여서 하지 않는다. 도식 블록 전체에 대한 댓글은 '전체 댓글'이나 블록 분기로 단다.

@@ -6,13 +6,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentAProjectInfo, AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAttachment, AgentAReviewComments, AgentAReviewDoc, AgentAReviewDraft, AgentAReviewImageRegion, AgentAReviewProposal, AgentAReviewVersion } from "@shared/agent-a";
 import { GlassButton } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
+import { labelText, loadLabels, saveLabels, type QuickLabel } from "../lib/agent-a-labels";
 import { buildThreads, myTurn, outline } from "../lib/agent-a-review";
 import { newId } from "../lib/store";
 import { AgentAManage } from "./agent-a/AgentAManage";
 import { ChatPanel } from "./agent-a/ChatPanel";
 import { CommentPanel, type PanelView } from "./agent-a/CommentPanel";
+import { DraftEditor } from "./agent-a/DraftEditor";
+import { ImageDraw } from "./agent-a/ImageDraw";
+import { LabelEditor } from "./agent-a/LabelEditor";
+import { ReviewAttachments, uploadImage } from "./agent-a/ReviewAttachments";
 import { ReviewDocument, type ReviewInput, type ReviewMode } from "./agent-a/ReviewDocument";
-import { Badge, MQ_DESKTOP, Modal, Sheet, Time, useConfirmPress, useMediaQuery } from "./ui";
+import { Badge, MQ_DESKTOP, Modal, Sheet, Time, useMediaQuery } from "./ui";
 import "../styles/agent-a.css";
 
 /** 답을 쓰는 중이면 자주, 아니면 드물게 댓글을 다시 읽는다. */
@@ -41,85 +46,12 @@ const MODES: { key: ReviewMode; label: string; hint: string }[] = [
   { key: "markup", label: "표시", hint: "고른 뒤 댓글·삭제 표시·묻기 중에 고릅니다" },
   { key: "comment", label: "댓글", hint: "고르면 바로 댓글을 씁니다" },
   { key: "redline", label: "삭제 표시", hint: "고르면 바로 삭제 표시를 남깁니다" },
+  { key: "label", label: "라벨", hint: "고르면 바로 빠른 라벨 목록을 띄웁니다" },
 ];
 const INPUTS: { key: ReviewInput; label: string; hint: string }[] = [
   { key: "drag", label: "끌기", hint: "글을 끌어 고릅니다" },
   { key: "pinpoint", label: "요소 지정", hint: "문단·항목·제목을 눌러 통째로 고릅니다" },
 ];
-const toBase64 = async (file: File): Promise<string> => {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-};
-
-/** 본문 직접 고치기: 고친 글은 이 검토의 초안으로만 남는다(정본은 그대로). 그사이 다른 화면이 초안을 바꿨으면 덮지 않고 알린다. */
-function DraftEditor({ fileId, session, canonical, onSaved, onClose }: { fileId: string; session: string; canonical: string; onSaved: (message: string) => void; onClose: () => void }) {
-  const [draft, setDraft] = useState<AgentAReviewDraft | null>(null);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  /** 저장하려는데 다른 화면이 먼저 초안을 바꿨다: 그 초안. 내 글은 입력칸에 그대로 있다. */
-  const [theirs, setTheirs] = useState<AgentAReviewDraft | null>(null);
-  const discard = useConfirmPress();
-  useEffect(() => {
-    let stopped = false;
-    api.agentAReview.draft(fileId, session).then((d) => {
-      if (stopped) return;
-      setDraft(d);
-      setText(d.editedMarkdown ?? canonical);
-    }, (e) => !stopped && setError(errorText(e)));
-    return () => { stopped = true; };
-  }, [fileId, session, canonical]);
-  const save = async (markdown: string | null, revision: number) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.agentAReview.saveDraft(fileId, session, markdown, revision);
-      onSaved(markdown === null ? "고친 본문을 버렸습니다. 정본 본문을 다시 열었습니다." : "고친 본문을 초안으로 저장했습니다. 정본은 그대로입니다.");
-    } catch (e) {
-      setError(errorText(e));
-      // 다른 화면이 먼저 저장했다. 덮지 않고 그 초안을 읽어 보여 준다.
-      if (e instanceof ApiError && e.code === "AGENT_A_DRAFT_CONFLICT") await api.agentAReview.draft(fileId, session).then(setTheirs, () => {});
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <section className="aar-editor" aria-label="본문 고치기">
-      <p className="aar-note">고친 글은 이 검토의 초안으로만 남습니다. 정본은 바뀌지 않고, ‘검토 제출’ 때 고친 내용이 함께 넘어갑니다.</p>
-      {!draft && error ? <p className="aar-error" role="alert">{error}</p> : null}
-      {!draft && !error ? <p className="aar-note" role="status">초안을 읽는 중…</p> : null}
-      {draft ? (
-        <>
-          <textarea className="aar-editor__input" aria-label="본문(마크다운)" value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} />
-          {/* 저장 단추 바로 위에 둔다: 긴 입력칸 아래에서 눌러도 결과가 보이게 */}
-          {error ? <p className="aar-error" role="alert">{error}</p> : null}
-          {theirs ? (
-            <div className="aar-card" role="status" aria-label="다른 화면의 초안">
-              <p className="aar-note">다른 화면이 먼저 초안을 저장했습니다. 그 초안은 그대로 있고, 내 글도 위 입력칸에 그대로 있습니다.</p>
-              <div className="aar-actions">
-                <button type="button" className="vw-btn" disabled={busy} onClick={() => { setDraft(theirs); setText(theirs.editedMarkdown ?? canonical); setTheirs(null); setError(null); }}>다른 화면의 초안으로 바꾸기</button>
-                <button type="button" className="vw-btn" disabled={busy} onClick={() => { const next = theirs; setDraft(next); setTheirs(null); void save(text, next.revision); }}>내 글로 그 초안의 본문 덮기</button>
-              </div>
-            </div>
-          ) : null}
-          <div className="aar-actions">
-            <GlassButton variant="primary" size="s" disabled={busy || theirs !== null || text === (draft.editedMarkdown ?? canonical)} onClick={() => void save(text, draft.revision)}>{busy ? "저장하는 중" : "초안 저장"}</GlassButton>
-            {draft.editedMarkdown !== null ? (
-              <button type="button" className="vw-btn" data-armed={discard.armed ? "" : undefined} disabled={busy || theirs !== null} onClick={() => discard.press(() => void save(null, draft.revision))}>
-                {discard.armed ? "한 번 더 눌러 버리기" : "고친 것 버리기"}
-              </button>
-            ) : null}
-            <GlassButton variant="ghost" size="s" disabled={busy} onClick={onClose}>고치기 그만</GlassButton>
-          </div>
-        </>
-      ) : null}
-    </section>
-  );
-}
-
 export function AgentAReview({ fileId, projectId, title, info }: { fileId: string; projectId: string; title: string; info: AgentAProjectInfo }) {
   const desktop = useMediaQuery(MQ_DESKTOP);
   const unseen = info.docs.find((d) => d.fileId === fileId)?.unseen ?? 0;
@@ -163,6 +95,14 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
     writeJson(() => localStorage, "iamceo.agentA.ai", next);
   };
   const [catalog, setCatalog] = useState<AgentAReviewAiCatalog | null>(null);
+  // 빠른 라벨: 이 기기 브라우저에 기억한 목록.
+  const [labels, setLabels] = useState<QuickLabel[]>(() => loadLabels());
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  /** 검토 전체에 붙인 그림(초안). 창을 열어 읽기 전에는 수를 모른다(null). */
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachCount, setAttachCount] = useState<number | null>(null);
+  /** 새 댓글에 붙일 그림 가운데 지금 그리는 것. */
+  const [drawing, setDrawing] = useState<{ path: string; url: string; name: string } | null>(null);
   /** 새 댓글에 붙이려고 올려 둔 그림. */
   const [images, setImages] = useState<AgentAReviewAttachment[]>([]);
   /** 올려 둔 그림의 미리 보기(이 브라우저 안의 주소). 화면을 떠날 때 놓아 준다. */
@@ -203,6 +143,9 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
           setView({ kind: "list" });
           setImages([]);
           setEditing(false);
+          setAttachCount(null);
+          setAttachOpen(false);
+          setDrawing(null);
         }
         setDoc(next);
         setNewer(false);
@@ -395,12 +338,17 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
       imageUrl={(path) => api.agentAReview.attachmentUrl(fileId, sessionId, path)}
       imagePreview={(path) => previews.current.get(path) ?? null}
       onAttach={(file) => void act(async () => {
-        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("PNG·JPEG·WebP 그림만 붙일 수 있습니다");
-        if (file.size > 4 * 1024 * 1024) throw new Error("그림은 4MB 까지입니다");
-        const up = await api.agentAReview.upload(fileId, sessionId, { name: file.name, mediaType: file.type, base64: await toBase64(file) });
+        const up = await uploadImage(fileId, sessionId, file);
         if (!previews.current.has(up.path)) previews.current.set(up.path, URL.createObjectURL(file));
         setImages((cur) => (cur.some((x) => x.path === up.path) ? cur : [...cur, up]));
       })}
+      onDrawImage={(path) => {
+        const url = previews.current.get(path), image = images.find((x) => x.path === path);
+        if (!url || !image) return setError("이 그림은 다시 붙인 뒤에 그릴 수 있습니다");
+        setError(null);
+        setDrawing({ path, url, name: image.name });
+      }}
+      labels={labels}
       onDetach={(path) => setImages((cur) => cur.filter((x) => x.path !== path))}
       onCreate={(target, text) => void act(async () => {
         const key = target.kind === "global" ? "new:global" : target.kind === "region" ? "new:region" : "new:quote";
@@ -456,6 +404,17 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
     setNotice("삭제 표시를 남겼습니다. ‘검토 제출’ 때 함께 넘어갑니다.");
     poke.current();
   });
+  // 빠른 라벨: 고른 글에 한 줄짜리 라벨을 댓글로 남긴다. 같은 글·같은 라벨을 다시 보내도 하나다.
+  const markLabel = (quote: string, label: QuickLabel) => void act(async () => {
+    const text = labelText(label);
+    const key = `label\n${quote}\n${text}\n${label.tip ?? ""}`;
+    if (pendingId.current?.key !== key) pendingId.current = { key, id: newId() };
+    const id = pendingId.current.id;
+    await api.agentAReview.addComment(fileId, sessionId, { id, kind: "comment", text, quote, quickLabel: { tip: label.tip ?? null } });
+    pendingId.current = null;
+    setNotice(`라벨 ‘${text}’을(를) 붙였습니다. ‘검토 제출’ 때 함께 넘어갑니다.`);
+    poke.current();
+  });
   const openSubmit = () => {
     setError(null);
     setSubmitDraft(null);
@@ -485,6 +444,9 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
           <>
             <button type="button" className="vw-btn" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>본문 고치기</button>
             <button type="button" className="vw-btn" onClick={openSubmit}>검토 제출</button>
+            <button type="button" className="vw-btn" aria-label={attachCount ? `검토 첨부 ${attachCount}개` : "검토 첨부"} onClick={() => setAttachOpen(true)}>
+              검토 첨부{attachCount ? <span className="aar-bar__count t-tabular">{attachCount}</span> : null}
+            </button>
             <span className="aar-seg" role="group" aria-label="고르는 방법">
               {INPUTS.map((x) => <button key={x.key} type="button" className="aar-seg__btn" aria-pressed={tool.input === x.key} title={x.hint} onClick={() => pickTool({ ...tool, input: x.key })}>{x.label}</button>)}
             </span>
@@ -549,6 +511,9 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
               onAsk={(quote) => { setChatQuote(quote); show({ kind: "chat" }); }}
               onRegion={(region) => show({ kind: "new", target: { kind: "region", region } })}
               onOpenThread={(id) => show({ kind: "thread", id })}
+              labels={labels}
+              onLabel={markLabel}
+              onEditLabels={() => setLabelsOpen(true)}
             />
           )}
         </div>
@@ -628,6 +593,22 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
         </div>
       </Modal>
       <AgentAManage fileId={fileId} projectId={projectId} open={manageOpen} recoveries={doc.recoveries} onClose={() => setManageOpen(false)} onChanged={(message) => toLatest(message)} onOpenReview={(id) => setResume(id)} />
+      <ReviewAttachments fileId={fileId} session={sessionId} open={attachOpen && canWrite} onClose={() => setAttachOpen(false)} onCount={setAttachCount} />
+      <LabelEditor open={labelsOpen} labels={labels} onClose={() => setLabelsOpen(false)} onSave={(next) => { saveLabels(next); setLabels(loadLabels()); }} />
+      {/* 새 댓글에 붙일 그림 위에 그리기: 표시한 그림을 올려 그 자리에 바꿔 끼운다. */}
+      <ImageDraw source={drawing ? { url: drawing.url, name: drawing.name } : null} onClose={() => setDrawing(null)}
+        onSave={async (file) => {
+          if (!drawing) return false;
+          try {
+            const up = await uploadImage(fileId, sessionId, file);
+            if (!previews.current.has(up.path)) previews.current.set(up.path, URL.createObjectURL(file));
+            setImages((cur) => cur.filter((x) => x.path !== up.path || x.path === drawing.path).flatMap((x) => (x.path === drawing.path ? [up] : [x])));
+            return true;
+          } catch (e) {
+            setError(errorText(e));
+            return false;
+          }
+        }} />
     </div>
   );
 }

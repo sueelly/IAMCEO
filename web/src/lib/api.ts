@@ -296,6 +296,8 @@ export const api = {
     draft: (fileId: string, session: string, signal?: AbortSignal) => get<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft?session=${seg(session)}`, signal),
     /** 직접 고친 본문을 초안에 저장한다(null 이면 고친 것을 버린다). revision 은 고치기 시작할 때 본 초안 판이다. */
     saveDraft: (fileId: string, session: string, markdown: string | null, revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft`, { session, markdown, revision }),
+    /** 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). revision 은 화면이 본 초안 판이다. */
+    saveAttachments: (fileId: string, session: string, attachments: AgentAReviewAttachment[], revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft/attachments`, { session, attachments, revision }),
     /** 검토 제출: 초안의 주석을 분기의 질문으로 넘기고 이 검토를 닫는다. */
     submit: (fileId: string, session: string, revision: number, decision: "feedback" | "approved") => post<AgentAReviewSubmitResult>(`/api/agent-a/docs/${seg(fileId)}/review/submit`, { session, revision, decision }),
     chat: (fileId: string, session: string, conversation?: string | null, signal?: AbortSignal) =>
@@ -304,6 +306,10 @@ export const api = {
     chatNew: (fileId: string, session: string) => post<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat/new`, { session }),
     chatSelect: (fileId: string, session: string, conversation: string) => post<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat/select`, { session, conversation }),
     chatAbort: (fileId: string, session: string, conversation: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/chat/abort`, { session, conversation }),
+    /** 대화를 한 질문(또는 그 답)까지 복사해 새 대화로 가른다. 새 대화가 지금 대화가 된다. */
+    chatFork: (fileId: string, session: string, conversation: string, questionId: string, point: "question" | "answer") => post<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat/fork`, { session, conversation, questionId, point }),
+    /** AI 가 구한 허락에 답한다(허용·거절). */
+    chatPermission: (fileId: string, session: string, conversation: string, requestId: string, allow: boolean) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/chat/permission`, { session, conversation, requestId, allow }),
     /**
      * 문서에 질문하고 답을 흐름으로 받는다. 줄마다 onEvent 를 부른다(start·delta·error·done).
      * 시간 제한을 두지 않는다: 멈추려면 signal 을 끊거나 chatAbort 를 부른다.

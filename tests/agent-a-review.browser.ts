@@ -543,7 +543,7 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await expect(page.locator('.aar-seg__btn[aria-pressed="true"]').allInnerTexts()).resolves.toEqual(["끌기", "표시"]);
     await dragSelect(page, "배경 문장 하나.");
     await page.locator(".aar-picks").waitFor({ timeout: 8_000 });
-    await expect(page.locator(".aar-picks button").allInnerTexts()).resolves.toEqual(["댓글", "삭제 표시", "묻기"]);
+    await expect(page.locator(".aar-picks button").allInnerTexts()).resolves.toEqual(["댓글", "라벨", "삭제 표시", "묻기"]);
     await page.locator(".aar-pick2", { hasText: "삭제 표시" }).click();
     await banner(page, "삭제 표시를 남겼습니다");
     const rows = () => fake!.rows.filter((r) => r.artifact_id === state.id);
@@ -707,7 +707,7 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     expect(fake!.rows.filter((r) => r.artifact_id === state.id)).toHaveLength(0);
     expect(fake!.sessions.find((s) => s.artifact_id === state.id)!.draft).toBeNull();
     // 새 대화 → 앞 대화로 돌아가기. 대화는 문서에 남아 다시 열어도 보인다.
-    await chat.getByRole("button", { name: "새 대화" }).click();
+    await chat.getByRole("button", { name: "새 대화", exact: true }).click();
     await chat.getByText("이 문서에 대해 물어보세요").waitFor();
     await ask("둘째 질문입니다");
     await chat.getByRole("button", { name: "앞 대화" }).click();
@@ -779,22 +779,20 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await page.close();
   }, 150_000);
 
-  test("원래 Agent-A(초안 보존 규약 없음)에서는 새 댓글·본문 고치기·검토 제출을 막고 까닭을 보인다. 도식 원문은 글로 보인다", async () => {
-    const fileId = (await agentA.createDoc(project.id, { title: "도식 문서", markdown: "도식이 있는 문서입니다.\n\n## 흐름\n\n```mermaid\ngraph TD\n  A[시작] --> B[끝]\n```\n\n흐름 아래 문장." })).fileId;
+  test("원래 Agent-A(초안 보존 규약 없음)에서는 새 댓글·본문 고치기·검토 제출·검토 첨부를 막고 까닭을 보인다", async () => {
+    const fileId = (await agentA.createDoc(project.id, { title: "막힌 문서", markdown: "원래 Agent-A 에 붙인 문서입니다.\n\n## 흐름\n\n흐름 아래 문장." })).fileId;
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     try {
-      // 규약을 아는 Agent-A: 도식 블록은 '도식 원문'으로 밝혀 글로 보인다(스크립트·바깥 주소 없이)
+      // 규약을 아는 Agent-A: 쓰기 단추가 보인다
       await open(page, fileId);
-      await expect(page.locator(".aar-diagram__code").innerText()).resolves.toContain("A[시작] --> B[끝]");
-      await expect(page.locator(".aar-diagram__cap").innerText()).resolves.toContain("도식(Mermaid) 원문");
-      await expect(page.locator(".aar-doc svg, .aar-doc iframe, .aar-doc script").count()).resolves.toBe(0);
       await page.getByRole("button", { name: "본문 고치기" }).waitFor();
+      await page.getByRole("button", { name: "검토 첨부" }).waitFor();
       // 원래 Agent-A 로 바뀐 뒤 다시 열면 쓰기가 막힌다
       fake!.setDraftProtocol(1);
       await page.reload();
       await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
       await banner(page, "이 Agent-A 는 초안 보존 규약을 몰라 새 댓글·삭제 표시·본문 고치기·검토 제출을 막았습니다.");
-      for (const name of ["본문 고치기", "검토 제출", "전체 댓글"]) await expect(page.getByRole("button", { name }).count()).resolves.toBe(0);
+      for (const name of ["본문 고치기", "검토 제출", "검토 첨부", "전체 댓글"]) await expect(page.getByRole("button", { name }).count()).resolves.toBe(0);
       await expect(page.locator(".aar-seg").count()).resolves.toBe(0);
       await dragSelect(page, "흐름 아래 문장.");
       await page.waitForTimeout(300);
@@ -949,6 +947,305 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await page.close();
   }, 150_000);
 
+  test("데스크톱: 빠른 라벨 — 고른 글에 라벨을 붙인다(목록·라벨 모드·⌥숫자). 라벨을 고치면 이 기기에 남는다", async () => {
+    const fileId = await newDoc("라벨 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    type Stored = { text: string; originalText: string; isQuickLabel?: boolean; quickLabelTip?: string };
+    const drafted = () => fake!.sessions.filter((s) => s.artifact_id === state.id).flatMap((s) => (s.draft?.annotations ?? []) as Stored[]);
+    // 표시 모드: 뜨는 단추의 '라벨'을 누르면 목록이 뜬다(맨 위는 '좋아요', 맨 아래는 '라벨 고치기')
+    await dragSelect(page, "배경 문장 하나.");
+    await page.locator(".aar-pick2", { hasText: "라벨" }).click();
+    const menu = page.locator('.aar-picks--menu[role="menu"]');
+    await menu.waitFor();
+    await expect(menu.locator(".aar-label").first().innerText()).resolves.toBe("👍 좋아요");
+    await expect(menu.locator('[role="menuitem"]').count()).resolves.toBe(12);
+    await menu.getByRole("menuitem", { name: /확인이 필요해요/ }).click();
+    await banner(page, "라벨 ‘🔍 확인이 필요해요’을(를) 붙였습니다.");
+    await page.waitForFunction(() => document.querySelectorAll(".aar-pane .aar-row .aar-label").length === 1, null, { timeout: 15_000 });
+    const first = drafted()[0]!;
+    expect([first.text, first.originalText, first.isQuickLabel, first.quickLabelTip]).toEqual(["🔍 확인이 필요해요", "배경 문장 하나.", true, "추측으로 보입니다. 실제 자료를 읽고 확인한 뒤에 진행해 주세요."]);
+    // 댓글 목록에 라벨로 보이고, 열면 지침이 보인다
+    await pane(page).locator(".aar-row", { hasText: "확인이 필요해요" }).click();
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("라벨 댓글");
+    await pane(page).getByText("지침: 추측으로 보입니다.").waitFor();
+    await pane(page).locator(".aar-back").click();
+    // 라벨 모드: 고르면 바로 목록이 뜬다. ⌥2 는 둘째 줄(기본 라벨의 첫째)이다.
+    await tool(page, "라벨");
+    await dragSelect(page, "계획은 세 단계입니다.");
+    await menu.waitFor();
+    await page.keyboard.press("Alt+Digit2");
+    await banner(page, "라벨 ‘❓ 더 설명해 주세요’을(를) 붙였습니다.");
+    expect(drafted().map((a) => a.text)).toEqual(["🔍 확인이 필요해요", "❓ 더 설명해 주세요"]);
+    await shot(page, "23-desk-labels");
+    // 라벨 고치기: 이름을 바꿔 저장하면 목록에 바로 보이고, 다시 열어도 남는다(이 기기 브라우저)
+    await dragSelect(page, "남은 일은 시험과 보고입니다.");
+    await menu.getByRole("menuitem", { name: "라벨 고치기…" }).click();
+    const editor = page.locator('dialog[open][aria-label="빠른 라벨 고치기"]');
+    await editor.locator('[aria-label="라벨 1"]').getByLabel("이름").fill("근거를 보여 주세요");
+    await editor.getByRole("button", { name: "라벨 저장" }).click();
+    await page.waitForFunction(() => !document.querySelector('dialog[open][aria-label="빠른 라벨 고치기"]'));
+    await page.reload();
+    await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+    await dragSelect(page, "남은 일은 시험과 보고입니다.");
+    await menu.waitFor();
+    await expect(menu.locator(".aar-label").nth(1).innerText()).resolves.toBe("❓ 근거를 보여 주세요");
+    await menu.getByRole("menuitem", { name: /근거를 보여 주세요/ }).click();
+    await banner(page, "라벨 ‘❓ 근거를 보여 주세요’을(를) 붙였습니다.");
+    expect(drafted().map((a) => a.text)).toEqual(["🔍 확인이 필요해요", "❓ 더 설명해 주세요", "❓ 근거를 보여 주세요"]);
+    // 라벨은 정본을 바꾸지 않는다
+    expect(state.artifact_revision).toBe(1);
+    await page.close();
+  }, 150_000);
+
+  test("데스크톱: 그림 위에 그리기 — 댓글에 붙일 그림에 표시를 그려 바꿔 끼운다. 검토 전체에 그림을 붙이고 빼고 그린다", async () => {
+    const fileId = await newDoc("그리기 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    const png = (name: string, w: number, h: number) => ({ name, mimeType: "image/png", buffer: Buffer.from(pngBase64(w, h), "base64") });
+    const draw = page.locator('dialog[open][aria-label="그림 위에 그리기"]');
+    const canvas = draw.locator("canvas.aar-draw__canvas");
+    const closed = () => page.waitForFunction(() => !document.querySelector('dialog[open][aria-label="그림 위에 그리기"]'), null, { timeout: 20_000 });
+    const stroke = async (x0: number, y0: number, x1: number, y1: number) => {
+      const box = (await canvas.boundingBox())!;
+      await page.mouse.move(box.x + x0 * box.width, box.y + y0 * box.height);
+      await page.mouse.down();
+      await page.mouse.move(box.x + x1 * box.width, box.y + y1 * box.height, { steps: 8 });
+      await page.mouse.up();
+    };
+    // ── 댓글에 붙일 그림 ──
+    await pane(page).getByRole("button", { name: "전체 댓글" }).click();
+    await pane(page).locator('input[aria-label="댓글에 붙일 그림"]').setInputFiles(png("shot.png", 600, 360));
+    await pane(page).locator(".aar-attach .aar-thumb img").waitFor({ timeout: 15_000 });
+    await pane(page).getByRole("button", { name: "shot.png 위에 그리기" }).click();
+    await canvas.waitFor({ timeout: 15_000 });
+    await expect(draw.getByRole("button", { name: "표시한 그림으로 바꾸기" }).isDisabled()).resolves.toBe(true);
+    // 펜, 파란 화살표, 동그라미
+    await stroke(0.1, 0.15, 0.6, 0.25);
+    await draw.getByRole("button", { name: "화살표" }).click();
+    await draw.getByRole("button", { name: "파랑" }).click();
+    await draw.getByRole("button", { name: "굵게" }).click();
+    await stroke(0.2, 0.8, 0.7, 0.5);
+    await draw.getByRole("button", { name: "동그라미" }).click();
+    await stroke(0.55, 0.55, 0.9, 0.9);
+    await expect(canvas.getAttribute("data-strokes")).resolves.toBe("3");
+    await draw.getByRole("button", { name: "되돌리기" }).click();
+    await expect(canvas.getAttribute("data-strokes")).resolves.toBe("2");
+    await draw.getByRole("button", { name: "다시 하기" }).click();
+    await expect(canvas.getAttribute("data-strokes")).resolves.toBe("3");
+    // 화살표 가운데(0.45, 0.65)는 파랑으로 칠해졌다
+    const pixel = await canvas.evaluate((c: HTMLCanvasElement) => [...c.getContext("2d")!.getImageData(Math.round(c.width * 0.45), Math.round(c.height * 0.65), 1, 1).data].slice(0, 3));
+    expect(pixel[2]!).toBeGreaterThan(200);
+    expect(pixel[0]!).toBeLessThan(120);
+    await shot(page, "24-desk-draw");
+    await draw.getByLabel("그림 이름").fill("표시한 화면");
+    await draw.getByRole("button", { name: "표시한 그림으로 바꾸기" }).click();
+    await closed();
+    // 원래 그림 자리에 표시한 그림 하나만 남는다
+    await expect(pane(page).locator(".aar-attach .aar-thumb").count()).resolves.toBe(1);
+    await expect(pane(page).locator(".aar-attach .aar-thumb__name").innerText()).resolves.toBe("표시한 화면.png");
+    await pane(page).getByLabel("댓글", { exact: true }).fill("표시한 그림을 봐 주세요");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 표시한 그림을 봐 주세요");
+    const sent = fake!.rows.find((r) => r.annotation.text === "표시한 그림을 봐 주세요")!.annotation.images as { name: string; path: string }[];
+    expect(sent.map((x) => x.name)).toEqual(["표시한 화면.png"]);
+    // ── 검토 전체에 붙이는 그림 ──
+    const session = fake!.sessions.find((s) => s.artifact_id === state.id)!;
+    const attached = () => ((session.draft?.globalAttachments ?? []) as { name: string; path: string }[]).map((x) => x.name);
+    await page.getByRole("button", { name: "검토 첨부" }).click();
+    const attach = page.locator('dialog[open][aria-label="검토에 붙인 그림"]');
+    const thumbs = (n: number) => page.waitForFunction((count) => document.querySelectorAll('dialog[open][aria-label="검토에 붙인 그림"] .aar-thumb').length === count, n, { timeout: 20_000 });
+    await attach.getByText("붙인 그림이 없습니다.").waitFor({ timeout: 15_000 });
+    await attach.locator('input[aria-label="검토에 붙일 그림"]').setInputFiles([png("a.png", 300, 200), png("b.png", 320, 200)]);
+    await thumbs(2);
+    expect(attached()).toEqual(["a.png", "b.png"]);
+    // 그사이 다른 창이 초안을 저장했으면 덮지 않고 다시 읽은 목록을 보인다
+    session.draft = { ...session.draft, editedMarkdown: "다른 창의 초안" };
+    session.draft_revision++;
+    await attach.getByRole("button", { name: "a.png 빼기" }).click();
+    await attach.locator(".aar-error", { hasText: "그사이 다른 화면이 초안을 저장했습니다" }).waitFor({ timeout: 15_000 });
+    expect(attached()).toEqual(["a.png", "b.png"]);
+    await attach.getByRole("button", { name: "a.png 빼기" }).click();
+    await thumbs(1);
+    expect(attached()).toEqual(["b.png"]);
+    expect(session.draft.editedMarkdown).toBe("다른 창의 초안");
+    // 붙인 그림 위에 그려 바꿔 끼운다
+    const before = (session.draft.globalAttachments as { path: string }[])[0]!.path;
+    await attach.getByRole("button", { name: "b.png 위에 그리기" }).click();
+    await canvas.waitFor({ timeout: 15_000 });
+    await stroke(0.2, 0.2, 0.8, 0.8);
+    await draw.getByRole("button", { name: "표시한 그림으로 바꾸기" }).click();
+    await closed();
+    await thumbs(1);
+    const after = session.draft.globalAttachments as { name: string; path: string }[];
+    expect(after.map((x) => x.name)).toEqual(["b.png"]);
+    expect(after[0]!.path).not.toBe(before);
+    await attach.getByRole("button", { name: "닫기" }).click();
+    await page.getByRole("button", { name: "검토 첨부 1개" }).waitFor();
+    // 검토 제출 창에도 붙인 그림 수가 보인다
+    await page.getByRole("button", { name: "검토 제출" }).click();
+    await page.locator("dialog[open]", { hasText: "붙인 그림 1개" }).waitFor({ timeout: 15_000 });
+    await page.close();
+  }, 180_000);
+
+  test("데스크톱: 문서에 묻기 — 대화를 갈라 이어 묻고, AI 가 구한 허락에 허용·거절로 답한다", async () => {
+    const fileId = await newDoc("가르기 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    const mine = () => fake!.chats.filter((c) => c.artifact_id === state.id);
+    await pane(page).getByRole("button", { name: "문서에 묻기" }).click();
+    const chat = page.locator('.aar-pane[aria-label="문서에 묻기"]');
+    const answeredWith = (text: string) => page.waitForFunction((s) => {
+      const last = [...document.querySelectorAll('.aar-pane[aria-label="문서에 묻기"] .aar-chat')].at(-1);
+      return Boolean(last && !last.querySelector(".aar-msg__writing") && (last.querySelector(".aar-msg[data-ai]")?.textContent ?? "").includes(s));
+    }, text, { timeout: 20_000 });
+    const send = async (text: string) => {
+      await chat.locator("textarea").fill(text);
+      await chat.locator("textarea").press("Enter");
+    };
+    await send("첫 질문");
+    await answeredWith("문서 답: 첫 질문");
+    await send("둘째 질문");
+    await answeredWith("문서 답: 둘째 질문");
+    // 첫 질문의 답까지 복사해 새 대화로 가른다. 원래 대화는 그대로다.
+    await chat.locator(".aar-chat").first().getByRole("button", { name: /의 답까지 복사해 새 대화로/ }).click();
+    await chat.locator("[data-branched]").waitFor({ timeout: 15_000 });
+    await expect(chat.locator(".aar-chat").count()).resolves.toBe(1);
+    expect(mine()).toHaveLength(2);
+    expect([mine()[1]!.origin.conversationId, mine()[1]!.origin.point, mine()[1]!.current]).toEqual([mine()[0]!.id, "answer", true]);
+    await send("갈라서 묻기");
+    await answeredWith("문서 답: 갈라서 묻기");
+    expect(mine().map((c) => c.entries.length)).toEqual([2, 2]);
+    expect(mine()[1]!.entries.map((e: { question: { prompt: string } }) => e.question.prompt)).toEqual(["첫 질문", "갈라서 묻기"]);
+    // 원래 대화로 돌아간다
+    await chat.getByRole("button", { name: "원래 대화 보기" }).click();
+    await chat.locator(".aar-chat", { hasText: "문서 답: 둘째 질문" }).waitFor({ timeout: 15_000 });
+    await expect(chat.locator("[data-branched]").count()).resolves.toBe(0);
+    // AI 가 허락을 구하면 답이 멈추고 카드가 뜬다. 허용하면 이어진다.
+    await send("권한이 필요한 질문");
+    const card = chat.locator("[data-permission]");
+    await card.waitFor({ timeout: 15_000 });
+    const asked = await card.innerText();
+    for (const part of ["AI 가 허락을 구합니다", "Bash", "명령 실행", "ls docs"]) expect(asked).toContain(part);
+    await expect(chat.getByRole("button", { name: "답 멈춤" }).count()).resolves.toBe(1);
+    await shot(page, "25-desk-permission");
+    await card.getByRole("button", { name: "허용" }).click();
+    await answeredWith("허락을 받아 확인했습니다. 문서 답: 권한이 필요한 질문");
+    await expect(card.count()).resolves.toBe(0);
+    // 거절하면 그 도구 없이 답한다
+    await send("권한을 거절할 질문");
+    await card.waitFor({ timeout: 15_000 });
+    await card.getByRole("button", { name: "거절" }).click();
+    await answeredWith("허락을 받지 못해 확인하지 않았습니다.");
+    await expect(card.count()).resolves.toBe(0);
+    // 대화는 정본도 초안도 바꾸지 않는다
+    expect(state.artifact_revision).toBe(1);
+    expect(fake!.sessions.find((s) => s.artifact_id === state.id)!.draft).toBeNull();
+    await page.close();
+  }, 150_000);
+
+  test("데스크톱: 본문 고치기의 서식 막대 — 굵게·기울임(단축키)·인용과 미리 보기. 저장하면 초안으로 남는다", async () => {
+    const fileId = await newDoc("서식 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    await page.getByRole("button", { name: "본문 고치기" }).click();
+    const input = page.getByLabel("본문(마크다운)");
+    await input.waitFor();
+    const bar = page.getByRole("toolbar", { name: "서식" });
+    const select = (needle: string) => input.evaluate((el, s) => {
+      const area = el as HTMLTextAreaElement;
+      const at = area.value.indexOf(s);
+      area.focus();
+      area.setSelectionRange(at, at + s.length);
+    }, needle);
+    // 굵게: 고른 글을 감싸고, 다시 누르면 벗긴다
+    await select("배경 문장 하나.");
+    await bar.getByRole("button", { name: "굵게" }).click();
+    await expect(input.inputValue()).resolves.toContain("**배경 문장 하나.** 배경 문장 둘은");
+    await bar.getByRole("button", { name: "굵게" }).click();
+    await expect(input.inputValue()).resolves.toContain("\n배경 문장 하나. 배경 문장 둘은");
+    // 단축키로 기울임
+    await select("계획은 세 단계입니다.");
+    await page.keyboard.press("ControlOrMeta+i");
+    await expect(input.inputValue()).resolves.toContain("*계획은 세 단계입니다.* 단계마다 확인합니다.");
+    // 인용: 고른 줄 전체에 붙는다
+    await select("남은 일은 시험과 보고입니다.");
+    await bar.getByRole("button", { name: "인용" }).click();
+    await expect(input.inputValue()).resolves.toContain("\n> 남은 일은 시험과 보고입니다.");
+    // 미리 보기: 옆에 그려 보인다
+    await bar.getByRole("button", { name: "미리 보기" }).click();
+    const view = page.getByRole("region", { name: "미리 보기" });
+    await expect(view.locator("em").innerText()).resolves.toBe("계획은 세 단계입니다.");
+    await expect(view.locator("blockquote").count()).resolves.toBe(1);
+    const [a, b] = [(await input.boundingBox())!, (await view.boundingBox())!];
+    expect(b.x).toBeGreaterThan(a.x + a.width - 2);
+    await shot(page, "27-desk-format");
+    await page.getByRole("button", { name: "초안 저장" }).click();
+    await banner(page, "고친 본문을 초안으로 저장했습니다.");
+    const saved = fake!.sessions.find((s) => s.artifact_id === state.id)!.draft.editedMarkdown as string;
+    expect(saved).toContain("*계획은 세 단계입니다.*");
+    expect(saved).toContain("> 남은 일은 시험과 보고입니다.");
+    expect(state.artifact_revision).toBe(1);
+    await page.close();
+  }, 120_000);
+
+  test("데스크톱: 도식을 그림으로 그린다(본문에 끼우지 않고 그림으로만). 원문도 보고, 틀린 도식은 원문으로 보인다", async () => {
+    const markdown = [
+      "도식이 있는 문서입니다.", "", "## 흐름", "", "```mermaid", "graph TD", "  A[시작] --> B[끝]", "```", "",
+      "## 틀린 도식", "", "```mermaid", "이것은 도식이 아닙니다 -->> ((", "```", "",
+      "## 꾸민 도식", "", "```mermaid", "graph LR", "  X[\"<img src=x onerror='window.__aaHacked=true'>글\"] --> Y[끝]", "```", "", "끝 문장.",
+    ].join("\n");
+    const fileId = (await agentA.createDoc(project.id, { title: "도식 그림 문서", markdown })).fileId;
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const requested: string[] = [];
+    page.on("request", (r) => requested.push(new URL(r.url()).pathname));
+    await open(page, fileId);
+    const diagrams = page.locator(".aar-diagram");
+    await expect(diagrams.count()).resolves.toBe(3);
+    await page.waitForFunction(() => [...document.querySelectorAll(".aar-diagram")].every((d) => d.getAttribute("data-state") !== "drawing"), null, { timeout: 60_000 });
+    // 첫 도식: 그림으로 그려졌다(이 브라우저 안의 그림 주소)
+    await expect(diagrams.nth(0).getAttribute("data-state")).resolves.toBe("drawn");
+    await page.waitForFunction(() => {
+      const img = document.querySelector<HTMLImageElement>(".aar-diagram img");
+      return Boolean(img && img.complete && img.naturalWidth > 20 && img.naturalHeight > 20);
+    }, null, { timeout: 20_000 });
+    await expect(diagrams.nth(0).locator("img").getAttribute("src")).resolves.toMatch(/^blob:/);
+    // 틀린 도식: 원문을 글로 보이고 까닭을 적는다
+    await expect(diagrams.nth(1).getAttribute("data-state")).resolves.toBe("failed");
+    await expect(diagrams.nth(1).locator(".aar-diagram__code").innerText()).resolves.toContain("이것은 도식이 아닙니다");
+    await expect(diagrams.nth(1).innerText()).resolves.toContain("도식을 그리지 못해 원문을 보입니다");
+    // 본문에 svg·iframe·script 를 끼우지 않고, 도식 글의 HTML 은 돌지 않는다. 그리는 부품이 남긴 임시 요소도 없다.
+    await expect(page.locator(".aar-doc svg, .aar-doc iframe, .aar-doc script, .aar-doc foreignObject").count()).resolves.toBe(0);
+    await expect(page.evaluate(() => (window as unknown as { __aaHacked?: boolean }).__aaHacked)).resolves.toBeUndefined();
+    await expect(page.locator('[id^="aar-diagram-"], [id^="daar-diagram-"]').count()).resolves.toBe(0);
+    // 원문 보기 ↔ 그림 보기
+    await diagrams.nth(0).getByRole("button", { name: "원문 보기" }).click();
+    await expect(diagrams.nth(0).locator(".aar-diagram__code").innerText()).resolves.toContain("A[시작] --> B[끝]");
+    await diagrams.nth(0).getByRole("button", { name: "그림 보기" }).click();
+    await diagrams.nth(0).locator("img").waitFor();
+    await shot(page, "26-desk-diagram");
+    // 그리는 부품은 화면 문서에서 돌지 않는다: 출처 없는 칸(sandbox) 하나에서만 돌고, 화면에는 부품이 없다.
+    await expect(page.evaluate(() => "mermaid" in window)).resolves.toBe(false);
+    const frames = await page.locator("iframe").evaluateAll((list) => list.map((f) => [f.getAttribute("src"), f.getAttribute("sandbox")]));
+    expect(frames).toEqual([["/vendor/diagram-frame", "allow-scripts"]]);
+    expect(requested.filter((p) => p.startsWith("/vendor/")).sort()).toEqual(["/vendor/diagram-frame", "/vendor/diagram-frame.js", "/vendor/mermaid.min.js"]);
+    // 도식 글에 든 그림 주소(<img src=x>)는 어디에서도 불리지 않았다
+    expect(requested.filter((p) => p === "/x" || p.endsWith("/x"))).toEqual([]);
+    // 칸의 문서는 스크립트 두 개만 허락하고 나머지(그림·연결·다른 칸)는 막는다
+    const frameRes = await fetch(`${base}/vendor/diagram-frame`);
+    const csp = frameRes.headers.get("content-security-policy") ?? "";
+    for (const part of ["sandbox allow-scripts", "default-src 'none'", "img-src data:", "frame-ancestors 'self'"]) expect(csp).toContain(part);
+    expect(csp).not.toContain("allow-same-origin");
+    const script = await fetch(`${base}/vendor/mermaid.min.js`, { method: "HEAD" });
+    expect([script.status, script.headers.get("content-type")]).toEqual([200, "text/javascript; charset=utf-8"]);
+    expect((await fetch(`${base}/vendor/diagram-frame`, { method: "POST" })).status).toBe(405);
+    await page.close();
+  }, 150_000);
+
   test("폰 폭: 문서 관리의 순서·배치는 순서만 바꾸고 넘치지 않는다", async () => {
     const fileId = await newDoc("폰 배치 문서");
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -982,7 +1279,7 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await open(page, fileId);
     const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
     await expect(fits()).resolves.toBe(true);
-    await expect(page.locator(".aar-seg__btn").count()).resolves.toBe(5);
+    await expect(page.locator(".aar-seg__btn").count()).resolves.toBe(6);
     for (const b of await page.locator(".aar-bar button").all()) {
       const box = (await b.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
@@ -995,8 +1292,21 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(390);
     await expect(fits()).resolves.toBe(true);
+    // 서식 막대와 미리 보기도 좁은 화면에 맞는다
+    await page.getByRole("toolbar", { name: "서식" }).getByRole("button", { name: "미리 보기" }).tap();
+    await page.getByRole("region", { name: "미리 보기" }).waitFor();
+    await expect(fits()).resolves.toBe(true);
+    for (const b of await page.getByRole("toolbar", { name: "서식" }).locator("button").all()) {
+      const at = (await b.boundingBox())!;
+      expect(at.x).toBeGreaterThanOrEqual(0);
+      expect(at.x + at.width).toBeLessThanOrEqual(390);
+    }
     await shot(page, "18-phone-editor");
     await page.getByRole("button", { name: "고치기 그만" }).tap();
+    await page.getByRole("button", { name: "검토 첨부" }).tap();
+    await page.locator('dialog[open][aria-label="검토에 붙인 그림"]').getByText("붙인 그림이 없습니다.").waitFor({ timeout: 15_000 });
+    await expect(fits()).resolves.toBe(true);
+    await page.locator('dialog[open][aria-label="검토에 붙인 그림"]').getByRole("button", { name: "닫기" }).tap();
     await page.locator(".aar-bar__comments").tap();
     await page.locator(".aar-pane").getByRole("button", { name: "문서에 묻기" }).tap();
     await page.locator('.aar-pane[aria-label="문서에 묻기"] textarea').waitFor();
