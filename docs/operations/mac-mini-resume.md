@@ -31,13 +31,15 @@ python3 scripts/migration_supervisor.py --config "$CONFIG" run
 
 실제 배치는 검증한 Git SHA의 `git archive`에서 감독 스크립트와 공통 private JSON 도구를 꺼내 고정 경로에 둔다. 기존 감시 LaunchAgent만 백업·정상 종료하고 같은 label을 `LimitLoadToSessionType=Background`, `RunAtLoad=true`, `KeepAlive=true`로 `user/<uid>`에 등록한다. 감독이 멈춰도 그 감독이 재개한 Codex 턴은 interrupt하지 않는다. 다른 서비스·Codex·직원은 중지하지 않는다. 머신 재부팅은 실행하지 않으며 이 검증을 부팅 시험과 혼동하지 않는다.
 
-감독은 120초 간격으로 인증된 source GET, 정책 메시지 실제 delivery, 전체 메시지 페이지, 열린 결정, CLI 로그인, 공인 TLS/실제 app build ID, DNS 해석, 기존 health, GUI/Docker 및 ingress 인증 파일의 존재를 관측한다. 브라우저 저장소·쿠키는 읽지 않는다. DOMAIN-PREFERENCE 파일이 없으면 public을 설계 가정으로 기록한다. Squarespace 로그인은 쿠키로 탐지하지 않으며 접근 영수증 또는 실제 DNS/TLS 상태로 전달한다.
+감독은 120초 간격으로 인증된 source GET, 정책 메시지 실제 delivery, 전체 메시지 페이지, 열린 결정, CLI 로그인, 선택한 HTTPS 주소의 실제 app build ID, 기존 health, GUI/Docker를 관측한다. 사용자는 Tailnet 전용 접속을 확정했다. DOMAIN-PREFERENCE의 `access_scope=tailnet_only` 또는 `mode=tailscale_only`를 인식하며 이 모드에서는 공개 DNS/TLS·ingress 계정 확인을 생략한다. 브라우저 저장소·쿠키는 읽지 않는다. 초기 복원본 조회의 `initial_viewing_ready`는 운영 후보의 `domain_ready`/`target_prepared`와 구분한다. 조회의 상세 조건은 [초기 복원본 접속](../mac-mini-read-only.md)에 있다.
 
 `state.json`에는 의미 있는 조건만 fingerprint로 비교한다. 바뀐 시각·heartbeat·PID만으로 재개하지 않는다. 실행/대기/막힘·열린/전달 대기 결정·queued/sending/delivering 메시지가 있으면 idle 자격을 주지 않는다. 120초 이상 간격을 둔 같은 idle 관측 두 번이 필요하다. 관측 불가나 상태 변화가 생기면 자격을 초기화한다.
 
 현재 턴은 소유 PID의 실행 시작 시각·프로그램과 terminal event를 함께 확인한다. 프로세스가 사라져도 turn.completed/turn.failed가 없으면 자동 재개하지 않고 `owner_exit_unconfirmed`로 남긴다. 재개는 고정 UUID의 `codex exec ... resume UUID -`이며 last/fork를 사용하지 않는다. 세션 UUID가 담긴 다른 resume 프로세스도 검사한다. 감독·dispatch 잠금과 fsync한 영속 claim을 먼저 쓰고 실행한다. claimed 이후 결과를 알 수 없으면 `uncertain_launch`로 남겨 같은 입력을 반복하지 않는다. 실행 전 확실한 spawn 실패도 매 poll 재시도하지 않고 새로운 실제 조건 변화나 운영자 점검을 기다린다.
 
 CLI는 현재 승인된 실행 권한을 이어 쓰며 `approve-for-me`나 직원 승인 응답을 추가하지 않는다. 감독 자체의 source write는 0이며 외부 재개 프롬프트에도 접속 코드·메시지 본문을 넣지 않는다.
+
+진행 중인 소유 턴이 대기열의 변화까지 확인하고 상태 보고에 반영했다면 `acknowledge --owner-pid <active_job.pid> --fingerprint <검토한 meaningful의 SHA256>`로 처리할 수 있다. dispatch 잠금 안에서 살아 있는 동일 PID 신원과 최신 fingerprint가 일치해야 하며, 새 조건이 기록됐으면 거절한다. active_job과 현재 턴은 그대로 둔다. 처리 이후 새로운 실제 변화는 다시 대기열에 들어간다. 미검토 상태를 자동으로 지우거나 현재 모델이 끝나기 전에 다른 모델을 시작하지 않는다.
 
 ## 동결·백업 요청·복구
 

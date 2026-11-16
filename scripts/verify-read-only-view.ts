@@ -77,6 +77,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${cfg.origin}/#/p/${encodeURIComponent(bootstrap.projects[0].id)}/thread`);
   await page.locator("[data-scroll-root]").waitFor();
+  await page.waitForFunction(() => !document.body.textContent?.includes("불러오는 중") && document.body.textContent?.includes("서버 연결됨"));
   await page.screenshot({ path: join(cfg.outputDir, "thread-mobile.png"), fullPage: true });
   writeFileSync(join(cfg.outputDir, "browser-diagnostics.json"), JSON.stringify({ browserErrors, failedRequests }, null, 2), { mode: 0o600 });
   assert(browserErrors.length === 0 && failedRequests.length === 0, "Browser errors or refused read requests observed");

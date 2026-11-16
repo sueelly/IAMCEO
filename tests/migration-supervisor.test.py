@@ -90,6 +90,24 @@ class Tests(unittest.TestCase):
         self.assertFalse(s.job_finished(job))
         job['pid']=99999999;job['identity']='gone';self.assertTrue(s.job_finished(job))
         event.write_text('{"type":"turn.started"}\n');self.assertFalse(s.job_finished(job))
+    def test_current_owner_can_acknowledge_only_the_reviewed_condition_fingerprint(self):
+        cfg=self.config();runner=s.Supervisor(cfg);runner.tick(self.snapshot(),100,False)
+        changed=self.snapshot();changed['conditions']['initial_viewing_ready']=True
+        runner.tick(changed,200,False);state=runner.load()
+        state['active_job']={'pid':os.getpid(),'identity':s.process_identity(os.getpid())}
+        s.private_json(runner.state_path,state);fingerprint=s.key(state['meaningful'])
+        self.assertTrue(state['pending'])
+        with self.assertRaises(ValueError):runner.acknowledge(fingerprint,99999999)
+        newer=copy.deepcopy(changed);newer['conditions']['claude_authenticated']=True
+        runner.tick(newer,300,False)
+        with self.assertRaises(ValueError):runner.acknowledge(fingerprint,os.getpid())
+        current=runner.load();self.assertTrue(current['pending'])
+        runner.acknowledge(s.key(current['meaningful']),os.getpid())
+        done=runner.load();self.assertEqual(done['pending'],[]);self.assertEqual(done['active_job'],state['active_job']);self.assertTrue(done['last_handled']['event_ids'])
+        runner.tick(newer,400,False);self.assertEqual(runner.load()['pending'],[])
+        runner.tick(changed,500,False);self.assertTrue(runner.load()['pending'])
+        dead=runner.load();dead['active_job']={'pid':99999999,'identity':None};s.private_json(runner.state_path,dead)
+        with self.assertRaises(ValueError):runner.acknowledge(s.key(dead['meaningful']),99999999)
     def test_one_resume_and_restart_does_not_repeat_claim(self):
         cfg=self.config();script=self.root/'fake.py';script.write_text("import json,sys,time\nfrom pathlib import Path\nr=Path(sys.argv[1]);(r/'started').write_text('yes');sys.stdin.read();print(json.dumps({'type':'turn.started'}),flush=True);time.sleep(.2);print(json.dumps({'type':'turn.completed'}),flush=True)\n")
         cfg['resume_command']=[sys.executable,str(script),str(self.root),'{thread_id}']

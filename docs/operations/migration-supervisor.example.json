@@ -21,8 +21,10 @@
   "codex_bin": "/absolute/bin/codex",
   "claude_bin": "/absolute/bin/claude",
   "public_origin": "https://app.example.invalid",
-  "target_health": "http://127.0.0.1:47879/api/health",
-  "target_readiness": "http://127.0.0.1:47879/api/readiness",
+  "tailscale_origin": "https://machine.example.ts.net:14443",
+  "viewing_release_manifest": "/private/viewers/git-sha/release.json",
+  "target_health": "http://127.0.0.1:47878/api/health",
+  "target_readiness": "http://127.0.0.1:47878/api/readiness",
   "production_readiness": "http://127.0.0.1:47878/api/readiness",
   "baseline_health": {
     "existing-app": "http://127.0.0.1:3000/healthz"

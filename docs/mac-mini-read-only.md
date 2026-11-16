@@ -13,3 +13,9 @@ Tailscale에 연결된 기기에서 기존 인증으로 초기 복원본의 프�
 감독의 `tailscale_origin`은 실제 HTTPS 주소이고 `viewing_release_manifest`는 조회 바이너리의 build_id 및 `kind=read-only-snapshot-view`, `operational_cutover=false`를 가진 private 영수증이다. `initial_viewing_ready`는 해당 빌드·읽기 전용 응답을 검증한다. `domain_ready`, `target_authenticated_readiness`, `target_prepared`는 운영 후보의 별도 검증으로 남는다. 조회 서버를 운영 전환 준비 완료로 인정하지 않는다. Tailscale 전용 선택에서는 공개 DNS/TLS/Cloudflare 인증을 조사하거나 요구하지 않는다.
 
 변경 검증: HTTP·realtime·Store·조회 회귀 6개 파일 130개 통과, Python 감독 22개 및 이전 안전 검사 5개 통과, TypeScript 검사와 조회 바이너리 컴파일 통과. 기존 전체 회귀의 실패 분류는 TEST-FAILURES.md를 따른다. 실제 초기 복원본·HTTPS·브라우저·launchd 검증 결과는 이전 루트의 별도 영수증에 기록한다.
+
+기존 짧은 접속 코드를 보존하는 독립 진입점 검사도 추가했다. 실제 복원본은 별도 `verify-read-only-view.ts <private-config.json>`으로 검증한다. 설정에는 origin, home, releaseManifest, beforeInventory, expectedCounts, outputDir, receiptPath를 둔다. 새 Playwright context에서 정식 로그인·4개 프로젝트 화면·첨부와 DB 무결성·fence·파일 해시를 확인한다. 브라우저 자료와 설정은 private 경로에 둔다.
+
+실제 배포 검증은 source SHA `f3f4408d04fc632ccf9550ed3c475480f6d90f91`, 읽기 전용 build ID `a2229b4f27bcdcac3004597a0c888c47e45159b1ec97ec7211b61ed2916f3b57` 기준으로 통과했다. 초기 export 시각은 2026-11-16 12:08 KST다. TLS 신뢰·호스트 이름 검증, 인증, 데스크톱 12개 경로·모바일 화면, 248개 복원 파일 해시 불변, FK/무결성 및 전용 Background 서비스의 종료 후 자동 재시작을 확인했다. 검증 기기는 맥미니 자신이며 다른 기기 접속과 실제 재부팅은 미검증이다. 원본 작업·결정은 남아 있어 운영 전환은 보류한다.
+
+후속 검증에서는 독립 진입점까지 조회 검사 5개를 통과했다. 감독에는 현재 소유 턴의 검토한 조건 fingerprint만 처리하는 기능을 추가했고, 소유 PID 불일치·사망·새 조건 경합·후속 변화 보존을 포함해 23개 검사를 통과했다. 이번 턴에서 이미 검토한 변화 때문에 모델을 다시 부르는 일을 막으며 새로운 실제 변화는 보존한다.

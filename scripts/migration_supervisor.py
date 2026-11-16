@@ -208,6 +208,21 @@ class Supervisor:
     def load(self): return read_json(self.state_path) if self.state_path.exists() else {}
     def reap(self):
         if self.child and self.child.poll() is not None: self.child.wait(); self.child = None
+    def acknowledge(self, fingerprint, owner_pid):
+        """A live resumed owner may mark reviewed observations handled, never unseen changes."""
+        with (self.directory / '.dispatch.lock').open('a') as lock:
+            os.chmod(lock.name, 0o600); fcntl.flock(lock, fcntl.LOCK_EX)
+            state = self.load(); job = state.get('active_job', {})
+            identity = process_identity(owner_pid)
+            if identity is None or job.get('pid') != owner_pid or identity != job.get('identity'):
+                raise ValueError('Only the existing live session owner may acknowledge observations')
+            if not state.get('meaningful') or key(state['meaningful']) != fingerprint:
+                raise ValueError('Conditions changed since review; inspect the latest observation')
+            state['last_handled'] = {'at': now_iso(), 'fingerprint': fingerprint, 'owner_pid': owner_pid,
+                                     'event_ids': [p['id'] for p in state.get('pending', [])]}
+            state['pending'] = []
+            private_json(self.state_path, state)
+            return state['last_handled']
     def tick(self, observation, now=None, dispatch=False):
         now = time.time() if now is None else now
         with (self.directory / '.dispatch.lock').open('a') as lock:
@@ -570,8 +585,12 @@ def verify_final(cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('--config', required=True)
-    parser.add_argument('command', choices=['observe', 'run', 'freeze', 'rollback', 'status', 'verify-final']); args = parser.parse_args()
+    parser.add_argument('command', choices=['observe', 'run', 'freeze', 'rollback', 'status', 'verify-final', 'acknowledge'])
+    parser.add_argument('--fingerprint'); parser.add_argument('--owner-pid', type=int); args = parser.parse_args()
     cfg = private_config(args.config); runner = Supervisor(cfg)
+    if args.command == 'acknowledge':
+        if not args.fingerprint or not args.owner_pid: parser.error('acknowledge requires reviewed --fingerprint and live --owner-pid')
+        print(json.dumps(runner.acknowledge(args.fingerprint, args.owner_pid))); return
     if args.command == 'verify-final': print(json.dumps(verify_final(cfg))); return
     if args.command == 'status': print(json.dumps(runner.load(), ensure_ascii=False)); return
     if args.command == 'freeze':
