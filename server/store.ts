@@ -833,6 +833,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private lastMessageMs = 0;
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
+  private readonly fileBodies = new Map<string, { body: string; bytes: number }>();
+  private fileBodyBytes = 0;
   /** 이전 프로젝트(memory_mode NULL) 가운데 서버 환경 목록(IAMCEO_MEMORY_PROJECTS)으로 켠 것. */
   private legacyMemory: ReadonlySet<string> = new Set();
 
@@ -2443,8 +2445,33 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   listFiles(projectId: string): FileDoc[] {
     // Artifact HTML is loaded separately by getFileHtml, never by a sync/list projection.
-    return this.rows(`SELECT id, project_id, title, who, member_id, summary, body, path, attachments, created_at, sort_order, kind, task_id
-      FROM files WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC`, projectId).map(toFile);
+    // File bodies are immutable after creation; metadata (including task bindings)
+    // is always re-read. Avoid reading megabytes of overflow pages on every sync.
+    return this.rows(`SELECT id, project_id, title, who, member_id, summary, path, attachments, created_at, sort_order, kind, task_id
+      FROM files INDEXED BY files_list_metadata WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC`, projectId).map(row => toFile({ ...row, body: this.cachedFileBody(row.id) }));
+  }
+
+  private cachedFileBody(id: string): string {
+    const cached = this.fileBodies.get(id);
+    if (cached) {
+      this.fileBodies.delete(id);
+      this.fileBodies.set(id, cached);
+      return cached.body;
+    }
+    const body = (this.row("SELECT body FROM files WHERE id = ?", id)?.body as string | undefined) ?? "";
+    // Count UTF-16 storage conservatively, and bound empty-body/key overhead too.
+    const bytes = body.length * 2;
+    const budget = 16 * 1024 * 1024;
+    if (bytes <= budget) {
+      while (this.fileBodies.size >= 1024 || this.fileBodyBytes + bytes > budget) {
+        const oldest = this.fileBodies.keys().next().value!;
+        this.fileBodyBytes -= this.fileBodies.get(oldest)!.bytes;
+        this.fileBodies.delete(oldest);
+      }
+      this.fileBodies.set(id, { body, bytes });
+      this.fileBodyBytes += bytes;
+    }
+    return body;
   }
 
   createFile(input: NewFile): FileDoc {

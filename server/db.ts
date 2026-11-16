@@ -850,6 +850,9 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX harness_findings_project ON harness_findings(project_id, at);
    CREATE INDEX harness_findings_task ON harness_findings(task_id, at);`,
+  // v33: serve list metadata without walking large body/artifact overflow chains.
+  `CREATE INDEX files_list_metadata ON files
+    (project_id, sort_order DESC, id, title, who, member_id, summary, path, attachments, created_at, kind, task_id);`,
 ];
 
 export function openDb(path: string): Database {
