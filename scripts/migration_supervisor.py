@@ -500,7 +500,9 @@ def verify_final(cfg):
     db = sqlite3.connect('file:' + urllib.parse.quote(str(incoming / 'iamceo.db')) + '?immutable=1', uri=True)
     try:
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if version != ready['db_user_version'] or version > supported: raise ValueError('Final schema incompatible with selected release')
+        frozen_schema = frozen.get('before', {}).get('schema', {}).get('version')
+        if version < 1 or version != ready['db_user_version'] or version != frozen_schema or version > supported:
+            raise ValueError('Final schema differs from source freeze or selected release')
         if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)] or db.execute('PRAGMA foreign_key_check').fetchall():
             raise ValueError('Final database integrity/FK failure')
         tables = ['projects', 'members', 'messages', 'tasks', 'decisions', 'files', 'attachments']

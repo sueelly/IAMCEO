@@ -123,7 +123,7 @@ class Tests(unittest.TestCase):
         cfg=self.config();cfg['source_data_root']='/source/data';cfg['release_manifest']=str(self.root/'release.json')
         s.private_json(cfg['release_manifest'],{'supported_schema':33,'source_sha':'a'*40})
         req={'request_id':'final-test','source_frozen':True,'target_prepared':True,'original_runner_enabled':{'hq':True,'project':True},'source_freeze_receipt':'SOURCE_FROZEN.json'}
-        s.private_json(self.root/'EXPORT_REQUEST.json',req);s.private_json(self.root/'SOURCE_FROZEN.json',{'phase':'frozen','request_id':'final-test'})
+        s.private_json(self.root/'EXPORT_REQUEST.json',req);s.private_json(self.root/'SOURCE_FROZEN.json',{'phase':'frozen','request_id':'final-test','before':{'schema':{'version':33}}})
         incoming=self.root/'incoming/final-final-test';incoming.mkdir(parents=True)
         db=sqlite3.connect(incoming/'iamceo.db');db.execute('PRAGMA user_version=33');db.execute('CREATE TABLE projects(id,runner_enabled,archived)');db.executemany('INSERT INTO projects VALUES (?,0,0)',[('hq',),('project',)])
         db.execute('CREATE TABLE messages(delivery)');db.execute('CREATE TABLE attachments(path,size)');db.execute("INSERT INTO attachments VALUES ('/source/data/uploads/a',3)")
@@ -142,6 +142,9 @@ class Tests(unittest.TestCase):
         cfg,ready=self.final_fixture();ready['kind']='initial-preparation-only';s.private_json(self.root/'CUTOVER_READY.json',ready)
         with self.assertRaises(ValueError):s.verify_final(cfg)
         ready['kind']='final';s.private_json(self.root/'CUTOVER_READY.json',ready);s.private_json(cfg['release_manifest'],{'supported_schema':32,'source_sha':'b'*40})
+        with self.assertRaises(ValueError):s.verify_final(cfg)
+    def test_final_verifier_refuses_schema_different_from_freeze_observation(self):
+        cfg,ready=self.final_fixture();frozen=s.read_json(self.root/'SOURCE_FROZEN.json');frozen['before']['schema']['version']=32;s.private_json(self.root/'SOURCE_FROZEN.json',frozen)
         with self.assertRaises(ValueError):s.verify_final(cfg)
     def test_target_proof_must_match_binary_schema_build_and_unchanged_evidence(self):
         cfg=self.config();release_dir=self.root/'release';release_dir.mkdir();binary=release_dir/'iamceo';binary.write_bytes(b'fixture binary');cfg['release_manifest']=str(release_dir/'release.json')
