@@ -1,6 +1,6 @@
 # IAMCEO 맥미니 이전 계획
 
-등록된 프로젝트 4개(본사 포함)를 고유 저장소 IAMCEO와 god의 이력·대화·자료와 함께 맥미니로 옮긴다. 2026-11-16 최종 백업의 복원과 운영 HTTPS 접속은 검증됐다. 기존 총괄 4명의 시작 요청 중 본사·Native·God는 재개 글을 수신했고, Design은 Claude 폴더 신뢰 확인에서 기다린다. 전체 재개 완료로 판정하지 않는다. 사용자 실행 지시의 식별자는 `.migration/2026-11-16`이다.
+등록된 프로젝트 4개(본사 포함)를 고유 저장소 IAMCEO와 god의 이력·대화·자료와 함께 맥미니로 옮겼다. 2026-11-16 최종 백업 복원·운영 HTTPS 접속·기존 총괄 4명의 재개 글 수신과 실제 실행 검증을 완료했다. 각 프로젝트의 진행 업무와 새 질문은 그대로 이어간다. 사용자 실행 지시의 식별자는 `.migration/2026-11-16`이다.
 
 ## 최종 입력과 실제 운영 검증
 
@@ -12,7 +12,7 @@
 
 운영 주소는 `https://hyejoo-mac-mini.tail5169d3.ts.net:14443`이며 127.0.0.1:47878을 제공한다. TLS 기본 신뢰·호스트명, 기존 코드 로그인, 인증 없는 API/첨부의 401, 프로젝트 4개 홈·대화·자료 12개 경로와 모바일 화면을 확인했다. 기존 7개 Tailnet 경로와 Funnel 꺼짐, 기존 서비스 health·관리 API의 running/healthy도 확인했다. 다른 기기 접속·재부팅은 시험하지 않았다.
 
-실제 worker PID의 cwd는 `_hq`, IAMCEO, god에 연결됐고 hostname은 맥미니다. Design의 새 Claude 세션은 폴더 신뢰 승인을 기다리며 재개 글은 아직 held다. God는 이후 delivered와 실행 기록을 확인했다. 사용자가 앱의 확인 카드에서 직접 답한 뒤 실제 delivery·execution을 다시 확인한다. 감독은 이 조건의 변화만 관측하고 승인 응답을 보내지 않는다. 21개의 기존 쓰기 증거가 있는 불확실 전달과 오래된 unknown prompt 직원의 전달 1개는 격리를 유지한다.
+실제 worker PID의 cwd는 `_hq`, IAMCEO, god에 연결됐고 hostname은 맥미니다. Design의 폴더 신뢰 대기가 해소된 뒤 네 총괄 모두 원래 재개 글의 delivery ID와 같은 generation의 실제 execution journal을 연결해 입력 수신과 실행 근거를 확인했다. Design의 첫 시도는 입력 수신·시작 없이 오류로 끝났고 같은 delivery의 후속 실행은 성공했다. 이전 담당자는 승인에 답하거나 글을 다시 등록하지 않았다. 완료된 이전 감독만 정상 종료·unregister하고 자동 시작 plist를 private 보관했다. 진행 직원과 운영 서비스는 중단하지 않았다. 21개의 기존 쓰기 증거가 있는 불확실 전달과 오래된 unknown prompt 직원의 전달 1개는 격리를 유지한다.
 
 원본 네 프로젝트 runner는 false이며 읽기 가능한 복구 대상으로 남는다. 대상 dispatch가 활성인 동안 원본을 켜지 않는다. `TARGET_ACTIVATED.json`의 `activated:true`와 운영 readiness가 rollback을 차단한다. 최종 snapshot·source native 참조·양쪽 백업·God 데이터·WIP를 private 경로에 보존한다. God 실서버는 `LAB_DATA_DIR`를 `.runtime/god/data`로 지정하고 테스트에는 별도 격리 데이터를 사용한다.
 
@@ -56,6 +56,6 @@
 
 ## 초기 준비 때의 의존 조건
 
-아래 초기 조사와 준비 순서는 당시 기록이다. 최종 입력·복원·로그인·운영 HTTPS 검증은 위 현황으로 갱신됐고, 남은 총괄의 사람 확인을 전체 완료와 구분한다. 공개 DNS·Squarespace/Cloudflare 계정은 필요하지 않다.
+초기 조사와 준비 순서는 당시 기록이다. 최종 입력·복원·로그인·운영 HTTPS와 총괄 4명 재개 검증은 위 현황으로 갱신됐다. 완료 영수증은 Git 밖 이전 루트의 `FINAL_RESUME_ALL_VERIFIED.json`과 `MIGRATION_SUPERVISOR_COMPLETED.json`이다. 진행 업무·새 질문의 완료나 제품 전체 회귀 통과를 주장하지 않는다. 공개 DNS·Squarespace/Cloudflare 계정은 필요하지 않다.
 
 최신 접속 범위와 초기 읽기 전용 조회의 검증·제한은 [초기 복원본 접속](../mac-mini-read-only.md)을 따른다. 초기 조사에 적힌 공개 DNS 관측은 당시의 사실이며 현재의 전환 차단 조건이 아니다.
