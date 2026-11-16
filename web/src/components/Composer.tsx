@@ -9,7 +9,7 @@ import { getState, newId, refresh, routeHash, useProject, useRoute } from "../li
 import type { Draft } from "../lib/submissions";
 import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
-import { keepsTask, liveTasks, taskWorkers, visibleTasks } from "../lib/tasks";
+import { liveTasks, taskWorkers, visibleTasks } from "../lib/tasks";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import "../styles/composer.css";
 
@@ -177,11 +177,9 @@ export default function Composer() {
   const target = workers.find((m) => m.id === draft.targetId) ?? null;
   const allTasks = project?.tasks ?? [];
   const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
-  // 작업을 골라 둔 동안에는 모든 작업을 보인다(받는 사람은 그 작업에서 정해진 것이라 목록을 좁히지 않는다). 직원만 골랐으면 그 직원이 맡은 작업만.
-  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), task ? null : target?.id ?? null, workers);
-  // 칩에 맡은 사람을 붙인다. 직원을 골라 그 직원의 작업만 보일 때는 다 같은 사람이라 붙이지 않는다.
+  // 업무 칩은 받는 사람과 상관없이 늘 같은 목록이다(직원을 바꿔도 칩이 사라지거나 고른 업무가 풀리지 않는다). 맡은 직원은 이름으로만 보인다.
+  const shownTasks = visibleTasks(liveTasks(allTasks, project?.work, task?.id ?? null), null);
   const chipWho = (t: Task): string | null => {
-    if (target && !task) return null;
     const names = taskWorkers(t, workers).map((id) => workers.find((w) => w.id === id)!.name);
     return names.length ? names.join("·") : t.who.trim() || null;
   };
@@ -199,26 +197,24 @@ export default function Composer() {
   const menuOpen = chipMenu || (mentionOpen && matches.length > 0);
   const activeIndex = Math.min(active, Math.max(matches.length - 1, 0));
 
-  // 고른 작업의 직원이 아닌 사람을 대상으로 고르면 작업 선택을 푼다(그 사람에게 보내는 글은 이 작업의 글이 아니다).
-  const keepTask = (d: { taskId?: string | null }, targetId: string | null) =>
-    d.taskId && task && keepsTask(task, workers, targetId) ? { taskId: d.taskId } : { taskId: null };
+  // 받는 사람만 바꾼다. 고른 업무는 그대로 둔다(같은 업무를 다른 직원에게 이어서 보낼 수 있다).
   const pick = (entry: MenuEntry) => {
     setChipMenu(false);
     setActive(0);
     if (mention && mentionOpen && !chipMenu) {
       const rest = draft.text.slice(mention.start + mention.query.length + 1).replace(/^ /, "");
       const text = draft.text.slice(0, mention.start) + rest;
-      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id, ...keepTask(d, entry.id) }));
+      patchDraft(projectId, (d) => ({ ...d, text, targetId: entry.id }));
       setCaret(mention.start);
       requestAnimationFrame(() => inputRef.current?.setSelectionRange(mention.start, mention.start));
     } else {
-      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id, ...keepTask(d, entry.id) }));
+      patchDraft(projectId, (d) => ({ ...d, targetId: entry.id }));
     }
     inputRef.current?.focus();
   };
 
-  // 작업에서 '전체'로 돌아오면 받는 사람도 기본(총괄)으로 돌린다(대화 글의 작업 표지와 같은 규칙).
-  const pickTask = (next: Task | null) => chooseTask(projectId, next, workers);
+  // 업무만 바꾼다. '전체'로 돌아와도 받는 사람은 그대로다(대화 글의 업무 이름과 같은 규칙).
+  const pickTask = (next: Task | null) => chooseTask(projectId, next);
   // 작업이 바뀌면(대화 글의 작업 표지로 골랐을 때도) 고른 칩이 가로 목록 밖에 숨지 않게 그 칩까지 민다. '전체'면 처음으로 돌린다.
   const tasksRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -389,7 +385,7 @@ export default function Composer() {
             </svg>
           </button>
           {shownTasks.length > 0 || task ? (
-            <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="작업 고르기">
+            <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="업무 고르기">
               <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
                 전체
               </button>
