@@ -167,7 +167,7 @@ describe("검토 길: 댓글", () => {
 
   test("Agent-A 가 준 모양에서 화면이 쓰는 칸만 옮긴다", () => {
     expect(toAnnotation({ id: "a", type: "GLOBAL_COMMENT", text: "글", originalText: "", createdA: 5, secret: "x", implementationProposal: "앱 수정" })).toEqual({
-      id: "a", kind: "global", text: "글", quote: "", inReplyTo: null, ai: false, author: null, createdAt: 5, updatedAt: null, resolved: false, region: null, writing: false, error: null, canRetry: false, branchOf: null, extra: true,
+      id: "a", kind: "global", text: "글", quote: "", inReplyTo: null, ai: false, author: null, createdAt: 5, updatedAt: null, resolved: false, region: null, writing: false, error: null, canRetry: false, branchOf: null, extra: true, images: [], aiSettings: null,
     });
     expect(toAnnotation({ id: "b", isAIReply: true, text: "부분 답\n\n실패 [x]", answerText: "부분 답", answerError: { code: "request_timeout", message: "시간 초과" }, canRetry: true })).toMatchObject({ text: "부분 답", writing: false, error: { code: "request_timeout", message: "시간 초과" }, canRetry: true });
     expect(toAnnotation({ id: "c", isAIReply: true, text: "답변을 준비하고 있습니다…" })).toMatchObject({ writing: true });

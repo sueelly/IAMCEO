@@ -1,10 +1,18 @@
-// Agent-A 문서 본문. IAMCEO 의 마크다운 보기로 그리고, 글을 끌어 고르면 댓글 단추가 뜬다. 그림은 영역을 끌어 질문한다.
-// 댓글이 달린 문장은 CSS 강조(Highlight)로만 칠한다: 본문 DOM 을 바꾸지 않으므로 고르기·복사가 그대로다.
+// Agent-A 문서 본문. IAMCEO 의 마크다운 보기로 그리고, 글을 끌어 고르거나(끌기) 문단·항목을 눌러 고른다(요소 지정). 그림은 영역을 끌어 질문한다.
+// 고른 뒤의 동작은 모드가 정한다: 표시(댓글·삭제 표시·묻기 중 고름) · 댓글(바로 댓글 쓰기) · 삭제 표시(바로 삭제 표시).
+// 댓글·삭제 표시가 달린 문장은 CSS 강조(Highlight)로만 칠한다: 본문 DOM 을 바꾸지 않으므로 고르기·복사가 그대로다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { AgentAReviewImage, AgentAReviewImageRegion } from "@shared/agent-a";
 import { api, fetchAttachment } from "../../lib/api";
 import { imageFor, regionOf, regionStyle, splitDoc, squash, type ReviewThread } from "../../lib/agent-a-review";
 import { Markdown } from "../ui";
+import { MermaidBlock } from "./MermaidBlock";
+
+/** 고른 뒤의 동작. 표시: 뜨는 단추에서 고름 · 댓글: 바로 댓글 쓰기 · 삭제 표시: 바로 삭제 표시를 남김. */
+export type ReviewMode = "markup" | "comment" | "redline";
+/** 고르는 방법. 끌기: 글을 끌어 고름 · 요소 지정: 문단·항목·제목을 눌러 통째로 고름. */
+export type ReviewInput = "drag" | "pinpoint";
+const PINPOINT = "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th";
 
 const BLOCK = new Set(["P", "DIV", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "TR", "TD", "TH", "BLOCKQUOTE", "PRE", "SECTION", "FIGURE", "HR", "BR"]);
 
@@ -182,17 +190,32 @@ export interface ReviewDocumentProps {
   /** 새 댓글을 달 수 있는지(과거 판 보기·닫힌 검토에서는 false). */
   canComment: boolean;
   regionDraft: AgentAReviewImageRegion | null;
+  mode: ReviewMode;
+  input: ReviewInput;
   onQuote: (quote: string) => void;
+  /** 고른 글에 삭제 표시를 남긴다. */
+  onDelete: (quote: string) => void;
+  /** 고른 글과 함께 문서에 묻는다(문서 대화). 없으면 '묻기' 단추를 보이지 않는다. */
+  onAsk?: (quote: string) => void;
   onRegion: (region: AgentAReviewImageRegion) => void;
   onOpenThread: (threadId: string) => void;
 }
 
-export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, onQuote, onRegion, onOpenThread }: ReviewDocumentProps) {
+export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onOpenThread }: ReviewDocumentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ranges = useRef(new Map<string, Range>());
   const [pick, setPick] = useState<{ quote: string; left: number; top: number } | null>(null);
   const parts = useMemo(() => splitDoc(markdown), [markdown]);
   const quoteThreads = useMemo(() => threads.filter((t) => t.root.quote && !t.root.region && t.root.kind !== "global"), [threads]);
+  /** 고른 글로 할 일. 표시 모드는 단추를 띄우고, 나머지 모드는 바로 한다(pointer 로 고른 때만. 자판으로 고르는 중에는 단추를 띄운다). */
+  const act = useCallback((quote: string, at: { left: number; top: number }, direct: boolean) => {
+    if (direct && mode === "comment") return onQuote(quote);
+    if (direct && mode === "redline") {
+      window.getSelection()?.removeAllRanges();
+      return onDelete(quote);
+    }
+    setPick({ quote, ...at });
+  }, [mode, onQuote, onDelete]);
   const marksBy = useMemo(() => {
     const by = new Map<string, RegionMark[]>();
     for (const t of threads) {
@@ -205,7 +228,7 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
   }, [threads]);
 
   // 댓글이 달린 문장을 칠한다. 본문이나 댓글 목록이 바뀔 때만 다시 찾는다.
-  const quoteKey = quoteThreads.map((t) => `${t.root.id}:${t.done ? 1 : 0}:${t.root.quote.length}`).join("|");
+  const quoteKey = quoteThreads.map((t) => `${t.root.id}:${t.done ? 1 : 0}:${t.root.kind}:${t.root.quote.length}`).join("|");
   useLayoutEffect(() => {
     const root = rootRef.current;
     ranges.current = new Map();
@@ -216,16 +239,18 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
       if (range) ranges.current.set(t.root.id, range);
     }
     if (!canHighlight()) return;
-    const open: Range[] = [], done: Range[] = [];
+    const open: Range[] = [], done: Range[] = [], deletion: Range[] = [];
     for (const t of quoteThreads) {
       const range = ranges.current.get(t.root.id);
-      if (range) (t.done ? done : open).push(range);
+      if (range) (t.done ? done : t.root.kind === "deletion" ? deletion : open).push(range);
     }
     CSS.highlights.set("aa-quote", new Highlight(...open));
     CSS.highlights.set("aa-quote-done", new Highlight(...done));
+    CSS.highlights.set("aa-deletion", new Highlight(...deletion));
     return () => {
       CSS.highlights.delete("aa-quote");
       CSS.highlights.delete("aa-quote-done");
+      CSS.highlights.delete("aa-deletion");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markdown, quoteKey]);
@@ -249,7 +274,9 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
 
   // 글을 끌어 고르면 그 끝에 '댓글' 단추를 띄운다. 끄는 동안에는 띄우지 않는다.
   const dragging = useRef(false);
-  const readSelection = useCallback(() => {
+  /** 요소 지정으로 고른 직후의 선택 바뀜은 이미 처리했다. */
+  const pinned = useRef(false);
+  const readSelection = useCallback((direct: boolean) => {
     const root = rootRef.current;
     const sel = window.getSelection();
     if (!root || !canComment || !sel || sel.isCollapsed || sel.rangeCount === 0) return setPick(null);
@@ -260,17 +287,18 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
     const rects = range.getClientRects();
     const last = rects[rects.length - 1] ?? range.getBoundingClientRect();
     const host = root.getBoundingClientRect();
-    setPick({ quote, left: Math.min(Math.max(last.right - host.left, 44), host.width - 44), top: last.bottom - host.top + 6 });
-  }, [canComment]);
+    act(quote, { left: Math.min(Math.max(last.right - host.left, 44), host.width - 44), top: last.bottom - host.top + 6 }, direct);
+  }, [canComment, act]);
   useEffect(() => {
     const onChange = () => {
-      if (!dragging.current) readSelection();
+      if (pinned.current) return;
+      if (!dragging.current) readSelection(false);
     };
     const onUp = () => {
       if (!dragging.current) return;
       dragging.current = false;
       // 고르기가 끝난 뒤의 선택을 읽는다(일부 브라우저는 pointerup 뒤에 선택을 마무리한다)
-      setTimeout(readSelection, 0);
+      setTimeout(() => !pinned.current && readSelection(true), 0);
     };
     document.addEventListener("selectionchange", onChange);
     window.addEventListener("pointerup", onUp);
@@ -282,6 +310,8 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
     };
   }, [readSelection]);
 
+  // 뜨는 단추 묶음의 반 폭(가운데 맞춤이라 화면 밖으로 나가지 않게 자리를 잡는 데 쓴다). 단추 수는 모드가 정한다.
+  const pickHalf = mode === "markup" ? (onAsk ? 118 : 86) : mode === "redline" ? 56 : 44;
   const onClick = (e: { clientX: number; clientY: number; target: EventTarget }) => {
     if (!(e.target instanceof Element) || e.target.closest("a, button, .aar-fig")) return;
     const sel = window.getSelection();
@@ -295,12 +325,25 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
         // 본문이 다시 그려져 범위가 끊긴 경우: 다음 그리기에서 다시 찾는다
       }
     }
+    // 요소 지정: 누른 문단·항목·제목을 통째로 고른다.
+    const root = rootRef.current;
+    if (input !== "pinpoint" || !canComment || !root) return;
+    const el = e.target.closest<HTMLElement>(PINPOINT);
+    if (!el || !root.contains(el) || !el.closest(".aar-md")) return;
+    const quote = squash(el.innerText ?? el.textContent ?? "").slice(0, 60_000);
+    if (!quote) return;
+    pinned.current = true;
+    sel?.selectAllChildren(el);
+    setTimeout(() => { pinned.current = false; }, 0);
+    const box = el.getBoundingClientRect(), host = root.getBoundingClientRect();
+    act(quote, { left: Math.min(Math.max(box.left - host.left + 44, 44), host.width - 44), top: box.bottom - host.top + 6 }, true);
   };
 
   return (
-    <div ref={rootRef} className="aar-doc" onPointerDown={() => { dragging.current = true; setPick(null); }} onClick={onClick}>
+    <div ref={rootRef} className="aar-doc" data-input={canComment ? input : undefined} data-mode={mode} onPointerDown={() => { dragging.current = true; setPick(null); }} onClick={onClick}>
       {parts.map((part, i) => {
         if (part.kind === "markdown") return <Chunk key={`m${i}`} text={part.text} />;
+        if (part.kind === "mermaid") return <MermaidBlock key={`d${i}`} code={part.code} />;
         const image = imageFor(images, part.src, part.line);
         if (!image) return <p key={`i${i}`} className="aar-fig__wait">그림 정보를 찾지 못했습니다: {part.alt}</p>;
         const marks = marksBy.get(`${image.src}\n${image.sourceLine}`) ?? marksBy.get(`${image.src}\n`) ?? [];
@@ -308,9 +351,11 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
         return <ReviewImage key={`i${i}`} fileId={fileId} session={session} image={image} alt={part.alt} marks={marks} active={activeThread} draft={draft} canAsk={canComment} onDraw={onRegion} onOpen={onOpenThread} />;
       })}
       {pick ? (
-        <button type="button" className="aar-pick" style={{ left: pick.left, top: pick.top }} onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={(e) => { e.stopPropagation(); onQuote(pick.quote); setPick(null); }}>
-          댓글
-        </button>
+        <span className="aar-picks" role="group" aria-label="고른 글로 할 일" style={{ left: Math.min(Math.max(pick.left, pickHalf), Math.max(pickHalf, (rootRef.current?.clientWidth ?? 0) - pickHalf)), top: pick.top }} onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={(e) => e.stopPropagation()}>
+          {mode !== "redline" ? <button type="button" className="aar-pick" onClick={() => { onQuote(pick.quote); setPick(null); }}>댓글</button> : null}
+          {mode !== "comment" ? <button type="button" className="aar-pick2" data-tone="danger" onClick={() => { window.getSelection()?.removeAllRanges(); onDelete(pick.quote); setPick(null); }}>삭제 표시</button> : null}
+          {mode === "markup" && onAsk ? <button type="button" className="aar-pick2" onClick={() => { onAsk(pick.quote); setPick(null); }}>묻기</button> : null}
+        </span>
       ) : null}
     </div>
   );

@@ -15,3 +15,6 @@ native/DerivedData*/
 .pumasi/
 .imagen/
 images/
+
+# bun 이 시험·실행 중에 만드는 임시 실행파일(약 63MB). 소스가 아니다.
+*.bun-build

@@ -40,6 +40,14 @@ import type {
   AgentAReviewProposal,
   AgentAReviewVersion,
   AgentAReviewWriteResult,
+  AgentAChatEvent,
+  AgentAChatHistory,
+  AgentAChatSession,
+  AgentAReviewAiCatalog,
+  AgentAReviewAiSettings,
+  AgentAReviewAttachment,
+  AgentAReviewDraft,
+  AgentAReviewSubmitResult,
 } from "@shared/agent-a";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
@@ -77,6 +85,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** 서버가 붙인 거절 종류(있을 때만). 같은 409 라도 무엇이 어긋났는지 화면이 가릴 때 쓴다. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -131,7 +141,8 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     const res = await fetch(path, { method, headers, body: payload, signal: abort.signal, cache: "no-store", credentials: "same-origin" });
     if (!res.ok) {
       if (res.status === 401 && generation === credentialGeneration && code === getAccessCode()) onUnauthorized();
-      throw new ApiError(res.status, await readError(res));
+      const failure = await readFailure(res);
+      throw new ApiError(res.status, failure.message, failure.code);
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -144,21 +155,24 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
   }
 }
 
-async function readError(res: Response): Promise<string> {
+async function readFailure(res: Response): Promise<{ message: string; code?: string }> {
   const fallback = `요청 실패 (${res.status})`;
   try {
     const text = await res.text();
-    if (!text) return fallback;
+    if (!text) return { message: fallback };
     try {
-      const j = JSON.parse(text) as { error?: unknown; message?: unknown };
+      const j = JSON.parse(text) as { error?: unknown; message?: unknown; code?: unknown };
       const m = j.error ?? j.message;
-      return typeof m === "string" && m ? m : fallback;
+      return { message: typeof m === "string" && m ? m : fallback, ...(typeof j.code === "string" && j.code ? { code: j.code } : {}) };
     } catch {
-      return text.length <= 200 ? text : fallback;
+      return { message: text.length <= 200 ? text : fallback };
     }
   } catch {
-    return fallback;
+    return { message: fallback };
   }
+}
+async function readError(res: Response): Promise<string> {
+  return (await readFailure(res)).message;
 }
 
 const seg = encodeURIComponent;
@@ -262,13 +276,85 @@ export const api = {
   agentAInfo: (projectId: string, signal?: AbortSignal) => get<AgentAProjectInfo>(`/api/projects/${seg(projectId)}/agent-a`, signal),
   agentARead: (fileId: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/read`),
   // ---- Agent-A 검토 화면(IAMCEO 화면 부품). 화면은 이 길만 부른다. Agent-A 주소·열쇠는 오지 않는다. ----
+  /** Agent-A 문서를 새로 만든다(제목·마크다운·그림). 이 프로젝트의 자료로 등록된다. */
+  agentACreateDoc: (projectId: string, input: { title: string; markdown: string; images?: { title: string; name: string; mediaType: "image/png" | "image/jpeg" | "image/webp"; base64: string }[]; taskId?: string | null }) =>
+    request<{ fileId: string; artifactId: string }>("POST", `/api/projects/${seg(projectId)}/agent-a/docs`, input, SLOW_TIMEOUT_MS),
   agentAReview: {
     open: (fileId: string, resume?: string | null, signal?: AbortSignal) => get<AgentAReviewDoc>(`/api/agent-a/docs/${seg(fileId)}/review${resume ? `?resume=${seg(resume)}` : ""}`, signal),
     /** 바뀐 것이 없으면 null(서버 204). */
     comments: async (fileId: string, session: string, since: number | null, signal?: AbortSignal) =>
       (await get<AgentAReviewComments | undefined>(`/api/agent-a/docs/${seg(fileId)}/review/comments?session=${seg(session)}${since !== null ? `&since=${since}` : ""}`, signal)) ?? null,
     addComment: (fileId: string, session: string, req: AgentAReviewCommentReq) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/comments`, { session, ...req }),
-    reply: (fileId: string, session: string, inReplyTo: string, text: string) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/replies`, { session, inReplyTo, text }),
+    reply: (fileId: string, session: string, inReplyTo: string, text: string, ai?: AgentAReviewAiSettings | null) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/replies`, { session, inReplyTo, text, ai: ai ?? null }),
+    /** 답을 낼 수 있는 AI 목록(플랫폼·모델·추론 수준). */
+    ai: (fileId: string, session: string, signal?: AbortSignal) => get<AgentAReviewAiCatalog>(`/api/agent-a/docs/${seg(fileId)}/review/ai?session=${seg(session)}`, signal),
+    /** 댓글에 붙일 그림을 올린다. 돌려받은 path 를 댓글의 images 에 싣는다. */
+    upload: (fileId: string, session: string, file: { name: string; mediaType: string; base64: string }) => request<AgentAReviewAttachment>("POST", `/api/agent-a/docs/${seg(fileId)}/review/upload`, { session, ...file }, SLOW_TIMEOUT_MS),
+    /** 댓글에 붙은 그림의 주소. fetchAttachment 에 넘겨 blob 으로 그린다. */
+    attachmentUrl: (fileId: string, session: string, path: string) => `/api/agent-a/docs/${seg(fileId)}/review/attachment?session=${seg(session)}&path=${seg(path)}`,
+    draft: (fileId: string, session: string, signal?: AbortSignal) => get<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft?session=${seg(session)}`, signal),
+    /** 직접 고친 본문을 초안에 저장한다(null 이면 고친 것을 버린다). revision 은 고치기 시작할 때 본 초안 판이다. */
+    saveDraft: (fileId: string, session: string, markdown: string | null, revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft`, { session, markdown, revision }),
+    /** 검토 제출: 초안의 주석을 분기의 질문으로 넘기고 이 검토를 닫는다. */
+    submit: (fileId: string, session: string, revision: number) => post<AgentAReviewSubmitResult>(`/api/agent-a/docs/${seg(fileId)}/review/submit`, { session, revision }),
+    chat: (fileId: string, session: string, conversation?: string | null, signal?: AbortSignal) =>
+      get<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat?session=${seg(session)}${conversation ? `&conversation=${seg(conversation)}` : ""}`, signal),
+    chatSessions: (fileId: string, session: string) => get<AgentAChatSession[]>(`/api/agent-a/docs/${seg(fileId)}/review/chat/sessions?session=${seg(session)}`),
+    chatNew: (fileId: string, session: string) => post<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat/new`, { session }),
+    chatSelect: (fileId: string, session: string, conversation: string) => post<AgentAChatHistory>(`/api/agent-a/docs/${seg(fileId)}/review/chat/select`, { session, conversation }),
+    chatAbort: (fileId: string, session: string, conversation: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/chat/abort`, { session, conversation }),
+    /**
+     * 문서에 질문하고 답을 흐름으로 받는다. 줄마다 onEvent 를 부른다(start·delta·error·done).
+     * 시간 제한을 두지 않는다: 멈추려면 signal 을 끊거나 chatAbort 를 부른다.
+     */
+    chatAsk: async (fileId: string, session: string, input: { id: string; prompt: string; quote?: string | null; ai?: AgentAReviewAiSettings | null }, onEvent: (event: AgentAChatEvent) => void, signal?: AbortSignal): Promise<void> => {
+      const generation = credentialGeneration;
+      const code = getAccessCode();
+      let res: Response;
+      try {
+        res = await fetch(`/api/agent-a/docs/${seg(fileId)}/review/chat/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(code ? { Authorization: `Bearer ${code}` } : {}) },
+          body: JSON.stringify({ session, ...input }),
+          signal,
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+      } catch (e) {
+        throw new ApiError(0, e instanceof Error ? e.message : "network error");
+      }
+      if (!res.ok || !res.body) {
+        if (res.status === 401 && generation === credentialGeneration && code === getAccessCode()) onUnauthorized();
+        throw new ApiError(res.status, await readError(res));
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const flush = (text: string) => {
+        if (!text.trim()) return;
+        try {
+          onEvent(JSON.parse(text) as AgentAChatEvent);
+        } catch {
+          // 줄 하나가 깨져도 나머지 답은 이어 받는다
+        }
+      };
+      for (;;) {
+        let chunk: { done: boolean; value?: Uint8Array };
+        try {
+          chunk = await reader.read();
+        } catch (e) {
+          throw new ApiError(0, e instanceof Error ? e.message : "network error");
+        }
+        if (chunk.done || !chunk.value) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let at: number;
+        while ((at = buffer.indexOf("\n")) >= 0) {
+          flush(buffer.slice(0, at));
+          buffer = buffer.slice(at + 1);
+        }
+      }
+      flush(buffer);
+    },
     resolve: (fileId: string, session: string, id: string, resolved: boolean) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/resolve`, { session, id, resolved }),
     remove: (fileId: string, session: string, id: string) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/remove`, { session, id }),
     retry: (fileId: string, session: string, id: string) => post<AgentAReviewWriteResult>(`/api/agent-a/docs/${seg(fileId)}/review/retry`, { session, id }),
@@ -283,8 +369,18 @@ export const api = {
     manage: (fileId: string) => get<AgentAReviewManage>(`/api/agent-a/docs/${seg(fileId)}/review/manage`),
     decide: (fileId: string, proposalId: string, decision: "apply" | "held" | "rejected", opId: string) =>
       post<{ ok: true; status: AgentAProposalStatus; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/decide`, { proposalId, decision, opId }),
-    restore: (fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/restore`, input),
-    edit: (fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/edit`, input),
+    restore: (fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string; contextRevision?: number | null; layoutRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/restore`, input),
+    edit: (fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string; contextRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/edit`, input),
+    applyMany: (fileId: string, proposalIds: string[], opId: string) => post<{ ok: true; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/apply`, { proposalIds, opId }),
+    branchCreate: (fileId: string, input: { opId: string; question: string; blockId?: string | null; parent?: { branchId: string; messageId: string } | null }) => post<{ ok: true; branchId: string }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch`, input),
+    branchMessage: (fileId: string, input: { opId: string; branchId: string; text: string }) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch/message`, input),
+    branchDecide: (fileId: string, input: { opId: string; branchId: string; messageId: string; decision: "accepted" | "held" | "rejected"; reason?: string }) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch/decide`, input),
+    branchClose: (fileId: string, input: { opId: string; branchId: string; reason?: string }) => post<{ ok: true; unanswered: number; openChildren: number; unapplied: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch/close`, input),
+    feedbackPrepare: (fileId: string, input: { opId: string; feedbackIds: string[]; template?: string }) => post<{ ok: true; jobId: string }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/feedback`, input),
+    jobExport: (fileId: string, jobId: string) => get<Record<string, unknown>>(`/api/agent-a/docs/${seg(fileId)}/review/manage/jobs/${seg(jobId)}/export`),
+    jobRun: (fileId: string, jobId: string) => post<{ ok: true; state: string }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/jobs/${seg(jobId)}/run`),
+    jobCancel: (fileId: string, jobId: string) => post<{ ok: true; state: string }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/jobs/${seg(jobId)}/cancel`),
+    importResult: (fileId: string, result: Record<string, unknown>) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/import`, { result }),
   },
 
   patchMember: (memberId: string, patch: PatchMemberReq) => request<Member>("PATCH", `/api/members/${seg(memberId)}`, patch, SLOW_TIMEOUT_MS),

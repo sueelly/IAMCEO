@@ -1,7 +1,8 @@
-// 문서 관리: 이 문서의 모든 수정안 · 정본 블록과 이전 판 · 판 이력 · 다른 검토에 남은 초안과 기록.
+// 문서 관리: 분기(옆 질문) · 수정안 · 정본 블록과 이전 판 · 피드백(전송 자료·결과 가져오기) · 판 이력 · 다른 검토에 남은 초안과 기록.
+// 원래 Agent-A 의 '문서 관리'(분기·변경안·정본·피드백)를 IAMCEO 부품으로 옮긴 것이다.
 // 정본을 바꾸는 일(저장·되살리기·직접 고치기)은 대표가 누를 때만 하고, 같은 누름을 다시 보내도 한 번만 반영된다(opId).
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentABlock, AgentAProposalStatus, AgentAReviewManage, AgentAReviewRecovery } from "@shared/agent-a";
+import type { AgentABlock, AgentAManageBranch, AgentAProposalStatus, AgentAReviewManage, AgentAReviewRecovery } from "@shared/agent-a";
 import { GlassButton } from "../../glass";
 import { api, errorText } from "../../lib/api";
 import { PROPOSAL_LABEL, wordDiff } from "../../lib/agent-a-review";
@@ -9,13 +10,87 @@ import { newId } from "../../lib/store";
 import { Modal, Time, useConfirmPress } from "../ui";
 import { ProposalCard } from "./CommentPanel";
 
-type Tab = "proposals" | "blocks" | "versions" | "drafts";
+type Tab = "branches" | "proposals" | "blocks" | "feedback" | "versions" | "drafts";
 const TABS: { key: Tab; label: string }[] = [
   { key: "proposals", label: "수정안" },
   { key: "blocks", label: "정본" },
+  { key: "branches", label: "분기" },
+  { key: "feedback", label: "피드백" },
   { key: "versions", label: "판 이력" },
   { key: "drafts", label: "이전 초안·기록" },
 ];
+/** Agent-A 의 상태 이름을 읽는 말로. */
+const STATE: Record<string, string> = { proposed: "검토 전", accepted: "채택", held: "보류", rejected: "거절", not_sent: "미전송", queued: "준비됨", running: "실행 중", succeeded: "완료", failed: "실패", unknown: "상태 확인 필요", open: "열림", closed: "닫힘" };
+const IMPORT_TEXT = /\.(md|markdown|txt)$/i;
+const IMPORT_IMAGE: Record<string, "image/png" | "image/jpeg" | "image/webp"> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+
+function download(value: unknown, name: string): void {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.rel = "noopener";
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const toBase64 = async (file: File): Promise<string> => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+
+/** 실제 AI 를 부르는 일은 한 번 더 눌러야 한다. */
+function RunJob({ disabled, onRun }: { disabled: boolean; onRun: () => void }) {
+  const confirm = useConfirmPress();
+  return (
+    <button type="button" className="vw-btn" data-armed={confirm.armed ? "" : undefined} disabled={disabled} onClick={() => confirm.press(onRun)}>
+      {confirm.armed ? "한 번 더 눌러 실행(AI 사용)" : "CLI 실행"}
+    </button>
+  );
+}
+
+/** 분기 하나: 질문·답변, 답변 결정, 후속 질문, 닫기. */
+function BranchCard({ branch, parentTitle, busy, reason, onDecide, onFollow, onClose, onChild }: {
+  branch: AgentAManageBranch; parentTitle: string | null; busy: boolean; reason: string;
+  onDecide: (messageId: string, decision: "accepted" | "held" | "rejected") => void;
+  onFollow: (text: string) => Promise<boolean>;
+  onClose: () => void;
+  onChild: (messageId: string) => void;
+}) {
+  const [follow, setFollow] = useState("");
+  return (
+    <section className="aar-card" aria-label={`분기 ${branch.title}`} data-branch={branch.id}>
+      <header className="aar-card__head">
+        <strong>{branch.title}</strong>
+        <span className="aar-card__meta">{STATE[branch.status] ?? branch.status}</span>
+      </header>
+      <p className="aar-card__meta">대상: {branch.target}{parentTitle ? ` · 상위 분기 ‘${parentTitle}’` : ""}</p>
+      {branch.messages.map((m) => (
+        <div key={m.id} className="aar-history" data-role={m.role}>
+          <p className="aar-history__title">{m.role === "assistant" ? "답변" : "질문"}{m.decision && m.decision !== "proposed" ? ` · ${STATE[m.decision] ?? m.decision}` : ""}</p>
+          <p className="aar-msg__text">{m.body}</p>
+          {m.reason ? <p className="aar-card__meta">사유: {m.reason}</p> : null}
+          {m.role === "assistant" ? (
+            <div className="aar-actions">
+              <button type="button" className="vw-btn" disabled={busy} onClick={() => onDecide(m.id, "accepted")}>답변 채택</button>
+              <button type="button" className="vw-btn" disabled={busy} onClick={() => onDecide(m.id, "held")}>보류</button>
+              <button type="button" className="vw-btn" disabled={busy} onClick={() => onDecide(m.id, "rejected")}>거절</button>
+              <button type="button" className="vw-btn" disabled={busy} onClick={() => onChild(m.id)}>이 답변에서 새 분기</button>
+            </div>
+          ) : null}
+        </div>
+      ))}
+      <label className="aar-field">후속 질문<textarea rows={2} value={follow} onChange={(e) => setFollow(e.target.value)} /></label>
+      <div className="aar-actions">
+        <GlassButton variant="glass" size="s" disabled={busy || !follow.trim()} onClick={() => void onFollow(follow.trim()).then((ok) => ok && setFollow(""))}>후속 질문 저장</GlassButton>
+        <button type="button" className="vw-btn" disabled={busy || branch.status === "closed"} title={reason ? `사유: ${reason}` : undefined} onClick={onClose}>분기 닫기</button>
+      </div>
+    </section>
+  );
+}
 const FILTERS: (AgentAProposalStatus | "all")[] = ["pending", "held", "conflict", "rejected", "applied", "all"];
 
 function Restore({ disabled, revision, onRestore }: { disabled: boolean; revision: number; onRestore: () => void }) {
@@ -75,8 +150,10 @@ function BlockCard({ block, busy, onEdit, onRestore }: {
   );
 }
 
-export function AgentAManage({ fileId, open, recoveries, onClose, onChanged, onOpenReview }: {
+export function AgentAManage({ fileId, projectId, open, recoveries, onClose, onChanged, onOpenReview }: {
   fileId: string;
+  /** 새 문서 만들기·파일 가져오기가 문서를 등록할 프로젝트. */
+  projectId: string;
   open: boolean;
   recoveries: AgentAReviewRecovery[];
   onClose: () => void;
@@ -90,6 +167,18 @@ export function AgentAManage({ fileId, open, recoveries, onClose, onChanged, onO
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 한 번에 반영할 수정안. */
+  const [picked, setPicked] = useState<string[]>([]);
+  /** 채택·보류·거절·닫기에 붙일 사유(선택). */
+  const [reason, setReason] = useState("");
+  const [question, setQuestion] = useState("");
+  const [blockId, setBlockId] = useState("");
+  const [childOf, setChildOf] = useState<{ branchId: string; messageId: string } | null>(null);
+  const [pickedFeedback, setPickedFeedback] = useState<string[]>([]);
+  const [template, setTemplate] = useState("");
+  const [importText, setImportText] = useState("");
+  const [newDoc, setNewDoc] = useState({ title: "", markdown: "" });
+  const importInput = useRef<HTMLInputElement>(null);
   // 같은 일(같은 수정안·같은 블록)을 다시 누르면 같은 요청 id 로 보낸다. 끝난 일의 id 는 버린다.
   const ops = useRef(new Map<string, string>());
   const opId = (key: string) => {
@@ -161,6 +250,18 @@ export function AgentAManage({ fileId, open, recoveries, onClose, onChanged, onO
               ))}
             </div>
             {shown.length === 0 ? <p className="aar-note">이 상태의 수정안이 없습니다.</p> : null}
+            {shown.some((p) => p.applicable) ? (
+              <div className="aar-actions">
+                <GlassButton variant="glass" size="s" disabled={busy || picked.length === 0} onClick={() => void run(`applymany:${[...picked].sort().join(",")}`, async (id) => {
+                  const r = await api.agentAReview.applyMany(fileId, picked, id);
+                  setPicked([]);
+                  return r.verified ? `고른 수정안 ${picked.length}개를 한 번에 정본에 저장했습니다(판 ${r.artifactRevision}).` : `저장은 됐지만 정본 본문 확인이 맞지 않습니다(판 ${r.artifactRevision}).`;
+                }, true)}>
+                  고른 <span className="t-tabular">{picked.length}</span>개 한 번에 저장
+                </GlassButton>
+                <span className="aar-card__meta">전부 되거나 전부 안 됩니다.</span>
+              </div>
+            ) : null}
             {shown.map((p) => (
               <ProposalCard
                 key={p.id}
@@ -172,6 +273,12 @@ export function AgentAManage({ fileId, open, recoveries, onClose, onChanged, onO
                 }, true) : undefined}
                 actions={
                   <>
+                    {p.applicable ? (
+                      <label className="aar-check">
+                        <input type="checkbox" checked={picked.includes(p.id)} disabled={busy} onChange={(e) => setPicked((cur) => (e.target.checked ? [...cur, p.id] : cur.filter((x) => x !== p.id)))} />
+                        함께 저장
+                      </label>
+                    ) : null}
                     {p.status !== "held" ? <button type="button" className="vw-btn" disabled={busy} onClick={() => void run(`held:${p.id}`, async (id) => { await api.agentAReview.decide(fileId, p.id, "held", id); return "수정안을 보류했습니다. 정본은 그대로입니다."; }, false)}>보류</button> : null}
                     <button type="button" className="vw-btn" disabled={busy} onClick={() => void run(`rejected:${p.id}`, async (id) => { await api.agentAReview.decide(fileId, p.id, "rejected", id); return "수정안을 거절했습니다. 정본은 그대로입니다."; }, false)}>거절</button>
                   </>
@@ -187,15 +294,172 @@ export function AgentAManage({ fileId, open, recoveries, onClose, onChanged, onO
             {data.blocks.map((b) => (
               <BlockCard key={b.id} block={b} busy={busy}
                 onEdit={(input) => run(`edit:${b.id}:${b.revision}`, async (id) => {
-                  const r = await api.agentAReview.edit(fileId, { blockId: b.id, revision: b.revision, title: input.title, body: input.body, opId: id });
+                  const r = await api.agentAReview.edit(fileId, { blockId: b.id, revision: b.revision, title: input.title, body: input.body, opId: id, contextRevision: data.contextRevision });
                   return `정본에 저장했습니다(판 ${r.artifactRevision}).`;
                 }, true)}
                 onRestore={(historyRevision) => void run(`restore:${b.id}:${b.revision}:${historyRevision}`, async (id) => {
-                  const r = await api.agentAReview.restore(fileId, { blockId: b.id, revision: b.revision, historyRevision, opId: id });
+                  const r = await api.agentAReview.restore(fileId, { blockId: b.id, revision: b.revision, historyRevision, opId: id, contextRevision: data.contextRevision, layoutRevision: data.layoutRevision });
                   return `판 ${historyRevision}의 내용을 새 판으로 되살렸습니다(판 ${r.artifactRevision}).`;
                 }, true)}
               />
             ))}
+            <details className="aar-fold">
+              <summary>변경 이력 <span className="t-tabular">{data.events.length}</span>건</summary>
+              <ol className="aar-versions" aria-label="변경 이력">
+                {data.events.map((e) => (
+                  <li key={e.seq}>
+                    <span className="t-tabular">#{e.seq}</span>
+                    <span>{e.type}</span>
+                    <Time iso={e.at} />
+                  </li>
+                ))}
+              </ol>
+            </details>
+            <details className="aar-fold">
+              <summary>새 문서 만들기 · 파일 가져오기</summary>
+              <label className="aar-field">문서 제목<input value={newDoc.title} maxLength={200} onChange={(e) => setNewDoc({ ...newDoc, title: e.target.value })} /></label>
+              <label className="aar-field">처음 본문(마크다운)<textarea rows={5} value={newDoc.markdown} maxLength={200000} onChange={(e) => setNewDoc({ ...newDoc, markdown: e.target.value })} /></label>
+              <div className="aar-actions">
+                <GlassButton variant="glass" size="s" disabled={busy || !newDoc.title.trim() || !newDoc.markdown.trim()} onClick={() => void run("newdoc", async () => {
+                  await api.agentACreateDoc(projectId, { title: newDoc.title.trim(), markdown: newDoc.markdown });
+                  setNewDoc({ title: "", markdown: "" });
+                  return "새 문서를 만들었습니다. 자료 목록에서 엽니다.";
+                }, false)}>새 문서 만들기</GlassButton>
+                <button type="button" className="vw-btn" disabled={busy} onClick={() => importInput.current?.click()}>파일 가져오기</button>
+                <input ref={importInput} type="file" multiple hidden accept=".md,.markdown,.txt,.png,.jpg,.jpeg,.webp" aria-label="문서 파일 가져오기" onChange={(e) => {
+                  const files = [...(e.target.files ?? [])];
+                  e.target.value = "";
+                  if (!files.length) return;
+                  void run("import", async () => {
+                    // 파일마다 따로 문서 하나를 만든다. 지금 열어 둔 문서와 초안은 그대로 둔다.
+                    const failed: string[] = [];
+                    let made = 0;
+                    for (const file of files) {
+                      try {
+                        const title = file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "가져온 문서";
+                        const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+                        if (IMPORT_TEXT.test(file.name)) {
+                          const text = await file.text();
+                          if (!text.trim() || text.length > 200_000) throw new Error("비었거나 너무 깁니다");
+                          await api.agentACreateDoc(projectId, { title, markdown: text });
+                        } else if (IMPORT_IMAGE[ext]) {
+                          if (file.size > 4 * 1024 * 1024) throw new Error("4MB 를 넘습니다");
+                          await api.agentACreateDoc(projectId, { title, markdown: title, images: [{ title, name: file.name.slice(0, 500), mediaType: IMPORT_IMAGE[ext], base64: await toBase64(file) }] });
+                        } else throw new Error("가져올 수 없는 종류입니다");
+                        made++;
+                      } catch (err) {
+                        failed.push(`${file.name}(${errorText(err)})`);
+                      }
+                    }
+                    if (failed.length && !made) throw new Error(`가져오지 못했습니다: ${failed.join(", ")}`);
+                    return `문서 ${made}개를 가져왔습니다.${failed.length ? ` 못 가져온 파일: ${failed.join(", ")}` : ""} 자료 목록에서 엽니다.`;
+                  }, false);
+                }} />
+              </div>
+              <p className="aar-card__meta">MD·TXT 는 글 문서로, PNG·JPEG·WebP 는 그림 문서로 파일마다 하나씩 만듭니다.</p>
+            </details>
+          </>
+        ) : null}
+
+        {data && tab === "branches" ? (
+          <>
+            <p className="aar-note">분기는 정본 옆에서 이어 가는 질문입니다. 답변을 채택해도 정본은 바뀌지 않고, 정본 반영은 ‘수정안’에서 따로 고릅니다.</p>
+            <label className="aar-field">판단 사유(선택)<input value={reason} maxLength={1000} placeholder="채택·보류·거절·닫기 사유" onChange={(e) => setReason(e.target.value)} /></label>
+            {data.branches.length === 0 ? <p className="aar-note">저장된 분기가 없습니다.</p> : null}
+            {data.branches.map((b) => (
+              <BranchCard key={b.id} branch={b} busy={busy} reason={reason} parentTitle={b.parentId ? data.branches.find((x) => x.id === b.parentId)?.title ?? null : null}
+                onDecide={(messageId, decision) => void run(`answer:${b.id}:${messageId}:${decision}`, async (id) => {
+                  await api.agentAReview.branchDecide(fileId, { opId: id, branchId: b.id, messageId, decision, reason });
+                  return decision === "accepted" ? "답변을 채택했습니다. 정본은 바뀌지 않습니다." : decision === "held" ? "답변을 보류했습니다." : "답변을 거절했습니다.";
+                }, false)}
+                onFollow={(text) => run(`follow:${b.id}:${text}`, async (id) => {
+                  await api.agentAReview.branchMessage(fileId, { opId: id, branchId: b.id, text });
+                  return "후속 질문을 저장했습니다. ‘피드백’에서 전송 자료로 준비합니다.";
+                }, false)}
+                onClose={() => void run(`close:${b.id}`, async (id) => {
+                  const r = await api.agentAReview.branchClose(fileId, { opId: id, branchId: b.id, reason });
+                  const left = [r.unanswered ? `답 없는 질문 ${r.unanswered}` : "", r.openChildren ? `열린 하위 분기 ${r.openChildren}` : "", r.unapplied ? `반영 안 한 수정안 ${r.unapplied}` : ""].filter(Boolean).join(" · ");
+                  return `분기를 닫았습니다.${left ? ` 남은 것: ${left}.` : ""} 후속 질문을 더하면 다시 열립니다.`;
+                }, false)}
+                onChild={(messageId) => setChildOf({ branchId: b.id, messageId })}
+              />
+            ))}
+            <section className="aar-card" aria-label="새 분기">
+              <header className="aar-card__head"><strong>{childOf ? "답변에서 새 분기" : "블록에서 새 분기"}</strong></header>
+              {childOf ? (
+                <p className="aar-card__meta">고른 답변을 기준으로 질문합니다. <button type="button" className="aa-link" onClick={() => setChildOf(null)}>블록 질문으로</button></p>
+              ) : (
+                <label className="aar-field">질문 대상
+                  <select value={blockId || data.blocks.find((b) => !b.archived)?.id || ""} onChange={(e) => setBlockId(e.target.value)}>
+                    {data.blocks.filter((b) => !b.archived).map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className="aar-field">새 질문<textarea rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} /></label>
+              <div className="aar-actions">
+                <GlassButton variant="glass" size="s" disabled={busy || !question.trim() || (!childOf && !data.blocks.some((b) => !b.archived))} onClick={() => void run(`branch:${childOf ? `${childOf.branchId}:${childOf.messageId}` : blockId}:${question}`, async (id) => {
+                  await api.agentAReview.branchCreate(fileId, { opId: id, question: question.trim(), ...(childOf ? { parent: childOf } : { blockId: blockId || data.blocks.find((b) => !b.archived)!.id }) });
+                  setQuestion("");
+                  setChildOf(null);
+                  return "새 분기를 만들었습니다. 정본은 바뀌지 않습니다.";
+                }, false)}>분기 만들기</GlassButton>
+              </div>
+            </section>
+          </>
+        ) : null}
+
+        {data && tab === "feedback" ? (
+          <>
+            <p className="aar-note">분기의 질문을 골라 전송 자료를 준비합니다. 자료를 내보내 수동으로 주고받거나, Agent-A 에 설정된 CLI 로 실행합니다{data.adapter ? "" : "(지금 이 Agent-A 는 자동 연동이 꺼져 있어 수동 교환만 됩니다)"}.</p>
+            {data.feedback.length === 0 ? <p className="aar-note">저장된 질문이 없습니다.</p> : null}
+            {data.feedback.map((f) => (
+              <label key={f.id} className="aar-card aar-check" data-feedback={f.id}>
+                <input type="checkbox" checked={pickedFeedback.includes(f.id)} disabled={busy || f.state !== "not_sent" && f.state !== "failed" && f.state !== "unknown"} onChange={(e) => setPickedFeedback((cur) => (e.target.checked ? [...cur, f.id] : cur.filter((x) => x !== f.id)))} />
+                <span>
+                  <span className="aar-msg__text">{f.message}</span>
+                  <span className="aar-card__meta">{f.branchTitle} · {STATE[f.state] ?? f.state}</span>
+                </span>
+              </label>
+            ))}
+            <label className="aar-field">추가 전달 지침(선택)<textarea rows={2} value={template} maxLength={4000} onChange={(e) => setTemplate(e.target.value)} /></label>
+            <div className="aar-actions">
+              <GlassButton variant="glass" size="s" disabled={busy || pickedFeedback.length === 0} onClick={() => void run(`batch:${[...pickedFeedback].sort().join(",")}:${template}`, async (id) => {
+                await api.agentAReview.feedbackPrepare(fileId, { opId: id, feedbackIds: pickedFeedback, ...(template.trim() ? { template: template.trim() } : {}) });
+                setPickedFeedback([]);
+                return "전송 자료를 준비했습니다. 아래 전송 기록에서 내보내거나 실행합니다.";
+              }, false)}>
+                고른 <span className="t-tabular">{pickedFeedback.length}</span>개 자료 준비
+              </GlassButton>
+            </div>
+            <section className="aar-card" aria-label="전송 기록">
+              <header className="aar-card__head"><strong>전송 기록</strong></header>
+              {data.jobs.length === 0 ? <p className="aar-card__meta">전송 기록이 없습니다.</p> : null}
+              {data.jobs.map((j) => (
+                <div key={j.id} className="aar-history" data-job={j.id}>
+                  <p className="aar-history__title">{STATE[j.state] ?? j.state} · 질문 <span className="t-tabular">{j.feedback}</span>개</p>
+                  {j.error ? <p className="aar-card__meta" role="status">{j.error}</p> : null}
+                  <div className="aar-actions">
+                    <button type="button" className="vw-btn" disabled={busy} onClick={() => void run(`export:${j.id}`, async () => { download(await api.agentAReview.jobExport(fileId, j.id), `agent-a-${j.id}.json`); return "전송 자료를 내보냈습니다."; }, false)}>JSON 내보내기</button>
+                    <RunJob disabled={busy || !data.adapter || j.state !== "queued"} onRun={() => void run(`run:${j.id}`, async () => { await api.agentAReview.jobRun(fileId, j.id); return "실행을 시작했습니다. 끝나면 답과 수정안이 저장됩니다."; }, false)} />
+                    {j.state === "running" ? <button type="button" className="vw-btn" disabled={busy} onClick={() => void run(`cancel:${j.id}`, async () => { await api.agentAReview.jobCancel(fileId, j.id); return "실행을 멈췄습니다. 결과 상태를 확인해 주세요."; }, false)}>실행 멈춤</button> : null}
+                  </div>
+                </div>
+              ))}
+            </section>
+            <section className="aar-card" aria-label="수동 결과 가져오기">
+              <header className="aar-card__head"><strong>수동 결과 가져오기</strong></header>
+              <label className="aar-field">응답 JSON<textarea rows={5} value={importText} placeholder={'{"receipt_id":"…","answers":[],"proposals":[]}'} onChange={(e) => setImportText(e.target.value)} /></label>
+              <div className="aar-actions">
+                <GlassButton variant="glass" size="s" disabled={busy || !importText.trim()} onClick={() => void run("import-result", async () => {
+                  let parsed: unknown;
+                  try { parsed = JSON.parse(importText); } catch { throw new Error("JSON 으로 읽을 수 없습니다"); }
+                  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("결과 JSON 은 객체여야 합니다");
+                  await api.agentAReview.importResult(fileId, parsed as Record<string, unknown>);
+                  setImportText("");
+                  return "답과 수정안을 저장했습니다. 정본 반영은 ‘수정안’에서 고릅니다.";
+                }, false)}>결과 가져오기</GlassButton>
+              </div>
+            </section>
           </>
         ) : null}
 

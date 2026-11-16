@@ -3,13 +3,25 @@
 //   그래서 Agent-A 앱을 통째로 칸(iframe)에 넣지 않아도 같은 정본·댓글·답·수정안을 쓴다(계약 근거: Agent-A c559881 의
 //   src/server/plannotator.js · auto-comments.js · app.js).
 // - Agent-A 가 준 모양을 그대로 넘기지 않는다. 화면이 쓰는 칸만 골라 shared/agent-a.ts 의 모양으로 옮긴다.
-// - 댓글은 원래 화면과 똑같이 '검토 초안에 주석을 더해 저장'하는 길로 만든다(그때 Agent-A 가 답을 시작한다).
-//   있던 초안(다른 주석·직접 편집·첨부)은 그대로 다시 싣는다. 지우거나 덮지 않는다.
+// - 새 댓글은 검토 초안에 '주석 하나만 더하는' 길(POST /api/draft/annotations)로 만든다(그때 Agent-A 가 답을 시작한다).
+//   초안을 읽어 통째로 다시 쓰지 않는다: 원래 Agent-A 의 초안 저장은 늘 통째로 바꾸고 세대 번호도 그대로라,
+//   읽은 뒤 다른 창이 저장한 직접 편집·첨부·주석을 덮게 된다(독립 검토 F1). 그래서 이 길이 없는 Agent-A(원래 c559881)에는
+//   새 댓글·초안 고치기를 보내지 않고 거절한다(AGENT_A_UNSUPPORTED). 필요한 Agent-A 변경은 docs/agent-a/ 에 있다.
+// - 지난 판의 검토에는 새 댓글을 받지 않는다(같은 길이 한 트랜잭션에서 정본을 다시 확인한다). 읽기·있던 댓글의 답글은 그대로다.
 // - 열쇠·Agent-A 주소는 이 서버 프로세스에만 있다.
 import { ApiError } from "../store.ts";
 import { AgentAError, proposalView, verifyApplied, versionsOf, type AgentAService, type AState } from "./agent-a.ts";
 import type {
   AgentABlock,
+  AgentAChatEntry,
+  AgentAChatHistory,
+  AgentAChatSession,
+  AgentAManageBranch,
+  AgentAReviewAiCatalog,
+  AgentAReviewAiSettings,
+  AgentAReviewAttachment,
+  AgentAReviewDraft,
+  AgentAReviewSubmitResult,
   AgentAProposalStatus,
   AgentAReviewAnnotation,
   AgentAReviewCommentReq,
@@ -47,6 +59,12 @@ const KNOWN: Record<string, string> = {
   already_decided: "이미 제출한 검토입니다. 최신 정본을 다시 열어 주세요",
   invalid_image_region: "그림 영역을 원래 그림에서 찾지 못했습니다. 영역을 다시 골라 주세요",
   local_only: "Agent-A 가 이 서버의 요청을 받지 않습니다(이 기기 전용 설정)",
+  idempotency_conflict: "같은 요청 id 로 다른 내용을 보냈습니다",
+  draft_conflict: "그사이 다른 화면이 초안을 저장했습니다. 다시 불러온 초안에서 고쳐 주세요",
+  unsupported: "이 Agent-A 는 초안 보존 규약을 몰라 새 댓글과 초안 고치기를 막았습니다. Agent-A 를 초안 보존 판으로 올려야 합니다",
+};
+const unsupported = (): never => {
+  throw new ApiError(409, KNOWN.unsupported!, "AGENT_A_UNSUPPORTED");
 };
 
 function refuse(status: number, json: unknown, fallback: string): never {
@@ -97,8 +115,71 @@ export function toAnnotation(raw: unknown): AgentAReviewAnnotation | null {
     canRetry: raw.canRetry === true,
     branchOf: branch || null,
     extra: Boolean(raw.implementationProposal || raw.fulfillment || raw.previousAnswer),
+    images: ai ? [] : (Array.isArray(raw.images) ? raw.images : []).flatMap((x) => (obj(x) && UPLOADED.test(str(x.path)) ? [{ path: str(x.path), name: str(x.name) || "그림" }] : [])),
+    aiSettings: ai || !obj(raw.aiSettings) ? null : {
+      ...(str(raw.aiSettings.providerId) ? { providerId: str(raw.aiSettings.providerId) } : {}),
+      ...(str(raw.aiSettings.model) ? { model: str(raw.aiSettings.model) } : {}),
+      ...(str(raw.aiSettings.reasoningEffort) ? { reasoningEffort: str(raw.aiSettings.reasoningEffort) } : {}),
+    },
   };
 }
+
+/** 댓글에 붙인 그림: Agent-A 에 올려서 받은 경로만(다른 주소는 받지 않는다). */
+const UPLOADED = /^\/assets\/user\/[a-f0-9]{64}\/1$/;
+function attachments(v: unknown): AgentAReviewAttachment[] {
+  if (v == null) return [];
+  if (!Array.isArray(v) || v.length > 10) throw new ApiError(400, "붙인 그림은 10개까지입니다");
+  return v.map((x) => {
+    if (!obj(x) || !UPLOADED.test(str(x.path)) || typeof x.name !== "string" || x.name.length > 200) throw new ApiError(400, "붙인 그림이 올바르지 않습니다");
+    return { path: str(x.path), name: x.name };
+  });
+}
+/** AI 설정: 아는 세 칸의 짧은 글만. 비었으면 null(Agent-A 기본값). */
+function aiSettings(v: unknown): AgentAReviewAiSettings | null {
+  if (v == null) return null;
+  if (!obj(v)) throw new ApiError(400, "AI 설정이 올바르지 않습니다");
+  const out: AgentAReviewAiSettings = {};
+  for (const [key, value] of Object.entries(v)) {
+    if (!["providerId", "model", "reasoningEffort"].includes(key) || typeof value !== "string" || value.length > 200) throw new ApiError(400, "AI 설정이 올바르지 않습니다");
+    if (value) out[key as keyof AgentAReviewAiSettings] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** 줄 단위로 달라진 곳만 뽑는다(같은 머리·꼬리는 뺀다). 직접 고친 본문을 제출 글에 싣는 데 쓴다. */
+function lineDiff(before: string, after: string): string {
+  const a = before.split("\n"), b = after.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const removed = a.slice(head, a.length - tail), added = b.slice(head, b.length - tail);
+  return [`@@ line ${head + 1} @@`, ...removed.map((l) => `- ${l}`), ...added.map((l) => `+ ${l}`)].join("\n").slice(0, 60_000);
+}
+
+/**
+ * 검토 제출에 싣는 전체 의견 글. 원래 화면이 내보내는 글과 같은 짜임이다(주석 목록 + '# Direct Edits').
+ * Agent-A 는 이 글을 문서 전체 질문 하나로 남긴다. 주석 하나하나는 따로 분기의 질문이 된다.
+ */
+export function feedbackText(markdown: string, annotations: Json[], edited: string | null, attachments: number): string {
+  const parts: string[] = ["# Plan Feedback", "", `I've reviewed this document and have ${annotations.length} piece${annotations.length === 1 ? "" : "s"} of feedback:`, ""];
+  annotations.forEach((a, i) => {
+    const quote = str(a.originalText), text = str(a.text);
+    const head = a.type === "DELETION" ? "Remove this" : a.type === "GLOBAL_COMMENT" || !quote ? "General feedback" : "Feedback on";
+    parts.push(`## ${i + 1}. ${head}${quote && a.type !== "DELETION" ? `: "${quote.replace(/\s+/g, " ").slice(0, 200)}"` : ""}`);
+    if (a.type === "DELETION" && quote) parts.push("```", quote.slice(0, 2000), "```");
+    if (text) parts.push(...text.split("\n").map((l) => `> ${l}`));
+    if (obj(a.imageRegion)) parts.push(`(image region: ${str(a.imageRegion.src)})`);
+    if (Array.isArray(a.images) && a.images.length) parts.push(`(attachments: ${a.images.length})`);
+    parts.push("");
+  });
+  if (attachments) parts.push(`(review attachments: ${attachments})`, "");
+  if (edited !== null && edited !== markdown) parts.push("# Direct Edits", "", "```diff", lineDiff(markdown, edited), "```", "");
+  return parts.join("\n").trim().slice(0, 95_000);
+}
+
+/** 화면이 본 판을 보냈으면 그것을, 아니면 지금 판을 쓴다(둘 다 Agent-A 가 다시 확인한다). */
+const revisionOr = (sent: number | null | undefined, current: number): number => (typeof sent === "number" && Number.isSafeInteger(sent) && sent >= 0 ? sent : current);
 
 const STATUSES: AgentAProposalStatus[] = ["pending", "held", "rejected", "applied", "conflict"];
 const bodyOf = (content: unknown): string | null => {
@@ -107,6 +188,7 @@ const bodyOf = (content: unknown): string | null => {
 };
 
 export class AgentAReview {
+  /** 같은 수정안의 반영·보류가 겹치지 않게 하는 이 프로세스 안의 줄. 다른 창·프로세스의 쓰기를 막는 장치가 아니다(그건 Agent-A 가 한다). */
   private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(
@@ -129,7 +211,7 @@ export class AgentAReview {
     return id;
   }
 
-  private async call(fileId: string, sessionId: string | null, method: string, path: string, body?: unknown): Promise<{ status: number; json: unknown }> {
+  private async call(fileId: string, sessionId: string | null, method: string, path: string, body?: unknown): Promise<{ status: number; json: unknown; draftRevision: number | null }> {
     const doc = this.service.docOf(fileId);
     try {
       return await this.service.client.reviewCall(method, path, { artifactId: doc.artifactId, sessionId }, body);
@@ -157,6 +239,7 @@ export class AgentAReview {
     const draft = obj(s.draft) ? s.draft : null;
     const edited = typeof draft?.editedMarkdown === "string";
     const latest = s.stale !== true;
+    const protocol = obj(s.capabilities) ? num(s.capabilities.draft_protocol) : null;
     let artifactRevision: number | null = null;
     if (latest) {
       const r = await this.call(fileId, sessionId, "GET", "/api/plan/revision");
@@ -176,9 +259,11 @@ export class AgentAReview {
       title: doc.title || s.markdown.split("\n")[0]!.replace(/^#\s*/, ""),
       markdown: edited ? (draft!.editedMarkdown as string) : s.markdown,
       edited,
+      canonical: s.markdown,
       artifactRevision,
       images,
       closed: Boolean(s.decision),
+      safeWrites: (protocol ?? 1) >= 2,
       recoveries: (Array.isArray(s.recoveries) ? s.recoveries : []).flatMap((r): AgentAReviewRecovery[] => {
         if (!obj(r) || !SESSION.test(str(r.id))) return [];
         return [{
@@ -232,59 +317,62 @@ export class AgentAReview {
   }
 
   /**
-   * 새 댓글(문장·전체·그림 영역). 원래 화면과 같은 길: 검토 초안에 주석 하나를 더해 저장한다. 그때 Agent-A 가 답을 시작한다.
-   * 있던 초안은 그대로 다시 싣는다. 같은 id 를 다시 보내면 댓글을 또 만들지 않는다.
+   * 새 댓글(문장·전체·그림 영역·삭제 표시). 검토 초안에 주석 하나만 더한다. 그때 Agent-A 가 답을 시작한다(삭제 표시는 답이 없다).
+   * - 초안을 읽어 통째로 다시 쓰지 않으므로 다른 창이 그사이 저장한 직접 편집·첨부·주석이 그대로 남는다.
+   * - 같은 id·같은 내용으로 다시 보내면 Agent-A 가 처음 결과를 확인해 준다(댓글은 하나). 같은 id 로 다른 내용이면 거절한다.
+   * - 지난 판의 검토·제출로 닫힌 검토에는 새 댓글을 받지 않는다. 그 확인은 Agent-A 가 쓰기와 같은 트랜잭션에서 한다.
+   * - 이 규약을 모르는 Agent-A 에는 아무것도 보내지 않고 거절한다(AGENT_A_UNSUPPORTED).
    */
   async addComment(fileId: string, sessionId: string, req: AgentAReviewCommentReq): Promise<AgentAReviewWriteResult> {
     const sid = this.session(sessionId);
     if (!ANNOTATION.test(req.id)) throw new ApiError(400, "댓글 id 가 올바르지 않습니다");
-    const text = req.text.trim();
+    if (req.kind !== "comment" && req.kind !== "global" && req.kind !== "deletion") throw new ApiError(400, "댓글 종류가 올바르지 않습니다");
+    const text = (req.text ?? "").trim();
     const quote = req.kind === "global" ? "" : (req.quote ?? "");
-    if (!text || text.length > MAX_TEXT) throw new ApiError(400, "댓글은 1~30000자입니다");
+    if (req.kind === "deletion" ? !quote.trim() : !text) throw new ApiError(400, req.kind === "deletion" ? "지울 글을 골라 주세요" : "댓글은 1~30000자입니다");
+    if (text.length > MAX_TEXT) throw new ApiError(400, "댓글은 1~30000자입니다");
     if (quote.length > MAX_QUOTE) throw new ApiError(400, "고른 글이 너무 깁니다");
     let region: AgentAReviewImageRegion | null = null;
     if (req.region != null) {
-      region = parseRegion(req.region);
+      region = req.kind === "deletion" ? null : parseRegion(req.region);
       if (!region || !REVIEW_ASSET.test(region.src)) throw new ApiError(400, KNOWN.invalid_image_region!, "AGENT_A_INVALID_IMAGE_REGION");
     }
-    return this.serial(`draft:${sid}`, async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const cur = await this.call(fileId, sid, "GET", "/api/draft");
-        if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
-        const got = obj(cur.json) ? cur.json : {};
-        const generation = num(got.draftGeneration) ?? 0;
-        // 있던 초안의 모든 칸을 그대로 싣는다(직접 편집·첨부 포함). 문서별 초안(documents)은 Agent-A 가 따로 들고 있어 싣지 않는다.
-        const { draftGeneration: _g, documents: _d, found: _f, ...kept } = cur.status === 200 ? got : {};
-        const annotations = Array.isArray(kept.annotations) ? [...kept.annotations] : [];
-        if (annotations.some((a) => obj(a) && a.id === req.id)) return { ok: true as const, id: req.id };
-        annotations.push({
-          id: req.id,
-          blockId: "",
-          startOffset: 0,
-          endOffset: 0,
-          type: req.kind === "global" ? "GLOBAL_COMMENT" : "COMMENT",
-          text,
-          originalText: quote,
-          createdA: this.now(),
-          ...(region ? { imageRegion: region } : {}),
-        });
-        const saved = await this.call(fileId, sid, "POST", "/api/draft", { ...kept, annotations, globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [], draftGeneration: generation });
-        if (saved.status === 200) return { ok: true as const, id: req.id };
-        if (saved.status === 409 && obj(saved.json) && saved.json.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
-        // 그사이 다른 화면이 초안을 저장했다(세대가 앞섰다). 새 초안을 다시 읽어 한 번만 더 해 본다.
-        if (saved.status === 409 && obj(saved.json) && saved.json.code === undefined && attempt === 0) continue;
-        refuse(saved.status, saved.json, "댓글을 저장하지 못했습니다");
-      }
-      throw new ApiError(409, "그사이 다른 화면이 초안을 저장했습니다. 잠시 뒤 다시 보내 주세요", "AGENT_A_DRAFT_BUSY");
+    const images = attachments(req.images);
+    const ai = aiSettings(req.ai);
+    // 1) 이 Agent-A 가 초안 보존 규약을 아는지 먼저 본다(초안 판 머리). 모르면 쓰기를 하나도 보내지 않는다.
+    const cur = await this.call(fileId, sid, "GET", "/api/draft");
+    if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
+    if (cur.draftRevision === null) unsupported();
+    // 2) 주석 하나만 더한다. 여기서 읽은 초안은 보내지 않는다(그사이 다른 창이 저장해도 그 저장이 남는다).
+    const saved = await this.call(fileId, sid, "POST", "/api/draft/annotations", {
+      annotation: {
+        id: req.id,
+        blockId: "",
+        startOffset: 0,
+        endOffset: 0,
+        type: req.kind === "global" ? "GLOBAL_COMMENT" : req.kind === "deletion" ? "DELETION" : "COMMENT",
+        ...(text ? { text } : {}),
+        originalText: quote,
+        ...(region ? { imageRegion: region } : {}),
+        ...(images.length ? { images } : {}),
+        ...(ai ? { aiSettings: ai } : {}),
+      },
     });
+    if (saved.status === 200) return { ok: true, id: req.id };
+    const body = obj(saved.json) ? saved.json : {};
+    if (saved.status === 409 && body.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
+    // 길 자체가 없으면(404, Agent-A 의 code 없음) 규약을 모르는 Agent-A 다.
+    if (saved.status === 404 && typeof body.code !== "string") unsupported();
+    refuse(saved.status, saved.json, "댓글을 저장하지 못했습니다");
   }
 
-  /** 대댓글. 첫 댓글 id 에 단다. Agent-A 가 같은 대화로 답한다. */
-  async reply(fileId: string, sessionId: string, input: { inReplyTo: string; text: string }): Promise<AgentAReviewWriteResult> {
+  /** 대댓글. 첫 댓글 id 에 단다. Agent-A 가 같은 대화로 답한다. ai 를 주면 이 답글의 답만 그 AI·모델·추론 수준으로 받는다. */
+  async reply(fileId: string, sessionId: string, input: { inReplyTo: string; text: string; ai?: AgentAReviewAiSettings | null }): Promise<AgentAReviewWriteResult> {
     const text = input.text.trim();
     if (!ANNOTATION.test(input.inReplyTo)) throw new ApiError(400, "댓글 id 가 올바르지 않습니다");
     if (!text || text.length > MAX_TEXT) throw new ApiError(400, "답글은 1~30000자입니다");
-    const r = await this.ok(fileId, this.session(sessionId), "POST", "/api/external-annotations", { inReplyTo: input.inReplyTo, text }, "답글을 저장하지 못했습니다");
+    const settings = aiSettings(input.ai);
+    const r = await this.ok(fileId, this.session(sessionId), "POST", "/api/external-annotations", { inReplyTo: input.inReplyTo, text, ...(settings ? { settings } : {}) }, "답글을 저장하지 못했습니다");
     return { ok: true, id: str(r.id) };
   }
 
@@ -368,14 +456,347 @@ export class AgentAReview {
     return { version: v, markdown: r.plan };
   }
 
+  // ---- AI 고르기 · 그림 붙이기 ----
+
+  /** 답을 낼 수 있는 AI 목록. Agent-A 가 지금 쓸 수 있다고 알리는 것만 옮긴다. */
+  async aiCatalog(fileId: string, sessionId: string): Promise<AgentAReviewAiCatalog> {
+    const r = await this.ok(fileId, this.session(sessionId), "GET", "/api/ai/capabilities", undefined, "AI 목록을 불러오지 못했습니다");
+    const providers = (Array.isArray(r.providers) ? r.providers : []).flatMap((p) => {
+      if (!obj(p) || !str(p.id)) return [];
+      const models = (Array.isArray(p.models) ? p.models : []).flatMap((m) => {
+        if (!obj(m) || !str(m.id)) return [];
+        const efforts = (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []).flatMap((e) => (obj(e) && str(e.id) ? [{ id: str(e.id), label: str(e.label) || str(e.id) }] : []));
+        return [{ id: str(m.id), label: str(m.label) || str(m.id), default: m.default === true, efforts, defaultEffort: str(m.defaultReasoningEffort) || null }];
+      });
+      return [{ id: str(p.id), name: str(p.name) || str(p.id), models }];
+    });
+    return { available: r.available === true && providers.length > 0, defaultProvider: str(r.defaultProvider) || null, providers, error: str(r.error) || null };
+  }
+
+  /** 댓글에 붙일 그림을 Agent-A 에 올린다. 같은 그림은 같은 경로를 돌려준다(내용 해시). 올린 것만으로는 어디에도 붙지 않는다. */
+  async upload(fileId: string, sessionId: string, input: { name: string; mediaType: string; base64: string }): Promise<AgentAReviewAttachment> {
+    this.session(sessionId);
+    this.service.docOf(fileId);
+    const name = input.name.trim().slice(0, 200) || "그림";
+    if (!["image/png", "image/jpeg", "image/webp"].includes(input.mediaType)) throw new ApiError(400, "PNG·JPEG·WebP 그림만 붙일 수 있습니다");
+    if (!input.base64 || input.base64.length > 6 * 1024 * 1024) throw new ApiError(400, "그림은 4MB 까지입니다");
+    try {
+      const asset = await this.service.client.uploadAsset({ name, media_type: input.mediaType, base64: input.base64 });
+      if (!UPLOADED.test(str(asset?.src))) throw new ApiError(502, "Agent-A 가 그림 경로를 돌려주지 않았습니다", "AGENT_A_BAD_RESPONSE");
+      return { path: asset.src, name };
+    } catch (e) {
+      if (!(e instanceof AgentAError)) throw e;
+      if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
+      throw new ApiError(e.kind === "auth" ? 502 : 400, e.kind === "auth" ? "Agent-A 연결 열쇠가 맞지 않습니다" : e.message || "그림을 올리지 못했습니다", "AGENT_A_REFUSED");
+    }
+  }
+
+  /** 댓글·초안에 붙은 그림 하나. 이 검토의 댓글이나 초안이 가리키는 그림만 내준다(경로를 안다고 아무 그림이나 주지 않는다). */
+  async attachment(fileId: string, sessionId: string, path: string): Promise<Response> {
+    const sid = this.session(sessionId);
+    if (!UPLOADED.test(path)) throw new ApiError(404, "그림을 찾을 수 없습니다");
+    const list = await this.call(fileId, sid, "GET", "/api/external-annotations");
+    const draft = await this.call(fileId, sid, "GET", "/api/draft");
+    const known = new Set<string>();
+    const collect = (items: unknown) => {
+      for (const a of Array.isArray(items) ? items : []) {
+        if (!obj(a)) continue;
+        if (typeof a.path === "string") known.add(a.path);
+        for (const image of Array.isArray(a.images) ? a.images : []) if (obj(image) && typeof image.path === "string") known.add(image.path);
+      }
+    };
+    if (list.status === 200 && obj(list.json)) collect(list.json.annotations);
+    if (draft.status === 200 && obj(draft.json)) {
+      collect(draft.json.annotations);
+      collect(draft.json.globalAttachments);
+    }
+    if (!known.has(path)) throw new ApiError(404, "그림을 찾을 수 없습니다");
+    let res: Response;
+    try {
+      res = await this.service.client.asset(path);
+    } catch (e) {
+      if (e instanceof AgentAError) throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
+      throw e;
+    }
+    const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    if (!res.ok || !["image/png", "image/jpeg", "image/webp"].includes(type)) throw new ApiError(404, "그림을 찾을 수 없습니다");
+    return new Response(res.body, { status: 200, headers: { "Content-Type": type, "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff" } });
+  }
+
+  // ---- 검토 초안: 본문 직접 고치기 · 검토 제출 ----
+
+  private draftView(revision: number, json: unknown): AgentAReviewDraft {
+    const d = obj(json) ? json : {};
+    return {
+      revision,
+      editedMarkdown: typeof d.editedMarkdown === "string" ? d.editedMarkdown : null,
+      annotations: Array.isArray(d.annotations) ? d.annotations.length : 0,
+      attachments: (Array.isArray(d.globalAttachments) ? d.globalAttachments : []).flatMap((x) => (obj(x) && typeof x.path === "string" ? [{ path: x.path, name: str(x.name) || "그림" }] : [])),
+    };
+  }
+
+  /** 초안을 읽는다. 초안 판을 주지 않는 Agent-A 면 거절한다(판 없이 고쳐 쓰면 다른 화면의 초안을 덮을 수 있다). */
+  private async readDraft(fileId: string, sid: string): Promise<{ revision: number; found: boolean; json: Json }> {
+    const cur = await this.call(fileId, sid, "GET", "/api/draft");
+    if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
+    if (cur.draftRevision === null) unsupported();
+    return { revision: cur.draftRevision as number, found: cur.status === 200, json: cur.status === 200 && obj(cur.json) ? cur.json : {} };
+  }
+
+  async draft(fileId: string, sessionId: string): Promise<AgentAReviewDraft> {
+    const got = await this.readDraft(fileId, this.session(sessionId));
+    return this.draftView(got.revision, got.json);
+  }
+
+  /**
+   * 직접 고친 본문을 초안에 저장한다(markdown 이 null 이면 고친 것을 버린다). 정본은 바뀌지 않는다.
+   * revision 은 화면이 고치기 시작할 때 본 초안 판이다. 그 뒤 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않고 거절한다:
+   * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision). 초안의 다른 칸(주석·첨부)은 그대로 다시 싣는다.
+   */
+  async saveDraft(fileId: string, sessionId: string, input: { markdown: string | null; revision: number }): Promise<AgentAReviewDraft> {
+    const sid = this.session(sessionId);
+    if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
+    if (input.markdown !== null && (typeof input.markdown !== "string" || input.markdown.length > 500_000)) throw new ApiError(400, "본문이 너무 깁니다");
+    const doc = this.service.docOf(fileId);
+    const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: doc.artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
+    if (session.decision) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
+    if (session.stale === true) throw new ApiError(409, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", "AGENT_A_REVISION_CONFLICT");
+    const got = await this.readDraft(fileId, sid);
+    if (got.revision !== input.revision) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+    const { draftGeneration, documents: _d, found: _f, editedMarkdown: _e, ...kept } = got.json;
+    const body = {
+      ...kept,
+      annotations: Array.isArray(kept.annotations) ? kept.annotations : [],
+      globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
+      ...(input.markdown !== null ? { editedMarkdown: input.markdown } : {}),
+      draftGeneration: num(draftGeneration) ?? 0,
+      ifDraftRevision: input.revision,
+    };
+    const saved = await this.call(fileId, sid, "POST", "/api/draft", body);
+    if (saved.status !== 200) {
+      if (saved.status === 409 && obj(saved.json) && saved.json.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
+      if (saved.status === 409 && obj(saved.json) && saved.json.code === undefined) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+      refuse(saved.status, saved.json, "초안을 저장하지 못했습니다");
+    }
+    if (saved.draftRevision === null) unsupported();
+    const { ifDraftRevision: _i, ...stored } = body;
+    return this.draftView(saved.draftRevision as number, stored);
+  }
+
+  /**
+   * 검토 제출(원래 화면 머리의 Save): 이 판의 초안에 든 주석을 분기의 질문으로 넘기고 검토를 닫는다. 정본은 바뀌지 않는다.
+   * revision 은 화면이 본 초안 판이다. 그 뒤 다른 화면이 초안을 바꿨으면 제출하지 않는다(그 댓글이 분기가 되지 못한 채 닫히지 않게).
+   * 같은 내용으로 다시 보내면 Agent-A 가 처음 결과를 돌려준다.
+   */
+  async submit(fileId: string, sessionId: string, input: { revision: number }): Promise<AgentAReviewSubmitResult> {
+    const sid = this.session(sessionId);
+    if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
+    const doc = this.service.docOf(fileId);
+    const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: doc.artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
+    const cur = await this.call(fileId, sid, "GET", "/api/draft");
+    if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
+    if (cur.draftRevision === null) unsupported();
+    const decided = obj(session.decision);
+    // 이미 제출한 검토의 재전송은 초안 판이 달라져 있다(제출이 초안을 비운다). Agent-A 가 같은 내용인지 보고 처음 결과를 돌려주게 그대로 보낸다.
+    const source = decided && obj(session.decision) && obj((session.decision as Json).original_payload) ? ((session.decision as Json).original_payload as Json) : cur.status === 200 && obj(cur.json) ? cur.json : {};
+    if (!decided && cur.draftRevision !== input.revision) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+    const annotations = (Array.isArray(source.annotations) ? source.annotations : []).filter((a) => obj(a) && typeof a.id === "string" && ["COMMENT", "GLOBAL_COMMENT", "DELETION"].includes(str(a.type)));
+    const attachments = Array.isArray(source.globalAttachments) ? source.globalAttachments : [];
+    const edited = typeof source.editedMarkdown === "string" ? source.editedMarkdown : null;
+    const nothing = !annotations.length && !attachments.length && edited === null;
+    const payload = decided ? source : {
+      serverSession: str(session.server_session),
+      feedback: nothing ? "" : feedbackText(str(session.markdown), annotations as Json[], edited, attachments.length),
+      annotations,
+      ...(edited !== null ? { editedMarkdown: edited } : {}),
+      ...(attachments.length ? { globalAttachments: attachments } : {}),
+      ...(nothing ? { nothingToSend: true } : {}),
+      ifDraftRevision: input.revision,
+    };
+    const sent = await this.call(fileId, sid, "POST", "/api/feedback", payload);
+    if (sent.status !== 200 || !obj(sent.json)) {
+      if (sent.status === 409 && obj(sent.json) && sent.json.code === "draft_conflict") throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+      refuse(sent.status, sent.json, "검토를 제출하지 못했습니다");
+    }
+    return { ok: true, sent: Array.isArray(sent.json.feedback_ids) ? sent.json.feedback_ids.length : 0, branches: Array.isArray(sent.json.branch_ids) ? sent.json.branch_ids.length : 0 };
+  }
+
+  // ---- 문서 대화(Ask AI) ----
+
+  private chatHistoryOf(json: Json): AgentAChatHistory {
+    const entries = (Array.isArray(json.entries) ? json.entries : []).flatMap((e): AgentAChatEntry[] => {
+      if (!obj(e) || !obj(e.question) || !str(e.question.id)) return [];
+      const q = e.question, r = obj(e.response) ? e.response : {};
+      const scope = obj(q.scope) ? q.scope : {};
+      return [{
+        id: str(q.id),
+        prompt: str(q.prompt),
+        quote: scope.kind === "selection" && str(scope.text) ? str(scope.text) : null,
+        createdAt: num(q.createdAt) ?? 0,
+        answer: str(r.text),
+        writing: r.isStreaming === true && !str(r.error),
+        error: str(r.error) || null,
+        provider: str(r.providerId) || null,
+      }];
+    });
+    return { conversationId: str(json.conversationId), entries, branchedFrom: obj(json.origin) ? str(json.origin.conversationId) || null : null };
+  }
+  private conversation(id: string): string {
+    if (!ANNOTATION.test(id)) throw new ApiError(400, "대화 id 가 올바르지 않습니다");
+    return id;
+  }
+
+  /** 이 문서의 대화. conversationId 를 비우면 지금 이어 가는 대화다(없으면 Agent-A 가 새로 만든다). */
+  async chatHistory(fileId: string, sessionId: string, conversationId?: string | null): Promise<AgentAChatHistory> {
+    const path = conversationId ? `/api/ai/history?conversationId=${encodeURIComponent(this.conversation(conversationId))}` : "/api/ai/history";
+    return this.chatHistoryOf(await this.ok(fileId, this.session(sessionId), "GET", path, undefined, "대화를 불러오지 못했습니다"));
+  }
+  async chatSessions(fileId: string, sessionId: string): Promise<AgentAChatSession[]> {
+    const { status, json } = await this.call(fileId, this.session(sessionId), "GET", "/api/ai/sessions");
+    if (status !== 200 || !Array.isArray(json)) refuse(status, json, "대화 목록을 불러오지 못했습니다");
+    return (json as unknown[]).flatMap((x): AgentAChatSession[] => (obj(x) && str(x.sessionId) ? [{ conversationId: str(x.sessionId), label: str(x.label), current: x.current === true, active: x.isActive === true, createdAt: num(x.createdAt) ?? 0, updatedAt: num(x.lastActiveAt) ?? 0 }] : []));
+  }
+  /** 새 대화를 시작한다. 앞 대화는 목록에 남는다. */
+  async chatNew(fileId: string, sessionId: string): Promise<AgentAChatHistory> {
+    return this.chatHistoryOf(await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/new", {}, "새 대화를 시작하지 못했습니다"));
+  }
+  /** 앞 대화를 골라 이어 간다. */
+  async chatSelect(fileId: string, sessionId: string, conversationId: string): Promise<AgentAChatHistory> {
+    return this.chatHistoryOf(await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/select", { conversationId: this.conversation(conversationId) }, "대화를 고르지 못했습니다"));
+  }
+  /** 쓰고 있는 답을 멈춘다. */
+  async chatAbort(fileId: string, sessionId: string, conversationId: string): Promise<{ ok: true }> {
+    await this.ok(fileId, this.session(sessionId), "POST", "/api/ai/abort", { sessionId: this.conversation(conversationId) }, "답을 멈추지 못했습니다");
+    return { ok: true };
+  }
+  /**
+   * 문서에 질문한다. 답은 줄마다 JSON 하나인 흐름으로 돌려준다: {type:"start",conversationId} · {type:"delta",text} · {type:"error",message,code} · {type:"done",ok}.
+   * Agent-A 의 흐름을 그대로 넘기지 않고 화면이 쓰는 칸만 옮긴다. 같은 질문 id 를 다시 보내면 Agent-A 가 거절한다(질문은 하나다).
+   */
+  async chatAsk(fileId: string, sessionId: string, input: { id: string; prompt: string; quote?: string | null; ai?: AgentAReviewAiSettings | null }, signal?: AbortSignal): Promise<Response> {
+    const sid = this.session(sessionId);
+    const doc = this.service.docOf(fileId);
+    if (!ANNOTATION.test(input.id)) throw new ApiError(400, "질문 id 가 올바르지 않습니다");
+    const prompt = input.prompt.trim();
+    const quote = (input.quote ?? "").trim();
+    if (!prompt || prompt.length > MAX_TEXT) throw new ApiError(400, "질문은 1~30000자입니다");
+    if (quote.length > MAX_QUOTE) throw new ApiError(400, "고른 글이 너무 깁니다");
+    const settings = aiSettings(input.ai);
+    // 이어 갈 대화와 이번 답의 AI 설정을 정한다(설정을 비우면 그 대화의 기존 설정·Agent-A 기본값).
+    const opened = await this.ok(fileId, sid, "POST", "/api/ai/session", settings ?? {}, "대화를 열지 못했습니다");
+    const conversationId = str(opened.sessionId);
+    if (!conversationId) throw new ApiError(502, "Agent-A 가 대화를 돌려주지 않았습니다", "AGENT_A_BAD_RESPONSE");
+    let res: Response;
+    try {
+      res = await this.service.client.reviewStream("/api/ai/query", { artifactId: doc.artifactId, sessionId: sid }, {
+        sessionId: conversationId,
+        prompt: quote ? `${prompt}\n\nSelected text:\n${quote}` : prompt,
+        displayQuestion: { id: input.id, prompt, scope: quote ? { kind: "selection", text: quote } : { kind: "general" } },
+      }, signal);
+    } catch (e) {
+      if (e instanceof AgentAError) throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
+      throw e;
+    }
+    if (res.status !== 200 || !res.body) {
+      const text = await res.text().catch(() => "");
+      let json: unknown = null;
+      try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+      refuse(res.status === 200 ? 502 : res.status, json, "질문을 보내지 못했습니다");
+    }
+    const encoder = new TextEncoder(), decoder = new TextDecoder();
+    const line = (value: Record<string, unknown>) => encoder.encode(`${JSON.stringify(value)}\n`);
+    let buffer = "";
+    let finished = false;
+    const lines = (packet: string): Uint8Array[] => {
+      const data = packet.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("\n");
+      if (!data || data === "[DONE]") return [];
+      let event: unknown;
+      try { event = JSON.parse(data); } catch { return []; }
+      if (!obj(event)) return [];
+      if (event.type === "text_delta" && typeof event.delta === "string") return [line({ type: "delta", text: event.delta })];
+      if (event.type === "error") return [line({ type: "error", message: str(event.error) || "답을 받지 못했습니다", code: str(event.code) || "provider_failed" })];
+      if (event.type === "result" && !finished) {
+        finished = true;
+        return [line({ type: "done", ok: event.success !== false, text: str(event.result) })];
+      }
+      return [];
+    };
+    const source = res.body.getReader();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(line({ type: "start", conversationId }));
+      },
+      async pull(controller) {
+        // 한 번 부를 때 줄 하나는 내보내거나 끝낸다. 아무것도 내보내지 않고 돌아가면 흐름이 다시 불리지 않아 멈춘다
+        // (Agent-A 의 조각 가운데 화면에 옮기지 않는 것이 있다).
+        for (;;) {
+          const { done, value } = await source.read();
+          if (done) {
+            for (const out of lines(buffer)) controller.enqueue(out);
+            if (!finished) controller.enqueue(line({ type: "done", ok: false, text: "" }));
+            controller.close();
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          let emitted = false;
+          let at: number;
+          while ((at = buffer.indexOf("\n\n")) >= 0) {
+            const packet = buffer.slice(0, at);
+            buffer = buffer.slice(at + 2);
+            for (const out of lines(packet)) {
+              controller.enqueue(out);
+              emitted = true;
+            }
+          }
+          if (emitted) return;
+        }
+      },
+      cancel() {
+        void source.cancel().catch(() => {});
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Content-Type-Options": "nosniff" } });
+  }
+
   // ---- 문서 관리 ----
 
   async manage(fileId: string): Promise<AgentAReviewManage> {
     const doc = this.service.docOf(fileId);
     const state = await this.service.readState(fileId);
     const titleOf = (blockId: string, fallback: string | null) => state.blocks.find((b) => b.id === blockId)?.content.title ?? fallback ?? blockId;
+    // 전송 기록과 자동 연동 여부는 곁들임이다. 못 읽어도 정본·수정안은 보인다.
+    const jobs = await this.service.client.jobs(doc.artifactId).catch(() => []);
+    const adapter = await this.service.client.config_().then((c) => c.adapter_enabled === true, () => false);
+    const targetOf = (t: Record<string, unknown>): string => {
+      const block = typeof t.block_id === "string" ? titleOf(t.block_id, null) : "";
+      if (t.kind === "text") return `${block} · “${str(t.exact).replace(/\s+/g, " ").slice(0, 80)}”`;
+      if (t.kind === "region") return `${block} · 그림 영역`;
+      if (t.kind === "message") return "앞 답변";
+      return block || "문서 전체";
+    };
+    const branches = state.branches.map((b): AgentAManageBranch => ({
+      id: b.id,
+      title: b.title || "분기",
+      status: b.status === "closed" ? "closed" : "open",
+      parentId: b.parent_branch_id ?? null,
+      target: targetOf(b.target),
+      messages: b.messages.map((m) => ({ id: m.id, role: m.role, body: m.body, decision: m.decision ?? null, reason: m.reason || null, at: m.created_at })),
+    }));
     return {
       artifactRevision: state.artifact_revision,
+      contextRevision: state.context_revision,
+      layoutRevision: state.layout_revision,
+      branches,
+      feedback: state.feedback.map((f) => ({
+        id: f.id,
+        branchId: f.branch_id,
+        branchTitle: branches.find((b) => b.id === f.branch_id)?.title ?? "",
+        message: f.message ?? state.branches.find((b) => b.id === f.branch_id)?.messages.find((m) => m.role === "user" && (m.question_id ?? m.id) === f.question_id)?.body ?? "",
+        state: f.state,
+      })),
+      jobs: (Array.isArray(jobs) ? jobs : []).map((j) => ({ id: j.id, state: j.state, error: j.error ?? null, feedback: j.packet?.selected_feedback?.length ?? 0 })),
+      events: state.events.slice(-30).reverse().map((e) => ({ seq: e.seq, type: e.type, at: e.created_at })),
+      adapter,
       blocks: state.blocks.map((b): AgentABlock => ({
         id: b.id,
         revision: b.revision,
@@ -422,41 +843,173 @@ export class AgentAReview {
     });
   }
 
-  /** 블록의 이전 판 내용을 새 판으로 되살린다. 기준 판은 서버가 지금 정본에서 읽는다(그사이 바뀌면 Agent-A 가 거절한다). */
-  async restore(fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string }): Promise<{ ok: true; artifactRevision: number }> {
+  // ---- 문서 관리: 분기 · 피드백 ----
+
+  /**
+   * 새 분기: 블록에 질문하거나(blockId), 앞 분기의 답변에서 갈라 질문한다(parent). 정본은 바뀌지 않는다.
+   * 분기 id 와 명령 id 를 opId 로 정해, 같은 요청을 다시 보내면 Agent-A 가 처음 결과를 돌려준다.
+   */
+  async branchCreate(fileId: string, input: { opId: string; question: string; blockId?: string | null; parent?: { branchId: string; messageId: string } | null }): Promise<{ ok: true; branchId: string }> {
+    if (!OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    const question = input.question.trim();
+    if (!question || question.length > MAX_TEXT) throw new ApiError(400, "질문은 1~30000자입니다");
+    const state = await this.service.readState(fileId);
+    const branchId = `iamceo-branch-${input.opId}`;
+    let target: Record<string, unknown>;
+    let child: Record<string, unknown> = {};
+    if (input.parent) {
+      if (!ANNOTATION.test(input.parent.branchId) || !ANNOTATION.test(input.parent.messageId)) throw new ApiError(400, "분기 id 가 올바르지 않습니다");
+      target = { kind: "message", branch_id: input.parent.branchId, message_id: input.parent.messageId };
+      child = { parent_branch_id: input.parent.branchId, origin_message_id: input.parent.messageId };
+    } else {
+      const block = state.blocks.find((b) => b.id === input.blockId && !b.archived);
+      // 이미 만든 분기의 재전송이면 그때의 대상을 그대로 다시 쓴다(블록이 그사이 바뀌었어도 같은 명령이 된다).
+      const made = state.branches.find((b) => b.id === branchId);
+      if (!block && !made) throw new ApiError(404, "질문할 블록을 찾지 못했습니다");
+      target = made ? made.target : { kind: "block", block_id: block!.id, block_revision: block!.revision };
+    }
+    await this.command(fileId, { command_id: `iamceo-review-branch-${input.opId}`, type: "create_branch", branch_id: branchId, target, ...child, title: question.replace(/\s+/g, " ").slice(0, 200), message: question }, "분기를 만들지 못했습니다");
+    return { ok: true, branchId };
+  }
+
+  /** 분기에 후속 질문을 더한다. 닫힌 분기는 다시 열린다(Agent-A 규칙). */
+  async branchMessage(fileId: string, input: { opId: string; branchId: string; text: string }): Promise<{ ok: true }> {
+    const text = input.text.trim();
+    if (!OP.test(input.opId) || !ANNOTATION.test(input.branchId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!text || text.length > MAX_TEXT) throw new ApiError(400, "질문은 1~30000자입니다");
+    await this.command(fileId, { command_id: `iamceo-review-message-${input.opId}`, type: "add_message", branch_id: input.branchId, message: text }, "후속 질문을 저장하지 못했습니다");
+    return { ok: true };
+  }
+
+  /** 분기의 답변을 채택·보류·거절로 표시한다. 정본은 바뀌지 않는다(정본 반영은 변경안에서 따로 한다). */
+  async branchDecide(fileId: string, input: { opId: string; branchId: string; messageId: string; decision: "accepted" | "held" | "rejected"; reason?: string }): Promise<{ ok: true }> {
+    if (!OP.test(input.opId) || !ANNOTATION.test(input.branchId) || !ANNOTATION.test(input.messageId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!["accepted", "held", "rejected"].includes(input.decision)) throw new ApiError(400, "결정이 올바르지 않습니다");
+    await this.command(fileId, { command_id: `iamceo-review-answer-${input.opId}`, type: "decide_message", branch_id: input.branchId, message_id: input.messageId, decision: input.decision, reason: (input.reason ?? "").slice(0, 1000) }, "결정을 저장하지 못했습니다");
+    return { ok: true };
+  }
+
+  /** 분기를 닫는다. 남은 것(답 없는 질문·열린 하위 분기·반영 안 한 변경안)의 수를 돌려준다. */
+  async branchClose(fileId: string, input: { opId: string; branchId: string; reason?: string }): Promise<{ ok: true; unanswered: number; openChildren: number; unapplied: number }> {
+    if (!OP.test(input.opId) || !ANNOTATION.test(input.branchId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    const doc = this.service.docOf(fileId);
+    let receipt: { result?: Record<string, unknown> };
+    try {
+      receipt = await this.service.client.command(doc.artifactId, { command_id: `iamceo-review-close-${input.opId}`, type: "close_branch", branch_id: input.branchId, reason: (input.reason ?? "").slice(0, 1000) });
+    } catch (e) {
+      if (!(e instanceof AgentAError)) throw e;
+      if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 응답을 받지 못했습니다. 다시 누르면 같은 요청으로 결과를 확인합니다", "AGENT_A_UNKNOWN");
+      throw new ApiError(e.kind === "not_found" ? 404 : e.kind === "conflict" ? 409 : e.kind === "auth" ? 502 : 400, e.message || "분기를 닫지 못했습니다", "AGENT_A_REFUSED");
+    }
+    const left = obj(receipt.result) && obj(receipt.result.unresolved) ? receipt.result.unresolved : {};
+    return { ok: true, unanswered: num(left.unanswered) ?? 0, openChildren: num(left.open_children) ?? 0, unapplied: num(left.unapplied_proposals) ?? 0 };
+  }
+
+  /** 고른 변경안 여러 개를 한 번에(전부 되거나 전부 안 되게) 정본에 반영한다. */
+  async applyMany(fileId: string, input: { opId: string; proposalIds: string[] }): Promise<{ ok: true; artifactRevision: number; verified: boolean }> {
+    if (!OP.test(input.opId) || !input.proposalIds.length || input.proposalIds.length > 50 || new Set(input.proposalIds).size !== input.proposalIds.length || input.proposalIds.some((id) => !ANNOTATION.test(id))) throw new ApiError(400, "고른 변경안이 올바르지 않습니다");
+    const state = await this.command(fileId, { command_id: `iamceo-review-applymany-${input.opId}`, type: "apply_proposals", proposal_ids: input.proposalIds }, "변경안을 반영하지 못했습니다");
+    const picked = state.proposals.filter((p) => input.proposalIds.includes(p.id));
+    return { ok: true, artifactRevision: state.artifact_revision, verified: picked.length === input.proposalIds.length && picked.every((p) => p.status === "applied" && verifyApplied(state, p)) };
+  }
+
+  private async jobCall<T>(run: () => Promise<T>, fallback: string): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      if (!(e instanceof AgentAError)) throw e;
+      if (e.kind === "unreachable") throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
+      if (e.code === "adapter_disabled") throw new ApiError(409, "Agent-A 의 자동 연동이 꺼져 있습니다. 전송 자료를 내보내 수동으로 교환해 주세요", "AGENT_A_ADAPTER_OFF");
+      throw new ApiError(e.kind === "not_found" ? 404 : e.kind === "conflict" ? 409 : e.kind === "auth" || e.kind === "server" ? 502 : 400, e.kind === "auth" ? "Agent-A 연결 열쇠가 맞지 않습니다" : e.message || fallback, "AGENT_A_REFUSED");
+    }
+  }
+  private async ownJob(fileId: string, jobId: string): Promise<void> {
+    if (!ANNOTATION.test(jobId)) throw new ApiError(400, "전송 기록 id 가 올바르지 않습니다");
+    const doc = this.service.docOf(fileId);
+    const job = await this.jobCall(() => this.service.client.job(jobId), "전송 기록을 찾지 못했습니다");
+    if (job.artifact_id !== doc.artifactId) throw new ApiError(404, "이 문서의 전송 기록이 아닙니다");
+  }
+
+  /** 고른 질문으로 전송 자료를 준비한다(아직 아무 데도 보내지 않는다). 같은 opId 로 다시 보내면 같은 자료다. */
+  async feedbackPrepare(fileId: string, input: { opId: string; feedbackIds: string[]; template?: string }): Promise<{ ok: true; jobId: string }> {
+    if (!OP.test(input.opId) || !input.feedbackIds.length || input.feedbackIds.length > 50 || new Set(input.feedbackIds).size !== input.feedbackIds.length || input.feedbackIds.some((id) => !ANNOTATION.test(id))) throw new ApiError(400, "고른 질문이 올바르지 않습니다");
+    const doc = this.service.docOf(fileId);
+    const template = (input.template ?? "").trim().slice(0, 4000);
+    const job = await this.jobCall(() => this.service.client.feedbackBatch(doc.artifactId, { feedback_ids: input.feedbackIds, idempotency_key: `iamceo-review-batch-${input.opId}`, ...(template ? { template } : {}) }), "전송 자료를 준비하지 못했습니다");
+    return { ok: true, jobId: job.id };
+  }
+  /** 전송 자료(읽기 범위·수정 허용 범위·결과 양식). 수동 교환에 쓴다. */
+  async jobExport(fileId: string, jobId: string): Promise<Record<string, unknown>> {
+    await this.ownJob(fileId, jobId);
+    return this.jobCall(() => this.service.client.jobExport(jobId), "전송 자료를 내보내지 못했습니다");
+  }
+  /** Agent-A 에 설정된 CLI 로 실행한다(자동 연동이 켜진 Agent-A 에서만. 실제 AI 를 부른다). */
+  async jobRun(fileId: string, jobId: string): Promise<{ ok: true; state: string }> {
+    await this.ownJob(fileId, jobId);
+    const job = await this.jobCall(() => this.service.client.runJob(jobId), "실행하지 못했습니다");
+    return { ok: true, state: job.state };
+  }
+  async jobCancel(fileId: string, jobId: string): Promise<{ ok: true; state: string }> {
+    await this.ownJob(fileId, jobId);
+    const r = await this.jobCall(() => this.service.client.cancelJob(jobId), "취소하지 못했습니다");
+    return { ok: true, state: r.state };
+  }
+  /** 수동으로 받은 결과(답·변경안)를 저장한다. 정본 반영은 변경안에서 따로 고른다. */
+  async importResult(fileId: string, result: unknown): Promise<{ ok: true }> {
+    const doc = this.service.docOf(fileId);
+    if (!obj(result) || typeof result.receipt_id !== "string") throw new ApiError(400, "결과 JSON 에 receipt_id 가 있어야 합니다");
+    await this.jobCall(() => this.service.client.importResult(doc.artifactId, result), "결과를 가져오지 못했습니다");
+    return { ok: true };
+  }
+
+  /**
+   * 블록의 이전 판 내용을 새 판으로 되살린다.
+   * 명령은 요청이 가리킨 판(revision)과 화면이 본 문맥·배치 판으로만 만든다. 그래서 같은 요청을 다시 보내면 글자 하나 다르지 않은 같은 명령이 되고,
+   * Agent-A 가 판 검사보다 먼저 보관해 둔 처음 결과를 돌려준다(저장은 됐는데 응답만 잃은 경우). 지금 판으로 바꿔 다시 보내지 않는다:
+   * 새 요청이 낡은 판을 가리키면 Agent-A 가 거절하고, 같은 요청 id 로 다른 내용을 보내도 거절한다.
+   */
+  async restore(fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string; contextRevision?: number | null; layoutRevision?: number | null }): Promise<{ ok: true; artifactRevision: number }> {
     if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.revision) || !Number.isSafeInteger(input.historyRevision)) throw new ApiError(400, "판 번호가 올바르지 않습니다");
     const before = await this.service.readState(fileId);
     const block = before.blocks.find((b) => b.id === input.blockId);
     if (!block || !block.history.some((h) => h.revision === input.historyRevision)) throw new ApiError(404, "그 판을 찾지 못했습니다");
-    if (block.revision !== input.revision) throw new ApiError(409, KNOWN.revision_conflict!, "AGENT_A_REVISION_CONFLICT");
     const state = await this.command(fileId, {
       command_id: `iamceo-review-restore-${input.opId}`,
       type: "restore_block",
       block_id: block.id,
-      base_revision: block.revision,
+      base_revision: input.revision,
       history_revision: input.historyRevision,
-      context_revision: before.context_revision,
-      base_layout_revision: before.layout_revision,
+      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
     }, "이전 판을 되살리지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
   }
 
-  /** 블록 제목·본문을 직접 고쳐 정본에 저장한다. 요약·출처는 그대로 둔다. 화면이 본 판(revision)과 다르면 거절한다. */
-  async edit(fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string }): Promise<{ ok: true; artifactRevision: number }> {
+  /**
+   * 블록 제목·본문을 직접 고쳐 정본에 저장한다. 요약·출처는 요청이 가리킨 판의 것을 그대로 둔다.
+   * 되살리기와 같이, 같은 요청을 다시 보내면 같은 명령이 되어 처음 결과를 확인한다. 화면이 본 판과 정본이 다른 새 요청은 Agent-A 가 거절한다.
+   */
+  async edit(fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string; contextRevision?: number | null }): Promise<{ ok: true; artifactRevision: number }> {
     if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.revision)) throw new ApiError(400, "판 번호가 올바르지 않습니다");
     const title = input.title.trim();
     if (!title || title.length > 500 || input.body.length > 500_000) throw new ApiError(400, "제목이 비었거나 본문이 너무 깁니다");
     const before = await this.service.readState(fileId);
     const block = before.blocks.find((b) => b.id === input.blockId);
-    if (!block || block.archived) throw new ApiError(404, "그 블록을 찾지 못했습니다");
-    if (block.revision !== input.revision) throw new ApiError(409, KNOWN.revision_conflict!, "AGENT_A_REVISION_CONFLICT");
+    if (!block) throw new ApiError(404, "그 블록을 찾지 못했습니다");
+    // 요청이 가리킨 판의 내용: 지금 판이면 지금 것, 이미 지난 판이면 이력의 그 판(같은 요청의 재전송일 수 있다).
+    const base = block.revision === input.revision ? { content: block.content, archived: block.archived } : block.history.find((h) => h.revision === input.revision);
+    // 그 판이 이력에도 없으면 이 문서에서 나온 요청이 아니다. 지금 판에 맞춰 보내지 않는다.
+    if (!base) throw new ApiError(409, KNOWN.revision_conflict!, "AGENT_A_REVISION_CONFLICT");
+    if (block.revision === input.revision && block.archived) throw new ApiError(404, "그 블록을 찾지 못했습니다");
     const state = await this.command(fileId, {
       command_id: `iamceo-review-edit-${input.opId}`,
       type: "edit_block",
       block_id: block.id,
-      base_revision: block.revision,
-      context_revision: before.context_revision,
-      content: { ...block.content, title, body: input.body },
+      base_revision: input.revision,
+      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      content: { ...base.content, title, body: input.body },
     }, "정본을 저장하지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
   }

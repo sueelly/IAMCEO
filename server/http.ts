@@ -540,6 +540,8 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     return agentAReview;
   };
   const reviewSession = (url: URL): string => url.searchParams.get("session") ?? "";
+  /** 답에 쓸 AI 설정(플랫폼·모델·추론 수준). 아는 세 칸만 받는다. */
+  const reviewAi = z.strictObject({ providerId: z.string().max(200).optional(), model: z.string().max(200).optional(), reasoningEffort: z.string().max(200).optional() });
   const activeProject = (id: string): void => {
     if (store.requireProject(id).archived) throw new ApiError(404, "프로젝트를 찾을 수 없습니다");
   };
@@ -631,12 +633,51 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("POST", "/api/agent-a/docs/:id/review/comments", async (req, _url, [id]) => {
       const box = z.strictObject({ x: z.number().int(), y: z.number().int(), w: z.number().int(), h: z.number().int() });
       const region = z.strictObject({ v: z.literal(1), src: z.string().max(2048), sourceLine: z.number().int().nullable(), naturalWidth: z.number().int(), naturalHeight: z.number().int(), box });
-      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional() }));
-      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null }));
+      const ai = reviewAi;
+      const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(),
+        images: z.array(image).max(10).optional(), ai: ai.nullable().optional() }));
+      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, images: body.images, ai: body.ai ?? null }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/replies", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000) }));
-      return Response.json(await requireReview().reply(id!, body.session, { inReplyTo: body.inReplyTo, text: body.text }));
+      const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000), ai: reviewAi.nullable().optional() }));
+      return Response.json(await requireReview().reply(id!, body.session, { inReplyTo: body.inReplyTo, text: body.text, ai: body.ai ?? null }));
+    }),
+    // AI 고르기 · 그림 붙이기
+    route("GET", "/api/agent-a/docs/:id/review/ai", async (_req, url, [id]) => Response.json(await requireReview().aiCatalog(id!, reviewSession(url)))),
+    route("POST", "/api/agent-a/docs/:id/review/upload", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), name: z.string().max(500), mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]), base64: z.string().max(6 * 1024 * 1024) }));
+      return Response.json(await requireReview().upload(id!, body.session, { name: body.name, mediaType: body.mediaType, base64: body.base64 }));
+    }),
+    route("GET", "/api/agent-a/docs/:id/review/attachment", async (_req, url, [id]) => requireReview().attachment(id!, reviewSession(url), url.searchParams.get("path") ?? "")),
+    // 검토 초안(본문 직접 고치기)과 검토 제출
+    route("GET", "/api/agent-a/docs/:id/review/draft", async (_req, url, [id]) => Response.json(await requireReview().draft(id!, reviewSession(url)))),
+    route("POST", "/api/agent-a/docs/:id/review/draft", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), markdown: z.string().max(500_000).nullable(), revision: z.number().int().nonnegative() }));
+      return Response.json(await requireReview().saveDraft(id!, body.session, { markdown: body.markdown, revision: body.revision }));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/submit", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), revision: z.number().int().nonnegative() }));
+      return Response.json(await requireReview().submit(id!, body.session, { revision: body.revision }));
+    }),
+    // 문서 대화(Ask AI)
+    route("GET", "/api/agent-a/docs/:id/review/chat", async (_req, url, [id]) => Response.json(await requireReview().chatHistory(id!, reviewSession(url), url.searchParams.get("conversation")))),
+    route("GET", "/api/agent-a/docs/:id/review/chat/sessions", async (_req, url, [id]) => Response.json(await requireReview().chatSessions(id!, reviewSession(url)))),
+    route("POST", "/api/agent-a/docs/:id/review/chat/new", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string() }));
+      return Response.json(await requireReview().chatNew(id!, body.session));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/chat/select", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200) }));
+      return Response.json(await requireReview().chatSelect(id!, body.session, body.conversation));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/chat/abort", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), conversation: z.string().max(200) }));
+      return Response.json(await requireReview().chatAbort(id!, body.session, body.conversation));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/chat/ask", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), prompt: z.string().max(30_000), quote: z.string().max(60_000).nullable().optional(), ai: reviewAi.nullable().optional() }));
+      return requireReview().chatAsk(id!, body.session, { id: body.id, prompt: body.prompt, quote: body.quote ?? null, ai: body.ai ?? null }, req.signal);
     }),
     route("POST", "/api/agent-a/docs/:id/review/resolve", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), resolved: z.boolean() }));
@@ -668,12 +709,47 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await requireReview().decide(id!, body.proposalId, body.decision, body.opId, body.reason ?? ""));
     }),
     route("POST", "/api/agent-a/docs/:id/review/manage/restore", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), historyRevision: z.number().int(), opId: z.string().max(100) }));
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), historyRevision: z.number().int(), opId: z.string().max(100),
+        contextRevision: z.number().int().nonnegative().nullable().optional(), layoutRevision: z.number().int().nonnegative().nullable().optional() }));
       return Response.json(await requireReview().restore(id!, body));
     }),
     route("POST", "/api/agent-a/docs/:id/review/manage/edit", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), title: z.string().max(500), body: z.string().max(500_000), opId: z.string().max(100) }));
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), title: z.string().max(500), body: z.string().max(500_000), opId: z.string().max(100),
+        contextRevision: z.number().int().nonnegative().nullable().optional() }));
       return Response.json(await requireReview().edit(id!, body));
+    }),
+    // 문서 관리: 분기 · 피드백 · 전송 기록
+    route("POST", "/api/agent-a/docs/:id/review/manage/branch", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), question: z.string().max(30_000), blockId: z.string().max(200).nullable().optional(),
+        parent: z.strictObject({ branchId: z.string().max(200), messageId: z.string().max(200) }).nullable().optional() }));
+      return Response.json(await requireReview().branchCreate(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/branch/message", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), branchId: z.string().max(200), text: z.string().max(30_000) }));
+      return Response.json(await requireReview().branchMessage(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/branch/decide", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), branchId: z.string().max(200), messageId: z.string().max(200), decision: z.enum(["accepted", "held", "rejected"]), reason: z.string().max(1000).optional() }));
+      return Response.json(await requireReview().branchDecide(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/branch/close", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), branchId: z.string().max(200), reason: z.string().max(1000).optional() }));
+      return Response.json(await requireReview().branchClose(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/apply", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), proposalIds: z.array(z.string().max(200)).min(1).max(50) }));
+      return Response.json(await requireReview().applyMany(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/feedback", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), feedbackIds: z.array(z.string().max(200)).min(1).max(50), template: z.string().max(4000).optional() }));
+      return Response.json(await requireReview().feedbackPrepare(id!, body));
+    }),
+    route("GET", "/api/agent-a/docs/:id/review/manage/jobs/:job/export", async (_req, _url, [id, job]) => Response.json(await requireReview().jobExport(id!, job!))),
+    route("POST", "/api/agent-a/docs/:id/review/manage/jobs/:job/run", async (_req, _url, [id, job]) => Response.json(await requireReview().jobRun(id!, job!))),
+    route("POST", "/api/agent-a/docs/:id/review/manage/jobs/:job/cancel", async (_req, _url, [id, job]) => Response.json(await requireReview().jobCancel(id!, job!))),
+    route("POST", "/api/agent-a/docs/:id/review/manage/import", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ result: z.record(z.string(), z.unknown()) }));
+      return Response.json(await requireReview().importResult(id!, body.result));
     }),
     route("GET", "/api/agent-a/docs/:id", async (_req, _url, [id]) => Response.json(await requireAgentA().view(id!))),
     route("PATCH", "/api/agent-a/docs/:id", async (req, _url, [id]) => {
