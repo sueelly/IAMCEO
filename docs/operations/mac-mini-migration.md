@@ -1,6 +1,6 @@
 # IAMCEO 맥미니 이전 계획
 
-등록된 프로젝트 4개(본사 포함)를 고유 저장소 IAMCEO와 god의 이력·대화·자료와 함께 맥미니로 옮긴다. 2026-11-16 최종 백업의 복원과 운영 HTTPS 접속은 검증됐다. 기존 총괄 4명의 시작 요청 중 본사·Native는 재개 글을 수신했고, Design·God는 Claude 폴더 신뢰 확인에서 기다린다. 전체 재개 완료로 판정하지 않는다. 사용자 실행 지시의 식별자는 `.migration/2026-11-16`이다.
+등록된 프로젝트 4개(본사 포함)를 고유 저장소 IAMCEO와 god의 이력·대화·자료와 함께 맥미니로 옮긴다. 2026-11-16 최종 백업의 복원과 운영 HTTPS 접속은 검증됐다. 기존 총괄 4명의 시작 요청 중 본사·Native·God는 재개 글을 수신했고, Design은 Claude 폴더 신뢰 확인에서 기다린다. 전체 재개 완료로 판정하지 않는다. 사용자 실행 지시의 식별자는 `.migration/2026-11-16`이다.
 
 ## 최종 입력과 실제 운영 검증
 
@@ -12,7 +12,7 @@
 
 운영 주소는 `https://hyejoo-mac-mini.tail5169d3.ts.net:14443`이며 127.0.0.1:47878을 제공한다. TLS 기본 신뢰·호스트명, 기존 코드 로그인, 인증 없는 API/첨부의 401, 프로젝트 4개 홈·대화·자료 12개 경로와 모바일 화면을 확인했다. 기존 7개 Tailnet 경로와 Funnel 꺼짐, 기존 서비스 health·관리 API의 running/healthy도 확인했다. 다른 기기 접속·재부팅은 시험하지 않았다.
 
-실제 worker PID의 cwd는 `_hq`, IAMCEO, god에 연결됐고 hostname은 맥미니다. Design·God의 새 Claude 세션은 폴더 신뢰 승인을 기다리며 재개 글은 아직 held다. 사용자가 앱의 확인 카드에서 직접 답한 뒤 실제 delivery·execution을 다시 확인한다. 감독은 이 조건의 변화만 관측하고 승인 응답을 보내지 않는다. 21개의 기존 쓰기 증거가 있는 불확실 전달과 오래된 unknown prompt 직원의 전달 1개는 격리를 유지한다.
+실제 worker PID의 cwd는 `_hq`, IAMCEO, god에 연결됐고 hostname은 맥미니다. Design의 새 Claude 세션은 폴더 신뢰 승인을 기다리며 재개 글은 아직 held다. God는 이후 delivered와 실행 기록을 확인했다. 사용자가 앱의 확인 카드에서 직접 답한 뒤 실제 delivery·execution을 다시 확인한다. 감독은 이 조건의 변화만 관측하고 승인 응답을 보내지 않는다. 21개의 기존 쓰기 증거가 있는 불확실 전달과 오래된 unknown prompt 직원의 전달 1개는 격리를 유지한다.
 
 원본 네 프로젝트 runner는 false이며 읽기 가능한 복구 대상으로 남는다. 대상 dispatch가 활성인 동안 원본을 켜지 않는다. `TARGET_ACTIVATED.json`의 `activated:true`와 운영 readiness가 rollback을 차단한다. 최종 snapshot·source native 참조·양쪽 백업·God 데이터·WIP를 private 경로에 보존한다. God 실서버는 `LAB_DATA_DIR`를 `.runtime/god/data`로 지정하고 테스트에는 별도 격리 데이터를 사용한다.
 
