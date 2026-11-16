@@ -11,13 +11,14 @@ test("project sync lists public file fields without loading artifact HTML", () =
   const { store, project } = fixture();
   const html = "<article>large artifact</article>";
   const file = store.createFile({ projectId: project.id, title: "artifact", body: "문서 본문", html });
-  store.db.exec("ALTER TABLE files RENAME TO files_data");
-  // SQLite evaluates this deliberately unreadable source only when HTML is selected.
-  const columns = store.db.query<{ name: string }, []>("PRAGMA table_info(files_data)").all().map(c => c.name === "html" ? "json_extract(html, '$') AS html" : c.name);
-  store.db.exec(`CREATE VIEW files AS SELECT rowid, ${columns.join(", ")} FROM files_data`);
+  // Keep the real metadata index: INDEXED BY cannot address an index through a view.
+  // SQLite evaluates the malformed JSON only if the virtual HTML column is read.
+  store.db.exec("ALTER TABLE files RENAME COLUMN html TO raw_html");
+  store.db.exec("ALTER TABLE files ADD COLUMN html TEXT GENERATED ALWAYS AS (json_extract(raw_html, '$')) VIRTUAL");
+  expect(() => store.getFileHtml(file.id)).toThrow();
   expect(() => store.listFiles(project.id)).not.toThrow();
   expect(store.listFiles(project.id)).toEqual([file]);
-  store.db.exec("DROP VIEW files; ALTER TABLE files_data RENAME TO files");
+  store.db.exec("ALTER TABLE files DROP COLUMN html; ALTER TABLE files RENAME COLUMN raw_html TO html");
   expect(store.getFileHtml(file.id)).toBe(html);
 });
 

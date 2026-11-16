@@ -15,3 +15,7 @@ native/DerivedData*/
 .pumasi/
 .imagen/
 images/
+
+# Python migration tooling caches
+__pycache__/
+*.py[cod]
