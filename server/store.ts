@@ -315,6 +315,8 @@ export interface NewDelivery {
 export const TASK_SOURCE_KINDS = new Set<DeliveryKind>(["user_message", "answer", "todo_done", "instruction"]);
 
 export interface DeliveryUpdate {
+  /** An explicit owner retry may wake an otherwise passive notification. */
+  wake?: boolean;
   holdReason?: string | null;
   lastError?: string | null;
   /** 시도 횟수를 하나 올린다. */
@@ -2631,10 +2633,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.transaction(() => {
       const before = this.requireDelivery(id);
       this.run(
-        `UPDATE deliveries SET status = ?, hold_reason = ?, last_error = ?, attempts = attempts + ?,
+        `UPDATE deliveries SET status = ?, wake = ?, hold_reason = ?, last_error = ?, attempts = attempts + ?,
            delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, ?) ELSE delivered_at END
          WHERE id = ?`,
         status,
+        Number(update.wake ?? before.wake),
         status === "held" ? (update.holdReason ?? before.holdReason) : null,
         update.lastError !== undefined ? update.lastError : before.lastError,
         update.attempt ? 1 : 0,

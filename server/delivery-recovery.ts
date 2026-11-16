@@ -324,7 +324,8 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       const r = this.record(deliveryId);
       if (request.action === "recheck" && !this.closed && r.version === request.expectedVersion && !this.mutations.has(d.memberId) && this.ownerRetryable(d, r)) {
         const next = this.store.updateDeliveryRecovery(d.id, r.version, { nextCheckAt: null });
-        this.store.setDeliveryStatus(d.id, "queued", { holdReason: null });
+        // The owner requested an attempt now, including passive notifications that normally wait for other work.
+        this.store.setDeliveryStatus(d.id, "queued", { holdReason: null, wake: true });
         this.store.patchDeliveryRetry(d.id, { nextAttemptAt: null, retryReason: `${OWNER_RETRY}${request.operationId}` });
         this.store.appendActivity(d.memberId, "system", `입력 전 거절 한도에 걸린 지시를 대표 요청으로 같은 내용 그대로 한 번 더 보냅니다 (${d.id})`, `${d.id}:owner_retry:${request.operationId}`);
         return { operationId: request.operationId, deliveryId, outcome: "check_scheduled", committedVersion: next.version };
