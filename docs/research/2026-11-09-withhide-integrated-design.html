@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAMCEO 대화·실행 구조 최종 논의 — hide 사례 반영 개정판</title>
+<style>
+:root{color-scheme:light;--ink:#1f333b;--muted:#526970;--accent:#086a60;--line:#dce5e6;--wash:#eaf6f1;--bg:#f3f6f5;--warm:#fbf3e4}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;line-height:1.78;word-break:keep-all}main{max-width:1120px;margin:auto;padding:42px 28px 60px}h1{font-size:clamp(29px,4vw,43px);line-height:1.3;letter-spacing:-1.2px;margin:15px 0 20px}h2{font-size:25px;line-height:1.4;letter-spacing:-.6px;margin:0 0 18px}h3{font-size:18px;line-height:1.5;margin:0 0 9px}p{margin:8px 0 15px}small,.muted{color:var(--muted)}a{color:var(--accent);text-underline-offset:3px}.eyebrow{font-size:13px;font-weight:750;letter-spacing:1px;color:var(--accent)}.lead{font-size:20px;max-width:900px}.tag{display:inline-block;background:white;border:1px solid var(--line);border-radius:20px;font-size:12px;padding:3px 11px;margin:0 5px 5px 0}section{background:white;border:1px solid var(--line);border-radius:17px;padding:27px;margin:24px 0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:17px}.card{border:1px solid var(--line);border-radius:12px;padding:20px;background:white}.card p:last-child{margin-bottom:0}.label{color:var(--accent);font-size:12px;font-weight:750}.callout{padding:18px 21px;border-left:4px solid var(--accent);background:var(--wash);border-radius:6px;margin:20px 0}.callout p:last-child{margin-bottom:0}.warm{background:var(--warm);border-color:#a77b38}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:13px 12px;border-bottom:1px solid var(--line)}th{background:#f0f5f4}th:first-child{width:19%}.pick{background:#eef8f3}ul,ol{padding-left:23px}li{margin:8px 0}.flow{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;gap:8px;align-items:stretch}.arrow{display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:24px}.structure{border:1px solid var(--line);border-radius:12px;padding:21px;background:#f7fbf9}.structure .grid{margin-top:15px}.note{font-size:13px;color:var(--muted)}.steps>li{padding:5px 0 10px}.steps p{margin:4px 0}.mock{background:#edf3f2;padding:18px;border-radius:12px}.task{padding:13px 16px;border:1px solid var(--line);border-radius:8px;margin:9px 0;background:white}.task strong{display:block}.task p{font-size:13px;margin:1px 0}.badge{float:right;border-radius:12px;background:#e6eff0;font-size:12px;padding:1px 9px}.attention{background:#ffedc5;color:#705000}details{border-top:1px solid var(--line);padding-top:15px;margin-top:16px}summary{font-weight:650;cursor:pointer}.sources li{margin:13px 0}.sources small{display:block}code{font-size:12px;overflow-wrap:anywhere;background:#edf2f1;padding:2px 5px;border-radius:4px}footer{font-size:13px;color:var(--muted);padding:5px 4px 20px}nav{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:20px;font-size:14px}@media(max-width:680px){main{padding:25px 15px 40px}section{padding:20px}.grid,.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg);height:23px}h2{font-size:22px}.lead{font-size:18px}.scroll table{min-width:710px}.scroll:before{content:"표는 좌우로 움직여 볼 수 있습니다";display:block;font-size:12px;color:var(--muted);margin-bottom:8px}.card,.structure{padding:17px}.mock{padding:12px}}@media print{body{background:white}main{max-width:none;padding:0}section{break-inside:avoid}a{color:inherit}nav{display:none}}
+</style></head><body><main>
+<header><span class="eyebrow">IAMCEO · withhide.dev 반영 통합 개정판 · 2026.11.09</span>
+<h1>직원을 골라 맡기기보다,<br>업무를 말하고 필요한 판단만 하기</h1>
+<p class="lead">추천은 <strong>업무별 대화 + 필요할 때 묶는 목표 + 재사용하는 역할 + 업무별 실행 세션</strong>입니다. 대표가 고정 직원을 관리할 필요는 없습니다. 기억은 업무·프로젝트의 검증된 기록을 중심에 두고 역할이 필요한 내용을 가져오게 합니다.</p>
+<span class="tag">전체 제안을 담은 최신 논의 자료</span><span class="tag">구조 선택·구현 미승인</span><span class="tag">역할 관리 선호 답변 대기</span>
+<div class="grid" style="margin-top:20px">
+<div class="card"><span class="label">직원은 필요한가</span><h3>고정 직원 관리는 선택으로</h3><p>대표의 기본 화면에는 업무와 결과를 둡니다. 내부의 역할·주담당 책임은 남기고, 상세에서 확인·조정하게 합니다.</p></div>
+<div class="card"><span class="label">세션은 누가 나누나</span><h3>업무 담당이 요청하고 서버가 연결</h3><p>필요한 조사·실행·검토 문맥을 분리하되, 세션 수·사용량·권한의 미리 정한 한도를 지킵니다.</p></div>
+<div class="card"><span class="label">소통과 자가개선</span><h3>직접 협업하고 검증한 지식만 재사용</h3><p>직원별 비공개 기억에만 의존하지 않습니다. 업무 기록·근거·자료를 공유하고 개선 후보는 시험 뒤 좁게 적용합니다.</p></div>
+<div class="card"><span class="label">총괄은 무엇인가</span><h3>목표·우선순위·충돌·종합 담당</h3><p>모든 메시지의 중계자가 될 필요는 없습니다. 단순 업무는 바로 담당으로, 여러 업무의 조정은 총괄로 보냅니다.</p></div>
+</div>
+<nav aria-label="목차"><a href="#hide">hide의 단위</a><a href="#impact">기존안 재평가</a><a href="#options">대안 비교</a><a href="#model">추천 구조</a><a href="#collaboration">협업·학습</a><a href="#lead">총괄과 서버</a><a href="#example">5개 업무 흐름</a><a href="#open">검증·남은 쟁점</a></nav>
+</header>
+
+<section id="hide"><h2>hide가 보여주는 것은 ‘프로젝트 밖의 또 다른 폴더’만이 아닙니다</h2>
+<p>바로잡은 <a href="https://withhide.dev/">withhide.dev 공식 사이트</a>를 실제로 열어 읽었습니다. 공식 소개는 여러 코딩 에이전트를 함께 운용하며 사람이 판단할 것만 우선 올리는 제품이라고 설명합니다. Conductor의 mission 실행, 부모·자식 에이전트, Projects·Tasks·PRs 보기, Hide AI와 Project Memory를 구분합니다. <a href="https://withhide.dev/#conductor">[H1]</a></p>
+<p><strong>‘프로젝트 외의 다양한 단위’는 아래의 서로 다른 관점으로 확인됩니다.</strong> 모두 같은 층위의 업무함도 아니고, Project → Mission → Task → Plan 순서로 항상 포개지는 고정 계층도 아닙니다.</p>
+<div class="scroll"><table><thead><tr><th scope="col">정확한 이름</th><th scope="col">공개 원문에서 확인한 용도·관계</th><th scope="col">IAMCEO에 적용할 해석</th></tr></thead><tbody>
+<tr><th scope="row">Projects<br>Workspace / checkout</th><td>Projects는 체크아웃과 그 안의 에이전트를 묶어 보여줍니다. Workspace 경로는 project / checkout이며 Git이 아닌 일반 폴더의 경우도 문서에 나옵니다. <a href="https://github.com/with-hide/hide/blob/main/README.md#every-agent-at-a-glance">[H2]</a> <a href="https://github.com/with-hide/hide/blob/main/docs/UI_BEHAVIOR.md#web-workspace">[H3]</a></td><td>프로젝트는 지속 목표·자료·작업 범위를 묶는 단위로 유지합니다. 대표가 모든 요청마다 폴더나 체크아웃부터 만들게 하지 않습니다.</td></tr>
+<tr><th scope="row">Tasks</th><td>공개 UI 규약에서 Task는 루트 에이전트와 다른 기기를 포함한 그 자손들, 관련 체크아웃·PR을 묶은 보기입니다. 원래 issue·memo가 함께 붙을 수 있으며, 기존 사실에서 도출합니다. <a href="https://github.com/with-hide/hide/blob/main/docs/UI_BEHAVIOR.md#a-devices-tasks">[H3]</a></td><td>실행 관계를 한 업무 아래 접어 보여주는 원칙을 참고합니다. hide의 실행 묶음을 IAMCEO의 영속 업무 원장과 같은 개체라고 보지는 않습니다.</td></tr>
+<tr><th scope="row">Mission / Conductor</th><td>공식 소개·README는 Conductor가 여러 PR 작업을 계획하고 worker를 시작해 보고하는 mission을 설명합니다. 별도 mission 화면은 프로젝트별 필터와 지도·진척을 제공합니다. <a href="https://withhide.dev/#conductor">[H1]</a> <a href="https://github.com/with-hide/hide/blob/main/docs/UI_BEHAVIOR.md#the-mission-screen">[H3]</a></td><td>여러 업무를 묶는 ‘목표’를 필요할 때만 둡니다. IAMCEO의 끝점은 PR뿐 아니라 조사·문서·대표 결정도 될 수 있습니다.</td></tr>
+<tr><th scope="row">Plan<br><code>hide task</code></th><td>공식 문서 지도는 이를 한 세션의 자체 계획으로 구분하고, 검토 질문과 자식에게 단계 넘기기를 명시합니다. 공개 상태 규약에도 위임 단계와 검토 대기가 나옵니다. <a href="https://github.com/with-hide/hide/blob/main/docs/README.md#current-sources-of-truth">[H4]</a> <a href="https://github.com/with-hide/hide/blob/main/docs/status-model.md#a-handed-plan-step-adds-no-status">[H6]</a></td><td>작업 절차는 업무 안의 계획으로 시작합니다. 모든 단계마다 대표 대화를 새로 만들거나 새 직원을 만들 필요는 없습니다.</td></tr>
+<tr><th scope="row">Backlog<br>GitHub issues / local memos</th><td>공식 README는 issue·local note를 한 backlog에 모으고 시작 시 worktree·agent·첫 지시를 연결한다고 설명합니다. 공개 UI의 빠른 추가는 backlog를 둘 프로젝트를 요구하며 Local과 GitHub 목적지를 구분합니다. <a href="https://github.com/with-hide/hide/blob/main/README.md#still-an-ide">[H2]</a> <a href="https://github.com/with-hide/hide/blob/main/docs/UI_BEHAVIOR.md#adding-to-the-backlog-from-anywhere">[H3]</a></td><td>접수된 요청과 실행 중 업무를 구분합니다. 다만 hide의 backlog만으로 프로젝트 없는 일반업무 접수가 지원된다고 결론내릴 수는 없습니다.</td></tr>
+<tr><th scope="row">Pull requests / PRs</th><td>같은 작업을 PR 관점에서 보여주며 사람이 행동할 항목을 앞세웁니다. 하나의 Task에 관련 PR이 연결될 수 있습니다. <a href="https://github.com/with-hide/hide/blob/main/README.md#every-agent-at-a-glance">[H2]</a></td><td>결과물·검토·결재 중심의 보기로 확장합니다. 비개발 업무에 PR이나 Git 작업을 의무화하지 않습니다.</td></tr>
+<tr><th scope="row">Desk / jobs</th><td>공개 전달 규약의 Desk agent는 pane·checkout이 없고, 자신이 시작한 세션을 관찰하며 자리 부족 시 대기열을 사용합니다. checkout이 필요한 명령과 Project Memory 접근은 거부됩니다. Desk 화면·job 상세 설계는 비공개로 옮겨져 있습니다. <a href="https://github.com/with-hide/hide/blob/main/docs/delivery.md#desk">[H5]</a> <a href="https://github.com/with-hide/hide/blob/main/docs/README.md#current-sources-of-truth">[H4]</a></td><td>특정 프로젝트에 묶이지 않은 접수·연결 역할을 분리할 수 있다는 참고입니다. 비개발 일반업무 전반을 지원한다는 증거로 확대하지 않습니다.</td></tr>
+<tr><th scope="row">Hide AI / Project Memory<br>Needs You</th><td>소개는 세션 요약·사람 차례 우선 표시를, README는 결정의 카드화·저장소 대조·다음 에이전트 전달·문서 반영 PR을 설명합니다. Needs You는 사람이 개입할 대상을 모은 관점입니다. <a href="https://withhide.dev/">[H1]</a> <a href="https://github.com/with-hide/hide/blob/main/README.md#hide-ai-does-the-reading">[H2]</a></td><td>담당자의 이름보다 대표 차례를 먼저 보여줍니다. 기억의 재사용과 작업 방법의 검증·채택은 별도 단계로 설계합니다.</td></tr>
+</tbody></table></div>
+<div class="callout"><strong>실제 사용자 흐름을 요약하면</strong><p>프로젝트에서 에이전트에 요청하거나 backlog를 시작 → 필요한 worker를 분담 → Task에서 부모·자식 실행을 묶어 확인 → 복합 작업은 mission·plan으로 진행을 표시 → 결과는 PR 관점으로 검토 → 사람이 할 일은 Needs You로 모으는 방식입니다. 서로 다른 보기와 기록을 연결해 인지 부담을 줄이는 것이 핵심으로 읽힙니다. 마지막 해석은 우리의 판단입니다.</p></div>
+<details><summary>원문 확인 범위와 확인하지 못한 것</summary><p>공식 사이트는 직접 HTTP 요청으로 200 응답을 받아 소개·FAQ를 읽었고, 공식 GitHub 연결 도구로 README와 관련 공개 문서 구간을 읽었습니다. 검색 도구의 사이트 열기 실패를 실제 사이트의 접근 불가로 취급하지 않았습니다. 설치·실행 시험은 하지 않았습니다.</p><p>공식 문서 지도는 mission·plan·task identity·Desk·Project Memory 등의 핵심 상세 설계를 별도 비공개 저장소로 옮겼다고 명시합니다. 공개 문서에 남은 설명·규약만 사용했으며 비공개 문서를 열거나 추정해 채우지 않았습니다. ‘100+ agents’ 같은 소개 수치는 이번 검토에서 성능 검증한 결과가 아닙니다.</p><p>읽은 구간에서 IAMCEO처럼 지속되는 직원 명부·역할별 경험의 전체 모델은 확인하지 못했습니다. 그렇다고 hide에 해당 기능이 없다고 단정한 것은 아닙니다. 제품 소개의 기억 전달 기능도 자가개선 품질이 입증됐다는 뜻은 아닙니다.</p></details>
+</section>
+
+<section id="impact"><h2>새 근거로 기존안을 다시 평가했습니다</h2>
+<div class="scroll"><table><thead><tr><th scope="col">항목</th><th scope="col">기존 후속안</th><th scope="col">최신 판단과 이유</th></tr></thead><tbody>
+<tr><th scope="row">업무별 대화</th><td>담당자가 바뀌어도 같은 대화 유지</td><td><strong>유지.</strong> hide의 Task 보기에서 실행들을 묶는 방식을 참고하되, IAMCEO는 세션보다 오래가는 업무·대표 결정의 기록을 기준으로 삼습니다.</td></tr>
+<tr><th scope="row">지속 역할과 세션</th><td>고정 직원 대신 지속 역할·업무별 세션</td><td><strong>가볍게 유지.</strong> 역할은 재사용하는 판단·작업 기준으로 둡니다. 항상 켜진 역할 관리자나 고정 직원의 자아가 있어야 하는 구조는 피합니다.</td></tr>
+<tr><th scope="row">기억의 중심</th><td>역할의 경험 축적을 전면에 설명</td><td><strong>수정.</strong> 업무·프로젝트의 근거 있는 기록을 공통 기준으로 두고 역할이 선택해 활용합니다. 역할별 장기 기억은 재사용 효과가 확인될 때 추가합니다.</td></tr>
+<tr><th scope="row">여러 업무 묶기</th><td>프로젝트 종합 대화에서 종합</td><td><strong>보강.</strong> 하나의 대표 목적에 속하는 업무는 선택적인 ‘목표 묶음’으로 연결합니다. 영구 프로젝트 생성과 일회성 복합 요청을 구분합니다.</td></tr>
+<tr><th scope="row">총괄과 요약</th><td>총괄이 우선순위·종합 담당</td><td><strong>유지·구분.</strong> hide도 Conductor, Hide AI, core를 다르게 설명합니다. IAMCEO도 의미 판단·요약·정해진 처리를 구분하되 상주 AI를 셋 더 만드는 식으로 옮기지 않습니다.</td></tr>
+<tr><th scope="row">프로젝트 밖 업무</th><td>본사 일반업무로 접수</td><td><strong>유지.</strong> Desk는 착안점이지만 hide backlog는 프로젝트를 요구하는 구간도 있습니다. IAMCEO의 일반업무는 별도 제품 요구로 설계합니다.</td></tr>
+</tbody></table></div>
+<p><strong>목적의 차이:</strong> hide는 코딩 에이전트·체크아웃·PR 중심 IDE입니다. IAMCEO는 대표가 개발·조사·문서·프로젝트 밖 요청을 함께 지시하고 결정하는 창구입니다. 따라서 hide의 명칭과 내부 개체를 1:1로 가져오는 대신, <strong>여러 실행을 접어 보기, 사람이 할 일 우선, 근거 있는 기억의 재사용</strong>이라는 원칙을 취합니다.</p>
+</section>
+
+<section id="options"><h2>직원과 실행을 관리하는 세 대안</h2>
+<p class="note">아래 평가는 공개 근거와 사용 요구를 대조한 설계 판단입니다. 실제 사용량·품질을 측정한 비교는 아닙니다.</p>
+<div class="scroll"><table><thead><tr><th scope="col">대안</th><th scope="col">작동 방식</th><th scope="col">유리한 경우</th><th scope="col">부담</th></tr></thead><tbody>
+<tr><th scope="row">A · 고정 직원<br>전용 세션</th><td>조사 직원·개발 직원마다 세션을 이어 쓰고 대표가 담당자를 고릅니다.</td><td>업무가 적고 특정 직원과 장기 대화를 쌓는 경험이 중요한 경우</td><td>3~5개 일이 겹치면 대기·문맥 혼합·직원 2호 관리가 생깁니다. 실행 수와 책임 주체가 강하게 묶입니다.</td></tr>
+<tr><th scope="row">B · 업무별 실행<br>공유 업무·프로젝트 기록</th><td>필요할 때 세션을 연결하고, 연속성은 업무 기록과 공통 지식이 맡습니다.</td><td>서로 무관한 일회성 요청이 많고 반복 역할이 아직 적은 초기 제품</td><td>반복되는 판단 기준·작업 방식이 매번 다시 구성될 수 있습니다. 역할의 재사용이 커지면 C안이 유용해집니다.</td></tr>
+<tr class="pick"><th scope="row">C · 재사용 역할<br>업무별 실행 분리<br><small>추천</small></th><td>B안 위에 조사·구현 등 반복 수요가 있는 역할의 기준을 재사용합니다. 검증 지식은 업무·프로젝트에 두고 역할별 기억은 선택합니다.</td><td>반복 전문 업무와 일반업무가 섞이며, 대표가 직원 관리 없이 일관된 처리를 원하는 경우</td><td>역할 기준과 지식 적용 범위를 관리해야 합니다. 요청이 드물면 B안보다 무겁고, 직원의 개성을 직접 키우고 싶다면 A안보다 덜 직관적입니다.</td></tr>
+</tbody></table></div>
+<div class="callout"><strong>C안을 최소 형태로 추천합니다.</strong><p>hide 사례는 B안처럼 실행·공유 기록 중심으로도 충분한 구조를 만들 수 있음을 보여주는 참고입니다. 그래도 반복되는 조사·구현의 판단 기준을 재사용할 필요가 있어 C안을 유지합니다. 다만 ‘직원별 장기 기억부터 구축’하는 우선순위는 낮춥니다. 대표의 역할 관리 선호는 아직 답이 없으므로 화면 노출 정도까지 확정하지 않습니다.</p></div>
+</section>
+
+<section id="model"><h2>추천 구조: 접수·목표·업무·실행의 관계를 단순하게</h2>
+<div class="flow"><div class="card"><span class="label">대표의 입력</span><h3>프로젝트 또는 본사</h3><p>프로젝트 일은 그 안에서, 어디에도 속하지 않은 일은 본사 일반업무에서 접수합니다.</p></div><span class="arrow" aria-hidden="true">→</span><div class="card"><span class="label">대표가 이어가는 기록</span><h3>업무별 대화</h3><p>목적·완료 기준·후속 지시·결재·자료를 묶고, 복합 요청만 목표로 연결합니다.</p></div><span class="arrow" aria-hidden="true">→</span><div class="card"><span class="label">필요할 때 실행</span><h3>역할과 세션</h3><p>주담당 역할이 작업·검토를 맡고, 협업이 필요하면 범위가 정해진 추가 실행을 요청합니다.</p></div></div>
+<div class="scroll"><table><thead><tr><th scope="col">단위</th><th scope="col">수명과 연결</th><th scope="col">대표에게 보이는 것</th></tr></thead><tbody>
+<tr><th scope="row">프로젝트 / 본사</th><td>지속되는 업무 범위. 업무는 프로젝트 또는 본사에 속합니다.</td><td>프로젝트 상황·자료, 본사 일반업무. 프로젝트가 없는 요청을 가짜 개발 프로젝트로 만들지 않습니다.</td></tr>
+<tr><th scope="row">목표 묶음<br><small>선택 정보</small></th><td>복합 요청을 끝낼 때까지. 업무 여러 개를 연결하는 제목·완료 기준·관계로 시작합니다.</td><td>‘출시 준비’에 연결된 개발·소개 글·조사 진행. 작은 일에는 추가하지 않습니다.</td></tr>
+<tr><th scope="row">업무 + 기본 대화</th><td>접수→진행→완료·보관→재개. 주담당 역할 하나, 실행 여러 개. 결재·자료가 이 업무를 참조합니다.</td><td>업무 제목·현재 상태·대표 차례·결과. 직원이나 모델이 바뀌어도 같은 기록으로 이어집니다.</td></tr>
+<tr><th scope="row">역할</th><td>여러 업무에서 재사용하는 판단·작업 기준. 필요한 지식을 참조하며 상시 프로세스일 필요는 없습니다.</td><td>기본 선택은 자동, 원하면 상세에서 담당 역할과 기준을 확인·조정합니다.</td></tr>
+<tr><th scope="row">실행 / 세션</th><td>한 업무의 특정 작업 동안. 같은 업무는 세션을 재개할 수 있고 제공자 교체 시 새 문맥을 인계합니다.</td><td>진행·대기·사용량, 나눈 이유, 협업 결과. 세션·모델을 매번 고르지 않습니다.</td></tr>
+<tr><th scope="row">지식 항목</th><td>업무 이후에도 재사용하되 근거·적용 범위·버전·검토일을 둡니다.</td><td>검증된 사실·방법과 바뀐 이유. 처음에는 문서·목록으로 충분합니다.</td></tr>
+</tbody></table></div>
+<p><strong>처음부터 모든 것을 독립 개체로 만들 필요는 없습니다.</strong> 기존 프로젝트·본사를 유지하고, 업무 안에 대화·계획을 둡니다. 목표 묶음은 업무 사이의 연결 정보로, 역할은 재사용 설정으로 시작할 수 있습니다. 복잡한 조직도·상시 역할 관리자·별도 지식 서비스부터 만들자는 제안이 아닙니다.</p>
+<div class="structure"><strong>하나의 역할이 여러 세션을 운용한다는 뜻</strong><p>조사 역할이 제품 비교와 출장 동선을 동시에 맡아도 실행 문맥은 업무별로 나눕니다. 해당 업무의 주담당 실행이 추가 세션의 목적과 결과 기준을 요청하고, 서버가 중복·자원·허용 범위를 확인합니다. 다섯 업무를 접수했다고 다섯 세션을 즉시 띄울 필요는 없습니다.</p></div>
+
+<h3>문맥·결재·자료를 이어가는 규칙</h3>
+<ul><li><strong>업무에 남김:</strong> 대표 원문·완료 기준·현재 판단·미해결 질문·승인 대상·최신 결과물. 같은 업무의 실행끼리 공유하며 다른 업무의 승인으로 쓰지 않습니다.</li><li><strong>프로젝트에서 재사용:</strong> 확인한 구조·용어·작업 제약. 역할별로 필요한 부분만 가져옵니다. 특정 프로젝트 경험을 본사 일반업무나 다른 프로젝트의 사실로 확대하지 않습니다.</li><li><strong>역할에서 재사용:</strong> 검증한 조사·구현·검토 방법. 개인적인 추측이나 원시 대화 전체를 역할의 공통 기억에 자동 누적하지 않습니다.</li><li><strong>담당·모델 교체:</strong> 같은 업무 ID 아래 요약과 원문·자료·열린 결재를 인계합니다. 답은 업무·질문·대상 행위에 연결하고 현재 화면이나 옛 세션 ID만으로 보내지 않습니다. 실제 승인 대상이 달라졌으면 다시 판단받습니다.</li></ul>
+<p class="note">대화 범위의 기억과 여러 대화에서 쓰는 기억을 나누는 근거는 기존에 확인한 LangChain 공식 Memory overview를 재사용했습니다. 구체적인 업무·프로젝트·역할 범위는 우리의 제안입니다. <a href="https://docs.langchain.com/oss/python/concepts/memory">[M]</a></p>
+</section>
+
+<section id="collaboration"><h2>직접 협업하고, 결과와 학습의 근거를 남깁니다</h2>
+<p>hide는 lead→worker→helper와 편지 소통을 공개 설명하며, 자식은 부모에게 보고하도록 합니다. <a href="https://github.com/with-hide/hide/blob/main/README.md#agents-start-watch-and-write-to-each-other">[H2]</a> IAMCEO도 모든 질의를 총괄이 중계할 필요는 없습니다. 다만 사람이 정할 일을 부모 에이전트가 임의로 대신 답하는 구조로 옮기지는 않습니다.</p>
+<div class="flow"><div class="card"><span class="label">협업 요청</span><h3>질문·검토·인계</h3><p>주담당이 업무·필요한 답·참고 자료·종료 조건을 지정합니다. 범위 안의 직접 질의를 허용합니다.</p></div><span class="arrow" aria-hidden="true">→</span><div class="card"><span class="label">공유 업무 기록</span><h3>답과 근거를 연결</h3><p>협업 담당이 확인한 사실·검사 결과·미해결 항목을 남깁니다. 모든 원시 대화를 서로 복사하지 않습니다.</p></div><span class="arrow" aria-hidden="true">→</span><div class="card"><span class="label">주담당의 책임</span><h3>채택·보류·최종 보고</h3><p>업무 결과는 주담당 한 곳이 책임집니다. 다른 업무와 충돌하면 총괄, 대표 결정은 결재함으로 올립니다.</p></div></div>
+<ul><li><strong>목적 있는 협업:</strong> 필요한 답이나 검토 결과가 나오면 종료합니다. 초깃값 제안은 질의·답변 1회와 보완 1회입니다. 계속 합의가 안 되면 쟁점·근거를 남겨 주담당 또는 총괄이 판단합니다.</li><li><strong>불필요한 회의 방지:</strong> 기존 답 재사용 여부, 같은 실행의 중복 요청, 추가 세션의 기대 결과를 확인합니다. 실행 수·시간·사용량 한도와 재위임 깊이는 미리 정한 규칙으로 제한합니다.</li><li><strong>역할 간 소통 범위:</strong> 같은 업무는 필요한 기록을 공유하고, 다른 업무에는 요청 목적에 필요한 요약·근거만 보냅니다. 상대의 메시지는 대표 승인과 구분합니다.</li></ul>
+
+<h3>자가개선: 기억 카드가 생겼다는 것과 방법이 나아졌다는 것은 다릅니다</h3>
+<p>hide의 Project Memory는 결정의 카드화·다음 에이전트 전달·문서 반영 흐름을 참고할 만합니다. <a href="https://github.com/with-hide/hide/blob/main/README.md#hide-ai-does-the-reading">[H2]</a> 그것만으로 일반적인 품질 향상이 보장되지는 않습니다. IAMCEO에서는 다음의 최소 흐름을 제안합니다.</p>
+<ol class="steps">
+<li><strong>경험 기록 → 개선 후보</strong><p>대표 수정·실패·검사 결과를 근거로 바꿀 방법 하나와 적용 범위를 적습니다. “이번에 실패했다”를 “모든 업무에서 금지”로 바꾸지 않습니다.</p></li>
+<li><strong>기준 고정 → 기존 방법과 비교</strong><p>결과 품질·대표 수정량·시간·사용량 기준을 미리 정합니다. 같은 사례와 별도 확인 사례로 비교하고, 편차가 크면 반복합니다. 후보가 자기 평가 기준을 바꿔 통과시키지 않게 합니다.</p></li>
+<li><strong>검토 → 좁게 적용</strong><p>코드는 실제 검사 결과, 조사는 출처·요구 충족, 문서는 명시 기준과 사람의 표본 검토를 사용합니다. 에이전트끼리의 동의나 자체 점수는 보조 근거입니다.</p></li>
+<li><strong>버전 기록 → 관찰·되돌리기</strong><p>사용한 지식·방법 버전을 실행에 남기고 기준 미달이면 이전 판으로 되돌립니다. 프로젝트 한정 경험을 역할 전체나 모든 프로젝트로 자동 확대하지 않습니다.</p></li>
+</ol>
+<div class="callout warm"><strong>초기 자동화는 개선 후보 작성까지를 추천합니다.</strong><p>적용은 대표가 정한 뒤 진행하고, 이후 미리 허용한 범위·평가 기준 안에서 좁은 작업 방법을 자동 적용하는 방식을 검토할 수 있습니다. 권한 확대나 대표 결정 변경은 별도 판단 대상입니다. 이번에는 기억·지침을 실제 변경하거나 비교 시험을 실행하지 않았습니다.</p></div>
+<p class="note">평가가 실제 결과를 확인하고 코드·모델·사람 판단을 조합해야 한다는 근거는 기존에 확인한 Anthropic 공식 평가 글을 재사용했습니다. 자가평가·상호 동의가 개선을 보장한다는 근거로 쓰지 않았습니다. <a href="https://www.anthropic.com/research/demystifying-evals-for-ai-agents">[E]</a></p>
+</section>
+
+<section id="lead"><h2>총괄의 책임은 ‘여러 일 사이의 판단’입니다</h2>
+<p>hide의 Conductor는 mission 실행, Hide AI는 요약·사람 차례·기억 관련 보조, core는 상태·실행 규칙을 담당한다고 공개 설명됩니다. <a href="https://withhide.dev/">[H1]</a> <a href="https://github.com/with-hide/hide/blob/main/README.md#how-it-works">[H2]</a> IAMCEO에서도 이 책임을 구분하되 모든 대화와 도구를 총괄이 건별로 승인하는 병목은 만들 필요가 없습니다.</p>
+<div class="scroll"><table><thead><tr><th scope="col">책임</th><th scope="col">총괄·주담당의 판단</th><th scope="col">서버의 정해진 처리</th></tr></thead><tbody>
+<tr><th scope="row">대표 의도·업무 경계</th><td>총괄이 복합 요청을 나누고 완료 기준을 해석합니다. 중요한 모호함·범위 변경은 대표에게 확인합니다.</td><td>대표 원문·업무·목표 연결을 보존합니다. 같은 업무 수정은 현재 담당으로 연결합니다.</td></tr>
+<tr><th scope="row">우선순위·의존성·자원</th><td>총괄이 앞뒤 순서와 업무 간 충돌을 조정합니다. 주담당은 업무 안의 협업 필요성을 판단합니다.</td><td>선행 조건·대기열·가용 실행 수·사용량 한도와 허용 범위를 적용합니다.</td></tr>
+<tr><th scope="row">담당 지정</th><td>총괄은 낯선 복합 업무의 담당을 정합니다. 작은 일은 미리 정한 기본 역할로 갈 수 있습니다.</td><td>기존 담당·명시된 기본 연결을 적용하고 중복 실행과 잘못된 수신을 막습니다.</td></tr>
+<tr><th scope="row">결재·실행</th><td>주담당이 필요한 행동을 판단합니다. 총괄도 대표 결정을 대신하지 않습니다.</td><td>승인 상태·실행 정책을 확인하고 답을 정확한 질문·업무로 돌려보냅니다.</td></tr>
+<tr><th scope="row">결과 종합</th><td>주담당은 개별 결과, 총괄은 여러 결과가 대표 목표를 함께 충족하는지 책임집니다.</td><td>상태·결재·자료를 모아 보여줍니다. 전달됐다는 사실과 업무 완료를 구분합니다.</td></tr>
+</tbody></table></div>
+<p><strong>작은 일:</strong> 기존 업무 수정이나 범위가 명확한 요청은 바로 담당 역할로 연결하고 총괄 AI 호출을 줄일 수 있습니다. <strong>복합·충돌하는 일:</strong> 총괄이 필요한 요약·근거만 읽고 판단하며, 필요할 때 원문으로 내려갑니다. 총괄이 모든 세션을 계속 읽어야 한다고 전제하지 않습니다.</p>
+<p>현재 IAMCEO의 ‘총괄은 조사·구현을 직접 하지 않고 직원에게 맡긴다’는 기본 지침과는 구분한 장래 제안입니다. 총괄 단계를 줄이는 경로를 이번에 적용한 것은 아닙니다.</p>
+</section>
+
+<section id="example"><h2>프로젝트 업무 3개 + 일반업무 2개가 흐르는 예시</h2>
+<p class="note">아래는 제안 구조의 가상 예시입니다. 실제 업무·직원·하위 에이전트·시험 세션을 생성한 기록이 아닙니다.</p>
+<ol class="steps">
+<li><strong>프로젝트에서 대표가 세 일을 말합니다.</strong><p>“연동은 계속하고, 대화 구조 검토와 소개 글도 준비해 줘.” 세 업무를 접수하고 ‘출시 준비’라는 목적이 같다면 목표 묶음으로 연결합니다. 예시 응답은 “세 업무로 나눴습니다. 연동·구조 검토를 진행하고 소개 글은 검토 결과를 반영해 이어갑니다.”입니다.</p></li>
+<li><strong>본사에 출장 동선·견적 비교를 말합니다.</strong><p>프로젝트를 새로 만들지 않고 일반업무 대화로 각각 접수합니다. 프로젝트의 기술 맥락이나 승인 조건을 가져오지 않습니다.</p></li>
+<li><strong>역할이 필요한 실행을 나눕니다.</strong><p>조사 역할이 구조 검토와 출장 동선에 각각 별도 세션을 연결합니다. 역할 기준은 재사용하되 업무 문맥은 분리합니다. 연동 담당은 구조 검토에 전달 방식의 제약을 좁게 질의하고, 결과를 공유 업무 기록으로 받습니다. 실행 자리가 부족하면 다른 업무는 차례 대기로 남습니다.</p></li>
+<li><strong>대표는 ‘내 차례’와 업무 대화에서 답합니다.</strong><p>견적 조건은 관련 결재 카드에서 정하고, 구조 검토의 “둘째 안을 더 설명해 줘”는 그 업무 대화로 이어집니다. 직원·세션·모델을 매번 고르지 않아도 됩니다.</p></li>
+<li><strong>결과 종합 뒤 개선 후보를 남깁니다.</strong><p>주담당은 자료와 근거를 보고하고, 총괄은 소개 글이 검토 결론을 반영했는지 등 업무 간 연결을 종합합니다. 출처 확인일 누락 같은 피드백은 개선 후보가 되며 시험·검토 전에는 모든 조사 역할의 지침을 바꾸지 않습니다.</p></li>
+</ol>
+<div class="mock"><strong>대표가 보는 목록 · 예시</strong>
+<div class="task"><span class="badge">진행</span><strong>연동 구현</strong><p>프로젝트 · 출시 준비 · 결과 / 협업 근거</p></div>
+<div class="task"><span class="badge attention">대표 차례</span><strong>대화 구조 검토</strong><p>프로젝트 · 출시 준비 · 대안 비교 / 후속 지시</p></div>
+<div class="task"><span class="badge">선행 결과 대기</span><strong>소개 글 작성</strong><p>프로젝트 · 출시 준비 · 구조 검토 반영 예정</p></div>
+<div class="task"><span class="badge">진행</span><strong>출장 동선 조사</strong><p>본사 일반업무 · 독립 대화 / 결과</p></div>
+<div class="task"><span class="badge attention">조건 선택</span><strong>견적 비교</strong><p>본사 일반업무 · 결재 / 비교 자료</p></div></div>
+<p><strong>개입하고 싶을 때만 상세를 펼칩니다.</strong> 담당 역할, 세션을 나눈 이유, 진행·대기·사용량, 사용한 지식 버전과 협업 근거를 보여주고 역할 지정·우선순위 변경·일시중지를 할 수 있도록 제안합니다. 기본 사용에서는 업무와 판단에 집중합니다.</p>
+</section>
+
+<section id="current"><h2>현행과 공개 근거의 경계를 유지합니다</h2>
+<p><strong>현행 IAMCEO:</strong> 앞선 읽기 전용 코드 검토에서는 Member에 역할·현재 세션 ID가 함께 있고, 직원의 배정·생성 도구는 총괄에 열리며, 결재 답은 원래 질문자에게 우선 전달하는 구조를 확인했습니다. 메시지·결재·자료·진행판을 영속 업무 ID로 묶는 제안이나 역할의 복수 세션 관리는 아직 구현·운영 승인된 상태가 아닙니다.</p>
+<p><strong>herdr 앱·Orca와 herdr-core:</strong> 사용자용 앱과 터미널 엔진의 범위를 구분합니다. herdr-core의 기능만으로 그 위 앱·Orca의 실제 총괄·대표 서버 구조가 확인됐다고 보지 않습니다. 해당 구조는 미확인 범위로 유지합니다. hide-core도 이름이 비슷하다는 이유로 herdr-core와 같은 구현이라고 단정하지 않습니다.</p>
+<p class="note">이번에는 기존 코드·설정·기억·역할 지침·권한을 다시 바꾸거나 제품을 실행 시험하지 않았습니다. 앞선 자료의 관련 사실만 재사용하고, 새로운 제품 근거는 hide 공식 사이트·공개 문서로 보강했습니다.</p>
+</section>
+
+<section id="open"><h2>다음 검증은 작게, 미응답 선호는 열어 둡니다</h2>
+<p>다음 단계가 별도로 정해진다면 <strong>다섯 업무의 화면 예시 → 역할 하나의 독립 업무 두 개 → 직접 질의·인계·개선 후보 한 건</strong> 순서로 확인하는 것이 적절합니다. 처음부터 전사 조직도나 자동 자가개선 체계를 만들 필요는 없습니다.</p>
+<ul><li><strong>화면:</strong> 직원 선택 없이 하던 일·결재·결과를 찾을 수 있는지 확인합니다. 실제 세션 자동 생성 없이 먼저 검토할 수 있습니다.</li><li><strong>실행:</strong> 같은 역할의 두 업무가 섞이지 않는지, 차례 대기·중복 방지·담당 또는 모델 교체 뒤 연결이 유지되는지 확인합니다.</li><li><strong>협업·학습:</strong> 질의의 종료 조건, 주담당 책임, 근거·버전·되돌리기를 확인합니다. 대표 수정량·문맥 혼입·중복 실행·사용량도 함께 봅니다.</li></ul>
+<div class="callout"><strong>남은 핵심 질문은 기존 카드 그대로입니다.</strong><p>“계속 경험을 쌓는 역할의 일하는 기준을 대표가 직접 다듬고 싶은가, 아니면 업무와 결과만 보고 역할 관리는 맡기고 싶은가?”</p><p class="note">기존 결재 d_Cirixg2oxhSr은 아직 답이 없습니다. 답을 가정하거나 같은 질문의 새 결재를 만들지 않았습니다. 이 답에 따라 역할을 화면에 드러낼 정도와 경험 관리의 우선순위가 달라집니다.</p></div>
+<p>이번 요청은 올바른 참고 주소를 반영한 논의 자료 재작성입니다. 위 추천은 선택·구현·권한 변경 승인으로 간주하지 않았습니다. 일정·비용·실행 한도 수치는 아직 산정하지 않았습니다.</p>
+</section>
+
+<section id="sources"><h2>원문과 개정 이력</h2>
+<p>최신 자료 하나로 전체 제안을 읽을 수 있도록 이전 설명을 통합했습니다. 공개 사례의 사실과 IAMCEO 해석·제안을 각 구간에서 나눴습니다. withhide 관련 원문 확인일은 2026.11.09입니다.</p>
+<ol class="sources">
+<li><a href="https://withhide.dev/">[H1] hide 공식 사이트</a><small>Conductor·mission, 부모·자식 접기, Projects·Tasks·PRs, Hide AI·Project Memory·Needs You의 제품 소개. 실제 설치 검증은 하지 않음.</small></li>
+<li><a href="https://github.com/with-hide/hide/blob/main/README.md">[H2] hide 공식 저장소 README</a><small>작업 보기, 에이전트 소통, backlog 시작, Project Memory, Conductor와 core 경계의 공개 설명.</small></li>
+<li><a href="https://github.com/with-hide/hide/blob/main/docs/UI_BEHAVIOR.md">[H3] hide 공개 UI behavior</a><small>Workspace, Overview, A device’s tasks, backlog 추가, mission 화면의 관련 구간만 확인.</small></li>
+<li><a href="https://github.com/with-hide/hide/blob/main/docs/README.md#current-sources-of-truth">[H4] hide Documentation map</a><small>Mission·Plan·Desk·Project Memory의 구분과 일부 상세 설계의 비공개 이전 범위를 확인.</small></li>
+<li><a href="https://github.com/with-hide/hide/blob/main/docs/delivery.md#desk">[H5] hide Delivery · Desk</a><small>pane·checkout 없는 Desk 실행, 생성·대기열·명령 경계의 공개 규약.</small></li>
+<li><a href="https://github.com/with-hide/hide/blob/main/docs/status-model.md#a-handed-plan-step-adds-no-status">[H6] hide Status model · 위임한 계획 단계</a><small>계획 단계와 자식 실행의 연결. 비공개 상세 계획 설계를 읽었다는 뜻은 아님.</small></li>
+<li><a href="https://docs.langchain.com/oss/python/concepts/memory">[M] LangChain · Memory overview</a><small>앞선 조사에서 확인한 대화 범위 기억과 여러 대화의 장기 기억 구분을 재사용.</small></li>
+<li><a href="https://www.anthropic.com/research/demystifying-evals-for-ai-agents">[E] Anthropic · Demystifying evals for AI agents</a><small>앞선 조사에서 확인한 실제 결과 평가·평가 수단 조합·퇴행 검증 원칙을 재사용.</small></li>
+</ol>
+<details><summary>앞선 자료와의 관계</summary><p>최초 조사 f_KObsDsm4eu8L, 후속 설계 f_xZGaxe8fELPW 및 그 완료 보고 msg_8j8Bk2eLJgTw의 내용을 재평가·통합한 최신판입니다. withhind.dev를 확인 못했다는 예전 설명을 올바른 withhide.dev 원문 확인으로 대체하고, 업무·프로젝트 기록 중심의 기억과 선택적 목표 묶음을 보강했습니다.</p><p>인계된 추가 조사 2판 f_ogxBPWNKUpkC는 원본 보고 ID가 제공되지 않아 이번에 본문을 직접 재조회하지 않았습니다. 그 자료를 읽었다고 주장하거나 새로운 사실을 인용하지 않았고, 인계 지시의 herdr 앱·Orca와 herdr-core 구분 및 서버 구조 미확인 범위만 유지했습니다.</p></details>
+</section>
+<footer>산출물: withhide 사례를 반영한 자체 완결 HTML 통합 개정판 1건. 기존 비서 한 명이 순차 작성. 새 직원·하위 에이전트·시험 세션 생성, 제품 코드·설정·기억·역할 지침·권한 변경, 커밋·푸시·외부 게시 없음.</footer>
+</main></body></html>

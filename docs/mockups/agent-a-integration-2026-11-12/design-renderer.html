@@ -1,0 +1,221 @@
+<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"><meta http-equiv="x-dns-prefetch-control" content="off"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:where(*,*::before,*::after){box-sizing:border-box}
+:where(html){color-scheme:light;-webkit-text-size-adjust:100%}
+:where(body){margin:0;padding:24px;background:#FBFAFE;color:#17132B;font:15px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Segoe UI",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+:where(h1,h2,h3,h4){margin:1.6em 0 .6em;line-height:1.3;font-weight:650;color:#17132B}
+:where(h1){font-size:1.6rem;margin-top:0}
+:where(h2){font-size:1.25rem}
+:where(h3){font-size:1.05rem}
+:where(h4){font-size:.95rem;color:#4A4566}
+:where(p,ul,ol,dl,blockquote,pre,table,figure){margin:0 0 1em}
+:where(ul,ol){padding-left:1.4em}
+:where(li+li){margin-top:.25em}
+:where(a){color:#5B3FD9}
+:where(strong){color:#17132B}
+:where(hr){border:0;border-top:1px solid rgb(23 19 43 / .1);margin:1.5em 0}
+:where(blockquote){padding:.2em 0 .2em 1em;border-left:3px solid rgb(122 91 255 / .45);color:#4A4566}
+:where(img,svg,video,canvas){max-width:100%;height:auto}
+:where(code,kbd,samp){font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:rgb(23 19 43 / .05);padding:.1em .35em;border-radius:5px}
+:where(pre){padding:14px 16px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:12px;overflow:auto}
+:where(pre code){background:none;padding:0}
+:where(table){width:100%;border-collapse:collapse;font-size:.93em;display:block;overflow-x:auto}
+:where(.kit-table){margin:0 0 1em;overflow-x:auto}
+:where(.kit-table>table){display:table;margin:0}
+:where(th,td){padding:9px 12px;border-bottom:1px solid rgb(23 19 43 / .08);text-align:left;vertical-align:top;overflow-wrap:break-word}
+:where(th){color:#4A4566;font-weight:600;background:#F6F4FC;white-space:nowrap}
+:where(.card){padding:18px 20px;margin:0 0 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.card>:last-child,.callout>:last-child){margin-bottom:0}
+:where(.card>:first-child,.callout>:first-child){margin-top:0}
+:where(.grid){display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:0 0 14px}
+:where(.grid>.card){margin:0}
+:where(.callout){padding:14px 16px;margin:0 0 14px;background:rgb(122 91 255 / .08);border:1px solid rgb(122 91 255 / .22);border-left-width:4px;border-left-color:#7A5BFF;border-radius:12px}
+:where(.callout.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .4);border-left-color:#FF9A4D;color:#A8530A}
+:where(.callout.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .4);border-left-color:#FF6B60;color:#C2372E}
+:where(.callout.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .4);border-left-color:#20B97C;color:#0B7F55}
+:where(.kpi){display:flex;flex-direction:column;gap:4px;padding:16px 18px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.kpi b,.kpi strong){font-size:1.7rem;line-height:1.2;font-weight:680;color:#17132B;font-variant-numeric:tabular-nums}
+:where(.kpi small,.kpi span){color:#4A4566;font-size:.85em}
+:where(.steps){list-style:none;counter-reset:step;padding:0;margin:0 0 14px}
+:where(.steps>li){counter-increment:step;position:relative;padding:0 0 14px 40px;margin:0}
+:where(.steps>li)::before{content:counter(step);position:absolute;left:0;top:0;width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:rgb(122 91 255 / .12);color:#5B3FD9;font-size:.82em;font-weight:650}
+:where(.steps>li:not(:last-child))::after{content:"";position:absolute;left:12.5px;top:30px;bottom:4px;width:1px;background:rgb(23 19 43 / .12)}
+:where(.tag){display:inline-block;padding:.1em .6em;border-radius:999px;font-size:.8em;line-height:1.6;background:rgb(23 19 43 / .05);color:#4A4566;border:1px solid rgb(23 19 43 / .08)}
+:where(.tag.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .3);color:#0B7F55}
+:where(.tag.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .35);color:#A8530A}
+:where(.tag.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .35);color:#C2372E}
+:where(.compare){display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:0 0 14px}
+:where(.compare>*){padding:16px 18px;margin:0;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.compare>.pick){border-color:rgb(122 91 255 / .55);background:rgb(122 91 255 / .07)}
+:where(.compare>*>:last-child){margin-bottom:0}
+:where(.compare>*>:first-child){margin-top:0}
+:where(.flow){display:flex;flex-wrap:wrap;gap:10px 26px;list-style:none;padding:0;margin:0 0 14px}
+:where(.flow>*){position:relative;flex:1 1 130px;margin:0;padding:12px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(.flow>*:not(:last-child))::after{content:"→";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:#5F5983}
+:where(.flow>*>:last-child){margin-bottom:0}
+:where(.flow>*>:first-child){margin-top:0}
+:where(button){font:inherit;color:inherit}
+:where(.tabs){display:flex;flex-wrap:wrap;gap:4px;padding:4px;margin:0 0 14px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.tabs>button){flex:1 1 auto;min-height:44px;padding:0 14px;background:none;border:0;border-radius:10px;color:#4A4566;font-weight:600;cursor:pointer}
+:where(.tabs>button:hover){background:rgb(122 91 255 / .07)}
+:where(.tabs>button[aria-selected="true"]){background:#fff;color:#5B3FD9;box-shadow:0 6px 16px -6px rgb(122 91 255 / .55),0 0 0 1px rgb(122 91 255 / .22)}
+@media (max-width:520px){:where(body){padding:16px;font-size:14.5px}:where(h1){font-size:1.35rem}:where(.grid,.compare){grid-template-columns:1fr}:where(.flow){flex-direction:column;gap:22px}:where(.flow>*){flex:none}:where(.flow>*:not(:last-child))::after{content:"↓";right:auto;left:50%;top:auto;bottom:-22px;transform:translateX(-50%)}}
+:where(body>main.page){max-width:760px;margin-inline:auto}
+:where(body>main.page>h2){margin-top:40px}
+:where(p.src){margin:8px 0 0;font-size:.8em;color:#5F5983}
+:where(p.owner:has(>b)){display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 14px;padding:12px 16px;background:rgb(255 154 77 / .1);border:1px solid rgb(255 154 77 / .45);border-radius:12px;color:#17132B}
+:where(p.owner:has(>b))::before{content:"";flex:none;align-self:center;width:9px;height:9px;border-radius:50%;background:#FF9A4D}
+:where(p.owner>b){color:#A8530A}
+:where(ol.toc){display:flex;flex-wrap:wrap;gap:2px 14px;list-style:none;padding:0;margin:0 0 4px;font-size:.86em;color:#4A4566}
+:where(ol.toc>li){margin:0}
+:where(p.find){margin:0 0 14px;font-size:.82em;color:#5F5983}
+:where(h2>span.no,h3>span.no){color:#5F5983;font-weight:600}
+:where(div.hero:has(>b+span)){display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0 0 14px}
+:where(div.hero:has(>b+span)>b){font-size:3rem;line-height:1.05;font-weight:700;color:#17132B;white-space:nowrap}
+:where(div.hero:has(>b+span)>span){flex:1 1 220px;min-width:0;color:#4A4566}
+:where(span.delta){white-space:nowrap;font-variant-numeric:tabular-nums;color:#4A4566}
+:where(span.delta>b){color:#17132B;font-weight:680}
+:where(span.delta>small){font-size:.85em;color:#5F5983}
+:where(figure.bars){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.bars>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.bars>.bar){position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.bars>.bar>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(figure.bars>.bar)::after{content:"";grid-column:1/-1;height:10px;width:calc(var(--v) / var(--max) * 100%);min-width:2px;border-radius:0 4px 4px 0;background:rgb(23 19 43 / .25)}
+:where(figure.bars>.bar.is-key)::after{background:#17132B}
+:where(figure.bars>.bar.is-rec)::after{background:#7A5BFF}
+:where(.has-limit>figure.bars>.bar)::before{content:"";position:absolute;bottom:-3px;left:calc(var(--limit) / var(--max) * 100% - 1px);width:2px;height:16px;border-radius:1px;background:#17132B}
+:where(figure.bars>.ticks){display:flex;justify-content:space-between;margin:0;padding-top:4px;border-top:1px solid rgb(23 19 43 / .15);font-size:.75em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(figure.cols){margin:0 0 14px;max-width:520px}
+:where(figure.cols>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.cols>.cols-plot){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;align-items:end;height:150px;border-bottom:1px solid rgb(23 19 43 / .3)}
+:where(.cols-plot>.col){display:flex;flex-direction:column;align-items:center;gap:4px;font-size:.88em}
+:where(.cols-plot>.col>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(.cols-plot>.col)::after{content:"";width:min(44px,80%);height:calc(var(--v) / var(--max) * 120px);min-height:2px;border-radius:4px 4px 0 0;background:rgb(23 19 43 / .25)}
+:where(.cols-plot>.col.is-key)::after{background:#17132B}
+:where(figure.cols>.cols-x){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;margin:6px 0 0;text-align:center;font-size:.8em;line-height:1.4;color:#4A4566}
+:where(div.ba){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0 0 14px}
+:where(div.ba>*){margin:0;padding:14px 16px;background:#fff;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(div.ba>.ba-before){background:transparent;color:#4A4566}
+:where(div.ba>*>p){margin:0}
+:where(.ba-label){display:block;margin:0 0 6px;font-size:.8em;font-weight:650;color:#5F5983;letter-spacing:.02em}
+:where(div.ba del){color:#5F5983;text-decoration-thickness:1.5px}
+:where(div.ba ins){text-decoration:none;font-weight:650;color:#17132B;background:rgb(23 19 43 / .07);box-shadow:inset 0 -2px 0 #17132B;padding:0 2px;border-radius:3px}
+:where(sup.n){font-size:.68em;font-weight:700;color:#17132B;margin-left:1px}
+:where(ol.why){margin:0 0 14px;padding-left:1.4em;font-size:.93em;color:#4A4566}
+@media (max-width:520px){:where(div.ba){grid-template-columns:1fr;gap:8px}}
+:where(div.rec:has(>.rec-head)){margin:0 0 14px;padding:16px 18px;background:rgb(122 91 255 / .07);border:1px solid rgb(122 91 255 / .5);border-radius:14px}
+:where(div.rec:has(>.rec-head)>p){margin:0 0 4px}
+:where(div.rec>.rec-head){margin:0 0 8px;font-size:1.05em;font-weight:650;color:#17132B}
+:where(div.rec>.rec-cost){margin:10px 0 0;padding-top:10px;border-top:1px solid rgb(122 91 255 / .2);color:#4A4566;font-size:.93em}
+:where(div.rec:has(>.rec-head)>:last-child){margin-bottom:0}
+:where(.tag.pick){background:#fff;border-color:rgb(122 91 255 / .4);color:#5B3FD9;font-weight:650}
+:where(td.rec-cell,th.rec-cell){background:rgb(122 91 255 / .06)}
+:where(ul.opts){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px;font-size:.93em;color:#4A4566}
+:where(ul.opts>li){margin:0;padding:10px 14px;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(ul.opts>li>b){color:#17132B;margin-right:6px}
+:where(figure.gantt){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.gantt>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.gantt>.g-row){display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.gantt>.g-row>em){font-style:normal;color:#4A4566;font-variant-numeric:tabular-nums}
+:where(figure.gantt>.g-row>i){grid-column:1/-1;position:relative;display:block;height:14px;border-radius:4px;background:repeating-linear-gradient(90deg,transparent 0 calc(100% / var(--days) - 1px),rgb(23 19 43 / .09) calc(100% / var(--days) - 1px) calc(100% / var(--days))),rgb(23 19 43 / .035)}
+:where(figure.gantt>.g-row>i)::before{content:"";position:absolute;top:0;bottom:0;left:calc(var(--s) / var(--days) * 100%);width:calc((var(--e) - var(--s)) / var(--days) * 100%);border-radius:4px;background:rgb(23 19 43 / .45)}
+:where(figure.gantt>.g-row.is-rec>i)::before{background:#7A5BFF}
+:where(figure.gantt>.g-row.is-opt>i)::before{background:transparent;border:1.5px dashed #5F5983}
+:where(figure.gantt>.g-row.is-owner>i)::before{top:1px;bottom:auto;width:12px;height:12px;margin-left:1px;border-radius:2px;transform:rotate(45deg);background:#FF9A4D}
+:where(figure.gantt>.g-axis){display:flex;justify-content:space-between;margin:0;font-size:.78em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(:is(ul,ol).status:has(>li>.tag)){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px}
+:where(:is(ul,ol).status>li:has(>.tag)){display:flex;gap:10px;align-items:baseline;margin:0;padding:10px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(:is(ul,ol).status>li>.tag){flex:none;min-width:5.4em;text-align:center}
+:where(figure.dg){margin:0 0 14px}
+:where(figure.dg>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.dg>svg){display:block;width:100%;max-width:420px;height:auto}
+:where(.dg-box){fill:#fff;stroke:rgb(23 19 43 / .22)}
+:where(.dg-box.is-owner){fill:#FFF1E6;stroke:#FF9A4D}
+:where(.dg-t){font-size:14px;font-weight:650;fill:#17132B}
+:where(.dg-s){font-size:12px;fill:#4A4566}
+:where(.dg-line){fill:none;stroke:#5F5983;stroke-width:1.5}
+:where(.dg-head){fill:#5F5983}
+:where(.dg-l){font-size:11.5px;fill:#5F5983;paint-order:stroke;stroke:#FBFAFE;stroke-width:4px;stroke-linejoin:round}</style><script>(function(){["RTCPeerConnection","webkitRTCPeerConnection"].forEach(function(k){try{delete window[k];window[k]=undefined}catch(e){}});var Q="iframe,frame,link",E=Element.prototype,Rm=E.remove,Mt=E.matches,Qa=E.querySelectorAll;function strip(n){if(n.nodeType!==1)return;if(Mt.call(n,Q))Rm.call(n);else Qa.call(n,Q).forEach(function(x){Rm.call(x)})}new MutationObserver(function(l){l.forEach(function(r){r.addedNodes.forEach(strip)})}).observe(document,{childList:true,subtree:true});[[E,"attachShadow"],[E,"setHTMLUnsafe"],[Document,"parseHTMLUnsafe"],[Document.prototype,"write"],[Document.prototype,"writeln"]].forEach(function(x){try{delete x[0][x[1]]}catch(e){}});var P=parent,O=ResizeObserver,last=-1,S=getComputedStyle,doc=document,DP=Document.prototype,G=function(n){return Object.getOwnPropertyDescriptor(DP,n).get},GB=G("body"),GR=G("documentElement"),DQ=DP.querySelectorAll,DC=DP.createElement,DI=DP.getElementById,DN=DP.getElementsByName;function B(){return GB.call(doc)}function R(){return GR.call(doc)}function send(){var b=B(),d=R(),n=0;if(b){var c=S(b);n=b.scrollHeight+(parseFloat(c.marginTop)||0)+(parseFloat(c.marginBottom)||0)}else if(d){n=d.scrollHeight}n=Math.ceil(n);if(n!==last){last=n;P.postMessage({iamceoHeight:n},"*")}}var r=new O(send);if(R())r.observe(R());send();addEventListener("DOMContentLoaded",function(){if(B())r.observe(B());DQ.call(doc,"table").forEach(function(t){if(t.parentElement&&t.parentElement.classList.contains("kit-table"))return;var w=DC.call(doc,"div");w.className="kit-table";t.parentNode.insertBefore(w,t);w.appendChild(t)});send()});addEventListener("load",send);addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;if(!a)return;var h=a.getAttribute("href")||"";if(h.charAt(0)==="#"){var id=h.slice(1),t=null,y=-1;try{id=decodeURIComponent(id)}catch(x){}if(id)t=DI.call(doc,id)||DN.call(doc,id)[0]||null;if(t&&t.getBoundingClientRect)y=t.getBoundingClientRect().top+scrollY;else if(!id||id.toLowerCase()==="top")y=0;if(y>=0)P.postMessage({iamceoAnchor:Math.max(0,Math.round(y))},"*");return}e.preventDefault();P.postMessage({iamceoLink:a.href},"*")},true);addEventListener("keydown",function(e){if(e.key==="Escape")P.postMessage({iamceoEscape:true},"*")},true)})()</script></head><body><!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>[설계안] IAMCEO × Agent-A 통합 · 개발 문서 기준 개정</title><style>
+body{margin:0;padding:28px;color:#272139;background:#fbfaff;font:15px/1.75 -apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;overflow-wrap:anywhere}main{max-width:1050px;margin:auto}h1{font-size:32px;line-height:1.3;letter-spacing:-1px}h2{margin-top:38px;font-size:23px}h3{font-size:17px}.sub,.src,small{color:#716983}.hero{padding:30px;background:#eee8ff;border-radius:22px}.card{padding:22px;background:white;border:1px solid #e5def0;border-radius:15px;margin:15px 0}.grid,.compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.compare>div{padding:18px;border:1px solid #e5def0;border-radius:12px}.pick{background:#f0eaff}.tag{display:inline-block;font-size:12px;padding:2px 9px;background:#eee8ff;border-radius:20px}.warn{background:#fff1dd}.callout{border-left:4px solid #8058dd;background:#f4efff;padding:14px 18px;margin:16px 0}.flow{display:flex;flex-wrap:wrap;gap:10px;padding:0;list-style:none}.flow li{flex:1 1 150px;padding:14px;border:1px solid #e5def0;border-radius:12px;background:white}.scroll{overflow-x:auto;margin-bottom:18px}table{border-collapse:collapse;width:100%;min-width:680px;font-size:14px}td,th{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #e6dfef}th{background:#f1edf8}code{font-size:12px;overflow-wrap:anywhere;background:#f0edf4;border-radius:5px;padding:2px 5px}a{color:#6140bc}details{border:1px solid #e6dfef;border-radius:12px;padding:15px;margin:14px 0}summary{cursor:pointer;font-weight:650}.src{font-size:12px}.steps li{margin-bottom:12px}button{font:inherit}p{margin:0 0 12px}@media(max-width:520px){body{padding:16px}h1{font-size:25px}.hero{padding:20px}.card{padding:16px}.grid,.compare{grid-template-columns:1fr}}
+</style></head><body><main>
+<div class="hero"><span class="tag">주 설계안 · 2026.11.12 개정</span><h1>IAMCEO에서 지시하고,<br>Agent-A의 원문 곁에서 검토하기</h1><p><b>추천: IAMCEO 자료 화면 + 서버 간 연결 어댑터 + Agent-A의 단일 정본.</b> 업무·담당·전달은 IAMCEO가, 문서 정본·검토 snapshot·댓글·수정안은 Agent-A가 책임집니다. 댓글당 실행 주체는 하나만 둡니다.</p><p class="sub">함께 올린 <b>[클릭 목업]</b>은 아래 설계를 판단하는 보조 자료입니다. 정해 둔 시연 데이터만 바뀌며 실제 직원·Agent-A·AI·외부 API를 호출하지 않습니다. 이번 결과는 설계이며 통합 구현·배포가 아닙니다.</p></div>
+<div class="callout"><b>이번에 달라진 점</b><br>이전 f_43Ud4K8WDtRK는 ‘IAMCEO 자료 옆 검토’를 중심으로 제안했습니다. 새 원문은 Agent-A가 이미 정본 엔진·고정 검토본·영구 댓글·수정안·자체 실행 경로를 가진다고 설명합니다. 이를 IAMCEO에 중복 저장·중복 실행하는 설계로 확장하지 않고, <b>연결과 실행 책임을 분리</b>했습니다.</div>
+
+<h2>1. 먼저 확인한 사실과 아직 모르는 부분</h2>
+<p>대표 지정 URL을 로컬의 정상 HTTPS 읽기 경로로 직접 열었습니다. <b>16절은 유지보수 판단 기준</b>입니다. “원본·snapshot·초안 보존”과 “저장·표시·커밋·활성화·배포를 구분”하라는 기준을 적용하고, 연결된 3~15절을 계약 근거로 읽었습니다. 표시 기준 소스는 <code>c559881</code>입니다.</p>
+<div class="scroll"><table><thead><tr><th>구분</th><th>확인 내용</th><th>설계에 미친 영향</th></tr></thead><tbody>
+<tr><td>문서상 구현</td><td>Agent-A SQLite에 정본 artifact·검토 snapshot·문서 대화·댓글·변경안·작업 기록을 보관. Markdown은 투영. (§5~7)</td><td>Agent-A 연결 문서는 그곳을 유일한 쓰기 정본으로 둡니다. IAMCEO 파일은 연결/고정 내보내기로 취급합니다.</td></tr>
+<tr><td>문서상 구현</td><td>댓글 저장 시 자동 답변을 한 번 요청. 문서 수정은 제안 후 명시 수락, 기준 문맥·블록 revision·read-set 검사. 에이전트는 자체 수락 불가. (§7~8)</td><td>현재 자동 답변에 IAMCEO 직원 큐를 덧붙이면 이중 실행 위험. 외부 실행자 모드는 별도 개발 조건입니다.</td></tr>
+<tr><td>문서상 구현</td><td>헤더 Save는 검토 결정, 댓글 수정안 Save는 문서 변경, 준비된 개발 결과 Save는 정확한 패치 적용. (§4·9)</td><td>“답변됨”, “검토 완료”, “새 본문 확인”, “개발 결과 적용”을 한 완료 상태로 합치지 않습니다.</td></tr>
+<tr><td>직접 확인</td><td>지정 HTML과 Markdown 경로 응답을 읽음. 루트 HEAD에서 CSP·X-Frame-Options·CORS 허용 헤더는 관찰되지 않음.</td><td>이것만으로 외부 iframe·브라우저 교차 출처 API가 지원된다고 결론 내리지 않습니다.</td></tr>
+<tr><td>미확인</td><td>연결된 GitHub 고정 소스의 INTERFACES.md는 커넥터에서 404. 전체 요청 스키마·외부 실행자 주입·서비스 간 인증·웹훅은 확인 못 함.</td><td>없는 API/필드/완료 신호를 발명하지 않습니다. 아래 연결 레코드와 직원 이벤트는 <b>새 개발 제안</b>입니다.</td></tr>
+</tbody></table></div>
+<p class="src">원문: <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-16">§16 유지보수</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-5">§5 데이터 경계</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-8">§8 문서 수정</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs/agent-a.md">Markdown 원문</a>. 문서의 제품 검증 보고를 이번에 실제 AI로 재시험한 것은 아닙니다.</p>
+
+<h2>2. 연결 방식: 자료 HTML 안에 앱을 넣지 않습니다</h2>
+<div class="compare"><div><span class="tag">즉시 가능한 진입 후보</span><h3>서비스로 연결</h3><p>자료에서 Agent-A 원래 화면으로 이동. 기존 UI를 가장 많이 보존합니다. IAMCEO 안 담당/알림/업무 요약 통합은 별도입니다. artifact/review 링크는 최종 Tailscale 주소를 사용해야 합니다.</p></div><div><span class="tag warn">보류</span><h3>자료 안 iframe</h3><p>IAMCEO artifact-kit은 중첩 iframe/link를 무력화하고 외부 연결을 차단합니다. 제품 화면의 별도 iframe도 인증·보안 헤더·저장소·모바일 실검증이 없으므로 지원으로 확정하지 않습니다.</p></div><div class="pick"><span class="tag">목표 구조 추천 · 개발 필요</span><h3>IAMCEO 네이티브 화면 + 서버 어댑터</h3><p>자료 탭의 문서·검토 UI를 IAMCEO 제품 컴포넌트로 구현. 서버가 Agent-A 계약을 호출하고 원래 문서/검토 식별자를 유지합니다. 화면은 이어지고 저장 책임은 하나입니다.</p></div></div>
+<p>새 화면에서 Plannotator 기능 전체를 복제하지 않습니다. 첫 도입은 <b>Markdown 문서·전체 버전 댓글·답글·문서 수정안·이전 원문</b>입니다. Agent-A의 정밀 텍스트/이미지 선택, 분기, 직접 편집은 원래 화면으로 연결하고 이후 별도 검증합니다. Agent-A 전체 화면을 가져오는 모듈 임베드 계약도 확인되지 않았습니다.</p>
+<ol class="flow"><li><b>IAMCEO 자료</b><br>자료 연결·업무·담당·내 차례</li><li><b>IAMCEO 서버 어댑터</b><br>권한·출처 고정·큐·대조·요약</li><li><b>Agent-A 서버</b><br>정본·검토본·스레드·수정안·버전 검증</li><li><b>결과 반환</b><br>새 원문 확인 → 요약 링크 → 선별 기록 후보</li></ol>
+<p class="src">근거: <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-12">§12 API 지도</a>, <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-13">§13 도메인·인증</a>. IAMCEO 읽기 확인: 실제 7881 작업 사본의 <code>shared/types.ts</code>(자료/글의 task 연결), <code>server/agent-tools.ts</code>(자료/보고), <code>server/orchestrator.ts</code>(전달·실행 상관 ID), <code>shared/artifact-kit.ts</code>의 <code>ARTIFACT_CSP</code>·<code>buildArtifactSrcdoc</code>.</p>
+
+<h2>3. 누가 무엇을 보관하고, 어떤 ID로 연결하나</h2>
+<div class="scroll"><table><thead><tr><th>단위</th><th>정본/책임 주체</th><th>연결 방법 · 통합 제안</th></tr></thead><tbody>
+<tr><td>원래 IAMCEO file</td><td>기존 파일·자료 원문은 IAMCEO에 보존</td><td>자동 이관 없음. 명시적으로 Agent-A 관리 문서로 연결할 때 출처 file ID와 최초 기준을 고정. 이후 같은 문서의 양방향 본문 쓰기는 금지.</td></tr>
+<tr><td>Agent-A 연결 문서</td><td>Agent-A artifact가 편집 정본</td><td>IAMCEO의 지속 자료 연결 레코드 → Agent-A artifact ID. 새 버전마다 artifact_revision과 고정 내보내기 file ID를 대응. 기존 file ID 자체를 영속 문서 ID로 사용하지 않음.</td></tr>
+<tr><td>검토본·댓글·답글</td><td>Agent-A snapshot·검토 세션·영구 주석</td><td>문서·검토 세션 헤더/ID와 원래 댓글·부모 댓글 참조를 저장. 과거 snapshot과 위치를 최신 원문으로 자동 재연결하지 않음.</td></tr>
+<tr><td>문서 변경안</td><td>Agent-A 제안과 엔진</td><td>정확한 제안 ID·질문 관계·문맥/블록 버전·서버 read-set에 따라 수락. IAMCEO에서 별도 패치로 정본을 덮어쓰지 않음.</td></tr>
+<tr><td>project/task·담당·전달</td><td>IAMCEO 서버</td><td>자료 연결/요청마다 프로젝트·task 또는 전체(null)·전송 시 담당·배정 세대를 고정. Agent-A task_id와 IAMCEO task ID의 동등성은 가정하지 않고 명시 매핑.</td></tr>
+<tr><td>실행 상태</td><td>실제 실행을 소유한 시스템</td><td>Agent-A 자체 실행은 그 서버의 작업/질문 상태. IAMCEO 직원 실행은 IAMCEO 전달·큐·실행 기록. 둘을 동일한 run으로 꾸미지 않고 상관 ID로 연결.</td></tr>
+<tr><td>업무 대화·결재</td><td>IAMCEO가 정본</td><td>확정 결정·이유·결과 버전·미결과 원문 링크만. 댓글 답변·문서 Save를 IAMCEO의 전체 권한 승인으로 해석하지 않음.</td></tr>
+</tbody></table></div>
+<details><summary>개발자가 사용할 최소 연결 계약 · 모두 새 논리 계약</summary><p>IAMCEO 측 연결 레코드는 지속 자료키, source file ID, Agent-A artifact ID, IAMCEO project/task, 고정 검토 참조, 대상 revision, 담당과 배정 세대, 요청/전달 ID, 실행 소유자·상관 ID를 갖습니다. 결과는 원래 요청 ID와 정확한 제안/결과 ID를 참조합니다. <b>이는 Agent-A가 현재 받는 JSON 필드 목록이 아닙니다.</b></p><p>Agent-A가 문서에서 구분한 실제 값은 <code>artifact_revision</code>, <code>context_revision</code>, <code>layout_revision</code>, 블록 <code>revision</code>/<code>reviewed_revision</code>, <code>event_seq</code>입니다. 사용자용 v1/v2는 설명용 순번이며 이 모든 값을 대신하지 않습니다. CLI 세션·task·브랜치·워크트리도 서로 다른 단위입니다.</p></details>
+
+<h2>4. 댓글에서 새 본문까지: 실행 주체를 한 번만 선택</h2>
+<div class="callout"><b>가장 중요한 추가 계약: 외부 담당 실행 모드</b><br>현재 Agent-A는 새 댓글을 저장하면 자체 답변을 요청합니다. IAMCEO 직원에게 맡기려면 문서/요청별 실행 소유자를 서버가 확정하고, 자체 답변·자체 구현 경로를 함께 실행하지 않도록 해야 합니다. 외부 실행자 수신·결과/제안 제출·중단 확인 계약은 문서에 없습니다. 기존 API를 억지로 재사용해 구현됐다고 표시하지 않습니다.</div>
+<ol class="steps">
+<li><b>대표가 자료 A v1에서 요청.</b> 의견/질문/수정 요청을 구분합니다. IAMCEO가 출처 문서·snapshot·댓글·task·담당/배정을 고정하고 수신 기록을 남깁니다. 단순 질문은 답변만, 수정 요청은 변경안까지 준비합니다.</li>
+<li><b>서버가 한 곳에 전달.</b> 현재 IAMCEO의 총괄 배정·직원 대기열 경로를 사용합니다. 접수는 실행 시작/완료가 아닙니다. 같은 직원의 A/B는 순차 처리하고, 다른 작업의 요약은 필요한 경우만 입력합니다.</li>
+<li><b>직원이 근거와 결과를 제출.</b> 원래 요청·실행 ID, 읽은 버전, 변경 이유·검증·미결과 정확한 제안을 반환합니다. Agent-A 엔진이 권한과 read-set을 고정합니다. 답변이 도착해도 본문은 그대로입니다.</li>
+<li><b>대표가 변경 전후를 보고 명시 수락/거절.</b> 선택한 문서 제안만 수락합니다. 헤더 검토 Save나 개발 결과 Save와 구분합니다. 구버전/배정 충돌은 재검토로 보냅니다.</li>
+<li><b>저장 결과와 실제 표시를 대조.</b> DB 저장 후 현재 정본을 다시 읽고 새 본문이 표시되는지 확인합니다. 응답 유실은 ‘미확인’; 중복 적용 대신 원래 요청 결과를 조회합니다. 원래 댓글은 v1에 남습니다.</li>
+<li><b>업무 대화에는 한 결과 링크.</b> 결정/이유·새 버전·검증·미결과 원문 참조만 연결합니다. 업무 대화에서 수정 내용을 다시 복사해 별도 스레드를 만들지 않습니다.</li>
+</ol>
+<p><b>현재/장래 구분:</b> IAMCEO task 필터는 실제 CLI 모델 문맥의 완전 분리를 뜻하지 않습니다. f_k134NYyhbo3e의 상사+task별 실행은 별도 설계입니다. 이번 통합은 그 구현을 전제로 하지 않습니다. 현재 총괄의 직접 조사/구현 금지, 직원 간 호출 제약도 임의 해제하지 않습니다.</p>
+
+<h2>5. 동시업무·늦은 결과·충돌을 처리하는 규칙</h2>
+<div class="scroll"><table><thead><tr><th>상황</th><th>처리</th><th>대표가 보는 상태</th></tr></thead><tbody>
+<tr><td>A 요청 후 B로 이동</td><td>전송 시 고정한 A·v1·댓글·task·배정에 반환. 현재 선택 화면으로 귀속하지 않음.</td><td>B를 유지하며 A 알림. 클릭하면 A의 원래 댓글로 이동.</td></tr>
+<tr><td>같은 직원이 여러 자료·task</td><td>요청별 출처/작업 줄과 필요한 입력 묶음. 동일 자료의 쓰기는 한 번에 하나씩 조정, 엔진 버전 검사로 최종 보호.</td><td>자료별 대기/답변/검토 상태. 상시 그룹 대화는 없음.</td></tr>
+<tr><td>담당 교체 뒤 늦은 답</td><td>이전 배정의 결과로 보존. 새 담당이 출처·근거를 인계 검토하고 새 제안으로 채택해야 쓰기 가능. 최초 배정 기록은 수정하지 않음.</td><td>‘이전 담당 결과 · 인계 검토 필요’. 자동 반영 안 함.</td></tr>
+<tr><td>옛 버전 댓글·최신 정본 충돌</td><td>옛 원문을 열고 최신 정본을 따로 비교. 위치/인용이 모호하면 확인 요청. 최신본 기반 새 제안/새 read-set으로 재검토, 옛 제안 이력 보존.</td><td>‘기준 버전 충돌’ → 새 변경안 전후 확인. 단순 강제 적용 없음.</td></tr>
+<tr><td>답변 생성 중 중단·후속 지시</td><td>요청 ID와 실행 소유자에 중단 전달. ack 전에는 요청 중, 실제 종료 확인 후 중단 완료. 후속 지시는 원래 스레드/최신 정본 확인에 연결. 완료된 쓰기는 별도 정정 제안 필요.</td><td>‘중단 요청됨’과 ‘중단 확인’을 구분. 부분 답·초안 보존.</td></tr>
+<tr><td>저장 응답 유실·조회 실패</td><td>정확한 명령/제안의 처리 결과부터 대조. 같은 내용 재시도는 같은 중복키; 다른 내용은 새 키. 확인 전 새 버전 생성이나 완료 요약 금지.</td><td>‘저장 결과 미확인’ + 결과 재조회. 실패 시 원문·입력 유지.</td></tr>
+</tbody></table></div>
+<p class="src">Agent-A의 중단 API/보존은 <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-7">§7</a>, 오류는 <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-10">§10</a>, 원자적 변경·receipt는 <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-11">§11</a>. IAMCEO 직원 중단과 Agent-A 중단을 연결하는 부분은 신규 어댑터 계약입니다. 개발 담당의 기존 중단 작업은 건드리지 않습니다.</p>
+
+<h2>6. 접속·동기화·복구를 위한 최소 조건</h2>
+<details open><summary>인증과 연결 범위</summary><p>Agent-A는 loopback 서버와 Tailscale Serve의 루프백·정확한 호스트·허용 사용자 헤더를 함께 확인하며, 선택적 토큰/Access 인증도 적용될 수 있습니다(§13). IAMCEO 로그인만으로 Agent-A 권한을 취득한다고 가정하지 않습니다. 서버 어댑터는 <b>Agent-A가 정상 지원하는 인증 경로를 별도로 확인</b>해야 합니다. Tailscale 사용자 헤더 위조, 대표 접속 코드 재사용, 다른 직원 토큰 사용은 설계에 없습니다.</p><p>개인 도메인은 302 이동이며 쿼리를 전달하지 않습니다. artifact/review 링크는 승인된 최종 서비스 origin을 고정합니다. 모든 임의 URL을 서버가 대신 가져오는 프록시로 만들지 않습니다. 자격 정보는 서버 설정에만 두고 HTML·URL·댓글·캡처에는 넣지 않습니다.</p><p>API 연동은 브라우저가 직접 교차 출처 호출하는 방식보다 서버 간 호출을 권합니다. 그렇더라도 인증 계약 확인이 먼저입니다. 기존 IAMCEO 자료 뷰어의 <code>connect-src 'none'</code>과 중첩 iframe 차단을 풀지 않고, 실제 통합은 제품 UI에서 처리합니다. 현재 공개된 헤더 관찰만으로 CORS/CSP 호환성을 보증할 수 없습니다.</p></details>
+<details><summary>확인된 API와 아직 없는 연결점</summary><p>문서 §12는 <code>GET /api/artifacts</code>, <code>GET /api/artifacts/:id</code>, <code>POST .../commands</code>, <code>POST /api/plannotator/sessions</code>, <code>/api/external-annotations</code>, <code>/api/plannotator/comment-proposals</code>와 <code>.../approve</code>, <code>/api/ai/history</code>·<code>/query</code>·<code>/abort</code> 등 경로를 열거합니다. 검토 세션 열기는 쓰기 요청이며 이번 조사에서는 호출하지 않았습니다.</p><p>정확한 요청 본문/인증 헤더·외부 실행자·웹훅·이벤트 구독·완료 callback은 원문 지도만으로 확정되지 않습니다. <b>POST 문서/댓글로 직원 결과를 주입할 수 있다고 가정하지 않습니다.</b> Agent-A의 task_id나 대화 branch도 IAMCEO의 task/run과 동일하지 않습니다.</p></details>
+<details><summary>조회·outbox·중복 억제 · 신규 운영 제안</summary><p>문서에 웹훅 보장이 없어 처음에는 조회 어댑터를 제안합니다. 열 때/명시 새로고침/본인 요청 대기 중에만 조회합니다. 대기 중 3초→10초→30초, 탭 숨김 시 중지, 복귀 시 재조회는 시작 가설입니다. 요청/상태 변화가 없으면 중단하고 서버 부하와 알림 지연으로 조정합니다. 일반 AI query의 스트리밍을 전체 문서 이벤트 구독으로 간주하지 않습니다.</p><p>IAMCEO는 원래 댓글/전달/배정/실행의 상관 ID를 저장하고, 업무 요약 알림은 원래 이벤트+결과 버전의 중복키로 한 번만 생성합니다. 전달 의도와 outbox를 같은 트랜잭션에 저장하고 수신 ack·실패 횟수를 남기는 부분은 새 개발입니다. Agent-A 내부 receipt와 동일한 기능이 이미 IAMCEO에 있다는 뜻이 아닙니다.</p><p>네트워크 오류는 제한 재시도, 인증 거절은 설정 확인 대기, 버전 충돌은 새 검토, 결과 불명은 원래 요청 대조로 분기합니다. 적용 명령은 정본 엔진의 실제 idempotency 계약 확인 뒤에만 재전송합니다. 서버 재시작 뒤에도 로컬 선택 화면/모델 기억 대신 저장된 요청과 결과를 기준으로 복구합니다.</p></details>
+
+<h2>7. Hindsight에는 확정한 판단과 결과만</h2>
+<p>자료의 <b>채택한 결정/이유·적용 범위·원래 댓글/정본 버전·수락한 제안·검증/실제 결과</b>를 IAMCEO의 선별 기록 접점에 후보로 넘기는 설계입니다. 모든 댓글·답변·초안·거절안을 자동 업로드하지 않습니다. 대표의 선택과 실제 품질 검증은 다른 근거로 남깁니다. 정정은 이전 기록과 대체 관계를 연결합니다.</p><p>현재 w3가 구현 중인 선별 기록·업무 전 검색 코드는 변경하지 않습니다. 이번에 검색/업로드/피드백을 호출하지 않았습니다. 정확한 전달 스키마는 기존 접점 계약에 맞춰 후속 확인하며, 실행 상태·권한·문서 정본은 Hindsight 검색 결과가 대신하지 않습니다.</p>
+
+<h2>8. 가장 작게 도입하고 검증하는 범위</h2>
+<div class="grid"><section class="card"><h3>1단계 · 확인 가능한 연결</h3><p>기존 자료를 보존한 채 문서 하나를 명시 연결. Agent-A 정본과 원래 검토로 여는 경로, 버전/소유 표시부터 검증합니다. 링크 단계에서는 Agent-A 자체 실행만 사용하며 IAMCEO 직원 자동 전달은 켜지 않습니다.</p></section><section class="card"><h3>2단계 · 이 목업의 목표</h3><p>Markdown A/B, 버전 전체 댓글·답글·변경 전후·수락/거절·업무 요약·오류. IAMCEO 담당 모드는 인증과 외부 실행자/제안 제출 계약을 먼저 보완하고 자체 AI 자동 실행과 배타적으로 운영합니다.</p></section></div>
+<p>두 단계는 도입 제안입니다. 별도 제품/프로젝트 구조 체험판, 여러 문서 원자 승인, 이미지/PDF 정밀 위치 댓글, 개발 패치 자동 적용·push·배포, Hindsight 연동 변경은 첫 범위에 없습니다.</p>
+<ol class="steps">
+<li>A v1 요청 → B 이동 → A 알림으로 원래 v1 댓글을 연다. B 내용/스레드는 변하지 않는다.</li>
+<li>답변만인 요청에는 불필요한 수락을 요구하지 않는다. 수정안은 전후를 보고 명시 반영/거절한다.</li>
+<li>반영 시 새 버전 본문 표시를 확인한다. v1 원문/댓글은 유지되고, 업무 대화의 링크는 원래 댓글을 연다.</li>
+<li>담당 교체의 늦은 답은 자동 적용되지 않는다. 최신본 충돌은 새 제안으로 검토하며 기존 이력을 보존한다.</li>
+<li>저장 응답 유실은 미확인으로 남기고 조회 후 한 버전만 확인한다. 중단 ack 전에는 완료로 표시하지 않는다.</li>
+<li>실제 도입 수용 기준: 한 요청당 실행자 1곳, 원문/초안 보존, 재시작 복구, 권한 검사, 정본+Viewer 대조, 중복 알림/적용 없음. 이 항목들은 목업 검증만으로 제품 통과가 되지 않는다.</li>
+</ol>
+<div class="callout"><b>남은 핵심 판단</b><br>목표는 IAMCEO 직원에게 실행을 맡기되 Agent-A는 정본·검토 엔진으로 쓰는 방향을 추천합니다. 이를 선택하면 외부 실행자 계약을 추가해야 합니다. 기존 Agent-A 자체 실행을 먼저 그대로 사용할지, 직원 연결까지 첫 통합 범위로 삼을지는 이번 목업을 보고 정할 수 있습니다. 승인된 것으로 쓰지 않습니다.</div>
+
+<h2>9. 목업 체험과 이번 검증 범위</h2>
+<p>별도 [클릭 목업] 자료를 열고 필요한 경우 ‘실행’을 누릅니다. ① A에 요청하고 B로 이동 → ② A 결과 알림을 열고 전후 확인 → ③ 반영 후 v1/v2·업무 대화 링크 확인 → ④ 아래 ‘충돌·오류·중단도 체험하기’를 열어 배정/버전/저장 오류를 확인합니다. 초기화와 빈 상태도 제공합니다.</p>
+<p id="verification">로컬 Chromium에서 실제 artifact-kit 래퍼와 allow-scripts sandbox를 적용해 320·390·768·1440px의 A→B→알림→원래 댓글, 전후 확인·반영, v1/v2, 답글, 업무 요약 복귀, 초기화·빈 상태를 확인했습니다. 추가로 담당 교체·버전 충돌·연결 실패/재시도·저장 응답 유실/중복 없는 조회·중단 확인·거절·질문만 답변을 점검했습니다. 설계안도 네 폭에서 본문 가로 넘침이 없었습니다. 외부 요청·스크립트 오류 0건. PC/폰 캡처를 함께 제공합니다. 실제 7881 자료 뷰어를 여는 시험, Agent-A API/인증·실제 AI 왕복·기기별 Safari는 검증하지 않았습니다.</p>
+<p class="src">개정 관계: 주 설계 f_43Ud4K8WDtRK·시안 f_t3j1P4zePrcv·완료 msg_n1plrk5YalxV의 후속 최신판. 이전 자료를 읽지 않아도 이 자료 하나로 판단할 수 있도록 다시 작성했습니다. 정본/실행 책임을 새 문서에 맞춰 구체화했으며 기존 승인/배포 범위를 확대하지 않았습니다.</p>
+<footer class="card"><h3>근거를 다시 열기</h3><p><a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-3">§3 사용자 흐름</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-4">§4 Save 3종</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-5">§5 정본 경계</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-7">§7 대화·댓글</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-8">§8 수정안</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-9">§9 개발 실행</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-11">§11 버전·receipt</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-12">§12 API</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-13">§13 운영·인증</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-15">§15 미구현 범위</a> · <a href="https://hyejoo-mac-mini.tail5169d3.ts.net:10443/dev-docs#section-16">§16 유지보수</a></p><p class="src">확인 2026.11.12 · 원문 기준 c559881. 연결된 GitHub 원본은 404로 열지 못해 정확한 외부 호출 스키마까지 확인했다고 주장하지 않습니다. 서비스 쓰기/리뷰 세션 생성/실제 AI 호출/제품 수정 없음.</p></footer>
+</main></body></html>
+</body></html>

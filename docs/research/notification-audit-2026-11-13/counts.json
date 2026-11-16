@@ -1,0 +1,60 @@
+{
+  "window": {
+    "start_utc_inclusive": "2026-11-12T11:26:06.000Z",
+    "end_utc_exclusive": "2026-11-13T11:26:06.000Z",
+    "kst": "2026-11-12 20:26:06 ~ 2026-11-13 20:26:06 (24시간)"
+  },
+  "timeline": {
+    "total": 84,
+    "user": 8,
+    "by_kind": {
+      "완료": 24,
+      "질문": 5,
+      "알림": 25,
+      "진행": 21,
+      "나": 8,
+      "시스템": 1
+    },
+    "chief": 35,
+    "worker": 40
+  },
+  "runs": {
+    "total_started": 60,
+    "ended": 56,
+    "with_report_request": 19
+  },
+  "internal_deliveries": {
+    "total_created": 115,
+    "by_kind": {
+      "report": 35,
+      "system": 55,
+      "answer": 5,
+      "user_message": 8,
+      "instruction": 12
+    },
+    "missing_report_created": 19,
+    "same_target_run_duplicates": 0
+  },
+  "push_events_by_kind": [
+    {
+      "kind": "decision",
+      "n": 5
+    },
+    {
+      "kind": "report_complete",
+      "n": 22
+    }
+  ],
+  "push_delivery_states": [],
+  "duplicate_delivery_reference_groups": [],
+  "mac_notify_current": [],
+  "candidate_reductions": {
+    "chief_supplement_only_wake_runs": 13,
+    "posts_from_those_runs": 13,
+    "retrigger_runs": 5,
+    "with_nonwake_extra_and_rerequest": 5
+  },
+  "requested_runs_with_qualifying_post": 0,
+  "chief_requested_with_alert_only": 17,
+  "chief_requested_total": 17
+}

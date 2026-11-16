@@ -1,0 +1,349 @@
+<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src data:; form-action 'none'; base-uri 'none'"><meta http-equiv="x-dns-prefetch-control" content="off"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:where(*,*::before,*::after){box-sizing:border-box}
+:where(html){color-scheme:light;-webkit-text-size-adjust:100%}
+:where(body){margin:0;padding:24px;background:#FBFAFE;color:#17132B;font:15px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Segoe UI",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+:where(h1,h2,h3,h4){margin:1.6em 0 .6em;line-height:1.3;font-weight:650;color:#17132B}
+:where(h1){font-size:1.6rem;margin-top:0}
+:where(h2){font-size:1.25rem}
+:where(h3){font-size:1.05rem}
+:where(h4){font-size:.95rem;color:#4A4566}
+:where(p,ul,ol,dl,blockquote,pre,table,figure){margin:0 0 1em}
+:where(ul,ol){padding-left:1.4em}
+:where(li+li){margin-top:.25em}
+:where(a){color:#5B3FD9}
+:where(strong){color:#17132B}
+:where(hr){border:0;border-top:1px solid rgb(23 19 43 / .1);margin:1.5em 0}
+:where(blockquote){padding:.2em 0 .2em 1em;border-left:3px solid rgb(122 91 255 / .45);color:#4A4566}
+:where(img,svg,video,canvas){max-width:100%;height:auto}
+:where(code,kbd,samp){font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:rgb(23 19 43 / .05);padding:.1em .35em;border-radius:5px}
+:where(pre){padding:14px 16px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:12px;overflow:auto}
+:where(pre code){background:none;padding:0}
+:where(table){width:100%;border-collapse:collapse;font-size:.93em;display:block;overflow-x:auto}
+:where(.kit-table){margin:0 0 1em;overflow-x:auto}
+:where(.kit-table>table){display:table;margin:0}
+:where(th,td){padding:9px 12px;border-bottom:1px solid rgb(23 19 43 / .08);text-align:left;vertical-align:top;overflow-wrap:break-word}
+:where(th){color:#4A4566;font-weight:600;background:#F6F4FC;white-space:nowrap}
+:where(.card){padding:18px 20px;margin:0 0 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.card>:last-child,.callout>:last-child){margin-bottom:0}
+:where(.card>:first-child,.callout>:first-child){margin-top:0}
+:where(.grid){display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:0 0 14px}
+:where(.grid>.card){margin:0}
+:where(.callout){padding:14px 16px;margin:0 0 14px;background:rgb(122 91 255 / .08);border:1px solid rgb(122 91 255 / .22);border-left-width:4px;border-left-color:#7A5BFF;border-radius:12px}
+:where(.callout.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .4);border-left-color:#FF9A4D;color:#A8530A}
+:where(.callout.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .4);border-left-color:#FF6B60;color:#C2372E}
+:where(.callout.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .4);border-left-color:#20B97C;color:#0B7F55}
+:where(.kpi){display:flex;flex-direction:column;gap:4px;padding:16px 18px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.kpi b,.kpi strong){font-size:1.7rem;line-height:1.2;font-weight:680;color:#17132B;font-variant-numeric:tabular-nums}
+:where(.kpi small,.kpi span){color:#4A4566;font-size:.85em}
+:where(.steps){list-style:none;counter-reset:step;padding:0;margin:0 0 14px}
+:where(.steps>li){counter-increment:step;position:relative;padding:0 0 14px 40px;margin:0}
+:where(.steps>li)::before{content:counter(step);position:absolute;left:0;top:0;width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:rgb(122 91 255 / .12);color:#5B3FD9;font-size:.82em;font-weight:650}
+:where(.steps>li:not(:last-child))::after{content:"";position:absolute;left:12.5px;top:30px;bottom:4px;width:1px;background:rgb(23 19 43 / .12)}
+:where(.tag){display:inline-block;padding:.1em .6em;border-radius:999px;font-size:.8em;line-height:1.6;background:rgb(23 19 43 / .05);color:#4A4566;border:1px solid rgb(23 19 43 / .08)}
+:where(.tag.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .3);color:#0B7F55}
+:where(.tag.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .35);color:#A8530A}
+:where(.tag.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .35);color:#C2372E}
+:where(.compare){display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:0 0 14px}
+:where(.compare>*){padding:16px 18px;margin:0;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.compare>.pick){border-color:rgb(122 91 255 / .55);background:rgb(122 91 255 / .07)}
+:where(.compare>*>:last-child){margin-bottom:0}
+:where(.compare>*>:first-child){margin-top:0}
+:where(.flow){display:flex;flex-wrap:wrap;gap:10px 26px;list-style:none;padding:0;margin:0 0 14px}
+:where(.flow>*){position:relative;flex:1 1 130px;margin:0;padding:12px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(.flow>*:not(:last-child))::after{content:"→";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:#5F5983}
+:where(.flow>*>:last-child){margin-bottom:0}
+:where(.flow>*>:first-child){margin-top:0}
+:where(button){font:inherit;color:inherit}
+:where(.tabs){display:flex;flex-wrap:wrap;gap:4px;padding:4px;margin:0 0 14px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.tabs>button){flex:1 1 auto;min-height:44px;padding:0 14px;background:none;border:0;border-radius:10px;color:#4A4566;font-weight:600;cursor:pointer}
+:where(.tabs>button:hover){background:rgb(122 91 255 / .07)}
+:where(.tabs>button[aria-selected="true"]){background:#fff;color:#5B3FD9;box-shadow:0 6px 16px -6px rgb(122 91 255 / .55),0 0 0 1px rgb(122 91 255 / .22)}
+@media (max-width:520px){:where(body){padding:16px;font-size:14.5px}:where(h1){font-size:1.35rem}:where(.grid,.compare){grid-template-columns:1fr}:where(.flow){flex-direction:column;gap:22px}:where(.flow>*){flex:none}:where(.flow>*:not(:last-child))::after{content:"↓";right:auto;left:50%;top:auto;bottom:-22px;transform:translateX(-50%)}}
+:where(body>main.page){max-width:760px;margin-inline:auto}
+:where(body>main.page>h2){margin-top:40px}
+:where(p.src){margin:8px 0 0;font-size:.8em;color:#5F5983}
+:where(p.owner:has(>b)){display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 14px;padding:12px 16px;background:rgb(255 154 77 / .1);border:1px solid rgb(255 154 77 / .45);border-radius:12px;color:#17132B}
+:where(p.owner:has(>b))::before{content:"";flex:none;align-self:center;width:9px;height:9px;border-radius:50%;background:#FF9A4D}
+:where(p.owner>b){color:#A8530A}
+:where(ol.toc){display:flex;flex-wrap:wrap;gap:2px 14px;list-style:none;padding:0;margin:0 0 4px;font-size:.86em;color:#4A4566}
+:where(ol.toc>li){margin:0}
+:where(p.find){margin:0 0 14px;font-size:.82em;color:#5F5983}
+:where(h2>span.no,h3>span.no){color:#5F5983;font-weight:600}
+:where(div.hero:has(>b+span)){display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0 0 14px}
+:where(div.hero:has(>b+span)>b){font-size:3rem;line-height:1.05;font-weight:700;color:#17132B;white-space:nowrap}
+:where(div.hero:has(>b+span)>span){flex:1 1 220px;min-width:0;color:#4A4566}
+:where(span.delta){white-space:nowrap;font-variant-numeric:tabular-nums;color:#4A4566}
+:where(span.delta>b){color:#17132B;font-weight:680}
+:where(span.delta>small){font-size:.85em;color:#5F5983}
+:where(figure.bars){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.bars>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.bars>.bar){position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.bars>.bar>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(figure.bars>.bar)::after{content:"";grid-column:1/-1;height:10px;width:calc(var(--v) / var(--max) * 100%);min-width:2px;border-radius:0 4px 4px 0;background:rgb(23 19 43 / .25)}
+:where(figure.bars>.bar.is-key)::after{background:#17132B}
+:where(figure.bars>.bar.is-rec)::after{background:#7A5BFF}
+:where(.has-limit>figure.bars>.bar)::before{content:"";position:absolute;bottom:-3px;left:calc(var(--limit) / var(--max) * 100% - 1px);width:2px;height:16px;border-radius:1px;background:#17132B}
+:where(figure.bars>.ticks){display:flex;justify-content:space-between;margin:0;padding-top:4px;border-top:1px solid rgb(23 19 43 / .15);font-size:.75em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(figure.cols){margin:0 0 14px;max-width:520px}
+:where(figure.cols>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.cols>.cols-plot){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;align-items:end;height:150px;border-bottom:1px solid rgb(23 19 43 / .3)}
+:where(.cols-plot>.col){display:flex;flex-direction:column;align-items:center;gap:4px;font-size:.88em}
+:where(.cols-plot>.col>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(.cols-plot>.col)::after{content:"";width:min(44px,80%);height:calc(var(--v) / var(--max) * 120px);min-height:2px;border-radius:4px 4px 0 0;background:rgb(23 19 43 / .25)}
+:where(.cols-plot>.col.is-key)::after{background:#17132B}
+:where(figure.cols>.cols-x){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;margin:6px 0 0;text-align:center;font-size:.8em;line-height:1.4;color:#4A4566}
+:where(div.ba){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0 0 14px}
+:where(div.ba>*){margin:0;padding:14px 16px;background:#fff;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(div.ba>.ba-before){background:transparent;color:#4A4566}
+:where(div.ba>*>p){margin:0}
+:where(.ba-label){display:block;margin:0 0 6px;font-size:.8em;font-weight:650;color:#5F5983;letter-spacing:.02em}
+:where(div.ba del){color:#5F5983;text-decoration-thickness:1.5px}
+:where(div.ba ins){text-decoration:none;font-weight:650;color:#17132B;background:rgb(23 19 43 / .07);box-shadow:inset 0 -2px 0 #17132B;padding:0 2px;border-radius:3px}
+:where(sup.n){font-size:.68em;font-weight:700;color:#17132B;margin-left:1px}
+:where(ol.why){margin:0 0 14px;padding-left:1.4em;font-size:.93em;color:#4A4566}
+@media (max-width:520px){:where(div.ba){grid-template-columns:1fr;gap:8px}}
+:where(div.rec:has(>.rec-head)){margin:0 0 14px;padding:16px 18px;background:rgb(122 91 255 / .07);border:1px solid rgb(122 91 255 / .5);border-radius:14px}
+:where(div.rec:has(>.rec-head)>p){margin:0 0 4px}
+:where(div.rec>.rec-head){margin:0 0 8px;font-size:1.05em;font-weight:650;color:#17132B}
+:where(div.rec>.rec-cost){margin:10px 0 0;padding-top:10px;border-top:1px solid rgb(122 91 255 / .2);color:#4A4566;font-size:.93em}
+:where(div.rec:has(>.rec-head)>:last-child){margin-bottom:0}
+:where(.tag.pick){background:#fff;border-color:rgb(122 91 255 / .4);color:#5B3FD9;font-weight:650}
+:where(td.rec-cell,th.rec-cell){background:rgb(122 91 255 / .06)}
+:where(ul.opts){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px;font-size:.93em;color:#4A4566}
+:where(ul.opts>li){margin:0;padding:10px 14px;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(ul.opts>li>b){color:#17132B;margin-right:6px}
+:where(figure.gantt){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.gantt>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.gantt>.g-row){display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.gantt>.g-row>em){font-style:normal;color:#4A4566;font-variant-numeric:tabular-nums}
+:where(figure.gantt>.g-row>i){grid-column:1/-1;position:relative;display:block;height:14px;border-radius:4px;background:repeating-linear-gradient(90deg,transparent 0 calc(100% / var(--days) - 1px),rgb(23 19 43 / .09) calc(100% / var(--days) - 1px) calc(100% / var(--days))),rgb(23 19 43 / .035)}
+:where(figure.gantt>.g-row>i)::before{content:"";position:absolute;top:0;bottom:0;left:calc(var(--s) / var(--days) * 100%);width:calc((var(--e) - var(--s)) / var(--days) * 100%);border-radius:4px;background:rgb(23 19 43 / .45)}
+:where(figure.gantt>.g-row.is-rec>i)::before{background:#7A5BFF}
+:where(figure.gantt>.g-row.is-opt>i)::before{background:transparent;border:1.5px dashed #5F5983}
+:where(figure.gantt>.g-row.is-owner>i)::before{top:1px;bottom:auto;width:12px;height:12px;margin-left:1px;border-radius:2px;transform:rotate(45deg);background:#FF9A4D}
+:where(figure.gantt>.g-axis){display:flex;justify-content:space-between;margin:0;font-size:.78em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(:is(ul,ol).status:has(>li>.tag)){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px}
+:where(:is(ul,ol).status>li:has(>.tag)){display:flex;gap:10px;align-items:baseline;margin:0;padding:10px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(:is(ul,ol).status>li>.tag){flex:none;min-width:5.4em;text-align:center}
+:where(figure.dg){margin:0 0 14px}
+:where(figure.dg>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.dg>svg){display:block;width:100%;max-width:420px;height:auto}
+:where(.dg-box){fill:#fff;stroke:rgb(23 19 43 / .22)}
+:where(.dg-box.is-owner){fill:#FFF1E6;stroke:#FF9A4D}
+:where(.dg-t){font-size:14px;font-weight:650;fill:#17132B}
+:where(.dg-s){font-size:12px;fill:#4A4566}
+:where(.dg-line){fill:none;stroke:#5F5983;stroke-width:1.5}
+:where(.dg-head){fill:#5F5983}
+:where(.dg-l){font-size:11.5px;fill:#5F5983;paint-order:stroke;stroke:#FBFAFE;stroke-width:4px;stroke-linejoin:round}</style></head><body><!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>이름부터 이해되는 IAMCEO 공통 사전 · v0.1</title><style>body{margin:0;padding:24px;color:#252036;background:#fbfaff;font:15px/1.75 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;overflow-wrap:anywhere}main{max-width:980px;margin:auto}h1{font-size:30px;line-height:1.3;letter-spacing:-.6px}h2{font-size:22px;margin:36px 0 12px}p,li{margin-bottom:12px}.intro{border-left:4px solid #7854cf;padding:14px 18px;background:#eee7fb;border-radius:12px}.vocab{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0}.vocab div{padding:18px;border:1px solid #dfd4f0;background:#fff;border-radius:14px}.vocab b{display:block;font-size:24px;color:#6543b0}.vocab span{font-size:13px;color:#766982}.table-wrap{overflow-x:auto;margin:16px 0}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px;text-align:left;vertical-align:top;border-bottom:1px solid #e5ddee}th{background:#eee8f7}th:first-child,td:first-child{min-width:110px}code{background:#eee8f4;padding:2px 4px;border-radius:5px;font-size:12px}strong{color:#573c91}details{font-size:12px;color:#72667f;border-top:1px solid #dfd5ed;margin-top:30px;padding-top:16px}summary{cursor:pointer;font-weight:650}.page>.vocab{max-width:100%}@media(max-width:600px){body{padding:16px}h1{font-size:25px}h2{font-size:20px}.vocab{grid-template-columns:1fr}.vocab div{padding:12px 16px}.vocab b{font-size:20px}table,tbody,tr,td{display:block;min-width:0!important}.table-wrap{overflow:visible}thead{display:none}tr{border:1px solid #e0d7ec;border-radius:12px;margin:12px 0;padding:10px;background:white}td{padding:7px;border:0}td:before{content:attr(data-label) " · ";display:block;color:#8a799c;font-size:11px}td:first-child{font-weight:650;color:#5d3d9a}}</style></head><body><main class="page"><p class="intro">함께 다듬을 첫 사전입니다. 이름과 뜻을 제안했으며 화면·역할 설정은 바꾸지 않았습니다.</p><div class="vocab"><div><span>이어 갈 목표와 맥락</span><b>프로젝트</b></div><div><span>맡겨서 끝낼 결과 하나</span><b>업무</b></div><div><span>지금 대표가 처리할 항목</span><b>내 차례</b></div></div><h1>이름부터 이해되는 IAMCEO 공통 사전</h1>
+<p>v0.1 논의 초안 · 대표가 쓰는 말부터 정하는 문서 · 화면·설정 변경 전</p>
+<p>추천은 프로젝트·업무·직원·대화·자료·검토·내 차례, 일곱 가지를 기본 말로 쓰는 것입니다. 앞으로 기능을 고칠 때 이 뜻부터 맞춥니다. 모든 이름을 새로 만들기보다 익숙한 말은 유지하고, 지금 겹치는 말과 범위를 정리합니다.</p>
+<h2>1. 먼저 이 한 문장으로 이해하면 됩니다</h2>
+<p>프로젝트 안에서 업무를 맡기고, 담당 직원이 대화로 보고합니다. 대표는 자료를 검토하고, 내 차례에 모인 판단이나 직접 할 일을 처리합니다.</p>
+<p>예: ‘서비스 A 프로젝트에서, 소개서 수정 업무를 문서 담당에게 맡겨. 수정안은 자료에서 보고, 내가 골라야 하는 것만 내 차례에 올려줘.’</p>
+<h2>2. 기본 말 일곱 가지</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>이름</th>
+<th>뜻과 경계</th>
+<th>바로 쓸 문장</th>
+</tr>
+</thead>
+<tbody><tr>
+<td data-label="이름">프로젝트</td>
+<td data-label="뜻과 경계">하나의 목표나 맥락을 계속 이어 가는 업무 공간. 여러 업무·직원·자료를 담음. 서비스뿐 아니라 작품·강의 준비도 가능</td>
+<td data-label="바로 쓸 문장">‘이 프로젝트는 서비스 A를 만드는 곳이야.’</td>
+</tr>
+<tr>
+<td data-label="이름">업무</td>
+<td data-label="뜻과 경계">끝낼 결과와 완료 기준이 있는 일 하나. 대화나 직원, 파일 개수와 같지 않음</td>
+<td data-label="바로 쓸 문장">‘이번 업무는 소개서 첫 장을 고치는 거야.’</td>
+</tr>
+<tr>
+<td data-label="이름">직원 / 담당 직원</td>
+<td data-label="뜻과 경계">직원은 일을 맡는 AI 역할. 담당은 그 업무 결과를 책임지는 관계. 같은 직원이 여러 업무를 맡아도 업무는 별개</td>
+<td data-label="바로 쓸 문장">‘이 업무 담당은 문서 담당이야.’</td>
+</tr>
+<tr>
+<td data-label="이름">대화</td>
+<td data-label="뜻과 경계">지시·질문·보고·후속 의견이 이어지는 기록. 업무별로 볼 수 있으며, 대화를 봤다고 실행한 것은 아님</td>
+<td data-label="바로 쓸 문장">‘소개서 수정 업무의 대화만 보여줘.’</td>
+</tr>
+<tr>
+<td data-label="이름">자료</td>
+<td data-label="뜻과 경계">다시 열어 읽고 검토하는 문서·이미지·결과물·참고 내용. 한 업무에 여러 자료, 한 자료에 여러 버전이 있을 수 있음</td>
+<td data-label="바로 쓸 문장">‘최종 소개서는 자료로 남겨줘.’</td>
+</tr>
+<tr>
+<td data-label="이름">검토</td>
+<td data-label="뜻과 경계">자료를 보면서 질문하고, 답변·수정안을 확인하고, 채택 여부를 판단하는 과정</td>
+<td data-label="바로 쓸 문장">‘이 문장은 과장돼 보여. 수정안을 보여줘.’</td>
+</tr>
+<tr>
+<td data-label="이름">내 차례</td>
+<td data-label="뜻과 경계">지금 대표가 답하거나 선택하거나 직접 처리해야 하는 항목. 직원이 기다리는 모든 상태가 아님</td>
+<td data-label="바로 쓸 문장">‘내가 지금 할 것만 모아서 보여줘.’</td>
+</tr>
+</tbody></table></div>
+<p>‘프로젝트 → 업무 → 자료’는 서로 관련된 단위지만 딱 한 줄의 폴더 구조는 아닙니다. 자료가 아직 업무에 지정되지 않았거나, 기존 자료를 다른 업무에서 참고하는 경우도 허용합니다. 프로젝트 전체에 관한 지시도 매번 억지로 업무 하나를 만들 필요는 없습니다.</p>
+<p>‘직원’은 사람처럼 부르는 운영 개념이고, 모델은 그 직원이 사용하는 AI입니다. 담당·모델이 바뀌어도 같은 업무의 원문·결정·자료 연결은 이어져야 한다는 것이 이 정의의 기준입니다. 모든 직원을 상주시키거나 새 세션을 늘리자는 뜻은 아닙니다.</p>
+<h2>3. 화면 이름은 이렇게 읽히게 맞춥니다</h2>
+<p>권장 기본 메뉴: 홈 / 내 차례 / 팀 / 대화 / 자료</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>지금 섞여 있는 말</th>
+<th>권장 표현</th>
+<th>사용 원칙</th>
+</tr>
+</thead>
+<tbody><tr>
+<td data-label="지금 섞여 있는 말">작업·task·일 목록·진행판의 일</td>
+<td data-label="권장 표현">업무 / 업무 목록</td>
+<td data-label="사용 원칙">대표가 맡긴 결과 단위는 ‘업무’. 진행판은 업무 상태를 보는 화면이며 별도 종류의 일이 아님</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">결재함·내가 할 일·대표 차례</td>
+<td data-label="권장 표현">내 차례</td>
+<td data-label="사용 원칙">묶음 이름은 하나. 안에서는 ‘선택 필요 / 직접 할 일 / 실행 허용 요청 / 답변 필요’로 구분</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">전체</td>
+<td data-label="권장 표현">모든 대화</td>
+<td data-label="사용 원칙">이 프로젝트의 업무 대화와 업무 미지정 글을 함께 봄. 다른 프로젝트까지 보는 뜻이 아님</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">작업이 없음·task 없음</td>
+<td data-label="권장 표현">업무 미지정</td>
+<td data-label="사용 원칙">글에 연결된 업무가 없다는 사실. 내용이 쓸모없거나 모든 업무에 공통이라는 판단을 덧붙이지 않음</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">지금 상황</td>
+<td data-label="권장 표현">지금 상황</td>
+<td data-label="사용 원칙">유지. 현재 / 진행 / 대표 차례 / 다음 네 줄로 씀</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">진행·완료 옆 직원·작업 이름</td>
+<td data-label="권장 표현">진행 보고 · 문서 담당 · 업무: 소개서 수정</td>
+<td data-label="사용 원칙">보고 종류 / 작성자 / 글의 업무를 구분. 지난 ‘완료 보고’를 지금 실행 상태로 읽게 하지 않음</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">실행 … 작업: A, B</td>
+<td data-label="권장 표현">지금 처리 중: A, B</td>
+<td data-label="사용 원칙">직원이 지금 처리하는 범위. 현재 보고 있는 업무 대화와 별개</td>
+</tr>
+<tr>
+<td data-label="지금 섞여 있는 말">Agent-A·Workbench 등 기능 이름</td>
+<td data-label="권장 표현">자료 검토</td>
+<td data-label="사용 원칙">대표가 누르는 기능 이름은 목적 중심. 사용 엔진/서비스 이름은 연결 설정의 세부 정보</td>
+</tr>
+</tbody></table></div>
+<p>이는 바꿀 이름과 뜻의 권장안입니다. 현재 메뉴나 버튼이 이미 이대로 바뀌었다는 뜻은 아닙니다. ‘내 차례’로 모은다고 서로 다른 승인 권한과 직접 할 일의 처리를 하나로 합치지는 않습니다.</p>
+<h2>4. ‘모든 대화’와 ‘업무 미지정’은 꼭 구분합니다</h2>
+<ul>
+<li>모든 대화: 이 프로젝트 안의 여러 업무 글과 업무 미지정 글을 모두 보여 주는 보기 범위.</li>
+<li>업무 미지정: 특정 글에 업무가 연결되지 않은 저장 상태.</li>
+<li>업무별 대화: 선택한 업무에 실제로 연결된 글만 보는 범위.</li>
+<li>받는 직원: 지금 쓰는 글을 받을 대상. 그 직원이 쓴 모든 보고를 검색하는 필터와 같지 않음.</li>
+<li>지금 처리 중: 선택한 직원의 실제 실행 범위. 다른 업무를 보고 있어도 직원이 하던 일은 저절로 바뀌지 않음.</li>
+</ul>
+<p>따라서 ‘직원에게 직접 보내기’, ‘업무 대화 보기’, ‘지금 처리 중인 직원 멈추기’는 다른 동작입니다. ‘다른 업무를 골랐으니 그 일로 실행도 바뀌었다’고 표현하지 않습니다. 화면을 선택한 것과 보낸 것은 구분합니다.</p>
+<h2>5. 자료와 검토에서 쓸 말</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>이름 / 버튼</th>
+<th>뜻</th>
+<th>구분할 것</th>
+</tr>
+</thead>
+<tbody><tr>
+<td data-label="이름 / 버튼">댓글 / 답글</td>
+<td data-label="뜻">그 자료·버전에 붙인 의견과 이어지는 답</td>
+<td data-label="구분할 것">답변 도착만으로 자료가 바뀐 것은 아님</td>
+</tr>
+<tr>
+<td data-label="이름 / 버튼">수정안 / 수정안 보기</td>
+<td data-label="뜻">아직 채택하지 않은 구체적인 변경 후보와 이유</td>
+<td data-label="구분할 것">새 본문과 전후를 볼 수 있어야 함</td>
+</tr>
+<tr>
+<td data-label="이름 / 버튼">이 수정안 반영</td>
+<td data-label="뜻">확인한 수정안을 실제 자료에 적용</td>
+<td data-label="구분할 것">일반 답변 동의·개발 실행 허용·배포와 다름</td>
+</tr>
+<tr>
+<td data-label="이름 / 버튼">버전 / 이전 버전</td>
+<td data-label="뜻">같은 자료에 저장된 내용의 특정 시점</td>
+<td data-label="구분할 것">수정안·과거 원문·현재 반영된 자료를 섞지 않음</td>
+</tr>
+<tr>
+<td data-label="이름 / 버튼">저장됨</td>
+<td data-label="뜻">기록이나 초안이 보관됨</td>
+<td data-label="구분할 것">현재 자료에 반영됐다는 보장은 아님</td>
+</tr>
+<tr>
+<td data-label="이름 / 버튼">반영됨</td>
+<td data-label="뜻">해당 수정이 현재 자료에 적용되고 새 본문까지 확인됨</td>
+<td data-label="구분할 것">코드 커밋·서비스 배포·다른 자료 승인과 별개</td>
+</tr>
+</tbody></table></div>
+<p>‘정본·snapshot·proposal·artifact’는 대표에게 기본으로 요구하지 않습니다. 화면에서는 ‘현재 자료 / 이 댓글의 원문 / 수정안 / 이전 버전’처럼 대상을 붙여 씁니다. v1·v2 같은 표시는 저장 이력의 이름이고, 새 이름이 업무나 자료의 식별자를 대신하지 않습니다.</p>
+<h2>6. 상태는 한 줄로 뭉치지 않습니다</h2>
+<p>업무의 상태, 대표가 해야 할 일, 자료의 상태는 따로 말합니다.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>어디의 상태인가</th>
+<th>쓸 말</th>
+<th>뜻</th>
+</tr>
+</thead>
+<tbody><tr>
+<td data-label="어디의 상태인가">업무</td>
+<td data-label="쓸 말">예정 / 진행 중 / 보류 / 막힘 / 완료</td>
+<td data-label="뜻">아직 시작 전 / 실제 수행 / 의도적으로 미룸 / 원인 때문에 진행 불가 / 정해 둔 완료 기준 충족</td>
+</tr>
+<tr>
+<td data-label="어디의 상태인가">대표 차례</td>
+<td data-label="쓸 말">없음 / 선택 필요 / 답변 필요 / 직접 할 일 / 실행 허용 요청</td>
+<td data-label="뜻">무엇을 해야 하는지 명시. 원인을 모르는 입력 대기를 전부 승인 대기로 만들지 않음</td>
+</tr>
+<tr>
+<td data-label="어디의 상태인가">자료 검토</td>
+<td data-label="쓸 말">답변 도착 / 수정안 준비 / 검토 필요 / 반영됨</td>
+<td data-label="뜻">결과가 도착한 단계와 실제 자료가 바뀐 단계를 구분</td>
+</tr>
+<tr>
+<td data-label="어디의 상태인가">전달</td>
+<td data-label="쓸 말">보냄 / 대기 중 / 전달됨 / 전달 실패</td>
+<td data-label="뜻">글의 전달 단계. 업무 완료·직원 실행 완료의 근거로 사용하지 않음</td>
+</tr>
+</tbody></table></div>
+<p>완료 기준은 업무를 맡길 때 정합니다. 모든 업무가 대표의 수락을 거쳐야만 끝나는 구조로 만들지는 않습니다. 시험·형식 확인으로 끝낼 일과 대표 판단이 필요한 일을 그 업무 기준과 권한으로 나눕니다. 예: ‘안내문은 지정 형식으로 자료에 남기면 완료’, ‘외부 발송은 대표가 허용한 뒤에만 실행’.</p>
+<p>위 상태표는 공통 언어의 목표 정의입니다. 현행 진행판의 네 칸이나 직원 CLI 상태가 이미 이 정의대로 자동 판별·통합된다는 뜻은 아닙니다.</p>
+<h2>7. 기억과 기술 용어는 필요한 곳에서만 설명합니다</h2>
+<ul>
+<li>기억: 지난 결정·수정 이유·검증 결과를 나중에 참고하는 기록. 현재 지시·승인·실행 상태를 대신하지 않습니다. 대표 화면에서는 ‘지난 결정 참고’, ‘판단 기준’, ‘이번 업무에 참고한 기록’처럼 용도를 함께 씁니다.</li>
+<li>모델: 직원이 사용하는 AI. GPT·Claude·Gemini 이름만으로 역할이나 권한을 정하지 않습니다.</li>
+<li>연결 도구: 다른 서비스에서 읽고 쓰는 기능. MCP 같은 구현 방식은 연결 설정의 세부로 둡니다.</li>
+<li>현재 실행: 직원이 한 번 시작해 응답하거나 멈출 때까지 처리하는 단위. 업무 하나와 항상 같지 않습니다. 기본 조작은 ‘직원 멈추기’, 실제로 영향을 받는 업무를 함께 표시합니다.</li>
+<li>업무 번호·자료 번호: 이름을 바꿔도 원래 대화·자료·결정을 찾는 연결 기준. 내부 task_id·file ID와의 정확한 대응은 개발 문서에서 관리합니다.</li>
+</ul>
+<h2>8. 앞으로 고도화할 때 지킬 짧은 규칙</h2>
+<ol>
+<li>새 기능보다 먼저 ‘대표가 무엇을 보고 무엇을 결정하나’를 한 문장으로 쓴다.</li>
+<li>이미 있는 개념이면 같은 말을 쓴다. 새 이름은 기존 개념과 정말 다를 때만 만든다.</li>
+<li>기본 사전에 뜻·포함/제외 범위·실제 사용 문장 하나를 추가한다.</li>
+<li>화면·알림·직원 보고·자료 안내가 같은 대상을 같은 말로 부르는지 확인한다.</li>
+<li>이름을 고쳐도 원래 ID·기록·결정 링크는 유지한다. 실제 단위가 달라지면 명칭 변경과 구조 변경을 따로 다룬다.</li>
+<li>대표가 헷갈린 문장을 모아 다음 판을 고친다. 이 초안의 선택 사항을 승인된 결정이나 자동 역할 지침으로 저장하지 않는다.</li>
+</ol>
+<p>현재 ‘진행판 일’과 ‘작업’은 내부 객체가 따로 있고, 연결된 경우와 직원이 별도로 등록한 경우가 있습니다. 대표 개념을 ‘업무’로 통일하더라도 두 객체의 ID를 자동으로 합치는 것은 아닙니다. 이름 통일부터 할 수 있는 부분과 코드/운영 계약 정리가 필요한 부분을 후속 적용에서 나눕니다.</p>
+<h2>9. 이번 논의에서 하나만 먼저 맞출 것</h2>
+<p>추천 기준: 대표가 맡기는 결과 단위는 ‘업무’, 대표가 직접 처리할 것은 ‘내 차례’라고 부릅니다. ‘할 일’ 하나로 AI 업무와 대표 행동을 함께 부르지 않습니다.</p>
+<p>아직 ‘업무’가 대표에게 더 직관적인지, 익숙한 ‘작업’을 유지할지 확정하지 않았습니다. 먼저 이 기준 단어를 함께 맞춘 뒤 나머지 화면 문구를 같은 뜻으로 다듬으면 됩니다. 이번 문서는 논의 초안이며 제품 화면·서버·역할 설정은 바꾸지 않았습니다.</p>
+<details><summary>확인 범위·현행과 제안의 차이</summary>
+<p>현재 코드의 홈/내가 할 일/결재 대기, 팀의 일 목록, 대화의 작업 칩·직원 대상·실행 띠·보고 표지, 자료 목록과 Task/WorkItem 계약을 읽었습니다. 현재 메뉴는 홈·결재함·팀·대화·자료입니다. Agent-A는 이전에 확인한 검토 계약을 바탕으로 기능 이름만 제안했으며, 체험판이나 실제 연결을 이번에 다시 시험하지 않았습니다.</p>
+<p>근거 파일: web/src/components/Shell.tsx, Composer.tsx, web/src/screens/Home.tsx, Team.tsx, Files.tsx, Thread.tsx, web/src/lib/tasks.ts·stop.ts, shared/types.ts. 기존 업무 표시 조사와 자료 검토 설계의 개념 경계를 재사용했습니다.</p>
+<p>자동 제시된 기억은 Agent-A 외형·병렬 배정·과거 메인 통합 결정에 관한 기록입니다. 이번 용어 선택의 근거로 적용하지 않았습니다. 현재 요청의 순차 진행을 유지했고 직원·하위 에이전트·실행 세션을 만들지 않았습니다.</p>
+</details></main></body></html></body></html>

@@ -1,0 +1,387 @@
+{
+  "requested": [
+    {
+      "run": "5cdf62ec-d87a-4493-94e1-1f3e04c21912",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "24da61bc-f1f0-44bd-9b26-4078b2953998",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "a40e1216-bcd5-4a5f-bb67-4812c962d62c",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "2825b653-6322-4570-99b3-3985b1ed059c",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "ea06116c-f2e4-43fe-ba36-18949f9d5c1e",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "948a40c3-f60b-4bf1-a259-7f1e8e44f5a2",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "b4e6b28e-db5f-4dfb-9a74-62c442b7d907",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "c5b22d17-f51f-4c01-94a8-dd188f316471",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "a7630829-90b0-41d7-a10a-59f8ee394cc9",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "7f33d3d5-5ad9-44b3-a836-6c3510372af9",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "c31208f4-e32d-4b17-ae68-9b528194ab42",
+      "member": "m_LZwnt9TMRno4",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "2188b6ff-0b7b-4650-9197-46b375cceded",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "9417bda6-aa6b-4288-9236-4dd2ef605544",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "aceaa373-f59b-4b90-9ec8-77eb7cebcd10",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "0f31bf58-3563-4aa3-bdc5-7f4bbdc86f42",
+      "member": "m_SiHjVEWJefrQ",
+      "post_kinds": [
+        "진행",
+        "진행"
+      ]
+    },
+    {
+      "run": "ffbb0728-f61f-48ab-aaa3-11cf3cdfe0ab",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "8df53ceb-c9a8-4617-aaf1-b9e2ac2d01f8",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "e1cd144c-281d-45c7-b6dc-ae2deb16565d",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    },
+    {
+      "run": "a8545c81-1a03-461d-9238-58e712e57b19",
+      "member": "m_Mc4lCnMulELf",
+      "post_kinds": [
+        "알림"
+      ]
+    }
+  ],
+  "followups": [
+    {
+      "run": "24da61bc-f1f0-44bd-9b26-4078b2953998",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_RHmwlMR7fvmk"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 1
+    },
+    {
+      "run": "efb73b9d-1123-4d2b-a5e1-1f360a54a4b9",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_4eAP4UqeGRxu"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "4feb595f-8789-48b6-93af-709bb7e2e609",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_5FrlMxmmIRvf"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": false,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "ea06116c-f2e4-43fe-ba36-18949f9d5c1e",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_urVYnMCTfvNG"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 2
+    },
+    {
+      "run": "948a40c3-f60b-4bf1-a259-7f1e8e44f5a2",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_IONWddxPle4X"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 1
+    },
+    {
+      "run": "b4e6b28e-db5f-4dfb-9a74-62c442b7d907",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_rJnx6Oxa9txT"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 2
+    },
+    {
+      "run": "bea74890-8d05-457d-a28a-49631fa1fe60",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_gxKPU43NeTQv"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "a7630829-90b0-41d7-a10a-59f8ee394cc9",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_4jX6LwHlvDgh"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 1
+    },
+    {
+      "run": "33309393-a54d-4f5a-b2af-585f71aa0346",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_6s6xscWN0ooV"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "f9981dac-c128-468f-b3f1-05a441e1728f",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_sxhIQqXr77Os"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "575e9cec-c4b5-4f2c-b812-88e3cd610a81",
+      "member": "m_LZwnt9TMRno4",
+      "posts": [
+        "msg_CntezANxBRhA"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "34a0b81d-2068-4e95-87bf-137e4670ff11",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_BAuRqWwsFBbF"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": false,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "aceaa373-f59b-4b90-9ec8-77eb7cebcd10",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_UpzJjq4x7Ccl"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": false,
+      "nonwake_extras": 3
+    },
+    {
+      "run": "77cbb213-ff9b-4cba-b4cd-820e43bcfc1b",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_2kIxTQW0Yw7M"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "60ae3937-9dee-44c8-97cb-141b5a4acd20",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_Q41gMniOR0FP"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "9f0c4a8e-c3a4-4731-9e03-c1e6bd8ebc18",
+      "member": "m_SiHjVEWJefrQ",
+      "posts": [
+        "msg_0jxd41ckLszl"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "e1cd144c-281d-45c7-b6dc-ae2deb16565d",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_9vpGmTafhs8q"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": true,
+      "only_waking_is_supplement": false,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "ca82c806-520e-456e-8cae-74ce137f8ed8",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_m2EzRhQA4JRA"
+      ],
+      "post_kinds": [
+        "알림"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    },
+    {
+      "run": "6615ea3b-a821-4ff4-a4e8-d0cab0d1929b",
+      "member": "m_Mc4lCnMulELf",
+      "posts": [
+        "msg_LFEPetWg5EBV"
+      ],
+      "post_kinds": [
+        "완료"
+      ],
+      "rerequest": false,
+      "only_waking_is_supplement": true,
+      "nonwake_extras": 0
+    }
+  ]
+}

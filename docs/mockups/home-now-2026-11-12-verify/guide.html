@@ -1,0 +1,223 @@
+<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src data:; form-action 'none'; base-uri 'none'"><meta http-equiv="x-dns-prefetch-control" content="off"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:where(*,*::before,*::after){box-sizing:border-box}
+:where(html){color-scheme:light;-webkit-text-size-adjust:100%}
+:where(body){margin:0;padding:24px;background:#FBFAFE;color:#17132B;font:15px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Segoe UI",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+:where(h1,h2,h3,h4){margin:1.6em 0 .6em;line-height:1.3;font-weight:650;color:#17132B}
+:where(h1){font-size:1.6rem;margin-top:0}
+:where(h2){font-size:1.25rem}
+:where(h3){font-size:1.05rem}
+:where(h4){font-size:.95rem;color:#4A4566}
+:where(p,ul,ol,dl,blockquote,pre,table,figure){margin:0 0 1em}
+:where(ul,ol){padding-left:1.4em}
+:where(li+li){margin-top:.25em}
+:where(a){color:#5B3FD9}
+:where(strong){color:#17132B}
+:where(hr){border:0;border-top:1px solid rgb(23 19 43 / .1);margin:1.5em 0}
+:where(blockquote){padding:.2em 0 .2em 1em;border-left:3px solid rgb(122 91 255 / .45);color:#4A4566}
+:where(img,svg,video,canvas){max-width:100%;height:auto}
+:where(code,kbd,samp){font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:rgb(23 19 43 / .05);padding:.1em .35em;border-radius:5px}
+:where(pre){padding:14px 16px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:12px;overflow:auto}
+:where(pre code){background:none;padding:0}
+:where(table){width:100%;border-collapse:collapse;font-size:.93em;display:block;overflow-x:auto}
+:where(.kit-table){margin:0 0 1em;overflow-x:auto}
+:where(.kit-table>table){display:table;margin:0}
+:where(th,td){padding:9px 12px;border-bottom:1px solid rgb(23 19 43 / .08);text-align:left;vertical-align:top;overflow-wrap:break-word}
+:where(th){color:#4A4566;font-weight:600;background:#F6F4FC;white-space:nowrap}
+:where(.card){padding:18px 20px;margin:0 0 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.card>:last-child,.callout>:last-child){margin-bottom:0}
+:where(.card>:first-child,.callout>:first-child){margin-top:0}
+:where(.grid){display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:0 0 14px}
+:where(.grid>.card){margin:0}
+:where(.callout){padding:14px 16px;margin:0 0 14px;background:rgb(122 91 255 / .08);border:1px solid rgb(122 91 255 / .22);border-left-width:4px;border-left-color:#7A5BFF;border-radius:12px}
+:where(.callout.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .4);border-left-color:#FF9A4D;color:#A8530A}
+:where(.callout.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .4);border-left-color:#FF6B60;color:#C2372E}
+:where(.callout.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .4);border-left-color:#20B97C;color:#0B7F55}
+:where(.kpi){display:flex;flex-direction:column;gap:4px;padding:16px 18px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:16px;box-shadow:0 1px 2px rgb(40 24 110 / .05),0 10px 28px -18px rgb(70 46 180 / .25)}
+:where(.kpi b,.kpi strong){font-size:1.7rem;line-height:1.2;font-weight:680;color:#17132B;font-variant-numeric:tabular-nums}
+:where(.kpi small,.kpi span){color:#4A4566;font-size:.85em}
+:where(.steps){list-style:none;counter-reset:step;padding:0;margin:0 0 14px}
+:where(.steps>li){counter-increment:step;position:relative;padding:0 0 14px 40px;margin:0}
+:where(.steps>li)::before{content:counter(step);position:absolute;left:0;top:0;width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:rgb(122 91 255 / .12);color:#5B3FD9;font-size:.82em;font-weight:650}
+:where(.steps>li:not(:last-child))::after{content:"";position:absolute;left:12.5px;top:30px;bottom:4px;width:1px;background:rgb(23 19 43 / .12)}
+:where(.tag){display:inline-block;padding:.1em .6em;border-radius:999px;font-size:.8em;line-height:1.6;background:rgb(23 19 43 / .05);color:#4A4566;border:1px solid rgb(23 19 43 / .08)}
+:where(.tag.good){background:rgb(32 185 124 / .06);border-color:rgb(32 185 124 / .3);color:#0B7F55}
+:where(.tag.warn){background:rgb(255 154 77 / .08);border-color:rgb(255 154 77 / .35);color:#A8530A}
+:where(.tag.bad){background:rgb(255 107 96 / .08);border-color:rgb(255 107 96 / .35);color:#C2372E}
+:where(.compare){display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:0 0 14px}
+:where(.compare>*){padding:16px 18px;margin:0;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.compare>.pick){border-color:rgb(122 91 255 / .55);background:rgb(122 91 255 / .07)}
+:where(.compare>*>:last-child){margin-bottom:0}
+:where(.compare>*>:first-child){margin-top:0}
+:where(.flow){display:flex;flex-wrap:wrap;gap:10px 26px;list-style:none;padding:0;margin:0 0 14px}
+:where(.flow>*){position:relative;flex:1 1 130px;margin:0;padding:12px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(.flow>*:not(:last-child))::after{content:"→";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:#5F5983}
+:where(.flow>*>:last-child){margin-bottom:0}
+:where(.flow>*>:first-child){margin-top:0}
+:where(button){font:inherit;color:inherit}
+:where(.tabs){display:flex;flex-wrap:wrap;gap:4px;padding:4px;margin:0 0 14px;background:rgb(23 19 43 / .04);border:1px solid rgb(23 19 43 / .08);border-radius:14px}
+:where(.tabs>button){flex:1 1 auto;min-height:44px;padding:0 14px;background:none;border:0;border-radius:10px;color:#4A4566;font-weight:600;cursor:pointer}
+:where(.tabs>button:hover){background:rgb(122 91 255 / .07)}
+:where(.tabs>button[aria-selected="true"]){background:#fff;color:#5B3FD9;box-shadow:0 6px 16px -6px rgb(122 91 255 / .55),0 0 0 1px rgb(122 91 255 / .22)}
+@media (max-width:520px){:where(body){padding:16px;font-size:14.5px}:where(h1){font-size:1.35rem}:where(.grid,.compare){grid-template-columns:1fr}:where(.flow){flex-direction:column;gap:22px}:where(.flow>*){flex:none}:where(.flow>*:not(:last-child))::after{content:"↓";right:auto;left:50%;top:auto;bottom:-22px;transform:translateX(-50%)}}
+:where(body>main.page){max-width:760px;margin-inline:auto}
+:where(body>main.page>h2){margin-top:40px}
+:where(p.src){margin:8px 0 0;font-size:.8em;color:#5F5983}
+:where(p.owner:has(>b)){display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 14px;padding:12px 16px;background:rgb(255 154 77 / .1);border:1px solid rgb(255 154 77 / .45);border-radius:12px;color:#17132B}
+:where(p.owner:has(>b))::before{content:"";flex:none;align-self:center;width:9px;height:9px;border-radius:50%;background:#FF9A4D}
+:where(p.owner>b){color:#A8530A}
+:where(ol.toc){display:flex;flex-wrap:wrap;gap:2px 14px;list-style:none;padding:0;margin:0 0 4px;font-size:.86em;color:#4A4566}
+:where(ol.toc>li){margin:0}
+:where(p.find){margin:0 0 14px;font-size:.82em;color:#5F5983}
+:where(h2>span.no,h3>span.no){color:#5F5983;font-weight:600}
+:where(div.hero:has(>b+span)){display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0 0 14px}
+:where(div.hero:has(>b+span)>b){font-size:3rem;line-height:1.05;font-weight:700;color:#17132B;white-space:nowrap}
+:where(div.hero:has(>b+span)>span){flex:1 1 220px;min-width:0;color:#4A4566}
+:where(span.delta){white-space:nowrap;font-variant-numeric:tabular-nums;color:#4A4566}
+:where(span.delta>b){color:#17132B;font-weight:680}
+:where(span.delta>small){font-size:.85em;color:#5F5983}
+:where(figure.bars){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.bars>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.bars>.bar){position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.bars>.bar>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(figure.bars>.bar)::after{content:"";grid-column:1/-1;height:10px;width:calc(var(--v) / var(--max) * 100%);min-width:2px;border-radius:0 4px 4px 0;background:rgb(23 19 43 / .25)}
+:where(figure.bars>.bar.is-key)::after{background:#17132B}
+:where(figure.bars>.bar.is-rec)::after{background:#7A5BFF}
+:where(.has-limit>figure.bars>.bar)::before{content:"";position:absolute;bottom:-3px;left:calc(var(--limit) / var(--max) * 100% - 1px);width:2px;height:16px;border-radius:1px;background:#17132B}
+:where(figure.bars>.ticks){display:flex;justify-content:space-between;margin:0;padding-top:4px;border-top:1px solid rgb(23 19 43 / .15);font-size:.75em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(figure.cols){margin:0 0 14px;max-width:520px}
+:where(figure.cols>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.cols>.cols-plot){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;align-items:end;height:150px;border-bottom:1px solid rgb(23 19 43 / .3)}
+:where(.cols-plot>.col){display:flex;flex-direction:column;align-items:center;gap:4px;font-size:.88em}
+:where(.cols-plot>.col>b){font-variant-numeric:tabular-nums;font-weight:650}
+:where(.cols-plot>.col)::after{content:"";width:min(44px,80%);height:calc(var(--v) / var(--max) * 120px);min-height:2px;border-radius:4px 4px 0 0;background:rgb(23 19 43 / .25)}
+:where(.cols-plot>.col.is-key)::after{background:#17132B}
+:where(figure.cols>.cols-x){display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px;margin:6px 0 0;text-align:center;font-size:.8em;line-height:1.4;color:#4A4566}
+:where(div.ba){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0 0 14px}
+:where(div.ba>*){margin:0;padding:14px 16px;background:#fff;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(div.ba>.ba-before){background:transparent;color:#4A4566}
+:where(div.ba>*>p){margin:0}
+:where(.ba-label){display:block;margin:0 0 6px;font-size:.8em;font-weight:650;color:#5F5983;letter-spacing:.02em}
+:where(div.ba del){color:#5F5983;text-decoration-thickness:1.5px}
+:where(div.ba ins){text-decoration:none;font-weight:650;color:#17132B;background:rgb(23 19 43 / .07);box-shadow:inset 0 -2px 0 #17132B;padding:0 2px;border-radius:3px}
+:where(sup.n){font-size:.68em;font-weight:700;color:#17132B;margin-left:1px}
+:where(ol.why){margin:0 0 14px;padding-left:1.4em;font-size:.93em;color:#4A4566}
+@media (max-width:520px){:where(div.ba){grid-template-columns:1fr;gap:8px}}
+:where(div.rec:has(>.rec-head)){margin:0 0 14px;padding:16px 18px;background:rgb(122 91 255 / .07);border:1px solid rgb(122 91 255 / .5);border-radius:14px}
+:where(div.rec:has(>.rec-head)>p){margin:0 0 4px}
+:where(div.rec>.rec-head){margin:0 0 8px;font-size:1.05em;font-weight:650;color:#17132B}
+:where(div.rec>.rec-cost){margin:10px 0 0;padding-top:10px;border-top:1px solid rgb(122 91 255 / .2);color:#4A4566;font-size:.93em}
+:where(div.rec:has(>.rec-head)>:last-child){margin-bottom:0}
+:where(.tag.pick){background:#fff;border-color:rgb(122 91 255 / .4);color:#5B3FD9;font-weight:650}
+:where(td.rec-cell,th.rec-cell){background:rgb(122 91 255 / .06)}
+:where(ul.opts){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px;font-size:.93em;color:#4A4566}
+:where(ul.opts>li){margin:0;padding:10px 14px;border:1px solid rgb(23 19 43 / .1);border-radius:12px}
+:where(ul.opts>li>b){color:#17132B;margin-right:6px}
+:where(figure.gantt){display:grid;gap:10px;margin:0 0 14px;max-width:640px}
+:where(figure.gantt>figcaption){font-weight:650;margin:0 0 2px}
+:where(figure.gantt>.g-row){display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;font-size:.88em}
+:where(figure.gantt>.g-row>em){font-style:normal;color:#4A4566;font-variant-numeric:tabular-nums}
+:where(figure.gantt>.g-row>i){grid-column:1/-1;position:relative;display:block;height:14px;border-radius:4px;background:repeating-linear-gradient(90deg,transparent 0 calc(100% / var(--days) - 1px),rgb(23 19 43 / .09) calc(100% / var(--days) - 1px) calc(100% / var(--days))),rgb(23 19 43 / .035)}
+:where(figure.gantt>.g-row>i)::before{content:"";position:absolute;top:0;bottom:0;left:calc(var(--s) / var(--days) * 100%);width:calc((var(--e) - var(--s)) / var(--days) * 100%);border-radius:4px;background:rgb(23 19 43 / .45)}
+:where(figure.gantt>.g-row.is-rec>i)::before{background:#7A5BFF}
+:where(figure.gantt>.g-row.is-opt>i)::before{background:transparent;border:1.5px dashed #5F5983}
+:where(figure.gantt>.g-row.is-owner>i)::before{top:1px;bottom:auto;width:12px;height:12px;margin-left:1px;border-radius:2px;transform:rotate(45deg);background:#FF9A4D}
+:where(figure.gantt>.g-axis){display:flex;justify-content:space-between;margin:0;font-size:.78em;color:#5F5983;font-variant-numeric:tabular-nums}
+:where(:is(ul,ol).status:has(>li>.tag)){list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px}
+:where(:is(ul,ol).status>li:has(>.tag)){display:flex;gap:10px;align-items:baseline;margin:0;padding:10px 14px;background:#fff;border:1px solid rgb(23 19 43 / .08);border-radius:12px}
+:where(:is(ul,ol).status>li>.tag){flex:none;min-width:5.4em;text-align:center}
+:where(figure.dg){margin:0 0 14px}
+:where(figure.dg>figcaption){font-weight:650;margin:0 0 10px}
+:where(figure.dg>svg){display:block;width:100%;max-width:420px;height:auto}
+:where(.dg-box){fill:#fff;stroke:rgb(23 19 43 / .22)}
+:where(.dg-box.is-owner){fill:#FFF1E6;stroke:#FF9A4D}
+:where(.dg-t){font-size:14px;font-weight:650;fill:#17132B}
+:where(.dg-s){font-size:12px;fill:#4A4566}
+:where(.dg-line){fill:none;stroke:#5F5983;stroke-width:1.5}
+:where(.dg-head){fill:#5F5983}
+:where(.dg-l){font-size:11.5px;fill:#5F5983;paint-order:stroke;stroke:#FBFAFE;stroke-width:4px;stroke-linejoin:round}</style></head><body><!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>홈 현황은 현재·진행·대표 차례·다음으로 씁니다</title><style>
+body{margin:0;padding:24px;background:#fbfaff;color:#241e36;font:15px/1.7 -apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;overflow-wrap:anywhere}main{max-width:880px;margin:auto}h1{font-size:28px;line-height:1.35;letter-spacing:-.7px}h2{font-size:20px;margin:30px 0 12px}h3{font-size:16px;margin:0 0 10px}p{margin:0 0 12px}.card{border:1px solid #e3dcec;border-radius:16px;background:white;padding:20px;margin:14px 0}.callout{padding:15px 18px;background:#eee8ff;border-left:4px solid #7953d7;border-radius:10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.grid>.card{margin:0}.copy{white-space:pre-wrap;overflow-wrap:anywhere;word-break:keep-all;background:#f5f2fb;border:1px solid #e5dfee;padding:16px;border-radius:12px;font:14px/1.8 -apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;margin:0}.prompt{font-size:14px;line-height:1.85}.tag{display:inline-block;padding:2px 9px;background:#eee8ff;color:#6042a4;border-radius:20px;font-size:12px}.small,details{font-size:12px;color:#70677e}.examples .copy{margin-bottom:15px}.rules li{margin-bottom:9px}.bad{color:#8b4b26}details{border-top:1px solid #e5dfee;padding-top:16px;margin-top:24px}summary{cursor:pointer}code{font-size:12px}strong{font-weight:650}@media(max-width:600px){body{padding:16px}h1{font-size:24px}.grid{grid-template-columns:1fr}.card{padding:16px}.copy{padding:12px;font-size:13px}}
+</style></head><body><main class="page">
+<span class="tag">재사용 지침 · 작성 프롬프트 · 2026.11.12</span>
+<h1>홈 현황은 네 줄로,<br>지난 기록 대신 지금의 상태를 씁니다</h1>
+<p class="callout"><b>고정 순서: 현재 → 진행 → 대표 차례 → 다음.</b><br>전체 250자 이내를 상한으로 삼고, 보통 80~140자로 씁니다. 200자를 채우려 늘리지 않습니다. 한 줄은 한 역할만 맡습니다.</p>
+
+<div class="grid"><section class="card"><h2 style="margin-top:0">현재 프로젝트에 바로 쓸 본문</h2><pre class="copy" id="current">현재: 대화 카드 사용 가능.
+진행: 메인 통합·대화 수정 시험.
+대표 차례: 없음.
+다음: 시험 후 수정 적용→Agent-A 체험판.</pre><p class="small" style="margin-top:12px">자료 전달 직후 사용할 스냅샷입니다. 현황 작성 업무는 완료로 빠집니다. 등록 직전 도착한 새 보고를 반영했습니다. ‘체험판’은 다음 예정이며, 수정 적용과 메인 통합은 아직 완료 보고가 없습니다.</p></section>
+<section class="card"><h2 style="margin-top:0">복사할 고정 틀</h2><pre class="copy" id="template">현재: [지금 쓸 수 있는 결과/전체 상태].
+진행: [실제 움직이는 일 1~2건과 단계].
+대표 차례: [열린 판단/할 일 또는 없음].
+다음: [확정된 다음 행동과 선후].</pre><p class="small" style="margin-top:12px">실제 줄바꿈 세 개, 빈 줄 없음. 제목·번호·불릿·코드 블록·굵은 글씨를 본문에 넣지 않습니다. 문장 안에서는 가운데점으로 병렬, 화살표로 선후를 표시합니다.</p></section></div>
+
+<section class="card"><h2 style="margin-top:0">총괄에게 그대로 줄 작성 프롬프트</h2>
+<pre class="copy prompt" id="prompt">너는 IAMCEO 홈의 ‘지금 상황’을 작성하는 총괄이다. 대표가 5초 안에 현재·진행·자기 차례·다음을 구분하도록 쓴다. 실제 일을 실행하거나 직원에게 보고를 다시 요청하지 않는다.
+
+입력
+- 기준 시각과 현재 project_now 본문
+- 진행판: 업무명·칸·담당·갱신 시각·선행 조건
+- 열린 결재/대표 할 일: 현재 상태·요청 내용·출처
+- 최근 원본 보고와 정정 관계, 대표 지시·결재 답: 시각·범위·실제 단계·근거 참조
+입력이 없거나 낡으면 그 범위는 확인되지 않은 것으로 다룬다.
+
+사실을 고르는 규칙
+1. 현재 대표 원문과 승인 범위를 먼저 확인한다. 정정된 보고는 최신 정정으로 대체한다. 새 요청·승인은 의도와 권한의 근거이며 완료의 근거가 아니다.
+2. 현재에 영향을 주는 중단·지연·오류·대표 판단을 우선 드러낸다. 그다음 실제 움직이는 핵심 업무를 최대 2건 고른다. 나머지 진행은 필요할 때 ‘나머지는 팀 진행판’으로 안내하고 나열하지 않는다.
+3. 진행판의 ‘진행 중’이나 배정/수신 확인만으로 착수를 단정하지 않는다. 실제 최근 보고의 단계와 선행 조건으로 요청·예정·착수·검사·적용·완료·막힘·승인 대기를 구분한다.
+4. 같은 말처럼 보여도 대상과 환경을 맞춘다. 대표 화면에서 사용 가능과 메인 통합 완료는 다르다. 시험 중을 정상/완료로, 승인됨을 적용됨으로 쓰지 않는다.
+5. 대표 차례는 실제 열린 결재/대표 할 일만 적는다. 직원 응답 대기나 내부 검사 대기를 대표 일로 바꾸지 않는다. 열린 항목이 확인되면 행동과 위치를 짧게 쓴다. 확인된 열린 항목이 없으면 ‘없음’, 조회 근거가 없으면 ‘확인 필요’라고 쓴다.
+6. 충돌은 출처·시각·정정 관계·대상/범위를 대조한다. 원본으로 해결되지 않으면 ‘진행 여부 확인 대기’처럼 불확실성을 남긴다. 오래된 메모를 현재 실행으로 재사용하거나 임의로 완료 처리하지 않는다.
+7. 과거 이력·끝난 기능 목록·반복 주의·직원 세션 내부·커밋/DB/시험 수치는 뺀다. 새 직원 안 만들었다, 푸시 안 했다 같은 반복 문장도 뺀다. 현재 판단에 필요한 예외만 짧게 쓰고 근거는 원래 보고/자료에 둔다.
+
+출력
+아래 네 줄의 project_now 본문만 출력한다. 제목·해설·자기평가·출처 목록·마크다운 장식은 붙이지 않는다. 실제 줄바꿈 세 개를 쓰고, 문자 그대로의 역슬래시+n이나 빈 줄을 넣지 않는다.
+현재: [지금 쓸 수 있는 결과/전체 상태. 중요한 막힘은 우선 표시]
+진행: [실제로 움직이는 핵심 1~2건과 단계. 없으면 없음]
+대표 차례: [열린 판단/할 일과 위치. 없으면 없음]
+다음: [확정된 다음 행동과 선후. 미정이면 미정]
+
+길이와 갱신
+- 공백·문장부호·줄바꿈을 포함해 250자 이내. 보통 80~140자로 더 짧게 쓴다. 폰에서 접히면 중복 수식어와 두 번째 진행 항목부터 덜어낸다. 상태·부정·대표 행동은 자르지 않는다.
+- 진행 핵심은 최대 2건. 다음은 이미 정해진 1~2단계만 쓰고, 진행 없는 일을 새로 만들지 않는다.
+- 착수/검사/적용/완료/막힘/중단의 변화, 새 대표 결정·정정, 열린 결재/할 일의 생성·종료, 우선순위/선후 변경 때 현재 스냅샷 전체를 다시 쓴다. 상태 변화가 없으면 덧붙이거나 반복 갱신하지 않는다.
+- 게시 직전에 최신 보고·열린 항목을 다시 대조한다. 지난 문단 뒤에 새 사실을 누적하지 않는다.</pre>
+</section>
+
+<h2>각 줄에서 딱 하나씩 답할 것</h2>
+<ul class="rules">
+<li><b>현재:</b> 지금 사용할 수 있는 결과와 전체 상태. 장애가 사용을 막으면 사용 가능한 기능보다 장애부터 씁니다. 늘 끝난 기능을 반복하는 목록이 아닙니다.</li>
+<li><b>진행:</b> 실제 최근 실행 보고가 있는 일과 현재 단계. 세 건 이상이면 중단/오류 → 대표 판단으로 막힌 일 → 핵심 선행 업무 → 나머지 순으로 고릅니다. 담당 이름은 구분에 꼭 필요할 때만 씁니다.</li>
+<li><b>대표 차례:</b> 열린 카드의 행동과 위치. 두 건까지 짧게, 더 많으면 ‘결재 3건 확인 · 결재함’처럼 수와 위치를 안내합니다. 답이 끝난 카드나 직원 내부 대기를 넣지 않습니다.</li>
+<li><b>다음:</b> 확정된 후속 행동. 동시에 할 일이면 가운데점, 선행 업무가 끝나야 하면 화살표를 씁니다. 아직 계획만 받았다면 ‘예정’, 아직 정하지 않았다면 ‘미정’입니다.</li>
+</ul>
+
+<h2>짧은 예시 네 가지</h2><p class="small">아래는 가정한 상황입니다. 현재 프로젝트의 실제 진행/결재가 아닙니다.</p>
+<div class="grid examples"><section class="card"><h3>정상 진행</h3><pre class="copy sample">현재: 소개서 초안 검토 가능.
+진행: 수정 문구 작성 중.
+대표 차례: 없음.
+다음: 수정안 확인→새 버전 저장.</pre><p class="small">‘검토 가능’과 ‘작성 중’을 분리합니다.</p></section><section class="card"><h3>대표 결정 대기</h3><pre class="copy sample">현재: 수정안 준비, 반영은 대기.
+진행: 없음. 선택을 기다립니다.
+대표 차례: 수정안 채택 여부 · 결재함.
+다음: 답변에 따라 반영 또는 재작성.</pre><p class="small">실제 열린 결재가 있을 때만 이렇게 씁니다.</p></section><section class="card"><h3>막힘</h3><pre class="copy sample">현재: 연결 오류로 자료 수신 중단.
+진행: 오류 원인 확인 중.
+대표 차례: 없음.
+다음: 원인 확인→복구 경로 정리.</pre><p class="small">원인 미확인 상태에서 복구 완료·재시작 예정으로 앞당기지 않습니다.</p></section><section class="card"><h3>진행 일 없음</h3><pre class="copy sample">현재: 요청한 안내문 전달 완료.
+진행: 없음.
+대표 차례: 없음.
+다음: 미정. 새 지시 대기.</pre><p class="small">다음 일이 없으면 새 일을 만들어 채우지 않습니다.</p></section></div>
+
+<h2>이런 문구는 빼거나 고칩니다</h2>
+<section class="card"><p><span class="bad">“기능 구현·정상화·검증·적용·메인 통합 완료”</span><br>→ 확인한 마지막 단계만 씁니다. 현재 사례는 “대화 카드 사용 가능 / 메인 통합·대화 수정 시험”입니다.</p><p><span class="bad">“진행판에 있으니 작업 대화 오류 수정 중”</span><br>→ 이전 수신 보고만 있을 때는 다음 줄에 둡니다. 새 원인/수정 시험 보고가 도착한 뒤에만 진행 줄로 올립니다.</p><p><span class="bad">“결재 기다리는 중”</span><br>→ 실제 열린 카드가 있으면 “대표 차례: 채택 여부 · 결재함.” 이미 답했다면 승인 대기로 남기지 않습니다.</p><p><span class="bad">“모든 시험 통과, 문제없음, 직원 세션 유지, 커밋…, 배포 안 함…”</span><br>→ 홈에서는 판단에 영향을 주는 현재 상태만. 숫자·내부 근거는 원래 보고로 보냅니다.</p><p><span class="bad">“어제 A 완료. 이후 B 진행. 방금 C도…”</span><br>→ 덧붙이지 않고 네 줄 전체를 새 스냅샷으로 바꿉니다.</p></section>
+
+<h2>길이·줄바꿈·폰 확인</h2>
+<p id="check">현재 적용 문구의 글자 수와 폰 표시는 최신 예시로 다시 확인합니다. 로컬 렌더에서 자료 자체는 320/390px 가로 넘침이 없었고, 현행 홈과 같은 글자 크기·행간·5줄 높이를 재현한 미리보기에서도 본문이 잘리지 않았습니다(320px: 화면상 5줄, 390px: 4줄). 실제 대표 앱·다른 글자 크기 설정은 확인하지 않았습니다. 외부 조사·대규모 회귀 시험·AI 호출은 하지 않았습니다.</p>
+<p>현재 홈은 ‘논리 네 줄’이어도 폰에서 줄이 감기면 기본 높이를 넘을 수 있습니다. <b>250자 이내는 표시 보장이 아닙니다.</b> 접힌 내용을 끝까지 읽어야 대표 차례가 드러나는 긴 글은 피합니다. 기본 네 라벨의 순서를 바꾸기보다 각 줄을 줄입니다.</p>
+
+<details><summary>읽기 확인한 출처·범위와 현재 사실의 근거</summary>
+<p>홈 출처: <code>project_now(text)</code> → <code>setProjectNow</code> → 프로젝트 <code>now</code> → <code>Home.tsx / NowCard</code>. Markdown 렌더러는 <code>breaks: true</code>라 실제 줄바꿈을 지원합니다. 저장 도구는 비어 있지 않은 문자열을 받으며 해당 스키마에 250자 상한은 없습니다. 250자는 이번 운영 권장 상한입니다.</p>
+<p>표시 제약: <code>home.css</code>는 14.5px·행간 1.6, 기본 최대 높이 5줄·overflow hidden. 넘치면 ‘더 보기’를 제공합니다. 홈·팀은 큰 현황 카드를 쓰고 다른 화면의 머리줄은 한 줄로 접힐 수 있습니다. 읽은 범위는 Home.tsx·home.css·ui.tsx·Shell.tsx·agent-tools.ts·orchestrator.ts·store.ts이며 제품 변경은 하지 않았습니다.</p>
+<p>이 비서에게 board 도구는 노출되지 않아 우회 호출하지 않았습니다. boardView가 읽는 같은 프로젝트의 now·열린 결재·미완료 할 일·진행판을 기존 DB의 읽기 전용 연결로 대조했습니다. 열린 결재 0건·미완료 대표 할 일 0건. 실제 저장된 현황은 실제 줄바꿈 3개이며 문자열 역슬래시+n은 없었습니다.</p>
+<p>최신 근거: msg_XPty7V0btmLE(10:21:13Z, 메인 미통합·시험 비교), msg_2znzsg2iJX5f(10:22:15Z, 통합 시험 뒤 작업 대화 점검), msg_H8XD5C7idfqP(10:27:58Z, 네 줄 우선 정리), msg_MRBekSmHMXSo(10:10:30Z, 대화 카드 대표 화면 사용 가능). 처음에는 진행판 w_ODYQvYqQ1hy4의 doing 대신 원본 보고의 선행 조건을 우선했습니다. 등록 직전 새 원본 msg_U0Wmp4a5sD37(10:29:51Z, 빈 작업 칩 원인 확인·수정 시험·커밋/7881 확인은 다음)을 읽고 대화 수정 시험을 진행 줄에 올렸습니다. Agent-A는 w_lQCHnatFBzH2의 다음 예정이며 아직 기동 보고가 없습니다.</p>
+<p>기억 후보 exp-fe6789c053d2d0953badef01e8c10d62ad4043af는 전문 확인 후 ‘메인 통합 승인’ 근거로만 참고했습니다. 통합 완료 증거로 쓰지 않았고 현재 원본 보고로 단계를 확인했습니다. 자동 제시된 나머지 두 기억은 이번 서술 운영 판단에 필요하지 않아 적용하지 않았습니다. 기억 검색 결과가 현재 승인·원본을 대신하지 않습니다.</p>
+<p>기준은 위 원본의 최신 단계입니다. 새 완료/정정이 도착하면 적용 문구를 새로 씁니다. 이 문서는 작성 지침이며 project_now·역할 설정·DB·서버를 변경하거나 업무를 재실행하지 않았습니다.</p>
+</details></main></body></html>
+</body></html>

@@ -1,0 +1,76 @@
+{
+  "checks": [
+    {
+      "width": 320,
+      "flow": "A→B→A notification / diff→apply / v1 / reply / summary→origin / reset→empty",
+      "overflow": {
+        "width": 320,
+        "scroll": 320
+      }
+    },
+    {
+      "width": 390,
+      "flow": "A→B→A notification / diff→apply / v1 / reply / summary→origin / reset→empty",
+      "overflow": {
+        "width": 390,
+        "scroll": 390
+      }
+    },
+    {
+      "width": 768,
+      "flow": "A→B→A notification / diff→apply / v1 / reply / summary→origin / reset→empty",
+      "overflow": {
+        "width": 768,
+        "scroll": 768
+      }
+    },
+    {
+      "width": 1440,
+      "flow": "A→B→A notification / diff→apply / v1 / reply / summary→origin / reset→empty",
+      "overflow": {
+        "width": 1440,
+        "scroll": 1440
+      }
+    },
+    {
+      "edge": "failed→retry; assignment adoption preserves original owner; revision conflict→new proposal preserving newer text; lost response→lookup without duplicate"
+    },
+    {
+      "edge": "queued request→reassign→late original-worker answer"
+    },
+    {
+      "edge": "stop request≠ack; reject leaves v1; question answers without approval"
+    },
+    {
+      "designWidth": 320,
+      "overflow": {
+        "width": 320,
+        "scroll": 320
+      }
+    },
+    {
+      "designWidth": 390,
+      "overflow": {
+        "width": 390,
+        "scroll": 390
+      }
+    },
+    {
+      "designWidth": 768,
+      "overflow": {
+        "width": 768,
+        "scroll": 768
+      }
+    },
+    {
+      "designWidth": 1440,
+      "overflow": {
+        "width": 1440,
+        "scroll": 1440
+      }
+    }
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "scope": "Local Chromium, real artifact-kit wrapper, allow-scripts sandbox. No live IAMCEO/Agent-A calls."
+}

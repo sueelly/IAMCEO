@@ -1,0 +1,18 @@
+{
+  "characters": 75,
+  "lines": 4,
+  "widths": [
+    {
+      "viewport": 320,
+      "width": 260,
+      "height": 93,
+      "scroll": 93
+    },
+    {
+      "viewport": 390,
+      "width": 330,
+      "height": 93,
+      "scroll": 93
+    }
+  ]
+}
