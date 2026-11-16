@@ -8,7 +8,7 @@ import { openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
 import { startReadOnlyView } from "../server/read-only-view.ts";
 
-const code = "fixture-read-only-code";
+const code = "123456"; // Existing snapshots may use a shorter code than today's generated default.
 let home: string, config: Config, view: Awaited<ReturnType<typeof startReadOnlyView>>, origin: string;
 let before: string, filePath: string;
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -87,4 +87,22 @@ test("realtime uses the normal authenticated session and accepts no commands", a
     ws.onerror = () => { clearTimeout(timer); reject(new Error("Realtime connection failed")); };
   });
   expect(hello.type).toBe("hello"); expect(digest(config.dbPath)).toBe(before);
+});
+
+test("standalone entry preserves a short existing access code", async () => {
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const port = listener.port; listener.stop(true);
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/iamceo-view.ts")], {
+    env: { ...process.env, IAMCEO_VIEW_HOME: home, IAMCEO_VIEW_PORT: String(port) }, stdout: "pipe", stderr: "pipe",
+  });
+  try {
+    let response: Response | undefined;
+    for (let i = 0; i < 50; i++) {
+      try { response = await fetch(`http://127.0.0.1:${port}/api/readiness`, { headers: { Authorization: `Bearer ${code}` } }); break; }
+      catch { if (child.exitCode !== null) throw new Error("Snapshot viewer entry exited"); await Bun.sleep(20); }
+    }
+    expect(response?.status).toBe(200);
+    expect((await response!.json()).daemon.readOnly).toBe(true);
+  } finally { child.kill("SIGTERM"); await child.exited; }
+  expect(digest(config.dbPath)).toBe(before);
 });

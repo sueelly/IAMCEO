@@ -15,7 +15,7 @@ try {
   const stat = fstatSync(fd);
   if (!stat.isFile() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new Error("Private snapshot config required");
   accessCode = JSON.parse(readFileSync(fd, "utf8")).accessCode;
-  if (typeof accessCode !== "string" || accessCode.length < 8) throw new Error("Snapshot access code missing");
+  if (typeof accessCode !== "string" || !accessCode || accessCode.includes("\0")) throw new Error("Snapshot access code missing");
 } finally { closeSync(fd); }
 const config: Config = { home, configPath, dbPath: join(home, "iamceo.db"), uploadsDir: join(home, "uploads"),
   inboxDir: join(home, "inbox"), rolesDir: join(home, "roles"), accessCode, port, hosts: ["127.0.0.1"], hostsAuto: false,
