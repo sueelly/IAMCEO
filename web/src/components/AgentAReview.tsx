@@ -1,15 +1,18 @@
-// Agent-A 문서를 IAMCEO 화면 안에서 바로 쓴다: 문장 끌어 댓글 · 답글 · 전체 댓글 · 그림 영역 질문 · 수정안 저장 · 판 · 문서 관리.
+// Agent-A 문서를 IAMCEO 화면 안에서 바로 쓴다: 문장 끌어 댓글 · 요소 지정 · 삭제 표시 · 답글 · 전체 댓글 · 그림 영역 질문 · 그림 붙이기 · AI 고르기 ·
+// 문서에 묻기 · 본문 직접 고치기(초안) · 검토 제출 · 수정안 저장 · 판 · 문서 관리.
 // Agent-A 앱을 칸(iframe)에 넣지 않는다. 본문·댓글·수정안은 IAMCEO 서버의 검토 길(/api/agent-a/docs/:id/review…)로만 받고,
 // 화면은 IAMCEO 공통 부품(버튼·배지·팝업·마크다운)으로 그린다. 문서 글은 IAMCEO 의 마크다운 보기가 걸러 그리므로 스크립트가 돌지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentAProjectInfo, AgentAReviewComments, AgentAReviewDoc, AgentAReviewImageRegion, AgentAReviewProposal, AgentAReviewVersion } from "@shared/agent-a";
-import { api, errorText } from "../lib/api";
+import type { AgentAProjectInfo, AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAttachment, AgentAReviewComments, AgentAReviewDoc, AgentAReviewDraft, AgentAReviewImageRegion, AgentAReviewProposal, AgentAReviewVersion } from "@shared/agent-a";
+import { GlassButton } from "../glass";
+import { ApiError, api, errorText } from "../lib/api";
 import { buildThreads, myTurn, outline } from "../lib/agent-a-review";
 import { newId } from "../lib/store";
 import { AgentAManage } from "./agent-a/AgentAManage";
+import { ChatPanel } from "./agent-a/ChatPanel";
 import { CommentPanel, type PanelView } from "./agent-a/CommentPanel";
-import { ReviewDocument } from "./agent-a/ReviewDocument";
-import { Badge, MQ_DESKTOP, Modal, Sheet, Time, useMediaQuery } from "./ui";
+import { ReviewDocument, type ReviewInput, type ReviewMode } from "./agent-a/ReviewDocument";
+import { Badge, MQ_DESKTOP, Modal, Sheet, Time, useConfirmPress, useMediaQuery } from "./ui";
 import "../styles/agent-a.css";
 
 /** 답을 쓰는 중이면 자주, 아니면 드물게 댓글을 다시 읽는다. */
@@ -34,7 +37,88 @@ function writeJson(storage: () => Storage, key: string, value: unknown): void {
   }
 }
 
-export function AgentAReview({ fileId, title, info }: { fileId: string; title: string; info: AgentAProjectInfo }) {
+const MODES: { key: ReviewMode; label: string; hint: string }[] = [
+  { key: "markup", label: "표시", hint: "고른 뒤 댓글·삭제 표시·묻기 중에 고릅니다" },
+  { key: "comment", label: "댓글", hint: "고르면 바로 댓글을 씁니다" },
+  { key: "redline", label: "삭제 표시", hint: "고르면 바로 삭제 표시를 남깁니다" },
+];
+const INPUTS: { key: ReviewInput; label: string; hint: string }[] = [
+  { key: "drag", label: "끌기", hint: "글을 끌어 고릅니다" },
+  { key: "pinpoint", label: "요소 지정", hint: "문단·항목·제목을 눌러 통째로 고릅니다" },
+];
+const toBase64 = async (file: File): Promise<string> => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+
+/** 본문 직접 고치기: 고친 글은 이 검토의 초안으로만 남는다(정본은 그대로). 그사이 다른 화면이 초안을 바꿨으면 덮지 않고 알린다. */
+function DraftEditor({ fileId, session, canonical, onSaved, onClose }: { fileId: string; session: string; canonical: string; onSaved: (message: string) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState<AgentAReviewDraft | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** 저장하려는데 다른 화면이 먼저 초안을 바꿨다: 그 초안. 내 글은 입력칸에 그대로 있다. */
+  const [theirs, setTheirs] = useState<AgentAReviewDraft | null>(null);
+  const discard = useConfirmPress();
+  useEffect(() => {
+    let stopped = false;
+    api.agentAReview.draft(fileId, session).then((d) => {
+      if (stopped) return;
+      setDraft(d);
+      setText(d.editedMarkdown ?? canonical);
+    }, (e) => !stopped && setError(errorText(e)));
+    return () => { stopped = true; };
+  }, [fileId, session, canonical]);
+  const save = async (markdown: string | null, revision: number) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.agentAReview.saveDraft(fileId, session, markdown, revision);
+      onSaved(markdown === null ? "고친 본문을 버렸습니다. 정본 본문을 다시 열었습니다." : "고친 본문을 초안으로 저장했습니다. 정본은 그대로입니다.");
+    } catch (e) {
+      setError(errorText(e));
+      // 다른 화면이 먼저 저장했다. 덮지 않고 그 초안을 읽어 보여 준다.
+      if (e instanceof ApiError && e.code === "AGENT_A_DRAFT_CONFLICT") await api.agentAReview.draft(fileId, session).then(setTheirs, () => {});
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="aar-editor" aria-label="본문 고치기">
+      <p className="aar-note">고친 글은 이 검토의 초안으로만 남습니다. 정본은 바뀌지 않고, ‘검토 제출’ 때 고친 내용이 함께 넘어갑니다.</p>
+      {error ? <p className="aar-error" role="alert">{error}</p> : null}
+      {!draft && !error ? <p className="aar-note" role="status">초안을 읽는 중…</p> : null}
+      {theirs ? (
+        <div className="aar-card" role="status" aria-label="다른 화면의 초안">
+          <p className="aar-note">다른 화면이 먼저 초안을 저장했습니다. 그 초안은 그대로 있고, 내 글도 아래 입력칸에 그대로 있습니다.</p>
+          <div className="aar-actions">
+            <button type="button" className="vw-btn" disabled={busy} onClick={() => { setDraft(theirs); setText(theirs.editedMarkdown ?? canonical); setTheirs(null); setError(null); }}>다른 화면의 초안으로 바꾸기</button>
+            <button type="button" className="vw-btn" disabled={busy} onClick={() => { const next = theirs; setDraft(next); setTheirs(null); void save(text, next.revision); }}>내 글로 그 초안의 본문 덮기</button>
+          </div>
+        </div>
+      ) : null}
+      {draft ? (
+        <>
+          <textarea className="aar-editor__input" aria-label="본문(마크다운)" value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} />
+          <div className="aar-actions">
+            <GlassButton variant="primary" size="s" disabled={busy || theirs !== null || text === (draft.editedMarkdown ?? canonical)} onClick={() => void save(text, draft.revision)}>{busy ? "저장하는 중" : "초안 저장"}</GlassButton>
+            {draft.editedMarkdown !== null ? (
+              <button type="button" className="vw-btn" data-armed={discard.armed ? "" : undefined} disabled={busy || theirs !== null} onClick={() => discard.press(() => void save(null, draft.revision))}>
+                {discard.armed ? "한 번 더 눌러 버리기" : "고친 것 버리기"}
+              </button>
+            ) : null}
+            <GlassButton variant="ghost" size="s" disabled={busy} onClick={onClose}>고치기 그만</GlassButton>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+export function AgentAReview({ fileId, projectId, title, info }: { fileId: string; projectId: string; title: string; info: AgentAProjectInfo }) {
   const desktop = useMediaQuery(MQ_DESKTOP);
   const unseen = info.docs.find((d) => d.fileId === fileId)?.unseen ?? 0;
   // 이 자료를 열어 두었으면 알린 답을 읽은 것으로 둔다(목록의 '새 답'이 사라진다).
@@ -62,6 +146,29 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // 고르는 방법과 고른 뒤 동작, 답에 쓸 AI: 이 기기 브라우저에 기억한다.
+  const [tool, setTool] = useState<{ mode: ReviewMode; input: ReviewInput }>(() => {
+    const saved = readJson<{ mode?: string; input?: string }>(() => localStorage, "iamceo.agentA.tool", {});
+    return { mode: MODES.some((m) => m.key === saved.mode) ? (saved.mode as ReviewMode) : "markup", input: saved.input === "pinpoint" ? "pinpoint" : "drag" };
+  });
+  const pickTool = (next: { mode: ReviewMode; input: ReviewInput }) => {
+    setTool(next);
+    writeJson(() => localStorage, "iamceo.agentA.tool", next);
+  };
+  const [ai, setAiState] = useState<AgentAReviewAiSettings>(() => readJson(() => localStorage, "iamceo.agentA.ai", {}));
+  const setAi = (next: AgentAReviewAiSettings) => {
+    setAiState(next);
+    writeJson(() => localStorage, "iamceo.agentA.ai", next);
+  };
+  const [catalog, setCatalog] = useState<AgentAReviewAiCatalog | null>(null);
+  /** 새 댓글에 붙이려고 올려 둔 그림. */
+  const [images, setImages] = useState<AgentAReviewAttachment[]>([]);
+  /** '묻기'로 고른 글(문서에 묻기의 다음 질문에 싣는다). */
+  const [chatQuote, setChatQuote] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  /** 검토 제출 확인 창: 지금 초안. */
+  const [submitDraft, setSubmitDraft] = useState<AgentAReviewDraft | null>(null);
+  const [submitOpen, setSubmitOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const shownSession = useRef<string | null>(null);
 
@@ -87,6 +194,8 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
           setComments(null);
           setProposals([]);
           setView({ kind: "list" });
+          setImages([]);
+          setEditing(false);
         }
         setDoc(next);
         setNewer(false);
@@ -99,6 +208,14 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
 
   const sessionId = doc?.sessionId ?? null;
   const latest = doc?.latest ?? false;
+
+  // 답에 쓸 AI 목록. 못 읽으면 고르는 칸만 보이지 않는다(댓글은 기본값으로 간다).
+  useEffect(() => {
+    if (!sessionId) return;
+    const abort = new AbortController();
+    api.agentAReview.ai(fileId, sessionId, abort.signal).then(setCatalog, () => !abort.signal.aborted && setCatalog(null));
+    return () => abort.abort();
+  }, [fileId, sessionId]);
 
   // 지금 정본을 보는 동안, 다른 곳에서 정본이 바뀌면 알린다(자동으로 본문을 바꾸지 않는다: 쓰던 글·읽던 자리를 지킨다).
   useEffect(() => {
@@ -230,7 +347,9 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
   }
   if (!doc || !sessionId) return <p className="fl-wait" role="status">문서를 여는 중…</p>;
 
-  const blocked = past ? "과거 판의 본문만 보는 중입니다. 댓글은 ‘지금 정본 보기’로 돌아가서 답니다." : doc.closed ? "제출로 닫힌 검토입니다. ‘지금 정본 보기’에서 새 댓글을 답니다." : !doc.latest ? "과거 판의 검토입니다. 답글은 이 판의 댓글에 남고, 새 댓글은 ‘지금 정본 보기’에서 답니다." : null;
+  const blocked = past ? "과거 판의 본문만 보는 중입니다. 댓글은 ‘지금 정본 보기’로 돌아가서 답니다." : doc.closed ? "제출로 닫힌 검토입니다. ‘지금 정본 보기’에서 새 댓글을 답니다." : !doc.latest ? "과거 판의 검토입니다. 답글은 이 판의 댓글에 남고, 새 댓글은 ‘지금 정본 보기’에서 답니다."
+    : !doc.safeWrites ? "이 Agent-A 는 초안 보존 규약을 몰라 새 댓글·삭제 표시·본문 고치기·검토 제출을 막았습니다. 읽기·답글·수정안 저장은 그대로 됩니다." : null;
+  const canWrite = blocked === null;
   const replyBlocked = past ? blocked : null;
   const markdown = past?.markdown ?? doc.markdown;
   const toc = outline(markdown);
@@ -262,19 +381,34 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
       draftOf={(key) => drafts[key] ?? ""}
       setDraft={setDraft}
       onView={(next) => { setError(null); setView(next); }}
+      catalog={catalog}
+      ai={ai}
+      onAi={setAi}
+      images={images}
+      imageUrl={(path) => api.agentAReview.attachmentUrl(fileId, sessionId, path)}
+      onAttach={(file) => void act(async () => {
+        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("PNG·JPEG·WebP 그림만 붙일 수 있습니다");
+        if (file.size > 4 * 1024 * 1024) throw new Error("그림은 4MB 까지입니다");
+        const up = await api.agentAReview.upload(fileId, sessionId, { name: file.name, mediaType: file.type, base64: await toBase64(file) });
+        setImages((cur) => (cur.some((x) => x.path === up.path) ? cur : [...cur, up]));
+      })}
+      onDetach={(path) => setImages((cur) => cur.filter((x) => x.path !== path))}
       onCreate={(target, text) => void act(async () => {
         const key = target.kind === "global" ? "new:global" : target.kind === "region" ? "new:region" : "new:quote";
-        if (pendingId.current?.key !== `${key}\n${text}`) pendingId.current = { key: `${key}\n${text}`, id: newId() };
+        // 같은 글·같은 그림·같은 AI 설정이면 같은 id 로 다시 보낸다(내용이 달라지면 새 댓글이다).
+        const same = `${key}\n${text}\n${images.map((x) => x.path).join(",")}\n${JSON.stringify(ai)}`;
+        if (pendingId.current?.key !== same) pendingId.current = { key: same, id: newId() };
         const id = pendingId.current.id;
-        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null });
+        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null, images, ai });
         pendingId.current = null;
+        setImages([]);
         setDraft(key, "");
         window.getSelection()?.removeAllRanges();
         setView({ kind: "thread", id });
         poke.current();
       })}
       onReply={(threadId, text) => void act(async () => {
-        await api.agentAReview.reply(fileId, sessionId, threadId, text);
+        await api.agentAReview.reply(fileId, sessionId, threadId, text, ai);
         setDraft(`reply:${threadId}`, "");
         poke.current();
       })}
@@ -304,6 +438,26 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
     />
   );
 
+  // 삭제 표시: 고른 글을 지우자는 표시 하나를 남긴다(AI 답은 시작하지 않는다).
+  const markDeletion = (quote: string) => void act(async () => {
+    if (pendingId.current?.key !== `deletion\n${quote}`) pendingId.current = { key: `deletion\n${quote}`, id: newId() };
+    const id = pendingId.current.id;
+    await api.agentAReview.addComment(fileId, sessionId, { id, kind: "deletion", text: "", quote });
+    pendingId.current = null;
+    setNotice("삭제 표시를 남겼습니다. ‘검토 제출’ 때 함께 넘어갑니다.");
+    poke.current();
+  });
+  const openSubmit = () => {
+    setError(null);
+    setSubmitDraft(null);
+    setSubmitOpen(true);
+    api.agentAReview.draft(fileId, sessionId).then(setSubmitDraft, (e) => setError(errorText(e)));
+  };
+  // 댓글 칸 자리에 '문서에 묻기'를 보일 때는 그 칸을 통째로 바꾼다.
+  const side = view.kind === "chat" ? (
+    <ChatPanel fileId={fileId} session={sessionId} quote={chatQuote} onQuoteUsed={() => setChatQuote(null)} catalog={catalog} ai={ai} onAi={setAi}
+      onBack={() => setView({ kind: "list" })} draft={drafts["chat"] ?? ""} setDraft={(text) => setDraft("chat", text)} />
+  ) : panel;
   const openVersions = () => {
     setVersionsOpen(true);
     api.agentAReview.versions(fileId, sessionId).then(setVersions, (e) => setError(errorText(e)));
@@ -318,6 +472,18 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
         <button type="button" className="vw-btn" onClick={() => setManageOpen(true)}>
           문서 관리{doc.recoveries.length ? <span className="aar-bar__count t-tabular">{doc.recoveries.length}</span> : null}
         </button>
+        {canWrite ? (
+          <>
+            <button type="button" className="vw-btn" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>본문 고치기</button>
+            <button type="button" className="vw-btn" onClick={openSubmit}>검토 제출</button>
+            <span className="aar-seg" role="group" aria-label="고르는 방법">
+              {INPUTS.map((x) => <button key={x.key} type="button" className="aar-seg__btn" aria-pressed={tool.input === x.key} title={x.hint} onClick={() => pickTool({ ...tool, input: x.key })}>{x.label}</button>)}
+            </span>
+            <span className="aar-seg" role="group" aria-label="고른 뒤 동작">
+              {MODES.map((x) => <button key={x.key} type="button" className="aar-seg__btn" aria-pressed={tool.mode === x.key} title={x.hint} onClick={() => pickTool({ ...tool, mode: x.key })}>{x.label}</button>)}
+            </span>
+          </>
+        ) : null}
         <span className="aar-bar__state">{past ? `과거 판 ${past.version}` : doc.latest ? (doc.artifactRevision ? `정본 판 ${doc.artifactRevision}` : "지금 정본") : "과거 판의 검토"}{doc.edited && !past ? " · 직접 편집 초안" : ""}</span>
         <button type="button" className="vw-btn aar-bar__comments" aria-expanded={panelOpen} onClick={() => setPanelOpen((v) => !v)}>
           댓글 <span className="t-tabular">{threads.length}</span>
@@ -350,25 +516,33 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
       <div className="aar-body">
         {desktop && tocOpen ? <nav className="aar-toc" aria-label="목차">{tocList}</nav> : null}
         <div ref={scrollRef} className="aar-scroll">
-          <ReviewDocument
-            fileId={fileId}
-            session={sessionId}
-            markdown={markdown}
-            images={past ? [] : doc.images}
-            threads={past ? [] : threads}
-            activeThread={openThread}
-            canComment={blocked === null}
-            regionDraft={regionDraft}
-            onQuote={(quote) => show({ kind: "new", target: { kind: "quote", quote } })}
-            onRegion={(region) => show({ kind: "new", target: { kind: "region", region } })}
-            onOpenThread={(id) => show({ kind: "thread", id })}
-          />
+          {editing && canWrite ? (
+            <DraftEditor fileId={fileId} session={sessionId} canonical={doc.canonical} onClose={() => setEditing(false)} onSaved={(message) => { setEditing(false); setNotice(message); setReload((n) => n + 1); }} />
+          ) : (
+            <ReviewDocument
+              fileId={fileId}
+              session={sessionId}
+              markdown={markdown}
+              images={past ? [] : doc.images}
+              threads={past ? [] : threads}
+              activeThread={openThread}
+              canComment={canWrite}
+              regionDraft={regionDraft}
+              mode={tool.mode}
+              input={tool.input}
+              onQuote={(quote) => show({ kind: "new", target: { kind: "quote", quote } })}
+              onDelete={markDeletion}
+              onAsk={(quote) => { setChatQuote(quote); show({ kind: "chat" }); }}
+              onRegion={(region) => show({ kind: "new", target: { kind: "region", region } })}
+              onOpenThread={(id) => show({ kind: "thread", id })}
+            />
+          )}
         </div>
-        {desktop && panelOpen ? <aside className="aar-side">{panel}</aside> : null}
+        {desktop && panelOpen ? <aside className="aar-side">{side}</aside> : null}
       </div>
       {desktop ? null : (
         <>
-          <Sheet open={panelOpen} onClose={() => setPanelOpen(false)} title={`‘${title}’ 댓글`}>{panel}</Sheet>
+          <Sheet open={panelOpen} onClose={() => setPanelOpen(false)} title={`‘${title}’ 댓글`}>{side}</Sheet>
           <Sheet open={tocOpen} onClose={() => setTocOpen(false)} title="목차">{tocList}</Sheet>
         </>
       )}
@@ -410,7 +584,33 @@ export function AgentAReview({ fileId, title, info }: { fileId: string; title: s
           {error ? <p className="aar-error" role="alert">{error}</p> : null}
         </div>
       </Modal>
-      <AgentAManage fileId={fileId} open={manageOpen} recoveries={doc.recoveries} onClose={() => setManageOpen(false)} onChanged={(message) => toLatest(message)} onOpenReview={(id) => setResume(id)} />
+      <Modal open={submitOpen} onClose={() => setSubmitOpen(false)} title="검토 제출">
+        <div className="aar-manage">
+          <p className="aar-note">이 판의 검토를 마칩니다. 초안에 든 댓글·삭제 표시를 ‘문서 관리 → 분기’의 질문으로 넘기고 이 검토를 닫습니다. 정본은 바뀌지 않고, 다른 수정안도 반영하지 않습니다.</p>
+          {submitDraft ? (
+            <p className="aar-note" role="status">
+              넘길 것: 주석 <span className="t-tabular">{submitDraft.annotations}</span>개{submitDraft.editedMarkdown !== null ? " · 직접 고친 본문" : ""}{submitDraft.attachments.length ? ` · 붙인 그림 ${submitDraft.attachments.length}개` : ""}
+              {submitDraft.annotations === 0 && submitDraft.editedMarkdown === null && !submitDraft.attachments.length ? " · 넘길 것이 없어 ‘확인함’으로만 닫습니다" : ""}
+            </p>
+          ) : error ? null : <p className="aar-note" role="status">초안을 읽는 중…</p>}
+          {error ? <p className="aar-error" role="alert">{error}</p> : null}
+          <div className="aar-actions">
+            <GlassButton variant="primary" size="s" disabled={busy || !submitDraft} onClick={() => void act(async () => {
+              try {
+                const r = await api.agentAReview.submit(fileId, sessionId, submitDraft!.revision);
+                setSubmitOpen(false);
+                toLatest(r.sent ? `검토를 제출했습니다. 질문 ${r.sent}개가 분기로 넘어갔습니다. 정본은 그대로입니다.` : "넘길 것 없이 검토를 닫았습니다. 정본은 그대로입니다.");
+              } catch (e) {
+                // 그사이 다른 화면이 초안을 바꿨으면 제출하지 않고 최신 초안을 다시 보여 준다.
+                if (e instanceof ApiError && e.code === "AGENT_A_DRAFT_CONFLICT") await api.agentAReview.draft(fileId, sessionId).then(setSubmitDraft, () => {});
+                throw e;
+              }
+            })}>{busy ? "제출하는 중" : "검토 제출"}</GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={busy} onClick={() => setSubmitOpen(false)}>닫기</GlassButton>
+          </div>
+        </div>
+      </Modal>
+      <AgentAManage fileId={fileId} projectId={projectId} open={manageOpen} recoveries={doc.recoveries} onClose={() => setManageOpen(false)} onChanged={(message) => toLatest(message)} onOpenReview={(id) => setResume(id)} />
     </div>
   );
 }

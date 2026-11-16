@@ -226,10 +226,17 @@ export interface AgentAReviewDoc {
   /** 화면에 그릴 본문. 보내지 않은 직접 편집 초안이 있으면 그 초안이다(edited). */
   markdown: string;
   edited: boolean;
+  /** 이 검토가 고정한 정본 본문(직접 고치기 전의 것). 고친 것을 버리면 이 본문으로 돌아간다. */
+  canonical: string;
   artifactRevision: number | null;
   images: AgentAReviewImage[];
   /** 제출로 닫힌 검토인지. 닫힌 검토에는 새 댓글을 달 수 없다. */
   closed: boolean;
+  /**
+   * 이 Agent-A 가 초안 보존 규약(초안 판 비교·댓글 원자 추가)을 아는지.
+   * false 면 새 댓글·초안 고치기를 서버가 막는다(다른 화면의 초안을 덮을 수 있어서). 읽기·답글·수정안·판은 그대로다.
+   */
+  safeWrites: boolean;
   recoveries: AgentAReviewRecovery[];
 }
 
@@ -255,6 +262,10 @@ export interface AgentAReviewAnnotation {
   branchOf: string | null;
   /** 앱 수정안처럼 이 화면이 다루지 않는 딸린 내용이 있는지. */
   extra: boolean;
+  /** 댓글에 붙인 그림. */
+  images: AgentAReviewAttachment[];
+  /** 이 댓글에 고른 AI 설정(고르지 않았으면 null). */
+  aiSettings: AgentAReviewAiSettings | null;
 }
 
 export interface AgentAReviewComments {
@@ -292,20 +303,130 @@ export interface AgentAReviewVersion {
 }
 
 /** 문서 관리: 정본 블록과 그 이전 판, 문서의 모든 수정안, 정본 판 이력. */
+/** 답을 낼 수 있는 AI 목록(플랫폼·모델·추론 수준). Agent-A 가 지금 연결된 것만 알려 준다. */
+export interface AgentAReviewAiCatalog {
+  available: boolean;
+  defaultProvider: string | null;
+  providers: {
+    id: string;
+    name: string;
+    models: { id: string; label: string; default: boolean; efforts: { id: string; label: string }[]; defaultEffort: string | null }[];
+  }[];
+  error: string | null;
+}
+/** 검토 초안: 아직 제출하지 않은 직접 편집·주석·첨부. revision 은 초안이 바뀔 때마다 오른다(다른 화면의 저장 포함). */
+export interface AgentAReviewDraft {
+  revision: number;
+  /** 직접 고친 본문. 고친 적이 없으면 null. */
+  editedMarkdown: string | null;
+  /** 초안에 든 주석(댓글·삭제 표시) 수. */
+  annotations: number;
+  /** 검토 전체에 붙인 그림. */
+  attachments: AgentAReviewAttachment[];
+}
+export interface AgentAReviewSubmitResult {
+  ok: true;
+  /** 분기의 질문으로 넘어간 주석·전체 의견 수. */
+  sent: number;
+  branches: number;
+}
+/** 문서 대화(Ask AI)의 질문·답 한 쌍. */
+export interface AgentAChatEntry {
+  id: string;
+  prompt: string;
+  /** 질문할 때 고른 글. 없으면 null. */
+  quote: string | null;
+  createdAt: number;
+  answer: string;
+  /** 답을 쓰는 중인지. */
+  writing: boolean;
+  error: string | null;
+  provider: string | null;
+}
+/** 문서 대화의 답 흐름 한 줄. */
+export type AgentAChatEvent =
+  | { type: "start"; conversationId: string }
+  | { type: "delta"; text: string }
+  | { type: "error"; message: string; code: string }
+  | { type: "done"; ok: boolean; text: string };
+export interface AgentAChatHistory {
+  conversationId: string;
+  entries: AgentAChatEntry[];
+  /** 다른 대화에서 갈라진 대화면 그 대화 id. */
+  branchedFrom: string | null;
+}
+export interface AgentAChatSession {
+  conversationId: string;
+  label: string;
+  current: boolean;
+  /** 지금 답을 쓰는 중인 대화인지. */
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+/** 문서 관리의 분기: 정본 옆에서 이어 가는 질문·답. 답을 채택해도 정본은 바뀌지 않는다. */
+export interface AgentAManageBranch {
+  id: string;
+  title: string;
+  status: "open" | "closed";
+  parentId: string | null;
+  /** 질문 대상(블록 제목·고른 글·그림 영역 등)을 읽는 말로. */
+  target: string;
+  messages: { id: string; role: "user" | "assistant"; body: string; decision: string | null; reason: string | null; at: string }[];
+}
+/** 문서 관리의 피드백: 분기의 질문 하나. state 는 not_sent·queued·running·succeeded·failed·unknown. */
+export interface AgentAManageFeedback {
+  id: string;
+  branchId: string;
+  branchTitle: string;
+  message: string;
+  state: string;
+}
+/** 전송 기록: 고른 질문을 묶어 만든 전송 자료 하나. */
+export interface AgentAManageJob {
+  id: string;
+  state: string;
+  error: string | null;
+  feedback: number;
+}
 export interface AgentAReviewManage {
   artifactRevision: number;
+  /** 직접 고치기·되살리기 요청에 그대로 되돌려 보낸다(같은 요청을 다시 보내도 같은 명령이 되게). */
+  contextRevision: number;
+  layoutRevision: number;
+  branches: AgentAManageBranch[];
+  feedback: AgentAManageFeedback[];
+  jobs: AgentAManageJob[];
+  /** 최근 변경 이력(새것부터 30건). */
+  events: { seq: number; type: string; at: string }[];
+  /** Agent-A 의 자동 연동(CLI 실행)이 켜져 있는지. 꺼져 있으면 전송 자료를 내보내 수동으로 교환한다. */
+  adapter: boolean;
   blocks: AgentABlock[];
   proposals: (Omit<AgentAProposal, "operations"> & { operations: (AgentAProposalOp & { blockTitle: string })[] })[];
   versions: AgentAVersion[];
 }
 
+/** 답에 쓸 AI·모델·추론 수준. 비운 칸은 Agent-A 기본값을 쓴다. */
+export interface AgentAReviewAiSettings {
+  providerId?: string;
+  model?: string;
+  reasoningEffort?: string;
+}
+/** 댓글에 붙인 그림. path 는 Agent-A 에 먼저 올려서 받은 경로다. */
+export interface AgentAReviewAttachment {
+  path: string;
+  name: string;
+}
 export interface AgentAReviewCommentReq {
-  /** 화면이 만든 댓글 id. 같은 id 로 다시 보내도 댓글은 하나다. */
+  /** 화면이 만든 댓글 id. 같은 id·같은 내용으로 다시 보내면 처음 결과를 확인한다(댓글은 하나다). */
   id: string;
-  kind: "comment" | "global";
+  /** deletion 은 '이 글을 지우자'는 삭제 표시다(고른 글이 있어야 하고, 댓글 글은 없어도 된다. AI 답은 시작하지 않는다). */
+  kind: "comment" | "global" | "deletion";
   text: string;
   quote?: string;
   region?: AgentAReviewImageRegion | null;
+  images?: AgentAReviewAttachment[];
+  ai?: AgentAReviewAiSettings | null;
 }
 
 export interface AgentAReviewWriteResult {

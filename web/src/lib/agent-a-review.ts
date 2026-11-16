@@ -126,7 +126,7 @@ export function outline(markdown: string): OutlineItem[] {
   return out;
 }
 
-export type DocPart = { kind: "markdown"; text: string } | { kind: "image"; src: string; alt: string; line: number };
+export type DocPart = { kind: "markdown"; text: string } | { kind: "image"; src: string; alt: string; line: number } | { kind: "mermaid"; code: string };
 
 const IMAGE_LINE = /^!\[((?:[^\]\\]|\\.)*)\]\((\/assets\/(?:user\/[a-f0-9]{64}\/1|workbench-flow\.svg))\)\s*$/;
 
@@ -138,17 +138,40 @@ export function splitDoc(markdown: string): DocPart[] {
   const parts: DocPart[] = [];
   let buf: string[] = [];
   let fence: string | null = null;
+  /** mermaid 울타리 안이면 그 코드 줄들(울타리 줄은 뺀다). */
+  let diagram: string[] | null = null;
   const flush = () => {
     if (buf.join("\n").trim()) parts.push({ kind: "markdown", text: buf.join("\n") });
     buf = [];
   };
   markdown.split("\n").forEach((line, i) => {
-    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    const f = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (f) {
       const mark = f[1]!;
-      if (fence === null) fence = mark[0]!.repeat(mark.length);
-      else if (mark[0] === fence[0] && mark.length >= fence.length) fence = null;
+      if (fence === null) {
+        fence = mark[0]!.repeat(mark.length);
+        // ```mermaid 울타리는 도식으로 따로 그린다(Agent-A 의 mermaid 블록이 이 모양으로 온다).
+        if (f[2]!.trim().toLowerCase() === "mermaid") {
+          flush();
+          diagram = [];
+          return;
+        }
+      } else if (mark[0] === fence[0] && mark.length >= fence.length && !f[2]!.trim()) {
+        fence = null;
+        if (diagram) {
+          parts.push({ kind: "mermaid", code: diagram.join("\n") });
+          diagram = null;
+          return;
+        }
+      } else if (diagram) {
+        diagram.push(line);
+        return;
+      }
       buf.push(line);
+      return;
+    }
+    if (diagram) {
+      diagram.push(line);
       return;
     }
     const m = fence === null ? IMAGE_LINE.exec(line) : null;
@@ -159,6 +182,8 @@ export function splitDoc(markdown: string): DocPart[] {
     flush();
     parts.push({ kind: "image", src: m[2]!, alt: m[1]!.replace(/\\(.)/g, "$1"), line: i + 1 });
   });
+  // 닫히지 않은 mermaid 울타리는 도식이 아니라 글로 보인다.
+  if (diagram) buf.push("```mermaid", ...diagram);
   flush();
   return parts;
 }

@@ -94,7 +94,14 @@ export interface AState {
     content: { title: string; summary: string; body: string; sources: unknown[] };
     history: { revision: number; content: { title: string; summary: string; body: string }; archived: boolean }[];
   }[];
-  branches: { id: string; target: Record<string, unknown>; messages: { id: string; role: "user" | "assistant"; body: string; question_id?: string; created_at: string }[] }[];
+  branches: {
+    id: string;
+    target: Record<string, unknown>;
+    title?: string;
+    status?: string;
+    parent_branch_id?: string | null;
+    messages: { id: string; role: "user" | "assistant"; body: string; question_id?: string; created_at: string; decision?: string; reason?: string }[];
+  }[];
   proposals: {
     id: string;
     branch_id: string;
@@ -106,7 +113,7 @@ export interface AState {
     read_set: { block_id: string; revision: number }[];
     operations: { op: string; block_id: string; base_revision: number; content?: { title: string; summary: string; body: string } }[];
   }[];
-  feedback: { id: string; branch_id: string; question_id: string; state: string }[];
+  feedback: { id: string; branch_id: string; question_id: string; state: string; message?: string }[];
   events: { seq: number; type: string; actor_id: string; created_at: string; payload: Record<string, unknown> }[];
 }
 
@@ -201,7 +208,7 @@ export class AgentAClient {
   command(artifactId: string, command: Record<string, unknown>): Promise<AReceipt> {
     return this.call("POST", `/api/artifacts/${encodeURIComponent(artifactId)}/commands`, command);
   }
-  feedbackBatch(artifactId: string, body: { feedback_ids: string[]; idempotency_key: string }): Promise<AJob> {
+  feedbackBatch(artifactId: string, body: { feedback_ids: string[]; idempotency_key: string; template?: string }): Promise<AJob> {
     return this.call("POST", `/api/artifacts/${encodeURIComponent(artifactId)}/feedback-batches`, body);
   }
   job(id: string): Promise<AJob> {
@@ -219,11 +226,48 @@ export class AgentAClient {
   uploadAsset(body: { name: string; media_type: string; base64: string }): Promise<AAsset> {
     return this.call("POST", "/api/assets", body);
   }
+  /** 이 문서의 전송 기록(피드백 묶음). */
+  jobs(artifactId: string): Promise<(AJob & { created_at?: string })[]> {
+    return this.call("GET", `/api/artifacts/${encodeURIComponent(artifactId)}/jobs`);
+  }
+  /** 전송 자료(Context Packet)와 결과 양식. 수동 교환에 쓴다. */
+  jobExport(id: string): Promise<Record<string, unknown>> {
+    return this.call("GET", `/api/jobs/${encodeURIComponent(id)}/export`);
+  }
+  /** 수동으로 받은 에이전트 결과(답·변경안)를 이 문서에 저장한다. 정본은 바뀌지 않는다. */
+  importResult(artifactId: string, body: unknown): Promise<AReceipt> {
+    return this.call("POST", `/api/artifacts/${encodeURIComponent(artifactId)}/import-result`, body);
+  }
+  /** 올려 둔 그림 하나(댓글 첨부). 경로는 부르는 쪽이 /assets/user/<64hex>/1 인지 확인한다. */
+  async asset(src: string): Promise<Response> {
+    if (!/^\/assets\/user\/[a-f0-9]{64}\/1$/.test(src)) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
+    const headers: Record<string, string> = {};
+    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
+    try {
+      return await this.transport(`${this.config.baseUrl}${src}`, { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch {
+      throw new AgentAError("unreachable", 0, "unreachable", "Agent-A 서버에 닿지 않았습니다");
+    }
+  }
+  /**
+   * 문서 대화의 답 흐름(text/event-stream). 답이 길 수 있어 시간 제한을 두지 않고, 부르는 쪽의 signal 로만 끊는다.
+   * 상태가 200 이 아니면 흐름이 아니라 거절 JSON 이다(부르는 쪽이 읽는다).
+   */
+  async reviewStream(path: string, ctx: { artifactId: string; sessionId: string }, body: unknown, signal?: AbortSignal): Promise<Response> {
+    if (!path.startsWith("/api/") || path.includes("..")) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
+    const headers: Record<string, string> = { "x-enouv-artifact": ctx.artifactId, "x-enouv-review-session": ctx.sessionId, "content-type": "application/json" };
+    if (this.config.appToken) headers.authorization = `Bearer ${this.config.appToken}`;
+    try {
+      return await this.transport(`${this.config.baseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body), redirect: "manual", signal });
+    } catch {
+      throw new AgentAError("unreachable", 0, "unreachable", "Agent-A 서버에 닿지 않았습니다");
+    }
+  }
   /**
    * 검토 규약(Agent-A 원래 화면이 쓰는 API) 호출. 상태와 JSON 을 그대로 돌려준다: 404·409 의 뜻은 길마다 달라 부르는 쪽이 읽는다.
    * 닿지 않으면 AgentAError(unreachable). 받는 쪽 주소는 늘 이 설정의 Agent-A 이고, 문서·검토 머리는 서버가 붙인다.
    */
-  async reviewCall(method: string, path: string, ctx: { artifactId: string; sessionId?: string | null }, body?: unknown): Promise<{ status: number; json: unknown }> {
+  async reviewCall(method: string, path: string, ctx: { artifactId: string; sessionId?: string | null }, body?: unknown): Promise<{ status: number; json: unknown; draftRevision: number | null }> {
     if (!path.startsWith("/api/") || path.includes("..")) throw new AgentAError("invalid", 400, "bad_path", "잘못된 경로입니다");
     const headers: Record<string, string> = { "x-enouv-artifact": ctx.artifactId };
     if (ctx.sessionId) headers["x-enouv-review-session"] = ctx.sessionId;
@@ -235,7 +279,10 @@ export class AgentAClient {
     } catch {
       throw new AgentAError("unreachable", 0, "unreachable", "Agent-A 서버에 닿지 않았습니다");
     }
-    if (res.status === 304) return { status: 304, json: null };
+    // 초안 보존 규약(초안 규약 2)을 아는 Agent-A 만 초안 응답에 초안 판 머리를 싣는다. 없으면 null.
+    const head = res.headers.get("x-enouv-draft-revision");
+    const draftRevision = head !== null && /^\d{1,15}$/.test(head) ? Number(head) : null;
+    if (res.status === 304) return { status: 304, json: null, draftRevision };
     const text = await res.text().catch(() => "");
     let json: unknown = null;
     try {
@@ -243,7 +290,7 @@ export class AgentAClient {
     } catch {
       json = null;
     }
-    return { status: res.status, json };
+    return { status: res.status, json, draftRevision };
   }
 
   /** 검토 본문의 그림 하나. Agent-A 가 이 검토의 그림으로 아는 경로만 내준다. */

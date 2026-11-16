@@ -136,7 +136,7 @@ function Reader({ file, agentA, ready = true, list }: { file: FileDoc; agentA?: 
       {/* 아티팩트는 그림이 주인공이다. 원본 경로는 다른 종류에서만 보여 준다. */}
       {file.path && file.kind !== "artifact" ? <PathLine path={file.path} /> : null}
       {linked && agentA ? (
-        <AgentAReview fileId={file.id} title={file.title} info={agentA} />
+        <AgentAReview fileId={file.id} projectId={file.projectId} title={file.title} info={agentA} />
       ) : ready ? (
         <FileViewer file={file} />
       ) : (

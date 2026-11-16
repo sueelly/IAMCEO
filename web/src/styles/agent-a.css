@@ -64,8 +64,41 @@
 ::highlight(aa-quote) { background-color:rgb(122 91 255 / .18); }
 ::highlight(aa-quote-done) { background-color:rgb(23 19 43 / .08); }
 ::highlight(aa-quote-active) { background-color:rgb(122 91 255 / .4); }
-.aar-pick { position:absolute; z-index:3; transform:translateX(-50%); min-height:36px; padding:0 14px; border-radius:999px; font-size:13.5px; font-weight:650; color:#fff; background:var(--accent-fill); box-shadow:var(--menu-shadow); white-space:nowrap; }
-@media (pointer:coarse) { .aar-pick { min-height:44px; padding:0 18px; } }
+::highlight(aa-deletion) { background-color:rgb(214 69 69 / .14); text-decoration:line-through; text-decoration-color:rgb(214 69 69 / .8); }
+/* 고른 글로 할 일(댓글·삭제 표시·묻기). 모드에 따라 단추 수가 다르다. */
+.aar-pick { position:absolute; z-index:3; transform:translateX(-50%); display:inline-flex; gap:2px; padding:3px; border-radius:999px; background:var(--accent-fill); box-shadow:var(--menu-shadow); white-space:nowrap; }
+.aar-pick__btn { min-height:30px; padding:0 12px; border-radius:999px; font-size:13.5px; font-weight:650; color:#fff; }
+.aar-pick__btn:hover, .aar-pick__btn:focus-visible { background:rgb(255 255 255 / .18); }
+.aar-pick__btn[data-tone="danger"] { color:#ffe1e1; }
+@media (pointer:coarse) { .aar-pick__btn { min-height:38px; padding:0 16px; } }
+/* 요소 지정: 누르면 통째로 고를 문단·항목·제목을 미리 보인다. */
+.aar-doc[data-input="pinpoint"] .aar-md :is(p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th) { cursor:pointer; border-radius:6px; }
+@media (hover:hover) { .aar-doc[data-input="pinpoint"] .aar-md :is(p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th):hover { outline:1.5px dashed rgb(122 91 255 / .55); outline-offset:2px; } }
+/* 도구 막대의 갈래 단추(고르는 방법 · 고른 뒤 동작) */
+.aar-seg { display:inline-flex; gap:2px; padding:2px; border-radius:999px; background:var(--field); box-shadow:var(--field-ring); }
+.aar-seg__btn { min-height:28px; padding:0 10px; border-radius:999px; font-size:12.5px; font-weight:600; color:var(--ink-2); white-space:nowrap; }
+.aar-seg__btn[aria-pressed="true"] { color:#fff; background:var(--accent-fill); }
+@media (pointer:coarse) { .aar-seg__btn { min-height:36px; padding:0 12px; } }
+/* 본문 직접 고치기 */
+.aar-editor { display:flex; flex-direction:column; gap:10px; padding:12px 0; }
+.aar-editor__input { min-height:60vh; padding:12px 14px; border-radius:14px; font:inherit; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13.5px; line-height:1.6; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); resize:vertical; }
+/* 답에 쓸 AI 고르기 · 그림 붙이기 */
+.aar-ai { display:flex; flex-wrap:wrap; gap:6px; padding:6px 10px 0; }
+.aar-ai select { min-width:0; max-width:100%; min-height:30px; padding:0 8px; border-radius:10px; font:inherit; font-size:12.5px; color:var(--ink-2); background:var(--field); box-shadow:var(--field-ring); }
+.aar-attach { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:6px 10px 0; }
+.aar-msg .aar-attach { padding:6px 0 0; }
+.aar-thumb { position:relative; display:inline-flex; flex-direction:column; gap:2px; width:72px; font-size:11px; color:var(--ink-3); }
+.aar-thumb img, .aar-thumb__wait { width:72px; height:54px; border-radius:8px; object-fit:cover; background:var(--field); box-shadow:var(--field-ring); display:grid; place-items:center; }
+.aar-thumb__name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.aar-thumb__x { position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:999px; font-size:14px; line-height:1; color:#fff; background:var(--ink-2); }
+.aar-check { display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--ink-2); }
+.aar-check input { margin-top:3px; }
+.aar-field select { padding:9px 11px; border-radius:12px; font:inherit; font-size:14.5px; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); }
+.aar-chat { display:flex; flex-direction:column; gap:6px; }
+/* 도식 원문 */
+.aar-diagram { margin:12px 0; padding:10px 12px; border-radius:12px; background:var(--field); box-shadow:var(--field-ring); }
+.aar-diagram__cap { margin-bottom:6px; font-size:12px; font-weight:600; color:var(--ink-3); }
+.aar-diagram__code { margin:0; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; line-height:1.55; white-space:pre; }
 
 /* ── 그림과 영역 ── */
 .aar-fig { margin:0; display:flex; flex-direction:column; gap:6px; min-width:0; }
@@ -92,7 +125,9 @@
 .aar-pane__tools { flex:none; display:flex; flex-wrap:wrap; gap:6px; padding:0 10px 8px; }
 .aar-pane__tools .vw-btn { min-height:36px; padding:0 11px; font-size:13px; }
 .aar-pane__body { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:10px; padding:4px 12px 12px; }
-.aar-pane__foot { flex:none; margin:0 12px 12px; }
+.aar-pane__foot { flex:none; }
+p.aar-pane__foot { margin:0 12px 12px; }
+.aar-pane__foot > .aar-note { margin:6px 12px 0; }
 .dialog__body .aar-pane__body { overflow:visible; padding-inline:2px; }
 .dialog__body .aar-pane__head { padding-inline:2px; }
 .dialog__body .aar-pane__tools { padding-inline:2px; }
