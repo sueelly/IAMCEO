@@ -714,9 +714,38 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await requireReview().restore(id!, body));
     }),
     route("POST", "/api/agent-a/docs/:id/review/manage/edit", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), title: z.string().max(500), body: z.string().max(500_000), opId: z.string().max(100),
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), title: z.string().max(500), body: z.string().max(500_000), summary: z.string().max(10_000).optional(), opId: z.string().max(100),
         contextRevision: z.number().int().nonnegative().nullable().optional() }));
       return Response.json(await requireReview().edit(id!, body));
+    }),
+    // 문서 관리: 검토 표시 · 보관 · 새 블록 · 순서와 배치 · 목표와 제약
+    route("POST", "/api/agent-a/docs/:id/review/manage/block/review", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), opId: z.string().max(100) }));
+      return Response.json(await requireReview().blockReview(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/block/archive", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ blockId: z.string().max(200), revision: z.number().int(), opId: z.string().max(100),
+        contextRevision: z.number().int().nonnegative().nullable().optional(), layoutRevision: z.number().int().nonnegative().nullable().optional() }));
+      return Response.json(await requireReview().blockArchive(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/block", async (req, _url, [id]) => {
+      const image = z.strictObject({ name: z.string().max(500), mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]), base64: z.string().max(6 * 1024 * 1024) });
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), afterId: z.string().max(200).nullable(), kind: z.enum(["markdown", "table", "mermaid", "image"]), title: z.string().max(500), body: z.string().max(500_000),
+        image: image.nullable().optional(), contextRevision: z.number().int().nonnegative().nullable().optional(), layoutRevision: z.number().int().nonnegative().nullable().optional() }));
+      return Response.json(await requireReview().blockInsert(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/order", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), blockIds: z.array(z.string().max(200)).min(1).max(500), layoutRevision: z.number().int().positive() }));
+      return Response.json(await requireReview().blocksReorder(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/layout", async (req, _url, [id]) => {
+      const layout = z.strictObject({ x: z.number(), y: z.number(), width: z.number(), height: z.number() });
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), blockId: z.string().max(200), layout, layoutRevision: z.number().int().positive() }));
+      return Response.json(await requireReview().layoutSet(id!, body));
+    }),
+    route("POST", "/api/agent-a/docs/:id/review/manage/context", async (req, _url, [id]) => {
+      const body = await parseBody(req, z.strictObject({ opId: z.string().max(100), goal: z.string().max(10_000), constraints: z.array(z.string().max(2_000)).max(100), contextRevision: z.number().int().positive() }));
+      return Response.json(await requireReview().contextUpdate(id!, body));
     }),
     // 문서 관리: 분기 · 피드백 · 전송 기록
     route("POST", "/api/agent-a/docs/:id/review/manage/branch", async (req, _url, [id]) => {

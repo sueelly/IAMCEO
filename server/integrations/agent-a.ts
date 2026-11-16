@@ -86,11 +86,15 @@ export interface AState {
   context_revision: number;
   layout_revision: number;
   event_seq: number;
+  goal?: string;
+  constraints?: string[];
   blocks: {
     id: string;
     revision: number;
     kind: string;
     archived: boolean;
+    reviewed_revision?: number | null;
+    layout?: { x: number; y: number; width: number; height: number } | null;
     content: { title: string; summary: string; body: string; sources: unknown[] };
     history: { revision: number; content: { title: string; summary: string; body: string }; archived: boolean }[];
   }[];
@@ -694,17 +698,7 @@ export class AgentAService {
       assigneeId: (doc.assignee_id as string | null) ?? null,
       artifactRevision: state.artifact_revision,
       contextRevision: state.context_revision,
-      blocks: state.blocks.map(
-        (b): AgentABlock => ({
-          id: b.id,
-          revision: b.revision,
-          kind: b.kind,
-          title: b.content.title,
-          body: b.content.body,
-          archived: b.archived,
-          history: b.history.map((h) => ({ revision: h.revision, title: h.content.title, body: h.content.body, archived: h.archived })),
-        }),
-      ),
+      blocks: state.blocks.map(blockView),
       requests: rows.map((r) => this.toRequest(r, state)),
       versions: versionsOf(state, doc.created_at as string),
       source: "agent_a_server",
@@ -1219,6 +1213,35 @@ function opResult(op: Row): AgentAOpResult {
     message: (op.message as string | null) ?? null,
     artifactRevision: (op.artifact_revision as number | null) ?? null,
     verified: Boolean(op.verified),
+  };
+}
+
+/** 근거 하나를 읽는 글로. Agent-A 가 본문에 싣는 것과 같은 차례로 고른다(제목 → 이름표 → 주소 → 블록 id → 통째). */
+function sourceText(source: unknown): string {
+  if (typeof source === "string") return source;
+  if (source !== null && typeof source === "object" && !Array.isArray(source)) {
+    const s = source as Record<string, unknown>;
+    for (const key of ["title", "label", "url", "block_id"]) if (typeof s[key] === "string" && s[key]) return s[key] as string;
+  }
+  return JSON.stringify(source) ?? "";
+}
+
+/** Agent-A 의 블록 하나를 화면 모양으로. 근거는 읽는 글로만 옮기고, 배치는 수 네 개가 다 있을 때만 싣는다. */
+export function blockView(b: AState["blocks"][number]): AgentABlock {
+  const l = b.layout;
+  const layout = l && [l.x, l.y, l.width, l.height].every((n) => typeof n === "number" && Number.isFinite(n)) ? { x: l.x, y: l.y, width: l.width, height: l.height } : null;
+  return {
+    id: b.id,
+    revision: b.revision,
+    kind: b.kind,
+    title: b.content.title,
+    summary: typeof b.content.summary === "string" ? b.content.summary : "",
+    body: b.content.body,
+    archived: b.archived,
+    sources: (Array.isArray(b.content.sources) ? b.content.sources : []).slice(0, 100).map((s) => sourceText(s).slice(0, 2000)),
+    reviewedRevision: typeof b.reviewed_revision === "number" ? b.reviewed_revision : null,
+    layout,
+    history: b.history.map((h) => ({ revision: h.revision, title: h.content.title, summary: typeof h.content.summary === "string" ? h.content.summary : "", body: h.content.body, archived: h.archived })),
   };
 }
 

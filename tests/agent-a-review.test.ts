@@ -234,7 +234,7 @@ describe("검토 길: 수정안·판·문서 관리", () => {
     manage = await review.manage(fileId);
     const plan = manage.blocks.find((b) => b.title === "계획")!;
     expect(plan).toMatchObject({ revision: 2, body: "계획은 세 단계입니다. (고침) 같은 말 같은 말." });
-    expect(plan.history).toEqual([{ revision: 1, title: "계획", body: "계획은 세 단계입니다. 같은 말 같은 말.", archived: false }]);
+    expect(plan.history).toEqual([{ revision: 1, title: "계획", summary: "", body: "계획은 세 단계입니다. 같은 말 같은 말.", archived: false }]);
     // 화면이 본 판이 지금 판과 다르면 거절한다(그사이 바뀜)
     expect(await status(review.restore(fileId, { blockId: plan.id, revision: 1, historyRevision: 1, opId: "op-restore-0000" }))).toBe(409);
     expect(await review.restore(fileId, { blockId: plan.id, revision: 2, historyRevision: 1, opId: "op-restore-0001" })).toEqual({ ok: true, artifactRevision: 3 });

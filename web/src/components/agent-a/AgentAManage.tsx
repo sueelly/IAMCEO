@@ -1,19 +1,21 @@
-// 문서 관리: 분기(옆 질문) · 수정안 · 정본 블록과 이전 판 · 피드백(전송 자료·결과 가져오기) · 판 이력 · 다른 검토에 남은 초안과 기록.
-// 원래 Agent-A 의 '문서 관리'(분기·변경안·정본·피드백)를 IAMCEO 부품으로 옮긴 것이다.
-// 정본을 바꾸는 일(저장·되살리기·직접 고치기)은 대표가 누를 때만 하고, 같은 누름을 다시 보내도 한 번만 반영된다(opId).
+// 문서 관리: 분기(옆 질문) · 수정안 · 정본 블록과 이전 판 · 순서와 배치 · 피드백(전송 자료·결과 가져오기) · 판 이력 · 다른 검토에 남은 초안과 기록.
+// 원래 Agent-A 의 '문서 관리'(분기·변경안·정본·피드백·배치 보드)를 IAMCEO 부품으로 옮긴 것이다.
+// 정본을 바꾸는 일(저장·되살리기·직접 고치기·보관·새 블록·순서)은 대표가 누를 때만 하고, 같은 누름을 다시 보내도 한 번만 반영된다(opId).
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentABlock, AgentAManageBranch, AgentAProposalStatus, AgentAReviewManage, AgentAReviewRecovery } from "@shared/agent-a";
 import { GlassButton } from "../../glass";
-import { api, errorText } from "../../lib/api";
+import { ApiError, api, errorText } from "../../lib/api";
 import { PROPOSAL_LABEL, wordDiff } from "../../lib/agent-a-review";
 import { newId } from "../../lib/store";
-import { Modal, Time, useConfirmPress } from "../ui";
+import { Badge, MQ_DESKTOP, Modal, Time, useConfirmPress, useMediaQuery } from "../ui";
 import { ProposalCard } from "./CommentPanel";
+import { KIND_LABEL, LayoutBoard } from "./LayoutBoard";
 
-type Tab = "branches" | "proposals" | "blocks" | "feedback" | "versions" | "drafts";
+type Tab = "branches" | "proposals" | "blocks" | "layout" | "feedback" | "versions" | "drafts";
 const TABS: { key: Tab; label: string }[] = [
   { key: "proposals", label: "수정안" },
   { key: "blocks", label: "정본" },
+  { key: "layout", label: "순서·배치" },
   { key: "branches", label: "분기" },
   { key: "feedback", label: "피드백" },
   { key: "versions", label: "판 이력" },
@@ -23,6 +25,9 @@ const TABS: { key: Tab; label: string }[] = [
 const STATE: Record<string, string> = { proposed: "검토 전", accepted: "채택", held: "보류", rejected: "거절", not_sent: "미전송", queued: "준비됨", running: "실행 중", succeeded: "완료", failed: "실패", unknown: "상태 확인 필요", open: "열림", closed: "닫힘" };
 const IMPORT_TEXT = /\.(md|markdown|txt)$/i;
 const IMPORT_IMAGE: Record<string, "image/png" | "image/jpeg" | "image/webp"> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+type BlockKind = "markdown" | "table" | "mermaid" | "image";
+const KINDS: BlockKind[] = ["markdown", "table", "mermaid", "image"];
+const FIRST = "__first__";
 
 function download(value: unknown, name: string): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
@@ -93,60 +98,178 @@ function BranchCard({ branch, parentTitle, busy, reason, onDecide, onFollow, onC
 }
 const FILTERS: (AgentAProposalStatus | "all")[] = ["pending", "held", "conflict", "rejected", "applied", "all"];
 
-function Restore({ disabled, revision, onRestore }: { disabled: boolean; revision: number; onRestore: () => void }) {
+function Restore({ disabled, revision, unarchive, onRestore }: { disabled: boolean; revision: number; /** 보관된 블록을 그 판의 내용으로 다시 꺼낸다. */ unarchive: boolean; onRestore: () => void }) {
   const confirm = useConfirmPress();
   return (
     <button type="button" className="vw-btn" data-armed={confirm.armed ? "" : undefined} disabled={disabled} onClick={() => confirm.press(onRestore)}>
-      {confirm.armed ? "한 번 더 눌러 되살리기" : `판 ${revision} 내용으로 되살리기`}
+      {confirm.armed ? "한 번 더 눌러 되살리기" : unarchive ? `판 ${revision} 내용으로 다시 꺼내기` : `판 ${revision} 내용으로 되살리기`}
     </button>
   );
 }
 
-function BlockCard({ block, busy, onEdit, onRestore }: {
-  block: AgentABlock; busy: boolean;
-  onEdit: (input: { title: string; body: string }) => Promise<boolean>;
-  onRestore: (historyRevision: number) => void;
-}) {
-  const [edit, setEdit] = useState<{ title: string; body: string; revision: number } | null>(null);
-  const editable = !block.archived && block.kind === "markdown";
+function Archive({ disabled, onArchive }: { disabled: boolean; onArchive: () => void }) {
+  const confirm = useConfirmPress();
   return (
-    <section className="aar-card" aria-label={`블록 ${block.title}`}>
+    <button type="button" className="vw-btn" data-armed={confirm.armed ? "" : undefined} disabled={disabled} onClick={() => confirm.press(onArchive)}>
+      {confirm.armed ? "한 번 더 눌러 보관" : "보관"}
+    </button>
+  );
+}
+
+function BlockCard({ block, busy, onEdit, onRestore, onReview, onArchive }: {
+  block: AgentABlock; busy: boolean;
+  onEdit: (input: { title: string; summary: string; body: string }) => Promise<boolean>;
+  onRestore: (historyRevision: number) => void;
+  onReview: () => void;
+  onArchive: () => void;
+}) {
+  const [edit, setEdit] = useState<{ title: string; summary: string; body: string; revision: number } | null>(null);
+  const reviewed = block.reviewedRevision === block.revision;
+  return (
+    <section className="aar-card" aria-label={`블록 ${block.title}`} data-block={block.id}>
       <header className="aar-card__head">
         <strong>{block.title}</strong>
-        <span className="aar-card__meta t-tabular">판 {block.revision}{block.archived ? " · 보관됨" : ""}</span>
+        <span className="aar-card__meta t-tabular">
+          {KIND_LABEL[block.kind] ?? block.kind} · 판 {block.revision}{block.archived ? " · 보관됨" : ""}
+          {block.archived ? null : reviewed ? <> <Badge tone="ok">검토함</Badge></> : block.reviewedRevision !== null ? <> <Badge tone="accent">고친 뒤 검토 전</Badge></> : null}
+        </span>
       </header>
+      {block.summary && !edit ? <p className="aar-card__meta" data-summary="">요약: {block.summary}</p> : null}
       {edit ? (
         <div className="aar-edit">
           <label className="aar-field">제목<input value={edit.title} maxLength={500} onChange={(e) => setEdit({ ...edit, title: e.target.value })} /></label>
-          <label className="aar-field">본문<textarea rows={10} value={edit.body} onChange={(e) => setEdit({ ...edit, body: e.target.value })} /></label>
+          <label className="aar-field">요약<input value={edit.summary} maxLength={10000} placeholder="제목 아래에 보일 한두 줄(비워도 됩니다)" onChange={(e) => setEdit({ ...edit, summary: e.target.value })} /></label>
+          <label className="aar-field">{block.kind === "image" ? "그림 설명" : "본문"}<textarea rows={10} value={edit.body} onChange={(e) => setEdit({ ...edit, body: e.target.value })} /></label>
+          {block.kind === "table" ? <p className="aar-card__meta">표 본문은 {'{"headers":["머리"…],"rows":[["칸"…]…]}'} 모양입니다.</p> : null}
           {edit.revision !== block.revision ? <p className="aar-note" role="status">그사이 이 블록이 판 {block.revision}(으)로 바뀌었습니다. 고치던 글은 그대로 두었습니다. 닫고 다시 열어 최신 판에서 고쳐 주세요.</p> : null}
+          <p className="aar-card__meta">저장하면 새 판이 생기고, 검토 표시는 다시 해야 합니다.</p>
           <div className="aar-actions">
-            <GlassButton variant="primary" size="s" disabled={busy || !edit.title.trim() || edit.revision !== block.revision} onClick={() => void onEdit({ title: edit.title, body: edit.body }).then((ok) => ok && setEdit(null))}>
+            <GlassButton variant="primary" size="s" disabled={busy || !edit.title.trim() || edit.revision !== block.revision} onClick={() => void onEdit({ title: edit.title, summary: edit.summary, body: edit.body }).then((ok) => ok && setEdit(null))}>
               {busy ? "저장하는 중" : "정본에 저장"}
             </GlassButton>
             <GlassButton variant="ghost" size="s" disabled={busy} onClick={() => setEdit(null)}>고치기 그만</GlassButton>
           </div>
         </div>
-      ) : (
+      ) : block.archived ? null : (
         <div className="aar-actions">
-          {editable ? <button type="button" className="vw-btn" disabled={busy} onClick={() => setEdit({ title: block.title, body: block.body, revision: block.revision })}>직접 고치기</button> : null}
+          <button type="button" className="vw-btn" disabled={busy} onClick={() => setEdit({ title: block.title, summary: block.summary, body: block.body, revision: block.revision })}>직접 고치기</button>
+          {reviewed ? null : <button type="button" className="vw-btn" disabled={busy} onClick={onReview}>검토함으로 표시</button>}
+          <Archive disabled={busy} onArchive={onArchive} />
         </div>
       )}
+      {block.sources.length ? (
+        <details className="aar-fold">
+          <summary>근거 <span className="t-tabular">{block.sources.length}</span>개</summary>
+          <ul className="aar-sources" aria-label="근거">{block.sources.map((s, i) => <li key={i}>{s}</li>)}</ul>
+        </details>
+      ) : null}
       {block.history.length ? (
         <details className="aar-fold">
           <summary>이전 판 <span className="t-tabular">{block.history.length}</span>개</summary>
           {[...block.history].reverse().map((h) => (
             <div key={h.revision} className="aar-history">
-              <p className="aar-history__title">판 {h.revision} · {h.title}</p>
+              <p className="aar-history__title">판 {h.revision} · {h.title}{h.archived ? " · 보관된 판" : ""}</p>
               <p className="aar-diff">
                 {wordDiff(h.body, block.body).map((p, i) => (p.kind === "add" ? <ins key={i}>{p.text}</ins> : p.kind === "del" ? <del key={i}>{p.text}</del> : <span key={i}>{p.text}</span>))}
               </p>
-              {block.archived ? null : <Restore disabled={busy || edit !== null} revision={h.revision} onRestore={() => onRestore(h.revision)} />}
+              {/* 보관된 블록은 보관 전 판으로만 다시 꺼낸다(보관된 판으로 되살려도 보관된 채다). */}
+              {block.archived && h.archived ? null : <Restore disabled={busy || edit !== null} revision={h.revision} unarchive={block.archived} onRestore={() => onRestore(h.revision)} />}
             </div>
           ))}
         </details>
       ) : null}
     </section>
+  );
+}
+
+/** 새 블록: 글·표·도식·그림 가운데 하나를 고른 자리에 더한다. */
+function NewBlock({ blocks, busy, onAdd }: {
+  blocks: AgentABlock[]; busy: boolean;
+  onAdd: (input: { afterId: string | null; kind: BlockKind; title: string; body: string; file: File | null }) => Promise<boolean>;
+}) {
+  const active = blocks.filter((b) => !b.archived);
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState<BlockKind>("markdown");
+  const [body, setBody] = useState("");
+  const [after, setAfter] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  // 고르지 않았으면 맨 뒤(마지막 블록 뒤)다. 블록이 없으면 맨 앞이다.
+  const place = after !== null && (after === FIRST || active.some((b) => b.id === after)) ? after : active.at(-1)?.id ?? FIRST;
+  const ready = Boolean(title.trim()) && (kind === "image" ? file !== null : Boolean(body.trim()));
+  return (
+    <details className="aar-fold">
+      <summary>새 블록 더하기</summary>
+      <div className="aar-edit" aria-label="새 블록">
+        <label className="aar-field">블록 제목<input value={title} maxLength={500} onChange={(e) => setTitle(e.target.value)} /></label>
+        <label className="aar-field">종류
+          <select value={kind} onChange={(e) => setKind(e.target.value as BlockKind)}>
+            {KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+          </select>
+        </label>
+        <label className="aar-field">넣을 자리
+          <select value={place} onChange={(e) => setAfter(e.target.value)}>
+            <option value={FIRST}>맨 앞</option>
+            {active.map((b) => <option key={b.id} value={b.id}>‘{b.title}’ 뒤</option>)}
+          </select>
+        </label>
+        {kind === "image" ? (
+          <>
+            <div className="aar-actions">
+              <button type="button" className="vw-btn" disabled={busy} onClick={() => input.current?.click()}>{file ? "그림 바꾸기" : "그림 고르기"}</button>
+              <span className="aar-card__meta">{file ? file.name : "PNG·JPEG·WebP, 4MB 까지"}</span>
+              <input ref={input} type="file" hidden accept="image/png,image/jpeg,image/webp" aria-label="새 블록의 그림" onChange={(e) => { setFile(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+            </div>
+            <label className="aar-field">그림 설명(선택)<textarea rows={3} value={body} onChange={(e) => setBody(e.target.value)} /></label>
+          </>
+        ) : (
+          <label className="aar-field">본문<textarea rows={6} value={body} placeholder={kind === "table" ? '{"headers":["항목","값"],"rows":[["기간","2주"]]}' : kind === "mermaid" ? "flowchart LR\n  A --> B" : ""} onChange={(e) => setBody(e.target.value)} /></label>
+        )}
+        {kind === "table" ? <p className="aar-card__meta">표 본문은 {'{"headers":["머리"…],"rows":[["칸"…]…]}'} 모양의 JSON 입니다.</p> : null}
+        {kind === "mermaid" ? <p className="aar-card__meta">도식은 Mermaid 글로 적습니다. 본문에서 그림으로 보입니다.</p> : null}
+        <div className="aar-actions">
+          <GlassButton variant="glass" size="s" disabled={busy || !ready} onClick={() => void onAdd({ afterId: place === FIRST ? null : place, kind, title: title.trim(), body, file: kind === "image" ? file : null }).then((ok) => {
+            if (!ok) return;
+            setTitle("");
+            setBody("");
+            setFile(null);
+            setAfter(null);
+          })}>{busy ? "더하는 중" : "블록 더하기"}</GlassButton>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** 목표와 제약: 문서 머리의 목표 글과 제약 목록. 고치면 문맥이 바뀌어, 그 전에 나온 수정안은 새 문맥에서 다시 확인해야 한다. */
+function ContextCard({ goal, constraints, revision, busy, onSave }: { goal: string; constraints: string[]; revision: number; busy: boolean; onSave: (input: { goal: string; constraints: string[]; revision: number }) => Promise<boolean> }) {
+  const [edit, setEdit] = useState<{ goal: string; constraints: string; revision: number } | null>(null);
+  return (
+    <details className="aar-fold">
+      <summary>목표와 제약</summary>
+      {edit ? (
+        <div className="aar-edit" aria-label="목표와 제약 고치기">
+          <label className="aar-field">목표<textarea rows={3} value={edit.goal} maxLength={10000} onChange={(e) => setEdit({ ...edit, goal: e.target.value })} /></label>
+          <label className="aar-field">제약(한 줄에 하나)<textarea rows={4} value={edit.constraints} onChange={(e) => setEdit({ ...edit, constraints: e.target.value })} /></label>
+          {edit.revision !== revision ? <p className="aar-note" role="status">그사이 목표와 제약이 바뀌었습니다. 쓰던 글은 그대로 두었습니다. 닫고 다시 열어 최신 내용에서 고쳐 주세요.</p> : null}
+          <p className="aar-card__meta">목표와 제약을 바꾸면 그 전에 나온 수정안은 새 내용에서 다시 확인해야 합니다.</p>
+          <div className="aar-actions">
+            <GlassButton variant="primary" size="s" disabled={busy || !edit.goal.trim() || edit.revision !== revision} onClick={() => void onSave({ goal: edit.goal, constraints: edit.constraints.split("\n"), revision: edit.revision }).then((ok) => ok && setEdit(null))}>
+              {busy ? "저장하는 중" : "목표와 제약 저장"}
+            </GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={busy} onClick={() => setEdit(null)}>고치기 그만</GlassButton>
+          </div>
+        </div>
+      ) : (
+        <div className="aar-edit" aria-label="목표와 제약">
+          <p className="aar-msg__text">{goal || "목표가 비어 있습니다."}</p>
+          {constraints.length ? <ul className="aar-sources" aria-label="제약">{constraints.map((c, i) => <li key={i}>{c}</li>)}</ul> : <p className="aar-card__meta">제약이 없습니다.</p>}
+          <div className="aar-actions">
+            <button type="button" className="vw-btn" disabled={busy} onClick={() => setEdit({ goal, constraints: constraints.join("\n"), revision })}>목표와 제약 고치기</button>
+          </div>
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -161,6 +284,7 @@ export function AgentAManage({ fileId, projectId, open, recoveries, onClose, onC
   onChanged: (message: string) => void;
   onOpenReview: (sessionId: string) => void;
 }) {
+  const desktop = useMediaQuery(MQ_DESKTOP);
   const [data, setData] = useState<AgentAReviewManage | null>(null);
   const [tab, setTab] = useState<Tab>("proposals");
   const [filter, setFilter] = useState<AgentAProposalStatus | "all">("pending");
@@ -216,6 +340,11 @@ export function AgentAManage({ fileId, projectId, open, recoveries, onClose, onC
       }
       return true;
     } catch (e) {
+      // 그사이 다른 곳에서 바뀌어 거절된 일은 반영되지 않았다. 최신 내용을 다시 읽고(오류 글은 그대로 보인다), 다음 누름은 새 요청으로 보낸다.
+      if (e instanceof ApiError && e.code === "AGENT_A_REVISION_CONFLICT") {
+        ops.current.delete(key);
+        await load();
+      }
       setError(errorText(e));
       return false;
     } finally {
@@ -294,15 +423,38 @@ export function AgentAManage({ fileId, projectId, open, recoveries, onClose, onC
             {data.blocks.map((b) => (
               <BlockCard key={b.id} block={b} busy={busy}
                 onEdit={(input) => run(`edit:${b.id}:${b.revision}`, async (id) => {
-                  const r = await api.agentAReview.edit(fileId, { blockId: b.id, revision: b.revision, title: input.title, body: input.body, opId: id, contextRevision: data.contextRevision });
+                  const r = await api.agentAReview.edit(fileId, { blockId: b.id, revision: b.revision, title: input.title, summary: input.summary, body: input.body, opId: id, contextRevision: data.contextRevision });
                   return `정본에 저장했습니다(판 ${r.artifactRevision}).`;
                 }, true)}
                 onRestore={(historyRevision) => void run(`restore:${b.id}:${b.revision}:${historyRevision}`, async (id) => {
                   const r = await api.agentAReview.restore(fileId, { blockId: b.id, revision: b.revision, historyRevision, opId: id, contextRevision: data.contextRevision, layoutRevision: data.layoutRevision });
                   return `판 ${historyRevision}의 내용을 새 판으로 되살렸습니다(판 ${r.artifactRevision}).`;
                 }, true)}
+                onReview={() => void run(`reviewed:${b.id}:${b.revision}`, async (id) => {
+                  await api.agentAReview.blockReview(fileId, { blockId: b.id, revision: b.revision, opId: id });
+                  return `‘${b.title}’을(를) 검토함으로 표시했습니다. 본문은 그대로입니다.`;
+                }, false)}
+                onArchive={() => void run(`archive:${b.id}:${b.revision}`, async (id) => {
+                  const r = await api.agentAReview.blockArchive(fileId, { blockId: b.id, revision: b.revision, opId: id, contextRevision: data.contextRevision, layoutRevision: data.layoutRevision });
+                  return `‘${b.title}’을(를) 보관했습니다(판 ${r.artifactRevision}). 이전 판에서 다시 꺼낼 수 있습니다.`;
+                }, true)}
               />
             ))}
+            <NewBlock blocks={data.blocks} busy={busy} onAdd={(input) => run(`insert:${input.afterId ?? FIRST}:${input.kind}:${input.title}:${input.body}:${input.file ? `${input.file.name}:${input.file.size}:${input.file.lastModified}` : ""}`, async (id) => {
+              let image: { name: string; mediaType: "image/png" | "image/jpeg" | "image/webp"; base64: string } | null = null;
+              if (input.file) {
+                const type = input.file.type;
+                if (type !== "image/png" && type !== "image/jpeg" && type !== "image/webp") throw new Error("PNG·JPEG·WebP 그림만 넣을 수 있습니다");
+                if (input.file.size > 4 * 1024 * 1024) throw new Error("그림은 4MB 까지입니다");
+                image = { name: input.file.name.slice(0, 500), mediaType: type, base64: await toBase64(input.file) };
+              }
+              const r = await api.agentAReview.blockInsert(fileId, { opId: id, afterId: input.afterId, kind: input.kind, title: input.title, body: input.body, image, contextRevision: data.contextRevision, layoutRevision: data.layoutRevision });
+              return `새 블록 ‘${input.title}’을(를) 더했습니다(판 ${r.artifactRevision}).`;
+            }, true)} />
+            <ContextCard goal={data.goal} constraints={data.constraints} revision={data.contextRevision} busy={busy} onSave={(input) => run(`context:${input.revision}:${input.goal}:${input.constraints.join("\n")}`, async (id) => {
+              const r = await api.agentAReview.contextUpdate(fileId, { opId: id, goal: input.goal, constraints: input.constraints, contextRevision: input.revision });
+              return `목표와 제약을 저장했습니다(판 ${r.artifactRevision}).`;
+            }, true)} />
             <details className="aar-fold">
               <summary>변경 이력 <span className="t-tabular">{data.events.length}</span>건</summary>
               <ol className="aar-versions" aria-label="변경 이력">
@@ -358,6 +510,21 @@ export function AgentAManage({ fileId, projectId, open, recoveries, onClose, onC
               </div>
               <p className="aar-card__meta">MD·TXT 는 글 문서로, PNG·JPEG·WebP 는 그림 문서로 파일마다 하나씩 만듭니다.</p>
             </details>
+          </>
+        ) : null}
+
+        {data && tab === "layout" ? (
+          <>
+            <p className="aar-note">순서와 배치를 바꾸면 본문이 새 순서로 다시 열립니다. 블록의 글은 바뀌지 않습니다.</p>
+            <LayoutBoard blocks={data.blocks.filter((b) => !b.archived)} busy={busy} board={desktop}
+              onOrder={(ids) => void run(`order:${ids.join(",")}`, async (id) => {
+                await api.agentAReview.blocksReorder(fileId, { opId: id, blockIds: ids, layoutRevision: data.layoutRevision });
+                return "읽는 순서를 바꿨습니다.";
+              }, true)}
+              onLayout={(blockId, layout) => run(`layout:${blockId}:${layout.x}:${layout.y}:${layout.width}:${layout.height}`, async (id) => {
+                await api.agentAReview.layoutSet(fileId, { opId: id, blockId, layout, layoutRevision: data.layoutRevision });
+                return "배치를 저장했습니다.";
+              }, true)} />
           </>
         ) : null}
 

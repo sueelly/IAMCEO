@@ -26,10 +26,26 @@ export interface AgentABlock {
   revision: number;
   kind: string;
   title: string;
+  /** 블록 요약(제목 아래에 보이는 글). 없으면 빈 글. */
+  summary: string;
   body: string;
   archived: boolean;
+  /** 근거(출처)를 읽는 글로 옮긴 것. Agent-A 가 가진 그대로이고 이 화면에서는 고치지 않는다. */
+  sources: string[];
+  /** '검토함'으로 표시한 판. 지금 판과 같으면 검토를 마친 블록이다. 표시한 적이 없으면 null. */
+  reviewedRevision: number | null;
+  /** 배치 보드에서의 자리와 크기. 정한 적이 없으면 null. */
+  layout: AgentABlockLayout | null;
   /** 이 블록의 예전 판(오래된 것부터). 블록 revision 별 본문. */
-  history: { revision: number; title: string; body: string; archived: boolean }[];
+  history: { revision: number; title: string; summary: string; body: string; archived: boolean }[];
+}
+
+/** 배치 보드에서 블록 하나의 자리(x·y)와 크기(width·height). 보드 좌표의 점 단위다. */
+export interface AgentABlockLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface AgentAMessage {
@@ -394,6 +410,9 @@ export interface AgentAReviewManage {
   /** 직접 고치기·되살리기 요청에 그대로 되돌려 보낸다(같은 요청을 다시 보내도 같은 명령이 되게). */
   contextRevision: number;
   layoutRevision: number;
+  /** 문서의 목표와 제약(Agent-A 의 문맥). 고치면 문맥 판과 정본 판이 오른다. */
+  goal: string;
+  constraints: string[];
   branches: AgentAManageBranch[];
   feedback: AgentAManageFeedback[];
   jobs: AgentAManageJob[];

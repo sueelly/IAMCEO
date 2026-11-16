@@ -15,15 +15,26 @@ const answerId = (artifact: string, annotation: string) => `comment-answer-${sha
 export function projectArtifact(state: Json) {
   let markdown = `# ${oneLine(state.title)}\n\n`;
   if (state.goal) markdown += `${state.goal}\n\n`;
+  if (Array.isArray(state.constraints) && state.constraints.length) markdown += `${state.constraints.map((c: string) => `- ${c}`).join("\n")}\n\n`;
   const sourceMap: Json[] = [];
+  const tableCell = (value: unknown) => String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
   for (const block of state.blocks.filter((b: Json) => !b.archived)) {
     const start = markdown.length;
     markdown += `## ${oneLine(block.content.title)}\n\n`;
     if (block.content.summary) markdown += `${block.content.summary}\n\n`;
     const bodyStart = markdown.length;
     let body: string = block.content.body;
-    if (block.kind === "image") body = `![${oneLine(block.content.title).replace(/\]/g, "\\]")}](${block.asset.src})${body ? `\n\n${body}` : ""}`;
+    if (block.kind === "table") {
+      const table = JSON.parse(body);
+      body = `| ${table.headers.map(tableCell).join(" | ")} |\n| ${table.headers.map(() => "---").join(" | ")} |\n${table.rows.map((row: unknown[]) => `| ${row.map(tableCell).join(" | ")} |`).join("\n")}`;
+    } else if (block.kind === "mermaid") {
+      const fence = "`".repeat([...body.matchAll(/`+/g)].reduce((length, match) => Math.max(length, match[0].length + 1), 3));
+      body = `${fence}mermaid\n${body}\n${fence}`;
+    } else if (block.kind === "image") body = `![${oneLine(block.content.title).replace(/\]/g, "\\]")}](${block.asset.src})${body ? `\n\n${body}` : ""}`;
     markdown += `${body}\n\n`;
+    if (Array.isArray(block.content.sources) && block.content.sources.length) {
+      markdown += `${block.content.sources.map((source: Json | string) => (typeof source === "string" ? `- ${source}` : `- ${source.title ?? source.label ?? source.url ?? source.block_id ?? JSON.stringify(source)}`)).join("\n")}\n\n`;
+    }
     sourceMap.push({
       block_id: block.id, revision: block.revision, kind: block.kind, start, end: markdown.length, body_start: bodyStart, body_end: bodyStart + body.length,
       start_line: markdown.slice(0, start).split("\n").length, end_line: markdown.split("\n").length, raw_body: block.content.body, body_identity: block.kind === "markdown",
@@ -93,6 +104,7 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     if (prior) return prior.hash === hash ? Response.json(prior.receipt) : fail(409, "idempotency_conflict");
     const block = (id: string) => state.blocks.find((b: Json) => b.id === id);
     let content = false;
+    let layout = false;
     let result: Json = {};
     const branch = (id: string) => state.branches.find((b: Json) => b.id === id);
     const ask = (b: Json, message: string): Json => {
@@ -164,18 +176,109 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       p.status = c.decision;
       result = { proposal_id: p.id, status: p.status };
     } else if (c.type === "edit_block" || c.type === "restore_block") {
+      // 실제 엔진(src/domain/engine.js)과 같은 차례: 문맥 판 → 블록 판 → (고치기는 보관된 블록 거절, 되살리기는 보관된 블록도 된다) → 배치 판.
       const b = block(c.block_id);
-      if (!b || b.archived) return fail(404, "not_found");
-      if (b.revision !== c.base_revision || state.context_revision !== c.context_revision) return fail(409, "revision_conflict", "Block changed");
-      const next = c.type === "edit_block" ? c.content : b.history.find((h: Json) => h.revision === c.history_revision)?.content;
+      if (state.context_revision !== c.context_revision) return fail(409, "revision_conflict", "Context changed");
+      if (!b) return fail(404, "not_found");
+      if (b.revision !== c.base_revision) return fail(409, "revision_conflict", "Block changed");
+      if (c.type === "edit_block" && b.archived) return fail(409, "revision_conflict", "Block is archived");
+      const old = c.type === "restore_block" ? b.history.find((h: Json) => h.revision === c.history_revision) : null;
+      const next = c.type === "edit_block" ? c.content : old?.content;
       if (!next) return fail(404, "not_found");
-      b.history.push({ revision: b.revision, content: clone(b.content), archived: false });
+      const archived = c.type === "restore_block" ? old.archived === true : false;
+      if (c.type === "restore_block" && (b.archived || b.archived !== archived) && c.base_layout_revision !== state.layout_revision) return fail(409, "revision_conflict", "Layout changed");
+      if (b.archived !== archived) layout = true;
+      b.history.push({ revision: b.revision, content: clone(b.content), archived: b.archived });
       b.revision++;
       b.content = clone(next);
+      b.archived = archived;
       content = true;
       result = { block_id: b.id, revision: b.revision };
+    } else if (c.type === "review_block") {
+      const b = block(c.block_id);
+      if (!b) return fail(404, "not_found");
+      if (b.revision !== c.base_revision) return fail(409, "revision_conflict", "Block changed");
+      if (b.archived) return fail(409, "revision_conflict", "Block is archived");
+      b.reviewed_revision = b.revision;
+      result = { block_id: b.id, reviewed_revision: b.reviewed_revision };
+    } else if (c.type === "insert_block" || c.type === "archive_block") {
+      const shape = "명령 형식이 올바르지 않습니다. 대상과 기준 버전을 확인하세요.";
+      if (state.context_revision !== c.context_revision) return fail(409, "revision_conflict", "Context changed");
+      if (typeof c.block_id !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(c.block_id) || !Number.isSafeInteger(c.base_layout_revision) || c.base_layout_revision < 1) return fail(400, "invalid_request", shape);
+      if (c.type === "insert_block") {
+        const k = c.content;
+        if (!("after_id" in c) || !["markdown", "table", "mermaid", "image"].includes(c.kind) || !k || typeof k !== "object" || Object.keys(k).sort().join() !== "body,sources,summary,title"
+          || typeof k.title !== "string" || typeof k.summary !== "string" || typeof k.body !== "string" || !Array.isArray(k.sources)) return fail(400, "invalid_request", shape);
+        if (block(c.block_id)) return fail(409, "revision_conflict", "Block ID already exists");
+        if (!k.title.trim()) return fail(400, "invalid_command", "title must be a string with content");
+        if (c.kind === "table") {
+          try {
+            const t = JSON.parse(k.body);
+            if (!Array.isArray(t.headers) || !Array.isArray(t.rows) || t.rows.some((row: unknown) => !Array.isArray(row) || row.length !== t.headers.length)) throw new Error("table");
+          } catch {
+            return fail(400, "invalid_command", "Invalid table headers or rows");
+          }
+        }
+        if (c.asset !== undefined && c.kind !== "image") return fail(400, "invalid_command", "Only image blocks have assets");
+        if (c.kind === "image" && (!c.asset || typeof c.asset.id !== "string" || typeof c.asset.src !== "string" || !Number.isSafeInteger(c.asset.revision) || !(c.asset.width > 0) || !(c.asset.height > 0))) return fail(400, "invalid_command", "Image asset must be an object");
+        if (c.after_id !== null) {
+          const after = typeof c.after_id === "string" ? block(c.after_id) : null;
+          if (!after) return fail(404, "not_found", "Block not found");
+          if (after.archived) return fail(409, "revision_conflict", "Insertion anchor is archived");
+        }
+        if (c.base_layout_revision !== state.layout_revision) return fail(409, "revision_conflict", "Layout changed");
+        const made = { id: c.block_id, revision: 1, kind: c.kind, content: clone(k), reviewed_revision: null, archived: false, history: [] as Json[], ...(c.asset ? { asset: clone(c.asset) } : {}) };
+        state.blocks.splice(c.after_id === null ? 0 : state.blocks.findIndex((x: Json) => x.id === c.after_id) + 1, 0, made);
+      } else {
+        const b = block(c.block_id);
+        if (!b) return fail(404, "not_found");
+        if (b.revision !== c.base_revision) return fail(409, "revision_conflict", "Block changed");
+        if (b.archived) return fail(409, "revision_conflict", "Block is archived");
+        if (c.base_layout_revision !== state.layout_revision) return fail(409, "revision_conflict", "Layout changed");
+        b.history.push({ revision: b.revision, content: clone(b.content), archived: false });
+        b.revision++;
+        b.archived = true;
+      }
+      content = true;
+      layout = true;
+      result = { block_id: c.block_id, revision: block(c.block_id).revision };
+    } else if (c.type === "reorder_blocks") {
+      if (c.base_layout_revision !== state.layout_revision) return fail(409, "revision_conflict", "Layout changed");
+      const active = state.blocks.filter((b: Json) => !b.archived);
+      if (!Array.isArray(c.block_ids) || c.block_ids.length !== active.length || new Set(c.block_ids).size !== active.length || c.block_ids.some((id: string) => !active.some((b: Json) => b.id === id))) return fail(400, "invalid_command", "Order must be an exact active block permutation");
+      if (JSON.stringify(active.map((b: Json) => b.id)) !== JSON.stringify(c.block_ids)) {
+        const ordered = c.block_ids.map((id: string) => block(id));
+        let index = 0;
+        state.blocks = state.blocks.map((b: Json) => (b.archived ? b : ordered[index++]));
+        layout = true;
+      }
+      result = { block_ids: c.block_ids };
+    } else if (c.type === "set_layout") {
+      if (c.base_layout_revision !== state.layout_revision) return fail(409, "revision_conflict", "Layout changed");
+      const b = block(c.block_id), l = c.layout;
+      if (!b) return fail(404, "not_found");
+      if (b.archived) return fail(409, "revision_conflict", "Block is archived");
+      if (!l || typeof l !== "object" || Object.keys(l).sort().join() !== "height,width,x,y") return fail(400, "invalid_request", "명령 형식이 올바르지 않습니다. 대상과 기준 버전을 확인하세요.");
+      if (["x", "y", "width", "height"].some((key) => !Number.isFinite(l[key])) || l.width <= 0 || l.height <= 0) return fail(400, "invalid_command", "Invalid layout dimensions");
+      if (JSON.stringify(b.layout ?? null) !== JSON.stringify(l)) {
+        b.layout = clone(l);
+        layout = true;
+      }
+      result = { block_id: b.id };
+    } else if (c.type === "update_context") {
+      if (c.base_context_revision !== state.context_revision) return fail(409, "revision_conflict", "Context changed");
+      if (typeof c.goal !== "string") return fail(400, "invalid_command", "goal must be a string");
+      if (!Array.isArray(c.constraints) || c.constraints.some((x: unknown) => typeof x !== "string")) return fail(400, "invalid_command", "constraints must be strings");
+      if (state.goal !== c.goal || JSON.stringify(state.constraints ?? []) !== JSON.stringify(c.constraints)) {
+        state.goal = c.goal;
+        state.constraints = clone(c.constraints);
+        state.context_revision++;
+        content = true;
+      }
+      result = { context_revision: state.context_revision };
     } else return fail(400, "invalid_command");
     if (content) state.artifact_revision++;
+    if (layout) state.layout_revision++;
     state.event_seq++;
     state.events.push({ seq: state.event_seq, type: c.type, actor_id: "local-user", created_at: new Date().toISOString(), payload: {} });
     const receipt = { command_id: c.command_id, artifact_id: state.id, event_seq: state.event_seq, status: "committed", result };
@@ -331,7 +434,7 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     }
     if (path === "/api/artifacts" && method === "POST") {
       const id = body!.id ?? randomUUID();
-      const state = { id, title: body!.title, goal: body!.goal ?? "", project_id: body!.project_id ?? null, task_id: body!.task_id ?? null, artifact_revision: 1, context_revision: 1, layout_revision: 1, event_seq: 0,
+      const state = { id, title: body!.title, goal: body!.goal ?? "", constraints: Array.isArray(body!.constraints) ? clone(body!.constraints) : [], project_id: body!.project_id ?? null, task_id: body!.task_id ?? null, artifact_revision: 1, context_revision: 1, layout_revision: 1, event_seq: 0,
         blocks: (body!.blocks ?? []).map((b: Json) => ({ id: b.id, revision: 1, kind: b.kind ?? "markdown", archived: false, content: clone(b.content), history: [], ...(b.asset ? { asset: b.asset } : {}) })),
         branches: [], proposals: [], feedback: [], events: [] };
       artifacts.set(id, state);

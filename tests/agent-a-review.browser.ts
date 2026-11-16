@@ -407,13 +407,13 @@ describe("Agent-A 문서 화면", () => {
     await expect(dialog.locator(".aar-proposal").count()).resolves.toBe(1);
     await dialog.getByRole("button", { name: "정본", exact: true }).click();
     const plan = dialog.locator(".aar-card", { hasText: "계획" });
-    await expect(plan.locator(".aar-card__meta").first().innerText()).resolves.toBe("판 2");
+    await expect(plan.locator(".aar-card__meta").first().innerText()).resolves.toBe("글 · 판 2");
     await plan.locator("summary").click();
     await plan.getByRole("button", { name: "판 1 내용으로 되살리기" }).click();
     await page.waitForTimeout(700);
     await plan.getByRole("button", { name: "한 번 더 눌러 되살리기" }).click();
     await dialog.locator(".aar-note", { hasText: "되살렸습니다(판 3)" }).waitFor({ timeout: 20_000 });
-    await expect(plan.locator(".aar-card__meta").first().innerText()).resolves.toBe("판 3");
+    await expect(plan.locator(".aar-card__meta").first().innerText()).resolves.toBe("글 · 판 3");
     await plan.getByRole("button", { name: "직접 고치기" }).click();
     await plan.locator("textarea").fill("계획은 네 단계로 바꿉니다.");
     await plan.getByRole("button", { name: "정본에 저장" }).click();
@@ -813,6 +813,167 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
       fake!.setDraftProtocol(2);
       await page.close();
     }
+  }, 120_000);
+
+  test("데스크톱: 문서 관리 — 요약 고치기 · 검토 표시 · 보관과 다시 꺼내기 · 새 블록(표·그림) · 목표와 제약", async () => {
+    const fileId = await newDoc("블록 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    const blockOf = (title: string) => state.blocks.find((b: { content: { title: string } }) => b.content.title === title);
+    await page.getByRole("button", { name: /문서 관리/ }).click();
+    const dialog = page.locator("dialog[open]");
+    const noted = (text: string) => dialog.locator(".aar-note", { hasText: text }).waitFor({ timeout: 20_000 });
+    await dialog.locator(".aar-manage__tabs .fl-chip", { hasText: /^정본/ }).click();
+    const card = (title: string) => dialog.locator(`section.aar-card[aria-label="블록 ${title}"]`);
+    // 요약 고치기: 제목 아래에 보이는 글. 본문은 그대로 둔다.
+    await card("계획").getByRole("button", { name: "직접 고치기" }).click();
+    await card("계획").getByLabel("요약").fill("세 단계 요약");
+    await card("계획").getByRole("button", { name: "정본에 저장" }).click();
+    await noted("정본에 저장했습니다(판 2)");
+    await expect(card("계획").locator("[data-summary]").innerText()).resolves.toBe("요약: 세 단계 요약");
+    // 가짜 Agent-A 의 상태는 값만 꺼내 본다(견주는 도구가 상태 안의 값을 바꾸지 않게).
+    expect(blockOf("계획").content.summary).toBe("세 단계 요약");
+    expect(blockOf("계획").content.body).toContain("계획은 세 단계입니다.");
+    // 검토 표시: 지금 판을 검토함으로. 본문은 바뀌지 않는다.
+    await card("계획").getByRole("button", { name: "검토함으로 표시" }).click();
+    await noted("검토함으로 표시했습니다");
+    await expect(card("계획").locator(".badge").innerText()).resolves.toBe("검토함");
+    await expect(card("계획").getByRole("button", { name: "검토함으로 표시" }).count()).resolves.toBe(0);
+    expect(blockOf("계획").reviewed_revision).toBe(2);
+    // 보관: 한 번 더 눌러야 한다. 본문에서 빠지고, 이전 판에서 다시 꺼낸다.
+    await card("배경").getByRole("button", { name: "보관" }).click();
+    await page.waitForTimeout(700);
+    await card("배경").getByRole("button", { name: "한 번 더 눌러 보관" }).click();
+    await noted("보관했습니다");
+    await expect(card("배경").locator(".aar-card__meta").first().innerText()).resolves.toContain("보관됨");
+    expect(blockOf("배경").archived).toBe(true);
+    await page.waitForFunction(() => !document.querySelector(".aar-doc")?.textContent?.includes("배경 문장 하나"));
+    await expect(card("배경").getByRole("button", { name: "직접 고치기" }).count()).resolves.toBe(0);
+    await card("배경").locator("summary", { hasText: "이전 판" }).click();
+    await card("배경").getByRole("button", { name: "판 1 내용으로 다시 꺼내기" }).click();
+    await page.waitForTimeout(700);
+    await card("배경").getByRole("button", { name: "한 번 더 눌러 되살리기" }).click();
+    await noted("되살렸습니다");
+    expect(blockOf("배경").archived).toBe(false);
+    await page.waitForFunction(() => document.querySelector(".aar-doc")?.textContent?.includes("배경 문장 하나"));
+    // 새 블록(표): 형식이 틀리면 까닭을 보이고 더하지 않는다. 고쳐서 더하면 본문에 표로 보인다.
+    await dialog.locator("summary", { hasText: "새 블록 더하기" }).click();
+    const form = dialog.locator('[aria-label="새 블록"]');
+    await form.getByLabel("블록 제목").fill("비교 표");
+    await form.getByLabel("종류").selectOption({ label: "표" });
+    await form.getByLabel("넣을 자리").selectOption({ label: "‘계획’ 뒤" });
+    await form.getByLabel("본문").fill("표가 아님");
+    await form.getByRole("button", { name: "블록 더하기" }).click();
+    await dialog.locator(".aar-error", { hasText: "표 본문은 JSON 이어야 합니다" }).waitFor({ timeout: 20_000 });
+    await expect(form.getByLabel("블록 제목").inputValue()).resolves.toBe("비교 표");
+    await form.getByLabel("본문").fill('{"headers":["항목","값"],"rows":[["기간","2주"]]}');
+    await form.getByRole("button", { name: "블록 더하기" }).click();
+    await noted("새 블록 ‘비교 표’을(를) 더했습니다");
+    await page.waitForFunction(() => [...document.querySelectorAll(".aar-doc td")].some((td) => td.textContent === "2주"));
+    const order = state.blocks.filter((b: { archived: boolean }) => !b.archived).map((b: { content: { title: string } }) => b.content.title);
+    expect(order[order.indexOf("계획") + 1]).toBe("비교 표");
+    // 새 블록(그림): 그림을 골라 더하면 본문에 그림으로 보인다.
+    const figures = await page.locator(".aar-doc .aar-fig").count();
+    await form.getByLabel("블록 제목").fill("새 그림");
+    await form.getByLabel("종류").selectOption({ label: "그림" });
+    await form.locator('input[type="file"]').setInputFiles({ name: "new.png", mimeType: "image/png", buffer: Buffer.from(pngBase64(120, 80), "base64") });
+    await form.getByLabel("그림 설명(선택)").fill("그림 아래 설명");
+    await form.getByRole("button", { name: "블록 더하기" }).click();
+    await noted("새 블록 ‘새 그림’을(를) 더했습니다");
+    await page.waitForFunction((n) => document.querySelectorAll(".aar-doc .aar-fig").length === n + 1, figures);
+    const made = blockOf("새 그림");
+    expect([made.kind, made.asset.width, made.asset.height]).toEqual(["image", 120, 80]);
+    // 목표와 제약
+    await dialog.locator("summary", { hasText: "목표와 제약" }).click();
+    await dialog.getByRole("button", { name: "목표와 제약 고치기" }).click();
+    const context = dialog.locator('[aria-label="목표와 제약 고치기"]');
+    await context.getByLabel("목표").fill("새 목표입니다");
+    await context.getByLabel("제약(한 줄에 하나)").fill("첫째 제약\n\n둘째 제약");
+    await context.getByRole("button", { name: "목표와 제약 저장" }).click();
+    await noted("목표와 제약을 저장했습니다");
+    expect([state.goal, state.constraints]).toEqual(["새 목표입니다", ["첫째 제약", "둘째 제약"]]);
+    await page.waitForFunction(() => document.querySelector(".aar-doc")?.textContent?.includes("새 목표입니다"));
+    await shot(page, "20-desk-blocks");
+    await page.close();
+  }, 150_000);
+
+  test("데스크톱: 문서 관리 — 읽는 순서를 바꾸고, 배치 보드에서 끌어 옮기고 숫자로 고치고 되돌린다", async () => {
+    const fileId = await newDoc("배치 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    const live = () => state.blocks.filter((b: { archived: boolean }) => !b.archived) as { id: string; content: { title: string }; layout?: { x: number; y: number; width: number; height: number } }[];
+    await page.getByRole("button", { name: /문서 관리/ }).click();
+    const dialog = page.locator("dialog[open]");
+    const noted = (text: string) => dialog.locator(".aar-note", { hasText: text }).waitFor({ timeout: 20_000 });
+    await dialog.locator(".aar-manage__tabs .fl-chip", { hasText: /^순서·배치/ }).click();
+    const titles = () => dialog.locator(".aar-order__title").allInnerTexts();
+    const before = await titles();
+    expect(before).toEqual(live().map((b) => b.content.title));
+    expect(before.length).toBeGreaterThanOrEqual(4);
+    // 순서: 둘째 블록을 위로 올린다. 본문도 그 순서로 다시 열린다.
+    await expect(dialog.getByRole("button", { name: `‘${before[0]}’ 위로` }).isDisabled()).resolves.toBe(true);
+    await dialog.getByRole("button", { name: `‘${before[1]}’ 위로` }).click();
+    await noted("읽는 순서를 바꿨습니다.");
+    const swapped = [before[1]!, before[0]!, ...before.slice(2)];
+    expect(await titles()).toEqual(swapped);
+    expect(live().map((b) => b.content.title)).toEqual(swapped);
+    // 배치 보드: 첫 블록을 끌어 옮기면 놓을 때 저장한다.
+    const first = dialog.locator(".aar-board__block").first();
+    await first.scrollIntoViewIfNeeded();
+    const box = (await first.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + Math.min(60, box.height - 8));
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 70, box.y + Math.min(60, box.height - 8) + 50, { steps: 6 });
+    await page.mouse.up();
+    await noted("배치를 저장했습니다.");
+    const moved = live()[0]!.layout!;
+    expect(moved.x).toBeGreaterThan(0);
+    expect(moved.y).toBeGreaterThan(0);
+    expect([moved.width, moved.height]).toEqual([620, 620]);
+    // 숫자로 고치기: 둘째 블록의 너비·높이
+    await dialog.getByRole("button", { name: new RegExp(`^블록 2 ‘${swapped[1]}’ 고르기`) }).click();
+    await dialog.getByLabel("너비").fill("400");
+    await dialog.getByLabel("높이").fill("300");
+    await dialog.getByRole("button", { name: "배치 저장" }).click();
+    await noted("배치를 저장했습니다.");
+    expect(live()[1]!.layout).toEqual({ x: 0, y: 650, width: 400, height: 300 });
+    await shot(page, "21-desk-board");
+    // 방금 배치 되돌리기: 그 전 값(기본 자리)으로 다시 저장한다.
+    await dialog.getByRole("button", { name: "방금 배치 되돌리기" }).click();
+    await page.waitForFunction(() => !document.querySelector("dialog[open]")?.textContent?.includes("방금 배치 되돌리기"));
+    expect(live()[1]!.layout).toEqual({ x: 0, y: 650, width: 620, height: 620 });
+    // 블록의 글과 정본 판은 그대로다(배치만 바뀌었다).
+    expect(state.artifact_revision).toBe(1);
+    await page.close();
+  }, 150_000);
+
+  test("폰 폭: 문서 관리의 순서·배치는 순서만 바꾸고 넘치지 않는다", async () => {
+    const fileId = await newDoc("폰 배치 문서");
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await open(page, fileId);
+    const state = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+    await page.getByRole("button", { name: /문서 관리/ }).tap();
+    const dialog = page.locator("dialog[open]");
+    await dialog.locator(".aar-manage__tabs .fl-chip", { hasText: /^순서·배치/ }).tap();
+    await dialog.getByText("배치 보드는 넓은 화면에서 씁니다.").waitFor();
+    await expect(dialog.locator(".aar-board").count()).resolves.toBe(0);
+    const titles = await dialog.locator(".aar-order__title").allInnerTexts();
+    await dialog.getByRole("button", { name: `‘${titles[0]}’ 아래로` }).tap();
+    await dialog.locator(".aar-note", { hasText: "읽는 순서를 바꿨습니다." }).waitFor({ timeout: 20_000 });
+    expect(state.blocks.map((b: { content: { title: string } }) => b.content.title).slice(0, 2)).toEqual([titles[1], titles[0]]);
+    await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+    for (const b of await dialog.locator(".aar-order button").all()) {
+      const box = (await b.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(390);
+    }
+    await dialog.locator(".aar-manage__tabs .fl-chip", { hasText: /^정본/ }).tap();
+    await dialog.locator("summary", { hasText: "새 블록 더하기" }).tap();
+    await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+    await shot(page, "22-phone-order");
+    await page.close();
   }, 120_000);
 
   test("폰 폭: 도구 막대·본문 고치기·문서에 묻기가 넘치지 않는다", async () => {

@@ -31,6 +31,7 @@ import type {
   StopResult,
 } from "@shared/types";
 import type {
+  AgentABlockLayout,
   AgentAProjectInfo,
   AgentAProposalStatus,
   AgentAReviewCommentReq,
@@ -370,7 +371,17 @@ export const api = {
     decide: (fileId: string, proposalId: string, decision: "apply" | "held" | "rejected", opId: string) =>
       post<{ ok: true; status: AgentAProposalStatus; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/decide`, { proposalId, decision, opId }),
     restore: (fileId: string, input: { blockId: string; revision: number; historyRevision: number; opId: string; contextRevision?: number | null; layoutRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/restore`, input),
-    edit: (fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string; contextRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/edit`, input),
+    edit: (fileId: string, input: { blockId: string; revision: number; title: string; body: string; summary?: string; opId: string; contextRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/edit`, input),
+    /** 블록을 '검토함'으로 표시한다(지금 판 기준). 본문은 바뀌지 않는다. */
+    blockReview: (fileId: string, input: { blockId: string; revision: number; opId: string }) => post<{ ok: true; reviewedRevision: number | null }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/block/review`, input),
+    /** 블록을 보관한다(지우지 않는다. 이전 판 되살리기로 돌아온다). */
+    blockArchive: (fileId: string, input: { blockId: string; revision: number; opId: string; contextRevision?: number | null; layoutRevision?: number | null }) => post<{ ok: true; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/block/archive`, input),
+    /** 새 블록(글·표·도식·그림). afterId 가 null 이면 맨 앞이다. */
+    blockInsert: (fileId: string, input: { opId: string; afterId: string | null; kind: "markdown" | "table" | "mermaid" | "image"; title: string; body: string; image?: { name: string; mediaType: "image/png" | "image/jpeg" | "image/webp"; base64: string } | null; contextRevision?: number | null; layoutRevision?: number | null }) =>
+      request<{ ok: true; blockId: string; artifactRevision: number }>("POST", `/api/agent-a/docs/${seg(fileId)}/review/manage/block`, input, SLOW_TIMEOUT_MS),
+    blocksReorder: (fileId: string, input: { opId: string; blockIds: string[]; layoutRevision: number }) => post<{ ok: true; layoutRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/order`, input),
+    layoutSet: (fileId: string, input: { opId: string; blockId: string; layout: AgentABlockLayout; layoutRevision: number }) => post<{ ok: true; layoutRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/layout`, input),
+    contextUpdate: (fileId: string, input: { opId: string; goal: string; constraints: string[]; contextRevision: number }) => post<{ ok: true; contextRevision: number; artifactRevision: number }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/context`, input),
     applyMany: (fileId: string, proposalIds: string[], opId: string) => post<{ ok: true; artifactRevision: number; verified: boolean }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/apply`, { proposalIds, opId }),
     branchCreate: (fileId: string, input: { opId: string; question: string; blockId?: string | null; parent?: { branchId: string; messageId: string } | null }) => post<{ ok: true; branchId: string }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch`, input),
     branchMessage: (fileId: string, input: { opId: string; branchId: string; text: string }) => post<{ ok: true }>(`/api/agent-a/docs/${seg(fileId)}/review/manage/branch/message`, input),

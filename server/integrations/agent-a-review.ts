@@ -10,9 +10,9 @@
 // - 지난 판의 검토에는 새 댓글을 받지 않는다(같은 길이 한 트랜잭션에서 정본을 다시 확인한다). 읽기·있던 댓글의 답글은 그대로다.
 // - 열쇠·Agent-A 주소는 이 서버 프로세스에만 있다.
 import { ApiError } from "../store.ts";
-import { AgentAError, proposalView, verifyApplied, versionsOf, type AgentAService, type AState } from "./agent-a.ts";
+import { AgentAError, blockView, proposalView, verifyApplied, versionsOf, type AAsset, type AgentAService, type AState } from "./agent-a.ts";
 import type {
-  AgentABlock,
+  AgentABlockLayout,
   AgentAChatEntry,
   AgentAChatHistory,
   AgentAChatSession,
@@ -63,6 +63,7 @@ const KNOWN: Record<string, string> = {
   draft_conflict: "그사이 다른 화면이 초안을 저장했습니다. 다시 불러온 초안에서 고쳐 주세요",
   unsupported: "이 Agent-A 는 초안 보존 규약을 몰라 새 댓글과 초안 고치기를 막았습니다. Agent-A 를 초안 보존 판으로 올려야 합니다",
 };
+const LAYOUT_CONFLICT = "그사이 배치가 바뀌었습니다. 다시 불러온 배치에서 고쳐 주세요";
 const unsupported = (): never => {
   throw new ApiError(409, KNOWN.unsupported!, "AGENT_A_UNSUPPORTED");
 };
@@ -186,6 +187,22 @@ const bodyOf = (content: unknown): string | null => {
   if (!obj(content)) return null;
   return [str(content.summary), str(content.body)].filter(Boolean).join("\n\n");
 };
+
+const BLOCK_KINDS = ["markdown", "table", "mermaid", "image"] as const;
+export type AgentABlockKind = (typeof BLOCK_KINDS)[number];
+/** 표 블록의 본문 형식(Agent-A 의 규칙): {"headers":[글…],"rows":[[글·수·참거짓·null…]…]} 이고 줄마다 칸 수가 머리와 같다. */
+export function tableBodyError(body: string): string | null {
+  let v: unknown;
+  try { v = JSON.parse(body); } catch { return "표 본문은 JSON 이어야 합니다"; }
+  if (!obj(v) || !Array.isArray(v.headers) || !Array.isArray(v.rows)) return "표 본문은 {\"headers\":[…],\"rows\":[[…]]} 모양이어야 합니다";
+  const headers = v.headers as unknown[];
+  if (headers.some((h) => typeof h !== "string")) return "표 머리는 글이어야 합니다";
+  for (const row of v.rows as unknown[]) {
+    if (!Array.isArray(row) || row.length !== headers.length) return "표의 줄마다 칸 수가 머리와 같아야 합니다";
+    if (row.some((cell) => cell !== null && !["string", "number", "boolean"].includes(typeof cell))) return "표의 칸은 글·수·참거짓만 됩니다";
+  }
+  return null;
+}
 
 export class AgentAReview {
   /** 같은 수정안의 반영·보류가 겹치지 않게 하는 이 프로세스 안의 줄. 다른 창·프로세스의 쓰기를 막는 장치가 아니다(그건 Agent-A 가 한다). */
@@ -477,18 +494,8 @@ export class AgentAReview {
   async upload(fileId: string, sessionId: string, input: { name: string; mediaType: string; base64: string }): Promise<AgentAReviewAttachment> {
     this.session(sessionId);
     this.service.docOf(fileId);
-    const name = input.name.trim().slice(0, 200) || "그림";
-    if (!["image/png", "image/jpeg", "image/webp"].includes(input.mediaType)) throw new ApiError(400, "PNG·JPEG·WebP 그림만 붙일 수 있습니다");
-    if (!input.base64 || input.base64.length > 6 * 1024 * 1024) throw new ApiError(400, "그림은 4MB 까지입니다");
-    try {
-      const asset = await this.service.client.uploadAsset({ name, media_type: input.mediaType, base64: input.base64 });
-      if (!UPLOADED.test(str(asset?.src))) throw new ApiError(502, "Agent-A 가 그림 경로를 돌려주지 않았습니다", "AGENT_A_BAD_RESPONSE");
-      return { path: asset.src, name };
-    } catch (e) {
-      if (!(e instanceof AgentAError)) throw e;
-      if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
-      throw new ApiError(e.kind === "auth" ? 502 : 400, e.kind === "auth" ? "Agent-A 연결 열쇠가 맞지 않습니다" : e.message || "그림을 올리지 못했습니다", "AGENT_A_REFUSED");
-    }
+    const asset = await this.uploadImage(input);
+    return { path: asset.src, name: input.name.trim().slice(0, 200) || "그림" };
   }
 
   /** 댓글·초안에 붙은 그림 하나. 이 검토의 댓글이나 초안이 가리키는 그림만 내준다(경로를 안다고 아무 그림이나 주지 않는다). */
@@ -789,6 +796,8 @@ export class AgentAReview {
       artifactRevision: state.artifact_revision,
       contextRevision: state.context_revision,
       layoutRevision: state.layout_revision,
+      goal: typeof state.goal === "string" ? state.goal : "",
+      constraints: (Array.isArray(state.constraints) ? state.constraints : []).filter((c): c is string => typeof c === "string"),
       branches,
       feedback: state.feedback.map((f) => ({
         id: f.id,
@@ -800,15 +809,7 @@ export class AgentAReview {
       jobs: (Array.isArray(jobs) ? jobs : []).map((j) => ({ id: j.id, state: j.state, error: j.error ?? null, feedback: j.packet?.selected_feedback?.length ?? 0 })),
       events: state.events.slice(-30).reverse().map((e) => ({ seq: e.seq, type: e.type, at: e.created_at })),
       adapter,
-      blocks: state.blocks.map((b): AgentABlock => ({
-        id: b.id,
-        revision: b.revision,
-        kind: b.kind,
-        title: b.content.title,
-        body: b.content.body,
-        archived: b.archived,
-        history: b.history.map((h) => ({ revision: h.revision, title: h.content.title, body: h.content.body, archived: h.archived })),
-      })),
+      blocks: state.blocks.map(blockView),
       proposals: state.proposals.map((p) => {
         const view = proposalView(p, state);
         return { ...view, operations: view.operations.map((op) => ({ ...op, blockTitle: titleOf(op.blockId, op.title) })) };
@@ -817,14 +818,14 @@ export class AgentAReview {
     };
   }
 
-  private async command(fileId: string, command: Record<string, unknown>, fallback: string): Promise<AState> {
+  private async command(fileId: string, command: Record<string, unknown>, fallback: string, conflict: string = KNOWN.revision_conflict!): Promise<AState> {
     const doc = this.service.docOf(fileId);
     try {
       await this.service.client.command(doc.artifactId, command);
     } catch (e) {
       if (!(e instanceof AgentAError)) throw e;
       if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 응답을 받지 못했습니다. 다시 누르면 같은 요청으로 결과를 확인합니다", "AGENT_A_UNKNOWN");
-      if (e.kind === "conflict") throw new ApiError(409, e.code === "idempotency_conflict" ? "같은 요청 id 로 다른 내용을 보냈습니다" : KNOWN.revision_conflict!, "AGENT_A_REVISION_CONFLICT");
+      if (e.kind === "conflict") throw new ApiError(409, e.code === "idempotency_conflict" ? "같은 요청 id 로 다른 내용을 보냈습니다" : conflict, "AGENT_A_REVISION_CONFLICT");
       throw new ApiError(e.kind === "not_found" ? 404 : e.kind === "auth" ? 502 : 400, e.kind === "auth" ? "Agent-A 연결 열쇠가 맞지 않습니다" : e.message || fallback, "AGENT_A_REFUSED");
     }
     return this.service.readState(fileId);
@@ -992,14 +993,15 @@ export class AgentAReview {
   }
 
   /**
-   * 블록 제목·본문을 직접 고쳐 정본에 저장한다. 요약·출처는 요청이 가리킨 판의 것을 그대로 둔다.
+   * 블록 제목·요약·본문을 직접 고쳐 정본에 저장한다. 요약을 보내지 않으면 요청이 가리킨 판의 요약을 그대로 둔다. 출처는 늘 그 판의 것을 그대로 둔다.
    * 되살리기와 같이, 같은 요청을 다시 보내면 같은 명령이 되어 처음 결과를 확인한다. 화면이 본 판과 정본이 다른 새 요청은 Agent-A 가 거절한다.
    */
-  async edit(fileId: string, input: { blockId: string; revision: number; title: string; body: string; opId: string; contextRevision?: number | null }): Promise<{ ok: true; artifactRevision: number }> {
+  async edit(fileId: string, input: { blockId: string; revision: number; title: string; body: string; summary?: string; opId: string; contextRevision?: number | null }): Promise<{ ok: true; artifactRevision: number }> {
     if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
     if (!Number.isSafeInteger(input.revision)) throw new ApiError(400, "판 번호가 올바르지 않습니다");
     const title = input.title.trim();
     if (!title || title.length > 500 || input.body.length > 500_000) throw new ApiError(400, "제목이 비었거나 본문이 너무 깁니다");
+    if (input.summary !== undefined && (typeof input.summary !== "string" || input.summary.length > 10_000)) throw new ApiError(400, "요약이 너무 깁니다");
     const before = await this.service.readState(fileId);
     const block = before.blocks.find((b) => b.id === input.blockId);
     if (!block) throw new ApiError(404, "그 블록을 찾지 못했습니다");
@@ -1014,8 +1016,118 @@ export class AgentAReview {
       block_id: block.id,
       base_revision: input.revision,
       context_revision: revisionOr(input.contextRevision, before.context_revision),
-      content: { ...base.content, title, body: input.body },
+      content: { ...base.content, title, ...(input.summary !== undefined ? { summary: input.summary } : {}), body: input.body },
     }, "정본을 저장하지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
+  }
+
+  // ---- 문서 관리: 검토 표시 · 보관 · 새 블록 · 순서와 배치 · 목표와 제약 ----
+  // 아래 명령은 모두 요청이 가리킨 판(블록 판·문맥 판·배치 판)으로만 만든다. 같은 요청을 다시 보내면 글자 하나 다르지 않은 같은 명령이 되어
+  // Agent-A 가 처음 결과를 돌려준다(저장은 됐는데 응답만 잃은 경우). 화면이 본 판이 낡았으면 Agent-A 가 거절하고, 여기서 지금 판으로 바꿔 다시 보내지 않는다.
+
+  /** 블록을 '검토함'으로 표시한다(요청이 가리킨 판이 지금 판일 때만). 본문과 정본 판은 바뀌지 않는다. 블록이 고쳐지면 표시는 지난 판의 것이 된다. */
+  async blockReview(fileId: string, input: { blockId: string; revision: number; opId: string }): Promise<{ ok: true; reviewedRevision: number | null }> {
+    if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new ApiError(400, "판 번호가 올바르지 않습니다");
+    const state = await this.command(fileId, { command_id: `iamceo-review-reviewed-${input.opId}`, type: "review_block", block_id: input.blockId, base_revision: input.revision }, "검토 표시를 저장하지 못했습니다");
+    const block = state.blocks.find((b) => b.id === input.blockId);
+    return { ok: true, reviewedRevision: typeof block?.reviewed_revision === "number" ? block.reviewed_revision : null };
+  }
+
+  /** 블록을 문서에서 보관한다. 지우는 것이 아니다: 이전 판과 함께 남고 '이전 판 되살리기'로 돌아온다. 새 정본 판이 생긴다. */
+  async blockArchive(fileId: string, input: { blockId: string; revision: number; opId: string; contextRevision?: number | null; layoutRevision?: number | null }): Promise<{ ok: true; artifactRevision: number }> {
+    if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new ApiError(400, "판 번호가 올바르지 않습니다");
+    const before = await this.service.readState(fileId);
+    const state = await this.command(fileId, {
+      command_id: `iamceo-review-archive-${input.opId}`,
+      type: "archive_block",
+      block_id: input.blockId,
+      base_revision: input.revision,
+      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
+      context_revision: revisionOr(input.contextRevision, before.context_revision),
+    }, "블록을 보관하지 못했습니다");
+    return { ok: true, artifactRevision: state.artifact_revision };
+  }
+
+  /** 그림 하나를 Agent-A 에 올리고 그 그림의 정보(경로·크기)를 받는다. 같은 그림은 같은 경로다(내용 해시). */
+  private async uploadImage(input: { name: string; mediaType: string; base64: string }): Promise<AAsset> {
+    if (!["image/png", "image/jpeg", "image/webp"].includes(input.mediaType)) throw new ApiError(400, "PNG·JPEG·WebP 그림만 붙일 수 있습니다");
+    if (!input.base64 || input.base64.length > 6 * 1024 * 1024) throw new ApiError(400, "그림은 4MB 까지입니다");
+    try {
+      const asset = await this.service.client.uploadAsset({ name: input.name.trim().slice(0, 200) || "그림", media_type: input.mediaType, base64: input.base64 });
+      if (!UPLOADED.test(str(asset?.src))) throw new ApiError(502, "Agent-A 가 그림 경로를 돌려주지 않았습니다", "AGENT_A_BAD_RESPONSE");
+      return asset;
+    } catch (e) {
+      if (!(e instanceof AgentAError)) throw e;
+      if (e.outcomeUnknown) throw new ApiError(502, "Agent-A 서버에 닿지 않습니다", "AGENT_A_UNAVAILABLE");
+      throw new ApiError(e.kind === "auth" ? 502 : 400, e.kind === "auth" ? "Agent-A 연결 열쇠가 맞지 않습니다" : e.message || "그림을 올리지 못했습니다", "AGENT_A_REFUSED");
+    }
+  }
+
+  /**
+   * 문서에 새 블록을 더한다(글·표·도식·그림). afterId 는 그 블록 바로 뒤, null 이면 맨 앞이다. 새 정본 판이 생긴다.
+   * 블록 id 를 opId 로 정해, 같은 요청을 다시 보내면 블록이 하나만 생긴다. 그림은 먼저 Agent-A 에 올리고(같은 그림은 같은 경로) 그 정보를 싣는다.
+   */
+  async blockInsert(fileId: string, input: { opId: string; afterId: string | null; kind: AgentABlockKind; title: string; body: string; image?: { name: string; mediaType: string; base64: string } | null; contextRevision?: number | null; layoutRevision?: number | null }): Promise<{ ok: true; blockId: string; artifactRevision: number }> {
+    if (!OP.test(input.opId) || (input.afterId !== null && !ANNOTATION.test(input.afterId))) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!BLOCK_KINDS.includes(input.kind)) throw new ApiError(400, "블록 종류가 올바르지 않습니다");
+    const title = input.title.trim();
+    if (!title || title.length > 500) throw new ApiError(400, "블록 제목은 1~500자입니다");
+    if (input.body.length > 500_000) throw new ApiError(400, "본문이 너무 깁니다");
+    if (input.kind !== "image" && !input.body.trim()) throw new ApiError(400, "본문을 적어 주세요");
+    if (input.kind === "table") {
+      const bad = tableBodyError(input.body);
+      if (bad) throw new ApiError(400, bad);
+    }
+    if (input.kind === "image" ? !input.image : Boolean(input.image)) throw new ApiError(400, input.kind === "image" ? "그림 파일을 골라 주세요" : "그림은 그림 블록에만 넣습니다");
+    this.service.docOf(fileId);
+    const uploaded = input.kind === "image" ? await this.uploadImage(input.image!) : null;
+    const asset = uploaded ? { id: uploaded.id, revision: uploaded.revision, src: uploaded.src, width: uploaded.width, height: uploaded.height } : null;
+    const before = await this.service.readState(fileId);
+    const blockId = `iamceo-block-${input.opId}`;
+    const state = await this.command(fileId, {
+      command_id: `iamceo-review-insert-${input.opId}`,
+      type: "insert_block",
+      block_id: blockId,
+      after_id: input.afterId,
+      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
+      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      kind: input.kind,
+      content: { title, summary: "", body: input.body, sources: [] },
+      ...(asset ? { asset } : {}),
+    }, "블록을 더하지 못했습니다");
+    return { ok: true, blockId, artifactRevision: state.artifact_revision };
+  }
+
+  /** 블록의 읽는 순서를 바꾼다. blockIds 는 보관하지 않은 블록 전부의 새 순서다. 본문은 그대로이고 배치 판이 오른다(본문 순서가 달라져 새 판으로 열린다). */
+  async blocksReorder(fileId: string, input: { opId: string; blockIds: string[]; layoutRevision: number }): Promise<{ ok: true; layoutRevision: number }> {
+    if (!OP.test(input.opId) || !input.blockIds.length || input.blockIds.length > 500 || new Set(input.blockIds).size !== input.blockIds.length || input.blockIds.some((id) => !ANNOTATION.test(id))) throw new ApiError(400, "블록 순서가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.layoutRevision) || input.layoutRevision < 1) throw new ApiError(400, "배치 판이 올바르지 않습니다");
+    const state = await this.command(fileId, { command_id: `iamceo-review-order-${input.opId}`, type: "reorder_blocks", block_ids: input.blockIds, base_layout_revision: input.layoutRevision }, "순서를 저장하지 못했습니다", LAYOUT_CONFLICT);
+    return { ok: true, layoutRevision: state.layout_revision };
+  }
+
+  /** 배치 보드에서 블록 하나의 자리와 크기를 정한다. 본문과 정본 판은 바뀌지 않고 배치 판만 오른다. */
+  async layoutSet(fileId: string, input: { opId: string; blockId: string; layout: AgentABlockLayout; layoutRevision: number }): Promise<{ ok: true; layoutRevision: number }> {
+    if (!OP.test(input.opId) || !ANNOTATION.test(input.blockId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.layoutRevision) || input.layoutRevision < 1) throw new ApiError(400, "배치 판이 올바르지 않습니다");
+    const l = input.layout;
+    const values = [l?.x, l?.y, l?.width, l?.height];
+    if (!values.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= 100_000) || l.width <= 0 || l.height <= 0) throw new ApiError(400, "배치 값이 올바르지 않습니다");
+    const state = await this.command(fileId, { command_id: `iamceo-review-layout-${input.opId}`, type: "set_layout", block_id: input.blockId, base_layout_revision: input.layoutRevision, layout: { x: l.x, y: l.y, width: l.width, height: l.height } }, "배치를 저장하지 못했습니다", LAYOUT_CONFLICT);
+    return { ok: true, layoutRevision: state.layout_revision };
+  }
+
+  /** 문서의 목표와 제약을 고친다. 문맥 판과 정본 판이 오른다. 그 전에 나온 수정안은 새 문맥에서 다시 확인해야 한다(Agent-A 규칙). */
+  async contextUpdate(fileId: string, input: { opId: string; goal: string; constraints: string[]; contextRevision: number }): Promise<{ ok: true; contextRevision: number; artifactRevision: number }> {
+    if (!OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    if (!Number.isSafeInteger(input.contextRevision) || input.contextRevision < 1) throw new ApiError(400, "문맥 판이 올바르지 않습니다");
+    const goal = input.goal.trim();
+    if (!goal || goal.length > 10_000) throw new ApiError(400, "목표는 1~10000자입니다");
+    const constraints = input.constraints.map((c) => c.trim()).filter(Boolean);
+    if (constraints.length > 100 || constraints.some((c) => c.length > 2_000)) throw new ApiError(400, "제약은 100줄까지, 한 줄에 2000자까지입니다");
+    const state = await this.command(fileId, { command_id: `iamceo-review-context-${input.opId}`, type: "update_context", base_context_revision: input.contextRevision, goal, constraints }, "목표와 제약을 저장하지 못했습니다", "그사이 목표와 제약이 바뀌었습니다. 다시 불러온 내용에서 고쳐 주세요");
+    return { ok: true, contextRevision: state.context_revision, artifactRevision: state.artifact_revision };
   }
 }
