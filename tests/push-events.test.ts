@@ -111,6 +111,20 @@ describe("domain recorder", () => {
     f.restart(); expect(f.push.listEvents()).toHaveLength(2);
     expect(f.push.eventTarget(f.push.listEvents()[0].id).target.screen).toBe("inbox");
   });
+  test("원보고를 확인한 완료 글은 대표 차례가 없으면 새 알림을 만들지 않는다", () => {
+    const f = fixture(); f.enabled();
+    const original = f.report("worker-original");
+    const leads = ["총괄1", "총괄2"].map((name, i) => f.store.createMember({ projectId: f.project.id, handle: `lead${i}`, name, kind: "conductor" }));
+    for (const [i, body] of ["판에 적었습니다", "● 대표 차례: 합칠지 정해 주세요\n판에 적었습니다"].entries()) {
+      f.store.transaction(() => {
+        const message = f.store.createMessage({ projectId: f.project.id, memberId: leads[i]!.id, kind: "완료", body, aboutMessageId: original.id });
+        f.recorder.message(message);
+      });
+    }
+    f.advance(120_000); f.push.closeDueGroups(f.push.timestamp());
+    // 원보고 1건과 대표 차례가 있는 확인 1건만 알린다. 대표 차례 없는 확인은 묶음도 만들지 않는다.
+    expect(f.push.listEvents().filter((e) => e.kind === "report_complete").map((e) => e.memberId).sort()).toEqual([f.member.id, leads[1]!.id].sort());
+  });
   test("only explicit member completion posts group; role is irrelevant", () => {
     const f = fixture(); f.enabled();
     for (const kind of ["질문", "답변", "알림", "막힘"] as const) f.report(randomUUID(), f.member.id, f.project.id, kind);

@@ -263,6 +263,7 @@ export interface NewMessage {
   delivery?: DeliveryStatus | null;
   deliveryNote?: string | null;
   taskId?: string | null;
+  aboutMessageId?: string | null;
 }
 
 export interface NewFile {
@@ -593,6 +594,7 @@ function toMessage(r: Row): Message {
     delivery: r.delivery,
     deliveryNote: r.delivery_note,
     taskId: r.task_id ?? null,
+    aboutMessageId: r.about_message_id ?? null,
   };
 }
 
@@ -758,6 +760,35 @@ export interface ExecutionJournal {
   reportRequestedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 보고 의무를 마감한 근거(v29). 글 종류만으로 마감하지 않는다: '알림'은 확인한 원보고(reviewed)나
+ * 기다리는 자기 결재(waiting)를 밝혀야 하고, '진행'은 마감하지 않는다.
+ */
+export type ReportClosureKind = "result" | "question" | "delegated" | "waiting" | "reviewed";
+export interface ReportClosure {
+  memberId: string;
+  projectId: string;
+  /** 기록 순간 그 직원의 열린 실행(없으면 null). 판정은 실행 시작 이후의 근거 시각으로 한다. */
+  runId: string | null;
+  kind: ReportClosureKind;
+  refType: "message" | "decision" | "delivery";
+  refId: string;
+  /** reviewed: 확인한 직원 보고 원본 id · waiting: 기다리는 결재 id */
+  causeId: string | null;
+  at: string;
+}
+/** 보고 보완 하나와 그 원인 실행. 원인 실행마다 한 번이고, 보완 실행이 끝나면 마감(closed) 또는 보고 미확인(unconfirmed)으로 한 번 정리한다. */
+export interface ReportFollowup {
+  rootRunId: string;
+  memberId: string;
+  projectId: string;
+  deliveryId: string;
+  requestedAt: string;
+  settledKind: "closed" | "unconfirmed" | null;
+  settledRef: string | null;
+  settledAt: string | null;
 }
 
 export interface DeliveryRetryState {
@@ -2327,8 +2358,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.requireProject(input.projectId);
       const id = input.id ?? newId("msg_");
       this.run(
-        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, project_id, at, mine, member_id, who, kind, title, body, target_member_id, target_name, decision_id, file_id, attachments, delivery, delivery_note, task_id, about_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.at ?? this.nextMessageAt(),
@@ -2346,6 +2377,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.delivery ?? null,
         input.deliveryNote ?? null,
         this.taskRef(input.projectId, input.taskId),
+        input.aboutMessageId ?? null,
       );
       const message = this.requireMessage(id);
       // 보관 중 늦은 manual 보고도 저장한다. 푸시는 활성 프로젝트의 실제 작성자만 대상이다.
@@ -2581,6 +2613,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 지시 outbox와 같은 트랜잭션에서 호출한다. 도구 응답 유실에도 배정 사실이 남는다. */
   noteDelegation(memberId: string, delivery: Delivery, queued: boolean): void {
+    // 맡긴 직원의 보고 의무는 위임으로 마감한다(지시 전달과 같은 트랜잭션).
+    this.recordReportClosure({ memberId, kind: "delegated", refType: "delivery", refId: delivery.id });
     const turn = this.row("SELECT * FROM delegation_ack_turns WHERE member_id = ? AND ended = 0 ORDER BY rowid DESC LIMIT 1", memberId);
     if (!turn || JSON.parse(turn.source_ids).length === 0) return;
     const assignments: { deliveryId: string; memberId: string; name: string; summary: string; queued: boolean }[] = JSON.parse(turn.assignments);
@@ -3033,6 +3067,50 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.transaction(() => {
       const column = kind === "interruption" ? "interruption_notified_at" : "report_requested_at";
       if (this.db.query(`UPDATE execution_journal SET ${column} = ? WHERE run_id = ? AND ${column} IS NULL`).run(nowIso(), runId).changes !== 1) return false;
+      write();
+      return true;
+    });
+  }
+
+  /** 이 보고 원본을 확인한 글(about_message_id). 작성 순서대로. */
+  listMessagesAbout(projectId: string, messageId: string): Message[] {
+    return this.rows("SELECT * FROM messages WHERE project_id = ? AND about_message_id = ? ORDER BY at COLLATE BINARY, id COLLATE BINARY", projectId, messageId).map(toMessage);
+  }
+
+  // ---- 보고 마감·보고 보완 ----
+  recordReportClosure(input: { memberId: string; kind: ReportClosureKind; refType: ReportClosure["refType"]; refId: string; causeId?: string | null }): void {
+    const member = this.requireMember(input.memberId);
+    const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
+    this.run("INSERT INTO report_closures (member_id, project_id, run_id, kind, ref_type, ref_id, cause_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", member.id, member.projectId, run?.run_id ?? null, input.kind, input.refType, input.refId, input.causeId ?? null, nowIso());
+  }
+
+  listReportClosures(memberId: string, since: string): ReportClosure[] {
+    return this.rows("SELECT * FROM report_closures WHERE member_id = ? AND at >= ? ORDER BY at, id", memberId, since)
+      .map((r) => ({ memberId: r.member_id, projectId: r.project_id, runId: r.run_id, kind: r.kind, refType: r.ref_type, refId: r.ref_id, causeId: r.cause_id, at: r.at }));
+  }
+
+  recordReportFollowup(rootRunId: string, memberId: string, projectId: string, deliveryId: string): void {
+    this.run("INSERT INTO report_followups (root_run_id, member_id, project_id, delivery_id, requested_at) VALUES (?, ?, ?, ?, ?)", rootRunId, memberId, projectId, deliveryId, nowIso());
+  }
+
+  private followupRow(r: Row): ReportFollowup {
+    return { rootRunId: r.root_run_id, memberId: r.member_id, projectId: r.project_id, deliveryId: r.delivery_id, requestedAt: r.requested_at, settledKind: r.settled_kind, settledRef: r.settled_ref, settledAt: r.settled_at };
+  }
+
+  getReportFollowup(rootRunId: string): ReportFollowup | null {
+    const r = this.row("SELECT * FROM report_followups WHERE root_run_id = ?", rootRunId);
+    return r ? this.followupRow(r) : null;
+  }
+
+  getReportFollowupByDelivery(deliveryId: string): ReportFollowup | null {
+    const r = this.row("SELECT * FROM report_followups WHERE delivery_id = ?", deliveryId);
+    return r ? this.followupRow(r) : null;
+  }
+
+  /** 한 번만 정리한다. 이미 정리했으면 false 이고 write 를 부르지 않는다. */
+  settleReportFollowup(rootRunId: string, kind: "closed" | "unconfirmed", ref: string, write: () => void): boolean {
+    return this.transaction(() => {
+      if (this.db.query("UPDATE report_followups SET settled_kind = ?, settled_ref = ?, settled_at = ? WHERE root_run_id = ? AND settled_at IS NULL").run(kind, ref, nowIso(), rootRunId).changes !== 1) return false;
       write();
       return true;
     });

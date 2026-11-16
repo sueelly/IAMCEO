@@ -1,7 +1,7 @@
 // 대화 화면이 글을 어떻게 보일지 정한다. 화면 없이 시험할 수 있게 React 를 쓰지 않는다.
 // · 대표 차례 줄(본문 첫 줄)은 말풍선 맨 위 띠로 뺀다.
 // · 결재 카드 사본(질문 + 결재 id)은 한 줄로 줄인다. 전체는 결재함에 있다.
-// · 총괄의 과정 글(맡김, 직원 보고 직후 다시 알림)은 한 줄로 접는다.
+// · 총괄의 과정 글(맡김, 직원 보고 직후 다시 알림, 원보고를 밝힌 확인 알림)은 한 줄로 접는다.
 import type { Decision, MemberKind, Message, MessageKind } from "@shared/types";
 import { parseOwnerLine } from "@shared/owner-lines";
 
@@ -24,11 +24,11 @@ const QUESTION_CUE = /[?？]|왜|어떻게|뭐|무엇|무슨|언제|어디|얼�
 const RENOTIFY_MAX_LINES = 2;
 
 export type KindOf = (memberId: string | null) => MemberKind | undefined;
-export type ProcessKind = "assign" | "renotify";
+export type ProcessKind = "assign" | "renotify" | "confirm";
 
 export type ThreadItem =
   | { type: "message"; message: Message }
-  | { type: "fold"; id: string; messages: Message[]; assign: number; renotify: number };
+  | { type: "fold"; id: string; messages: Message[]; assign: number; renotify: number; confirm?: number };
 
 const time = (iso: string) => {
   const t = Date.parse(iso);
@@ -82,6 +82,15 @@ export function processKind(list: readonly Message[], i: number, kindOf: KindOf)
   // 새 소식(실패·막힘·앞 보고와 다름·원인)이 있으면 접지 않는다.
   if (hasNews(m)) return null;
 
+  // 확인: 직원 보고 원본을 밝힌 알림(post about_report_id)은 시간·자리와 상관없이 그 보고의 확인이다.
+  // 원보고가 목록에 있으면 직원 보고여야 하고, 자료가 있으면 그 보고의 자료여야 한다(새 자료는 새 소식이라 펴 둔다).
+  if (m.kind === "알림" && m.aboutMessageId) {
+    const about = list.slice(0, i).find((p) => p.id === m.aboutMessageId);
+    if (about && !isWorkerReport(about, kindOf)) return null;
+    if (m.fileId && m.fileId !== about?.fileId) return null;
+    return "confirm";
+  }
+
   // 맡김: 대표 말 바로 뒤(시스템 글만 사이에 둠)의 첫 진행 글이고, 맡겼다는 말이 있다. 대표 말이 물음이면 답이라 접지 않는다.
   if (m.kind === "진행" && !m.fileId && ASSIGN_CUE.test(`${m.title}\n${firstLine(m.body)}`)) {
     for (let j = i - 1; j >= 0; j--) {
@@ -122,19 +131,21 @@ export function foldThread(list: readonly Message[], kindOf: KindOf): ThreadItem
       continue;
     }
     if (!open) {
-      open = { type: "fold", id: `fold:${m.id}`, messages: [], assign: 0, renotify: 0 };
+      open = { type: "fold", id: `fold:${m.id}`, messages: [], assign: 0, renotify: 0, confirm: 0 };
       items.push(open);
     }
     open.messages.push(m);
     if (kind === "assign") open.assign++;
+    else if (kind === "confirm") open.confirm = (open.confirm ?? 0) + 1;
     else open.renotify++;
   }
   return items;
 }
 
-/** 접은 줄의 글: '총괄 · 맡김 1건, 다시 알림 2건'. */
-export function foldLabel(item: { assign: number; renotify: number }): string {
-  const parts = [item.assign > 0 ? `맡김 ${item.assign}건` : null, item.renotify > 0 ? `다시 알림 ${item.renotify}건` : null].filter(Boolean);
+/** 접은 줄의 글: '총괄 · 맡김 1건, 다시 알림 2건, 확인 1건'. */
+export function foldLabel(item: { assign: number; renotify: number; confirm?: number }): string {
+  const confirm = item.confirm ?? 0;
+  const parts = [item.assign > 0 ? `맡김 ${item.assign}건` : null, item.renotify > 0 ? `다시 알림 ${item.renotify}건` : null, confirm > 0 ? `확인 ${confirm}건` : null].filter(Boolean);
   return `총괄 · ${parts.join(", ")}`;
 }
 

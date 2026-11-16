@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Decision, Member, Message } from "../../shared/types.ts";
+import { parseOwnerLine } from "../../shared/owner-lines.ts";
 import type { DomainRecorder } from "../service-contracts.ts";
 import { PushStore } from "./store.ts";
 import type { PushEpisode } from "./store.ts";
@@ -49,6 +50,8 @@ export class PushEventRecorder implements DomainRecorder {
   }
   message(message: Message): void {
     if (message.mine || !message.memberId || message.kind !== "완료") return;
+    // 직원 원보고를 확인한 글(about)은 같은 결과다. 대표 차례가 없으면 새로 알리지 않는다(원보고가 이미 알렸다).
+    if (message.aboutMessageId && !parseOwnerLine(message.body)) return;
     this.requireDomainTransaction();
     this.push.appendReport(message);
   }
