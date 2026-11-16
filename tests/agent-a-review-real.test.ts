@@ -18,19 +18,37 @@ const REAL = process.env.IAMCEO_AGENT_A_REAL_URL ?? null;
 const ORIGINAL = process.env.IAMCEO_AGENT_A_REAL_PROTOCOL === "1";
 const MARKDOWN = "머리 문단입니다.\n\n## 배경\n\n배경 문장 하나. 배경 문장 둘.\n\n## 계획\n\n계획은 세 단계입니다.";
 
+type Hook = (input: string, init: RequestInit, res: Response) => void | Promise<void>;
 async function setup(title: string) {
   const store = new Store(openDb(join(mkdtempSync(join(tmpdir(), "iamceo-aa-real-")), "iamceo.db")), new Bus());
   const project = store.createProject({ name: "실제 규약 시험", cwd: tmpdir() });
-  const service = new AgentAService(store, new AgentAClient({ baseUrl: REAL!, appToken: null, agentToken: null }));
+  // 실제 Agent-A 가 응답한 뒤에 끼어드는 고리. 저장은 됐는데 응답만 잃는 경우를 만든다(던지면 서버는 응답을 받지 못한 것이 된다).
+  const hooks: { after?: Hook } = {};
+  const transport = async (input: string, init: RequestInit) => {
+    const res = await fetch(input, init);
+    if (hooks.after) await hooks.after(input, init, res);
+    return res;
+  };
+  const service = new AgentAService(store, new AgentAClient({ baseUrl: REAL!, appToken: null, agentToken: null }, transport));
   const review = new AgentAReview(service);
   const view = await service.createDoc(project.id, { title, markdown: MARKDOWN });
   const doc = await review.open(view.fileId);
   // 다른 창(원래 Agent-A 화면)이 직접 Agent-A 에 쓴다. IAMCEO 를 거치지 않는다.
   const other = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${REAL}${path}`, { method, headers: { "x-enouv-artifact": view.artifactId, "x-enouv-review-session": doc.sessionId, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-    return { status: res.status, json: (await res.json().catch(() => null)) as Record<string, any> | null };
+    return { status: res.status, json: (await res.json().catch(() => null)) as Record<string, any> | null, revision: res.headers.get("x-enouv-draft-revision") };
   };
-  return { store, project, service, review, other, fileId: view.fileId, artifactId: view.artifactId, doc, sid: doc.sessionId };
+  /** 쓰기 하나(POST, 경로가 match 에 맞고 200)가 Agent-A 에 들어간 뒤 그 응답만 한 번 잃는다. */
+  const loseOnce = (match: (path: string) => boolean) => {
+    let lost = false;
+    hooks.after = (input, init, res) => {
+      if (!lost && init.method === "POST" && match(new URL(input).pathname) && res.status === 200) {
+        lost = true;
+        throw new Error("저장 뒤 응답 유실(시험)");
+      }
+    };
+  };
+  return { store, project, service, review, other, hooks, loseOnce, fileId: view.fileId, artifactId: view.artifactId, doc, sid: doc.sessionId };
 }
 const failure = async (p: Promise<unknown>): Promise<{ status: number; code?: string }> => p.then(() => ({ status: 200 }), (e) => (e instanceof ApiError ? { status: e.status, code: e.code } : { status: -1 }));
 async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: string): Promise<T> {
@@ -379,6 +397,73 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     expect(await s.review.draft(s.fileId, s.sid)).toMatchObject({ revision: 0, annotations: 0, editedMarkdown: null });
     expect((await s.review.manage(s.fileId)).artifactRevision).toBe(1);
   }, 90_000);
+
+  // 독립 재검토 R1: 실제 Agent-A 가 초안을 저장한 뒤 응답만 끊긴 경우. 같은 요청은 다시 쓰지 않고 저장된 초안을 돌려준다.
+  test("R1 초안 저장 뒤 응답 유실: 본문·검토 첨부의 같은 요청은 200 이고 초안은 한 번만 바뀐다. 다른 창의 저장은 계속 충돌이다", async () => {
+    for (const kind of ["body", "attachments"] as const) {
+      const s = await setup(`실제: R1 ${kind}`);
+      const seen = await s.review.draft(s.fileId, s.sid);
+      const image = kind === "attachments" ? [await s.review.upload(s.fileId, s.sid, { name: "own.png", mediaType: "image/png", base64: pngBase64(10, 10) })] : [];
+      const run = () => (kind === "body"
+        ? s.review.saveDraft(s.fileId, s.sid, { markdown: "한 번 저장할 초안", revision: seen.revision })
+        : s.review.saveAttachments(s.fileId, s.sid, { attachments: image, revision: seen.revision }));
+      s.loseOnce((path) => path === "/api/draft");
+      expect(await failure(run())).toEqual({ status: 502, code: "AGENT_A_UNAVAILABLE" });
+      const stored = await s.other("GET", "/api/draft");
+      expect(stored.revision).toBe(String(seen.revision + 1));
+      const again = await run();
+      expect(again).toEqual({ revision: seen.revision + 1, editedMarkdown: kind === "body" ? "한 번 저장할 초안" : null, annotations: 0, attachments: image });
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 내 저장 뒤에 댓글이 더해져 초안 판이 또 올라도 같은 요청은 저장된 것으로 확인한다(Agent-A 가 주석을 더할 때 표지를 그대로 둔다).
+      await s.review.addComment(s.fileId, s.sid, { id: `r1-after-${kind}`, kind: "deletion", text: "", quote: "배경 문장 둘." });
+      expect(await run()).toMatchObject({ revision: seen.revision + 2, annotations: 1 });
+      // 다른 창(원래 화면)이 통째로 저장하면 같은 요청도 충돌이고, 그 저장은 그대로 남는다.
+      await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: "다른 창 본문" });
+      expect(await failure(run())).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
+      expect((await s.other("GET", "/api/draft")).json!.editedMarkdown).toBe("다른 창 본문");
+    }
+    // 다른 창이 먼저 저장했으면 값이 같아 보여도(빈 그림 목록·같은 본문) 내 요청의 결과가 아니다.
+    const s = await setup("실제: R1 충돌");
+    const seen = await s.review.draft(s.fileId, s.sid);
+    expect((await s.other("POST", "/api/draft", { draftGeneration: 0, ifDraftRevision: seen.revision, annotations: [], globalAttachments: [], editedMarkdown: "다른 창 본문" })).status).toBe(200);
+    expect(await failure(s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: seen.revision }))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { markdown: "다른 창 본문", revision: seen.revision }))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
+    // 표지는 Agent-A 의 초안에만 남고, 제출 글·화면이 받는 초안에는 실리지 않는다.
+    const mine = await s.review.draft(s.fileId, s.sid);
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: `${s.doc.canonical}\n\n덧붙임`, revision: mine.revision });
+    expect(Object.keys(await s.review.draft(s.fileId, s.sid)).sort()).toEqual(["annotations", "attachments", "editedMarkdown", "revision"]);
+    expect((await s.review.submit(s.fileId, s.sid, { revision: mine.revision + 1 })).ok).toBe(true);
+  }, 60_000);
+
+  // 독립 재검토 R2: 문맥 판·배치 판 없이 보낸 요청이 저장된 뒤 응답을 잃고, 그사이 문맥(목표)이 바뀐 경우.
+  test("R2 판을 생략한 직접 고치기·되살리기: 응답을 잃고 그사이 목표가 바뀌어도 같은 요청은 처음 결과다", async () => {
+    for (const kind of ["edit", "restore"] as const) {
+      const s = await setup(`실제: R2 ${kind}`);
+      let m = await s.review.manage(s.fileId);
+      let block = m.blocks[0]!;
+      if (kind === "restore") {
+        await s.review.edit(s.fileId, { blockId: block.id, revision: block.revision, title: block.title, body: "되살리기 전 새 본문", opId: `r2-prepare-${kind}-01`, contextRevision: m.contextRevision });
+        m = await s.review.manage(s.fileId);
+        block = m.blocks.find((b) => b.id === block.id)!;
+      }
+      const common = { opId: `r2-replay-${kind}-0001`, blockId: block.id, revision: block.revision };
+      const run = (extra: { contextRevision?: number; layoutRevision?: number } = {}) => (kind === "edit"
+        ? s.review.edit(s.fileId, { ...common, ...extra, title: block.title, body: "한 번만 적용" })
+        : s.review.restore(s.fileId, { ...common, ...extra, historyRevision: 1 }));
+      s.loseOnce((path) => path.endsWith("/commands"));
+      expect(await failure(run())).toEqual({ status: 502, code: "AGENT_A_UNKNOWN" });
+      await s.review.contextUpdate(s.fileId, { opId: `r2-between-${kind}-0001`, contextRevision: m.contextRevision, goal: "그사이 바뀐 목표", constraints: [] });
+      const before = await s.review.manage(s.fileId);
+      expect(before.contextRevision).toBe(m.contextRevision + 1);
+      expect(await run()).toMatchObject({ ok: true });
+      expect(await s.review.manage(s.fileId)).toEqual(before);
+      expect(before.blocks.find((b) => b.id === block.id)!.revision).toBe(block.revision + 1);
+      // 처음 명령이 쓴 판을 밝혀 다시 보내면 같은 명령, 지금 판을 밝히면 다른 명령이라 거절한다
+      expect(await run({ contextRevision: m.contextRevision, ...(kind === "restore" ? { layoutRevision: m.layoutRevision } : {}) })).toMatchObject({ ok: true });
+      expect(await failure(run({ contextRevision: before.contextRevision }))).toEqual({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+      expect(await s.review.manage(s.fileId)).toEqual(before);
+    }
+  }, 60_000);
 });
 
 describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하지 않은 쓰기를 거절한다", () => {

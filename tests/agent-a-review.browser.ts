@@ -70,6 +70,13 @@ let base = "";
 let project: Project;
 let plain: FileDoc;
 const fake = REAL ? null : fakeAgentAReview({ answerDelayMs: 500 });
+/** 가짜 Agent-A 가 응답한 뒤에 끼어드는 고리. 던지면 IAMCEO 서버는 그 응답을 받지 못한 것이 된다(저장은 됐는데 응답만 잃는 경우). */
+const afterFake: { run?: (input: string, init: RequestInit, res: Response) => void } = {};
+const fakeTransport = async (input: string, init: RequestInit): Promise<Response> => {
+  const res = await fake!.transport(input, init);
+  afterFake.run?.(input, init, res);
+  return res;
+};
 const settle = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 
 async function newDoc(title: string): Promise<string> {
@@ -85,7 +92,7 @@ beforeAll(async () => {
   store = new Store(openDb(config.dbPath), bus);
   const runner = new FakeRunner();
   orch = new Orchestrator({ config, store, runners: new Map<Backend, Runner>([["headless", runner]]) });
-  agentA = new AgentAService(store, REAL ? new AgentAClient({ baseUrl: REAL, appToken: null, agentToken: null }) : new AgentAClient({ baseUrl: "http://127.0.0.1:4999", appToken: null, agentToken: null }, fake!.transport));
+  agentA = new AgentAService(store, REAL ? new AgentAClient({ baseUrl: REAL, appToken: null, agentToken: null }) : new AgentAClient({ baseUrl: "http://127.0.0.1:4999", appToken: null, agentToken: null }, fakeTransport));
   orch.agentA = agentA;
   review = new AgentAReview(agentA);
   server = await startServer({ config, store, bus, orch, delivery: orch.deliveryRecovery, agentA });
@@ -675,6 +682,47 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await expect(page.locator(".aar-bar__state").innerText()).resolves.not.toContain("직접 편집 초안");
     await page.close();
   }, 150_000);
+
+  // 독립 재검토 R1: Agent-A 가 초안을 저장한 뒤 응답만 끊긴 경우. 다시 누르면 다른 화면의 충돌로 보이지 않고 저장된 것으로 확인된다.
+  test("데스크톱: 초안 저장의 응답을 잃어도 '초안 저장'을 다시 누르면 저장된 것으로 확인한다(다시 쓰지 않는다)", async () => {
+    const fileId = await newDoc("응답 유실 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    const first = (await sessionOf(page))!;
+    const session = () => fake!.sessions.find((s) => s.id === first)!;
+    await page.getByRole("button", { name: "본문 고치기" }).click();
+    const input = page.getByLabel("본문(마크다운)");
+    await input.waitFor();
+    const canonical = await input.inputValue();
+    await input.fill(`${canonical}\n\n응답을 잃은 저장입니다.`);
+    let lost = false;
+    afterFake.run = (url, init, res) => {
+      if (!lost && init.method === "POST" && new URL(url).pathname === "/api/draft" && res.status === 200) {
+        lost = true;
+        throw new Error("초안 저장 뒤 응답 유실(시험)");
+      }
+    };
+    try {
+      await page.getByRole("button", { name: "초안 저장" }).click();
+      await page.locator(".aar-editor .aar-error").waitFor({ timeout: 15_000 });
+      await expect(page.locator(".aar-editor .aar-error").innerText()).resolves.toContain("Agent-A 서버에 닿지 않습니다");
+      expect(lost).toBe(true);
+      // Agent-A 에는 이미 저장돼 있다. 화면은 아직 모른다(입력칸의 글은 그대로다).
+      expect(session().draft.editedMarkdown).toContain("응답을 잃은 저장입니다.");
+      const revision = session().draft_revision;
+      await expect(input.inputValue()).resolves.toContain("응답을 잃은 저장입니다.");
+      // 같은 글로 다시 누른다: 다른 화면의 초안(충돌)으로 보이지 않고 저장으로 끝난다. 초안은 다시 쓰이지 않았다.
+      await page.getByRole("button", { name: "초안 저장" }).click();
+      await banner(page, "고친 본문을 초안으로 저장했습니다. 정본은 그대로입니다.");
+      await expect(page.locator('[aria-label="다른 화면의 초안"]').count()).resolves.toBe(0);
+      expect(session().draft_revision).toBe(revision);
+      await page.waitForFunction(() => document.querySelector(".aar-doc")?.textContent?.includes("응답을 잃은 저장입니다."));
+      await expect(page.locator(".aar-bar__state").innerText()).resolves.toContain("직접 편집 초안");
+    } finally {
+      afterFake.run = undefined;
+    }
+    await page.close();
+  }, 120_000);
 
   test("데스크톱: 문서에 묻기 — 고른 글과 함께 묻고 답이 이어 붙는다. 새 대화와 앞 대화", async () => {
     const fileId = await newDoc("묻기 문서");

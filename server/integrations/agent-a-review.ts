@@ -9,6 +9,7 @@
 //   새 댓글·초안 고치기를 보내지 않고 거절한다(AGENT_A_UNSUPPORTED). 필요한 Agent-A 변경은 docs/agent-a/ 에 있다.
 // - 지난 판의 검토에는 새 댓글을 받지 않는다(같은 길이 한 트랜잭션에서 정본을 다시 확인한다). 읽기·있던 댓글의 답글은 그대로다.
 // - 열쇠·Agent-A 주소는 이 서버 프로세스에만 있다.
+import { createHash } from "node:crypto";
 import { ApiError } from "../store.ts";
 import { AgentAError, blockView, proposalView, verifyApplied, versionsOf, type AAsset, type AgentAService, type AState } from "./agent-a.ts";
 import type {
@@ -192,8 +193,42 @@ export function feedbackText(markdown: string, annotations: Json[], edited: stri
   return parts.join("\n").trim().slice(0, 95_000);
 }
 
-/** 화면이 본 판을 보냈으면 그것을, 아니면 지금 판을 쓴다(둘 다 Agent-A 가 다시 확인한다). */
-const revisionOr = (sent: number | null | undefined, current: number): number => (typeof sent === "number" && Number.isSafeInteger(sent) && sent >= 0 ? sent : current);
+const revisionOf = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
+/**
+ * 같은 명령 id 로 이미 실행된 명령: Agent-A 가 사건 기록에 남긴 그때의 명령이다. 없으면 null(처음 보내는 요청).
+ * 판을 생략한 요청의 재전송이 처음과 같은 명령이 되게 하는 데 쓴다.
+ */
+function ranCommand(state: AState, commandId: string): Json | null {
+  const events = Array.isArray(state.events) ? state.events : [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.command_id === commandId) return obj(e.payload) ? e.payload : {};
+  }
+  return null;
+}
+/**
+ * 명령에 실을 판. 화면이 본 판을 보냈으면 그것을 쓴다.
+ * 보내지 않은 요청은, 같은 요청 id 의 명령이 이미 실행됐으면 그때 쓴 판(first)을, 처음 보내는 요청이면 지금 판을 쓴다.
+ * 지금 판으로 매번 채우면 저장 뒤 응답만 잃은 요청의 재전송이 그사이 문맥·배치가 바뀌었을 때 다른 명령이 되어 거절된다(독립 재검토 R2).
+ * 보낸 판은 여기서 바꾸지 않는다: 같은 요청 id 로 다른 내용·다른 판을 보내면 Agent-A 가 거절하고, 새 요청의 낡은 판도 Agent-A 가 거절한다.
+ */
+const revisionOr = (sent: number | null | undefined, first: unknown, current: number): number => revisionOf(sent) ?? revisionOf(first) ?? current;
+
+/**
+ * 초안에 남기는 '마지막 조건 저장' 표지(독립 재검토 R1). 조건 저장이 초안과 한 번에 싣기 때문에, 저장이 들어갔으면 표지도 들어가 있다.
+ * key 는 그 저장 요청(어느 검토의 무엇을·어느 초안 판에서·어떤 값으로)의 지문이다. 저장은 됐는데 응답만 잃은 같은 요청이 다시 오면
+ * 초안 판이 이미 올라 있어도 이 표지로 '이미 저장됨'을 확인하고 다시 쓰지 않는다. 표지가 없거나 다르면 다른 화면의 저장이다.
+ * Agent-A 는 초안의 모르는 칸을 그대로 보관하고(POST /api/draft), 주석 하나를 더할 때도 그대로 둔다. 원래 화면이 통째로 저장하면 사라진다.
+ */
+const SAVE_MARK = "iamceoSave";
+type SaveMark = { key: string; holds: (draft: Json) => boolean };
+const saveKey = (artifactId: string, sid: string, kind: "body" | "attachments", revision: number, value: unknown): string =>
+  createHash("sha256").update(JSON.stringify([artifactId, sid, kind, revision, value])).digest("hex");
+/** 지금 초안이 이 요청의 저장을 담고 있는가: 표지가 이 요청의 것이고, 그 칸의 값도 요청한 값 그대로다. */
+const savedAlready = (draft: Json, mark: SaveMark): boolean => {
+  const m = draft[SAVE_MARK];
+  return obj(m) && m.v === 1 && m.key === mark.key && mark.holds(draft);
+};
 
 const STATUSES: AgentAProposalStatus[] = ["pending", "held", "rejected", "applied", "conflict"];
 const bodyOf = (content: unknown): string | null => {
@@ -582,12 +617,17 @@ export class AgentAReview {
    * 직접 고친 본문을 초안에 저장한다(markdown 이 null 이면 고친 것을 버린다). 정본은 바뀌지 않는다.
    * revision 은 화면이 고치기 시작할 때 본 초안 판이다. 그 뒤 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않고 거절한다:
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision). 초안의 다른 칸(주석·첨부)은 그대로 다시 싣는다.
+   * 같은 요청(같은 초안 판·같은 본문)을 다시 보내면 다시 쓰지 않고 저장된 초안을 돌려준다(저장은 됐는데 응답만 잃은 경우).
    */
   async saveDraft(fileId: string, sessionId: string, input: { markdown: string | null; revision: number }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
     if (input.markdown !== null && (typeof input.markdown !== "string" || input.markdown.length > 500_000)) throw new ApiError(400, "본문이 너무 깁니다");
-    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", (kept) => {
+    const mark: SaveMark = {
+      key: saveKey(this.service.docOf(fileId).artifactId, sid, "body", input.revision, input.markdown),
+      holds: (draft) => (input.markdown === null ? typeof draft.editedMarkdown !== "string" : draft.editedMarkdown === input.markdown),
+    };
+    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", mark, (kept) => {
       const { editedMarkdown: _e, ...rest } = kept;
       return input.markdown !== null ? { ...rest, editedMarkdown: input.markdown } : rest;
     });
@@ -596,26 +636,38 @@ export class AgentAReview {
   /**
    * 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). 정본은 바뀌지 않고, 검토 제출 때 함께 넘어간다.
    * 본문 고치기와 같은 조건 저장이다: revision 뒤에 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않는다. 초안의 다른 칸(주석·고친 본문)은 그대로 둔다.
+   * 같은 요청(같은 초안 판·같은 목록)을 다시 보내면 다시 쓰지 않고 저장된 초안을 돌려준다.
    */
   async saveAttachments(fileId: string, sessionId: string, input: { attachments: unknown; revision: number }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
     const list = attachments(input.attachments);
     if (new Set(list.map((x) => x.path)).size !== list.length) throw new ApiError(400, "같은 그림이 두 번 들어 있습니다");
-    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에는 그림을 붙이지 않습니다. 최신 정본을 열어 주세요", (kept) => ({ ...kept, globalAttachments: list }));
+    const mark: SaveMark = {
+      key: saveKey(this.service.docOf(fileId).artifactId, sid, "attachments", input.revision, list.map((x) => [x.path, x.name])),
+      holds: (draft) => {
+        const stored = Array.isArray(draft.globalAttachments) ? draft.globalAttachments : [];
+        return stored.length === list.length && list.every((x, i) => obj(stored[i]) && stored[i].path === x.path && stored[i].name === x.name);
+      },
+    };
+    return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에는 그림을 붙이지 않습니다. 최신 정본을 열어 주세요", mark, (kept) => ({ ...kept, globalAttachments: list }));
   }
 
   /**
    * 초안의 한 칸만 바꿔 조건 저장한다. 읽은 초안의 다른 칸은 그대로 다시 싣고, revision(화면이 본 초안 판)이 지금 판과 다르면 아무것도 보내지 않는다.
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision).
+   * 판을 견주기 전에 같은 요청이 이미 저장됐는지 먼저 본다(mark). 저장됐으면 다시 쓰지 않고 지금 초안을 돌려준다. 다른 화면의 저장은 그대로 충돌이다.
    */
-  private async writeDraft(fileId: string, sid: string, revision: number, stale: string, change: (kept: Json) => Json): Promise<AgentAReviewDraft> {
+  private async writeDraft(fileId: string, sid: string, revision: number, stale: string, mark: SaveMark, change: (kept: Json) => Json): Promise<AgentAReviewDraft> {
     const doc = this.service.docOf(fileId);
     const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: doc.artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
     if (session.decision) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
     if (session.stale === true) throw new ApiError(409, stale, "AGENT_A_REVISION_CONFLICT");
     const got = await this.readDraft(fileId, sid);
-    if (got.revision !== revision) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+    if (got.revision !== revision) {
+      if (got.revision > revision && savedAlready(got.json, mark)) return this.draftView(got.revision, got.json);
+      throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+    }
     const { draftGeneration, documents: _d, found: _f, ...kept } = got.json;
     const body = {
       ...change({
@@ -623,13 +675,20 @@ export class AgentAReview {
         annotations: Array.isArray(kept.annotations) ? kept.annotations : [],
         globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
       }),
+      [SAVE_MARK]: { v: 1, key: mark.key },
       draftGeneration: num(draftGeneration) ?? 0,
       ifDraftRevision: revision,
     };
     const saved = await this.call(fileId, sid, "POST", "/api/draft", body);
     if (saved.status !== 200) {
-      if (saved.status === 409 && obj(saved.json) && saved.json.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
-      if (saved.status === 409 && obj(saved.json) && saved.json.code === undefined) throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+      const refusal = obj(saved.json) ? saved.json : null;
+      if (saved.status === 409 && refusal?.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
+      if (saved.status === 409 && refusal && (refusal.code === undefined || refusal.code === "draft_conflict")) {
+        // 읽은 뒤에 초안이 바뀌었다. 앞서 보낸 같은 요청이 그사이 저장된 것이면 그 결과를 돌려주고, 아니면 다른 화면의 저장이다.
+        const now = await this.readDraft(fileId, sid);
+        if (savedAlready(now.json, mark)) return this.draftView(now.revision, now.json);
+        throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
+      }
       refuse(saved.status, saved.json, "초안을 저장하지 못했습니다");
     }
     if (saved.draftRevision === null) unsupported();
@@ -1055,14 +1114,16 @@ export class AgentAReview {
     const before = await this.service.readState(fileId);
     const block = before.blocks.find((b) => b.id === input.blockId);
     if (!block || !block.history.some((h) => h.revision === input.historyRevision)) throw new ApiError(404, "그 판을 찾지 못했습니다");
+    const commandId = `iamceo-review-restore-${input.opId}`;
+    const first = ranCommand(before, commandId);
     const state = await this.command(fileId, {
-      command_id: `iamceo-review-restore-${input.opId}`,
+      command_id: commandId,
       type: "restore_block",
       block_id: block.id,
       base_revision: input.revision,
       history_revision: input.historyRevision,
-      context_revision: revisionOr(input.contextRevision, before.context_revision),
-      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
+      context_revision: revisionOr(input.contextRevision, first?.context_revision, before.context_revision),
+      base_layout_revision: revisionOr(input.layoutRevision, first?.base_layout_revision, before.layout_revision),
     }, "이전 판을 되살리지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
   }
@@ -1085,12 +1146,13 @@ export class AgentAReview {
     // 그 판이 이력에도 없으면 이 문서에서 나온 요청이 아니다. 지금 판에 맞춰 보내지 않는다.
     if (!base) throw new ApiError(409, KNOWN.revision_conflict!, "AGENT_A_REVISION_CONFLICT");
     if (block.revision === input.revision && block.archived) throw new ApiError(404, "그 블록을 찾지 못했습니다");
+    const commandId = `iamceo-review-edit-${input.opId}`;
     const state = await this.command(fileId, {
-      command_id: `iamceo-review-edit-${input.opId}`,
+      command_id: commandId,
       type: "edit_block",
       block_id: block.id,
       base_revision: input.revision,
-      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      context_revision: revisionOr(input.contextRevision, ranCommand(before, commandId)?.context_revision, before.context_revision),
       content: { ...base.content, title, ...(input.summary !== undefined ? { summary: input.summary } : {}), body: input.body },
     }, "정본을 저장하지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
@@ -1114,13 +1176,15 @@ export class AgentAReview {
     if (!ANNOTATION.test(input.blockId) || !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
     if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new ApiError(400, "판 번호가 올바르지 않습니다");
     const before = await this.service.readState(fileId);
+    const commandId = `iamceo-review-archive-${input.opId}`;
+    const first = ranCommand(before, commandId);
     const state = await this.command(fileId, {
-      command_id: `iamceo-review-archive-${input.opId}`,
+      command_id: commandId,
       type: "archive_block",
       block_id: input.blockId,
       base_revision: input.revision,
-      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
-      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      base_layout_revision: revisionOr(input.layoutRevision, first?.base_layout_revision, before.layout_revision),
+      context_revision: revisionOr(input.contextRevision, first?.context_revision, before.context_revision),
     }, "블록을 보관하지 못했습니다");
     return { ok: true, artifactRevision: state.artifact_revision };
   }
@@ -1161,13 +1225,15 @@ export class AgentAReview {
     const asset = uploaded ? { id: uploaded.id, revision: uploaded.revision, src: uploaded.src, width: uploaded.width, height: uploaded.height } : null;
     const before = await this.service.readState(fileId);
     const blockId = `iamceo-block-${input.opId}`;
+    const commandId = `iamceo-review-insert-${input.opId}`;
+    const first = ranCommand(before, commandId);
     const state = await this.command(fileId, {
-      command_id: `iamceo-review-insert-${input.opId}`,
+      command_id: commandId,
       type: "insert_block",
       block_id: blockId,
       after_id: input.afterId,
-      base_layout_revision: revisionOr(input.layoutRevision, before.layout_revision),
-      context_revision: revisionOr(input.contextRevision, before.context_revision),
+      base_layout_revision: revisionOr(input.layoutRevision, first?.base_layout_revision, before.layout_revision),
+      context_revision: revisionOr(input.contextRevision, first?.context_revision, before.context_revision),
       kind: input.kind,
       content: { title, summary: "", body: input.body, sources: [] },
       ...(asset ? { asset } : {}),

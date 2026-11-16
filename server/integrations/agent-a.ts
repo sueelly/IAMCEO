@@ -118,7 +118,8 @@ export interface AState {
     operations: { op: string; block_id: string; base_revision: number; content?: { title: string; summary: string; body: string } }[];
   }[];
   feedback: { id: string; branch_id: string; question_id: string; state: string; message?: string }[];
-  events: { seq: number; type: string; actor_id: string; created_at: string; payload: Record<string, unknown> }[];
+  /** command_id·payload: Agent-A 가 사건마다 남기는 그때의 명령 id 와 명령(+결과). 옛 기록에는 없을 수 있다. */
+  events: { seq: number; type: string; actor_id: string; command_id?: string; created_at: string; payload: Record<string, unknown> }[];
 }
 
 interface AJob {

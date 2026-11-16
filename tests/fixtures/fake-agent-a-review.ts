@@ -282,7 +282,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     if (content) state.artifact_revision++;
     if (layout) state.layout_revision++;
     state.event_seq++;
-    state.events.push({ seq: state.event_seq, type: c.type, actor_id: "local-user", created_at: new Date().toISOString(), payload: {} });
+    // 실제 엔진(src/domain/engine.js)처럼 사건마다 명령 id 와 보낸 명령(+결과)을 남긴다. 서버가 같은 요청 id 의 처음 명령을 여기서 찾는다.
+    state.events.push({ seq: state.event_seq, type: c.type, actor_id: "local-user", command_id: c.command_id, created_at: new Date().toISOString(), payload: clone({ ...c, result }) });
     const receipt = { command_id: c.command_id, artifact_id: state.id, event_seq: state.event_seq, status: "committed", result };
     receipts.set(c.command_id, { hash, receipt });
     return Response.json(receipt);
