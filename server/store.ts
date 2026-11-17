@@ -3304,6 +3304,46 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       .map(r => ({ id: r.id as string, memberId: r.member_id as string, kind: r.kind as string, status: r.status as string, createdAt: r.created_at as string, deliveredAt: (r.delivered_at as string | null) ?? null }));
   }
 
+  /** Bounded metadata only. Counts cover the whole task; samples never imply an empty queue. */
+  taskDeliveryTrace(taskId: string) {
+    return this.transaction(() => {
+      const limit = 60;
+      const pending = "d.status IN ('queued','held','delivering')";
+      const count = this.row(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN ${pending} THEN 1 ELSE 0 END) AS unsettled,
+        SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 1 THEN 1 ELSE 0 END) AS pending_wake,
+        SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 0 THEN 1 ELSE 0 END) AS pending_notice
+        FROM deliveries d WHERE d.task_id = ?`, taskId)!;
+      const sample = (where: string, order: string) => this.rows(`SELECT d.id, d.member_id, d.kind, d.status, d.wake,
+        d.hold_reason, d.attempts, d.created_at, d.delivered_at, d.next_attempt_at, d.retry_reason,
+        r.phase AS recovery_phase, r.reason AS recovery_reason
+        FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+        WHERE d.task_id = ? ${where} ORDER BY ${order} LIMIT ?`, taskId, limit).map(r => {
+          const latest = this.row(`SELECT e.run_id FROM execution_journal e
+            JOIN delivery_dispatch_items i ON i.dispatch_id = e.run_id
+            WHERE i.delivery_id = ? ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`, r.id);
+          const run = latest ? this.getExecutionJournal(latest.run_id) : null;
+          return { id: r.id as string, memberId: r.member_id as string, kind: r.kind as string,
+            status: r.status as DeliveryStatus, wake: !!r.wake, holdReason: (r.hold_reason as string | null) ?? null,
+            attempts: r.attempts as number, createdAt: r.created_at as string, deliveredAt: (r.delivered_at as string | null) ?? null,
+            nextAttemptAt: (r.next_attempt_at as string | null) ?? null, retryReason: (r.retry_reason as string | null) ?? null,
+            recovery: r.recovery_phase ? { phase: r.recovery_phase as string, reason: (r.recovery_reason as string | null) ?? null } : null,
+            // Receipt time is journal evidence, never guessed from delivered_at or status.
+            execution: run ? { runId: run.runId, sessionGeneration: run.identity.sessionGeneration, turn: run.turn,
+              deliveryIds: run.deliveryIds, phase: run.phase, inputReceivedAt: run.inputReceivedAt, startedAt: run.startedAt,
+              lastProgressAt: run.lastProgressAt, endedAt: run.endedAt, result: run.result, exitCode: run.exitCode } : null };
+        });
+      const recent = sample("", "d.created_at DESC, d.rowid DESC").reverse();
+      const unsettled = sample(`AND ${pending}`, "d.created_at, d.rowid");
+      const byStatus = Object.fromEntries(this.rows("SELECT status, COUNT(*) AS n FROM deliveries WHERE task_id = ? GROUP BY status", taskId).map(r => [r.status, r.n]));
+      return { history: this.listTaskDeliveries(taskId), recent, unsettled, coverage: { scope: "task", observedAt: nowIso(), limit, total: Number(count.total), returned: recent.length,
+        truncated: Number(count.total) > recent.length, historyOrder: "oldest_first", recentOrder: "latest_sixty_chronological",
+        unsettledStatuses: ["queued", "held", "delivering"], unsettledTotal: Number(count.unsettled ?? 0),
+        unsettledReturned: unsettled.length, unsettledTruncated: Number(count.unsettled ?? 0) > unsettled.length,
+        pendingWake: Number(count.pending_wake ?? 0), pendingNotice: Number(count.pending_notice ?? 0), byStatus } };
+    });
+  }
+
   /** 이 실행 표지를 이미 증거로 쓴 업무(계약이 붙은 업무). 없으면 null. */
   execRefTask(ref: string): string | null {
     const r = this.row("SELECT contract_task_id, task_id FROM harness_exec_refs WHERE exec_ref = ?", ref);
