@@ -54,6 +54,7 @@ class Tests(unittest.TestCase):
         s.private_json(self.root/'DOMAIN-PREFERENCE.json',{'access_scope':'tailnet_only','public_ingress_required':False,'public_dns_required':False});s.private_json(cfg['release_manifest'],{'build_id':'fixture'})
         with patch.object(s,'observe_source',return_value=self.snapshot()['source']),patch.object(s,'command_auth',return_value=True),patch.object(s,'http_probe',return_value=False),patch.object(s,'application_ready',return_value=True),patch.object(s,'dns_resolves',side_effect=AssertionError('public DNS must not be probed')),patch.object(s,'tls_valid',side_effect=AssertionError('public TLS must not be probed')),patch.object(s.subprocess,'run',return_value=Mock(returncode=1)):
             result=s.collect(cfg)
+            self.assertIsNone(result['conditions']['target_handoff'])
             cfg['viewing_release_manifest']=str(self.root/'view-release.json')
             s.private_json(cfg['viewing_release_manifest'],{'kind':'read-only-snapshot-view','operational_cutover':False,'build_id':'view-fixture'})
             with patch.object(s,'command_auth',return_value=False),patch.object(s,'application_ready',side_effect=lambda url,credential,build,require_read_only=False: build=='view-fixture' and require_read_only):
@@ -64,6 +65,36 @@ class Tests(unittest.TestCase):
         api=s.API('https://source.example.invalid',str(self.root/'missing-credentials'))
         for method,path,body in [('POST','/api/decisions/d/answer',{}),('PATCH','/api/decisions/d',{}),('PATCH','/api/projects/p',{'runnerEnabled':False,'cwd':'/other'})]:
             with self.assertRaises(ValueError):api.request(method,path,body)
+    def test_target_handoff_watches_delivery_and_prompt_without_busy_idle_chatter(self):
+        class Target:
+            status='blocked';delivery='held';calls=[]
+            def request(self,method,path,body=None):
+                self.calls.append((method,path,body))
+                if path.startswith('/api/members/'):
+                    return {'id':'m-one','projectId':'project','status':self.status,'statusObservation':{'observedAt':str(time.time()),'error':{'code':'folder_trust'}}}
+                return {'id':'resume-one','projectId':'project','delivery':self.delivery,'body':'private text must not enter state'}
+        api=Target();members=[{'member_id':'m-one','project_id':'project','message_id':'resume-one'}]
+        pending=s.observe_target_handoff(api,members);state={};obs=self.snapshot();obs['conditions']['target_handoff']=pending;s.record_observation(state,obs,100,120)
+        self.assertEqual(pending['members']['m-one']['blocked_reason'],'folder_trust')
+        self.assertNotIn('private text',json.dumps(pending));self.assertTrue(all(c[0]=='GET' for c in api.calls))
+        api.status='working';api.delivery='delivered';obs=copy.deepcopy(obs);obs['conditions']['target_handoff']=s.observe_target_handoff(api,members);s.record_observation(state,obs,200,120)
+        self.assertEqual(len(state['pending']),1);state['pending']=[]
+        api.status='idle';obs=copy.deepcopy(obs);obs['conditions']['target_handoff']=s.observe_target_handoff(api,members);s.record_observation(state,obs,300,120)
+        self.assertFalse(state['pending'])
+        # Later business approvals belong to that project, not migration resume.
+        api.status='waiting';obs=copy.deepcopy(obs);obs['conditions']['target_handoff']=s.observe_target_handoff(api,members);s.record_observation(state,obs,400,120)
+        self.assertFalse(state['pending'])
+    def test_target_handoff_rejects_wrong_project_identity_and_unavailable_reads(self):
+        class Target:
+            def request(self,method,path,body=None):return {'id':'m-one','projectId':'other-project'}
+        members=[{'member_id':'m-one','project_id':'project','message_id':'resume-one'}]
+        with self.assertRaises(ValueError):s.observe_target_handoff(Target(),members)
+        self.assertEqual(s.target_handoff_probe({}),None)
+        from unittest.mock import patch
+        cfg={'target_handoff':{'origin':'https://target.example.invalid','credential_file':'/unused','members':members}}
+        with patch.object(s.API,'request',side_effect=RuntimeError('sensitive response body')):
+            result=s.target_handoff_probe(cfg)
+        self.assertEqual(result,{'reachable':False,'error_type':'RuntimeError'})
     def test_reads_older_messages_and_never_writes_during_observation(self):
         api=API();api.queued=True;obs=s.observe_source(api,api.ids,[])
         self.assertFalse(obs['quiescent']);self.assertIn('queued_source_messages',obs['blockers'])
