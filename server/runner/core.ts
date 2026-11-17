@@ -385,7 +385,7 @@ export class CoreRunner implements Runner {
     if (statusKey !== track.statusKey || track.failure) {
       track.status = status;
       track.statusKey = statusKey;
-      if (state === "error") return; // Keep the error result from being overwritten by idle in the same observation.
+      if (state === "error" && status !== "gone") return; // Keep the error result from being overwritten by idle in the same observation.
       this.event(track, { type: "status", memberId: track.member.id, status, blockedReason, observation: { source: "core", observedAt: track.observedAt, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: track.setupError }, ...(status === "gone" ? { exit: { reason: terminal.reason ?? null, exitCode: terminal.exit_code ?? null } } : {}) });
     }
   }

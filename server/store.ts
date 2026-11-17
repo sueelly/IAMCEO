@@ -207,7 +207,7 @@ export interface NewMember {
 export type MemberPatch = Partial<
   Pick<
     Member,
-    "name" | "role" | "cli" | "origin" | "backend" | "modelOverride" | "effortOverride" | "status" | "now" | "next" | "cwd" | "sessionId" | "paneId" | "contextPct" | "contextWindow" | "contextWindowSource" | "subagents" | "parallel" | "lastError" | "statusObservation" | "blockedReason" | "subagentState" | "nowAt" | "manualActivityAt"
+    "name" | "role" | "cli" | "origin" | "backend" | "modelOverride" | "effortOverride" | "status" | "now" | "next" | "cwd" | "sessionId" | "paneId" | "contextPct" | "contextWindow" | "contextWindowSource" | "subagents" | "parallel" | "lastError" | "executionIssue" | "statusObservation" | "blockedReason" | "subagentState" | "nowAt" | "manualActivityAt"
   >
 >;
 
@@ -472,6 +472,7 @@ function toMember(r: Row): Member {
     queuedCount: r.queued_count,
     heldCount: r.held_count ?? 0,
     lastError: r.last_error,
+    executionIssue: r.execution_issue_json == null ? null : json<Member["executionIssue"]>(r.execution_issue_json),
     lastActiveAt: r.last_active_at ?? null,
     updatedAt: r.updated_at,
     createdAt: r.created_at,
@@ -761,6 +762,7 @@ const MEMBER_COLUMNS: Record<keyof MemberPatch, string> = {
   lastError: "last_error",
   statusObservation: "status_observation_json",
   blockedReason: "blocked_reason",
+  executionIssue: "execution_issue_json",
   subagentState: "subagent_state_json",
   nowAt: "now_at",
   manualActivityAt: "manual_activity_at",
@@ -858,6 +860,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private readonly sqlTransaction: Database["transaction"];
   private commitFrames: (() => void)[][] = [];
   private lastMessageMs = 0;
+  private readonly deliveryWaits = new Map<string, NonNullable<Member["deliveryWait"]>>();
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
   private readonly fileBodies = new Map<string, { body: string; bytes: number }>();
@@ -1032,7 +1035,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         this.run(`INSERT INTO member_session_history (id, member_id, cli, backend, session_id, pane_id, generation, applied_config, archived_at, reason)
           SELECT ?, id, cli, backend, session_id, pane_id, session_generation, applied_config, ?, ? FROM members WHERE id = ?`, newId("hist_"), nowIso(), reason, memberId);
         this.run(`UPDATE members SET cli = ?, token = ?, session_id = NULL, pane_id = NULL, context_pct = NULL, context_window = NULL, context_window_source = NULL,
-          applied_config = NULL, parallel = 0, subagents = 0, config_revision = config_revision + 1, session_generation = session_generation + 1 WHERE id = ?`, cli, `tk_${newId("")}${newId("")}`, memberId);
+          applied_config = NULL, execution_issue_json = NULL, parallel = 0, subagents = 0, config_revision = config_revision + 1, session_generation = session_generation + 1 WHERE id = ?`, cli, `tk_${newId("")}${newId("")}`, memberId);
       });
     });
   }
@@ -1287,10 +1290,25 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     };
   }
 
+  private memberWithWait(row: Row): Member {
+    const member = toMember(row);
+    return { ...member, deliveryWait: member.queuedCount ? this.deliveryWaits.get(member.id) ?? null : null };
+  }
+
+  setDeliveryWait(memberId: string, wait: Omit<NonNullable<Member["deliveryWait"]>, "since"> | null): void {
+    const before = this.deliveryWaits.get(memberId);
+    if (!wait && !before) return;
+    const next = wait ? { ...wait, since: before?.kind === wait.kind ? before.since : nowIso() } : null;
+    if (JSON.stringify(next) === JSON.stringify(before ?? null)) return;
+    if (next) this.deliveryWaits.set(memberId, next); else this.deliveryWaits.delete(memberId);
+    const member = this.getMember(memberId);
+    if (member) { this.emit({ type: "member", member }); }
+  }
+
   // ---- 직원 ----
   getMember(id: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.id = ?`, id);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   requireMember(id: string): Member {
@@ -1303,7 +1321,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   getMemberByToken(token: string): Member | null {
     if (!token) return null;
     const r = this.row(`${MEMBER_SELECT} WHERE m.token = ?`, token);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   /** MCP 설정 파일을 쓸 때만 쓴다. 화면으로 보내지 않는다. */
@@ -1314,38 +1332,38 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   listMembers(projectId: string): Member[] {
-    return this.rows(`${MEMBER_SELECT} WHERE m.project_id = ? ORDER BY m.created_at, m.rowid`, projectId).map(toMember);
+    return this.rows(`${MEMBER_SELECT} WHERE m.project_id = ? ORDER BY m.created_at, m.rowid`, projectId).map(r => this.memberWithWait(r));
   }
 
   listAllMembers(): Member[] {
-    return this.rows(`${MEMBER_SELECT} ORDER BY m.created_at, m.rowid`).map(toMember);
+    return this.rows(`${MEMBER_SELECT} ORDER BY m.created_at, m.rowid`).map(r => this.memberWithWait(r));
   }
 
   getMemberByHandle(projectId: string, handle: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.handle = ?`, projectId, handle);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   /** 핸들 또는 화면 이름으로 찾는다. 같은 프로젝트 안에서만. */
   findMember(projectId: string, handleOrName: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND (m.handle = ? OR m.name = ?) ORDER BY m.handle = ? DESC`, projectId, handleOrName, handleOrName, handleOrName);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   /** 프로젝트의 총괄(본사는 root). */
   getConductor(projectId: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.kind IN ('root','conductor') ORDER BY m.created_at LIMIT 1`, projectId);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   getMemberBySession(sessionId: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.session_id = ?`, sessionId);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   getMemberByPane(paneId: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.pane_id = ?`, paneId);
-    return r ? toMember(r) : null;
+    return r ? this.memberWithWait(r) : null;
   }
 
   createMember(input: NewMember): Member {
@@ -1410,6 +1428,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (patch.now !== undefined && patch.nowAt === undefined) patch = { ...patch, nowAt: at };
       const { set, values } = buildSet({
         ...patch,
+        executionIssue: patch.executionIssue == null ? patch.executionIssue : JSON.stringify(patch.executionIssue),
         statusObservation: patch.statusObservation == null ? patch.statusObservation : JSON.stringify(patch.statusObservation),
         subagentState: patch.subagentState == null ? patch.subagentState : JSON.stringify(patch.subagentState),
       }, MEMBER_COLUMNS);
@@ -3657,6 +3676,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const retries = this.rows(`SELECT next_attempt_at FROM deliveries WHERE next_attempt_at IS NOT NULL AND
       ((member_id = ? AND status IN ('queued', 'held')) OR retry_scope IN (?, ?))`, memberId, `member:${memberId}`, `backend:${backend}`);
     return retries.reduce((due, r) => r.next_attempt_at ? Math.max(due, Date.parse(r.next_attempt_at)) : due, 0);
+  }
+
+  /** A successful observation or an explicit retry releases only the provider cooldown. */
+  clearProviderRetry(memberId: string): void {
+    this.run(`UPDATE deliveries SET next_attempt_at = NULL, retry_scope = NULL, retry_reason = NULL
+      WHERE member_id = ? AND retry_scope = ? AND retry_reason IN ('processing_quota', 'processing_auth')`, memberId, `member:${memberId}`);
   }
 
   patchDeliveryRetry(id: string, patch: Partial<DeliveryRetryState>): void {

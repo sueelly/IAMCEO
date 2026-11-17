@@ -977,6 +977,8 @@ export const MIGRATIONS: string[] = [
      retired_reason TEXT
    );
    CREATE INDEX task_continuation_deliveries_task ON task_continuation_deliveries(task_id, round);`,
+  // v39: persistent CLI failure prevents automatic restart loops.
+  `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

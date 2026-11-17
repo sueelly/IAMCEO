@@ -34,11 +34,11 @@ export const STATUS_LABEL: Record<MemberStatus, string> = {
   error: "오류",
 };
 
-export function StatusDot({ status, label = false, className }: { status: MemberStatus; label?: boolean; className?: string }) {
+export function StatusDot({ status, label = false, text, className }: { status: MemberStatus; label?: boolean; text?: string; className?: string }) {
   return (
     <span className={cx("status", className)} data-status={status}>
       <i className="status__dot" aria-hidden="true" />
-      <span className={label ? undefined : "sr-only"}>{STATUS_LABEL[status]}</span>
+      <span className={label ? undefined : "sr-only"}>{text ?? STATUS_LABEL[status]}</span>
     </span>
   );
 }

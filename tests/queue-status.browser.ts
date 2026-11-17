@@ -39,3 +39,34 @@ for (const [name, width, height] of [['desktop', 1440, 1000], ['narrow', 390, 84
     } finally { await context.close(); await browser.close(); await server.stop(); await f.stop(); }
   }, 30_000);
 }
+
+for (const [name, width, height] of [['desktop', 1440, 1000], ['narrow', 390, 844]] as const) {
+  test(`capacity and quota have distinct live reasons and retry controls on ${name}`, async () => {
+    const f = await createQueueStatusFixture(1);
+    const server = await startServer({ config: f.config, bus: f.bus, store: f.store, orch: f.orch, delivery: f.orch.deliveryRecovery, detectHosts: () => [] });
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width, height } });
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    try {
+      await f.orch.sendUserMessage(f.project.id, { targetMemberId: f.member.id, text: 'Occupy capacity' });
+      const second = await f.orch.createMember(f.project.id, { name: 'Capacity waiter', cli: 'claude' });
+      const queued = f.store.enqueue({ projectId: f.project.id, memberId: second.id, kind: 'instruction', text: 'Keep this queued', wake: true });
+      await f.orch.pump(second.id);
+      await page.addInitScript(code => localStorage.setItem('iamceo.accessCode', code), f.config.accessCode);
+      const base = `http://127.0.0.1:${server.port}`;
+      await page.goto(`${base}/#/p/${f.project.id}/team/${second.id}`);
+      await page.locator('.tm-detail .tm-status').filter({ hasText: '실행 자리 대기' }).waitFor({ timeout: 15_000 });
+      expect(await page.locator('.tm-detail .tm-facts').textContent()).toContain('전체 실행 1/1개가 사용 중');
+      expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: 'queued', attempts: 0 });
+      const terminal = f.terminals.get(f.store.requireMember(f.member.id).paneId!)!;
+      terminal.turn = (terminal.turn ?? 0) + 1;
+      terminal.status = { state: 'error', app: 'claude-code', msg: "You've hit your weekly limit · resets 7am (Asia/Seoul)" };
+      await page.goto(`${base}/#/p/${f.project.id}/team/${f.member.id}`);
+      await page.locator('.tm-detail .tm-status').filter({ hasText: '사용량 한도' }).waitFor({ timeout: 15_000 });
+      await page.getByRole('button', { name: '다시 확인', exact: true }).waitFor();
+      expect(await page.locator('.tm-detail .tm-error').textContent()).toContain('weekly limit');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(errors).toHaveLength(0);
+    } finally { await browser.close(); await server.stop(); await f.stop(); }
+  }, 30_000);
+}

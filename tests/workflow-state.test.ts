@@ -152,3 +152,30 @@ test.each(["input", "owner", "failure"])("parent completion cannot hide an activ
   expect(done.isError).toBe(true);
   expect(f.store.taskProgress(parent).stage).not.toBe("done");
 });
+
+test("workflow distinguishes capacity and provider limits without hiding protected inputs or prior work", () => {
+  const f = fixture(), current = task(f, "실행 자리를 기다리는 지시"), later = task(f, "후속 지시");
+  const delivery = assign(f, current.id); assign(f, later.id);
+  f.store.patchMember(f.worker.id, { status: "idle" });
+  f.store.setDeliveryWait(f.worker.id, { kind: "capacity", active: 20, limit: 20 });
+  const node = () => f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === current.id)!;
+  expect(node()).toMatchObject({ state: "queued", label: "실행 자리 대기" });
+  expect(node().reason).toContain("20/20");
+  expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === later.id)?.label).toBe("선행 업무 대기");
+  f.store.patchMember(f.worker.id, { status: "error", executionIssue: { kind: "usage_limit", detail: "You've hit your weekly limit", at: new Date().toISOString(), sessionGeneration: 1, terminalId: null, exitCode: null } });
+  expect(node()).toMatchObject({ state: "blocked", label: "사용량 한도" });
+  f.store.db.query("UPDATE delivery_recovery SET phase = 'stopped' WHERE delivery_id = ?").run(delivery.id);
+  expect(node().label).toBe("추가 전달 중지");
+});
+
+test.each([
+  ["permission", "승인 응답 대기"], ["selection", "선택 응답 대기"], ["setup", "초기 설정 대기"],
+] as const)("ordinary blocked holds retain the specific %s wait reason", (kind, label) => {
+  const f = fixture(), current = task(f, "창에서 응답을 기다리는 지시");
+  const delivery = assign(f, current.id);
+  f.store.markHeld(delivery.id, "blocked");
+  f.store.setDeliveryWait(f.worker.id, { kind });
+  expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === current.id)?.label).toBe(label);
+  f.store.db.query("UPDATE delivery_recovery SET phase = 'stopped' WHERE delivery_id = ?").run(delivery.id);
+  expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === current.id)?.label).toBe("추가 전달 중지");
+});
