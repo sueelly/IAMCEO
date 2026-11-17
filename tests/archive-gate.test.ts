@@ -48,8 +48,10 @@ class Fake {
   checkErrors = new Map<string, Error>();
   stopped: string[] = [];
   stopDelayMs = 0;
+  duringStop: ((member: RunnerMember) => Promise<void>) | null = null;
   async stop(m: RunnerMember) {
     if (this.stopError) throw this.stopError;
+    await this.duringStop?.(m);
     if (this.stopDelayMs) await Bun.sleep(this.stopDelayMs);
     const e = this.stopErrors.get(m.id);
     if (e) throw e;
@@ -236,7 +238,9 @@ describe("보관", () => {
   describe("넘겨받은 칸이 둘일 때", () => {
     const CANNOT = () => new HerdrError("cannot_exit", "칸의 입력칸에 쓰던 글이 있습니다");
     const pair = async () => {
-      const t = await setup();
+      // These cases own the archive interleaving. A background tick before
+      // archive would attempt delivery and correctly preserve delivery_unknown.
+      const t = await setup({ timings: { tickMs: 60_000 } });
       const mk = (handle: string, name: string, paneId: string) =>
         t.store.createMember({ projectId: t.project.id, handle, name, role: "개발", kind: "worker", origin: "adopted", status: "idle", sessionId: `s-${handle}`, paneId });
       const a = mk("aa", "가", "pa");
@@ -278,7 +282,16 @@ describe("보관", () => {
     test("칸을 끝내는 동안 틱이 먼저 끝낸 칸을 다시 열지 않고, 다 끝나면 보관된다", async () => {
       const { t, a, b, d, archive } = await pair();
       t.runner.stopDelayMs = 60;
+      expect(t.store.requireDelivery(d.id).attempts).toBe(0);
+      let interleavings = 0;
+      t.runner.duringStop = async (member) => {
+        if (member.id !== b.id) return;
+        expect(t.store.requireMember(a.id).status).toBe("asleep");
+        await t.orch.pump(a.id);
+        interleavings++;
+      };
       expect((await archive()).status).toBe(200);
+      expect(interleavings).toBe(1);
       expect(t.runner.starts.length).toBe(0);
       expect(t.store.requireMember(a.id).status).toBe("asleep");
       expect(t.store.requireMember(b.id).status).toBe("asleep");
