@@ -50,16 +50,57 @@ const BOUNDARY_SLOT = "{{ROLE_BOUNDARY}}";
 /** 남는 경계 자리표시를 지운다. 줄이 통째로 자리표시면 그 줄을 지워 빈 줄을 남기지 않는다. */
 const dropSlots = (text: string): string => text.replace(/^[ \t]*\{\{ROLE_BOUNDARY\}\}[ \t]*(?:\r?\n|$)/gm, "").replaceAll(BOUNDARY_SLOT, "");
 
+/** 코드 블록(``` 또는 ~~~ 펜스) 범위. 닫히지 않은 펜스는 글 끝까지. 인용·예시로 든 코드 블록 안의 글은 실제 지침으로 치지 않는다. */
+function fencedRanges(text: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  let open: { at: number; mark: string } | null = null;
+  for (const m of text.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*$/gm)) {
+    const mark = m[1]!;
+    if (!open) open = { at: m.index!, mark };
+    else if (mark[0] === open.mark[0] && mark.length >= open.mark.length && !/\S/.test(m[0].trim().slice(mark.length))) {
+      ranges.push([open.at, m.index! + m[0].length]);
+      open = null;
+    }
+  }
+  if (open) ranges.push([open.at, text.length]);
+  return ranges;
+}
+
+/**
+ * 글 안에서 value 가 실제 지침으로 서 있는 자리들. 줄 머리에서 시작해 줄 끝에서 끝나고, 코드 블록 밖이어야 한다.
+ * 문장 안의 인용(«…»)·예시·부분 일치·코드 블록 안 사본은 치지 않는다. 사용자 글에 같은 글자가 있다는 이유만으로 지우거나 빼지 않는다.
+ */
+function standalone(text: string, value: string): number[] {
+  if (!value) return [];
+  const fenced = fencedRanges(text);
+  const found: number[] = [];
+  for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+    const end = at + value.length;
+    const lineStart = at === 0 || text[at - 1] === "\n";
+    const lineEnd = end === text.length || text[end] === "\n" || text.startsWith("\r\n", end) || value.endsWith("\n");
+    if (lineStart && lineEnd && !fenced.some(([from, to]) => at >= from && at < to)) found.push(at);
+  }
+  return found;
+}
+
 /**
  * 템플릿(값을 넣기 전)에 지금 역할 경계를 한 번만 둔다. 값 안의 `{{ROLE_BOUNDARY}}`·`{{NAME}}` 은 여기 오지 않으므로 건드리지 않는다.
- * - 같은 경계 글이 이미 들어 있으면(완성된 역할 글을 고친 템플릿으로 다시 쓴 경우) 첫 사본만 남긴다. 지우는 것은 글자 그대로 같은 뒤 사본과 남은 자리표시뿐이다.
+ * - 같은 경계 글이 실제 지침으로(줄 단위·코드 블록 밖) 이미 들어 있으면(완성된 역할 글을 고친 템플릿으로 다시 쓴 경우) 첫 사본만 남긴다.
+ *   지우는 것은 뒤의 실제 사본과 남은 자리표시뿐이다. 코드 블록·문장 안의 인용은 그대로 둔다.
  * - 자리표시가 있으면 첫 자리에 넣고 나머지 자리는 지운다.
- * - 둘 다 없으면 끝에 붙인다.
+ * - 둘 다 없으면(인용·예시에만 있어도) 끝에 실제 경계를 붙인다.
  */
 function withBoundary(template: string, kind: MemberKind): string {
   const text = ROLE_BOUNDARY[kind].trim();
-  const at = template.indexOf(text);
-  if (at >= 0) return `${dropSlots(template.slice(0, at))}${text}${dropSlots(template.slice(at + text.length).split(text).join(""))}`;
+  const active = standalone(template, text);
+  if (active.length) {
+    let out = "", from = 0;
+    for (const [i, at] of active.entries()) {
+      out += dropSlots(template.slice(from, at)) + (i === 0 ? text : "");
+      from = at + text.length;
+    }
+    return out + dropSlots(template.slice(from));
+  }
   const slot = template.indexOf(BOUNDARY_SLOT);
   if (slot >= 0) return `${template.slice(0, slot)}${text}${dropSlots(template.slice(slot + BOUNDARY_SLOT.length))}`;
   return `${template.trimEnd()}\n\n${text}\n`;
@@ -89,10 +130,20 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
     console.warn(`역할 템플릿 ${custom} 에 승인 규칙이 없습니다. 기본 규칙 전체를 대체하므로 직원이 승인 없이 일할 수 있습니다. 'iamceo roles export' 로 기본 규칙을 꺼내 고치세요`);
   }
   const template = withBoundary(raw, kind);
-  // 줄이 통째로 자리표시면 비었을 때 빈 줄을 남기지 않는다. 고쳐 쓴 템플릿에 자리표시가 없어도 규칙은 빠지지 않게 끝에 붙인다.
-  // 같은 글이 이미 들어 있으면(완성된 역할 글을 다시 쓴 경우) 다시 붙이지 않는다.
-  const place = (text: string, key: "SUBAGENT_EFFORT" | "MEMORY", value: string, gap: string): string =>
-    text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value && !text.includes(value.trim()) ? `${text.trimEnd()}${gap}${value}\n` : text;
-  const placed = place(place(template, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n");
-  return placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
+  const appended: ["SUBAGENT_EFFORT" | "MEMORY", string, string][] = [["SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"], ["MEMORY", vars.MEMORY ?? "", "\n\n"]];
+  // 줄이 통째로 자리표시인데 값이 비었으면 빈 줄을 남기지 않는다.
+  let text = template;
+  for (const [key, value] of appended) if (!value) text = text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "");
+  // 자리표시는 템플릿에서만 한 번 바꾼다. 값 안의 {{...}} 는 다시 읽지 않는다.
+  const fill = (part: string): string => part.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
+  const filled = fill(text);
+  // 자리표시가 없는 고친 템플릿에도 규칙이 빠지지 않게 끝에 붙인다. 바꾼 뒤에 붙여 값 안의 자리표시를 그대로 둔다.
+  // 같은 값이 이미 실제 지침으로(줄 단위·코드 블록 밖) 있으면(완성된 역할 글을 다시 쓴 경우) 다시 붙이지 않는다. 문장 안 예시·인용은 치지 않는다.
+  let tail = "";
+  for (const [key, value, gap] of appended) {
+    if (!value || template.includes(`{{${key}}}`) || standalone(filled + tail, value).length) continue;
+    tail += `${gap}${value}`;
+  }
+  // 끝 공백은 템플릿 글에서만 정리한다. 넣은 값의 앞뒤 공백은 그대로 둔다.
+  return tail ? `${fill(text.trimEnd())}${tail}\n` : filled;
 }

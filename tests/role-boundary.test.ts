@@ -278,3 +278,61 @@ describe("역할 경계 보완: 단계별 판정·승인 범위·경계 한 번"
     } finally { warn.mockRestore(); }
   });
 });
+
+describe("역할 경계 보완: 인용·예시는 지침이 아니다, 넣은 값은 그대로다", () => {
+  // 독립 검토의 추가 반례(인용 삭제·예시 때문에 실제 지침 누락·값 재치환·끝 공백 손실)를 같은 입력으로 고정한다.
+  const custom = (raw: string, extra: Partial<Record<"SUBAGENT_EFFORT" | "MEMORY", string>> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-role-boundary-quote-"));
+    writeFileSync(join(dir, "worker.md"), raw);
+    return renderRole("worker", { ...vars, ...extra }, dir);
+  };
+  const body = ROLE_BOUNDARY.worker.trim();
+
+  test("코드 블록 안의 경계 전문은 그대로 두고 실제 경계를 따로 한 번 붙인다. 두 인용도 지우지 않는다", () => {
+    const one = `승인 규칙 유지\n다음은 따르지 않는 코드 예시입니다.\n\`\`\`md\n${body}\n\`\`\`\n현재 업무: 원문을 읽는다.\n`;
+    const out = custom(one);
+    expect(out).toContain(one);
+    expect(out.trimEnd().endsWith(body)).toBe(true);
+    expect(count(out, HEAD.worker)).toBe(2);
+    const two = `승인 규칙 유지\n두 과거 인용은 그대로 보존할 자료입니다.\n\`\`\`md\n${body}\n\`\`\`\n비교할 둘째 인용:\n~~~md\n${body}\n~~~\n원문 끝\n`;
+    const both = custom(two);
+    expect(both).toContain(two);
+    expect(count(both, HEAD.worker)).toBe(3);
+    expect(both.trimEnd().endsWith(body)).toBe(true);
+    // 코드 블록 밖의 실제 사본이 있으면 그 하나만 쓰고 블록 안 인용은 그대로다.
+    const mixed = `승인\n\`\`\`md\n${body}\n\`\`\`\n\n${body}\n\n끝\n`;
+    expect(custom(mixed)).toBe(mixed);
+  });
+
+  test("문장 안 예시가 같은 값을 담아도 effort·기억 지침 줄은 따로 한 번 든다", () => {
+    for (const [key, policy] of [["SUBAGENT_EFFORT", "하위 직원의 effort는 high로 정한다."], ["MEMORY", "개발 기억은 절차 M을 따른다."]] as const) {
+      const raw = `승인 규칙 유지\n아래 문구는 적용하지 않는 예시입니다: «${policy}»\n현재 업무 지침.\n`;
+      const out = custom(raw, { [key]: policy });
+      expect(out).toContain(raw);
+      expect(out.split("\n")).toContain(policy);
+      expect(count(out, policy)).toBe(2);
+    }
+  });
+
+  test("자리표시 없는 템플릿에 붙인 값 안의 자리표시는 다시 바꾸지 않는다. 명시 자리도 같다", () => {
+    const effort = "노력값{{NAME}} / {{PROJECT}}", memory = "기억값{{NAME}} / {{ROLE}}";
+    const out = custom("승인 규칙 유지\n맞춤 역할\n", { SUBAGENT_EFFORT: effort, MEMORY: memory });
+    expect(out).toContain(effort);
+    expect(out).toContain(memory);
+    const slots = custom("승인 규칙 유지\n{{SUBAGENT_EFFORT}}\n{{MEMORY}}\n", { SUBAGENT_EFFORT: "노력값{{NAME}}", MEMORY: "기억값{{PROJECT}}" });
+    expect(slots).toContain("노력값{{NAME}}");
+    expect(slots).toContain("기억값{{PROJECT}}");
+  });
+
+  test("여러 줄 값의 앞뒤 공백이 그대로 남고, 그 글을 다시 써도 같다", () => {
+    const effort = "  EFFORT-FIRST\nEFFORT-LAST  ", memory = "  MEMORY-FIRST\nMEMORY-LAST  ";
+    const first = custom("승인 규칙 유지\n맞춤 역할\n", { SUBAGENT_EFFORT: effort, MEMORY: memory });
+    expect(first).toContain(effort);
+    expect(first).toContain(memory);
+    expect(custom(first, { SUBAGENT_EFFORT: effort, MEMORY: memory })).toBe(first);
+    // effort 는 명시 자리 끝에 있고 기억은 끝에 붙을 때도 effort 끝 공백을 지우지 않는다.
+    const slotted = custom("승인 규칙 유지\n{{SUBAGENT_EFFORT}}", { SUBAGENT_EFFORT: effort, MEMORY: memory });
+    expect(slotted).toContain(`${effort}\n\n`);
+    expect(slotted).toContain(memory);
+  });
+});
