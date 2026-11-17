@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chromium, type Browser } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 const SHOTS = join(
@@ -107,7 +107,12 @@ afterAll(async () => {
   store?.db.close();
   await isolated?.stop();
 });
-async function open(width = 1440, at?: string) {
+async function open(
+  width = 1440,
+  at?: string,
+  projectId = project.id,
+  configure?: (p: Page) => Promise<void>,
+) {
   const p = await browser.newPage({
     viewport: { width, height: 1000 },
     reducedMotion: "reduce",
@@ -119,7 +124,8 @@ async function open(width = 1440, at?: string) {
     (code) => localStorage.setItem("iamceo.accessCode", code),
     CODE,
   );
-  await p.goto(`${base}/#/p/${project.id}/team`);
+  await configure?.(p);
+  await p.goto(`${base}/#/p/${projectId}/team`);
   try {
     await p.locator(".to-row").first().waitFor({ timeout: 15000 });
   } catch (e) {
@@ -475,3 +481,357 @@ test("runtime settings retain drafts across tabs and manual removal keeps its de
   expect(store.getMember(manual.id)).toBeNull();
   await p.close();
 }, 30000);
+
+let reviewSerial = 0;
+function reviewFixture() {
+  const id = ++reviewSerial;
+  const pr = store.createProject({
+    name: `검토 ${id}`,
+    cwd: isolated.paths.work,
+  });
+  let staffSerial = 0;
+  const staff = (name = "휴면 담당") =>
+    store.createMember({
+      projectId: pr.id,
+      handle: `review-${id}-${++staffSerial}`,
+      name,
+      kind: "worker",
+      status: "asleep",
+      cli: "claude",
+    });
+  let serial = 0;
+  const task = (title: string, parentTaskId?: string) =>
+    store.ensureSourceTask({
+      projectId: pr.id,
+      sourceRef: `review-${id}-${++serial}`,
+      title,
+      origin: "owner",
+      parentTaskId,
+    }).task;
+  const assign = (m: Member, t: Task) => {
+    const d = store.enqueue({
+      projectId: pr.id,
+      taskId: t.id,
+      memberId: m.id,
+      kind: "instruction",
+      text: t.title,
+    });
+    store.markDelivered(d.id);
+  };
+  const mark = (t: Task, stage: "hold" | "review" | "done") =>
+    store.addStageMark({
+      projectId: pr.id,
+      taskId: t.id,
+      stage,
+      evidence: "review regression fixture",
+      memberId: null,
+      who: "대표",
+    });
+  return { pr, staff, task, assign, mark };
+}
+test("review: name search includes staff without tasks and searches the unassigned tray", async () => {
+  const f = reviewFixture(),
+    m = f.staff(),
+    a = f.task("검색 대상 미배정"),
+    b = f.task("별도 미배정");
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByLabel("직원·업무 검색", { exact: true }).fill(m.name);
+    expect(await p.locator(".to-row").count()).toBe(1);
+    await p.getByLabel("직원·업무 검색", { exact: true }).fill(a.title);
+    await p.locator(`.to-free[data-task-id="${a.id}"]`).waitFor();
+    expect(await p.locator(`.to-free[data-task-id="${b.id}"]`).count()).toBe(0);
+    await p.getByLabel("미배정 닫기", { exact: true }).click();
+    await p.locator(".to-unassigned").waitFor({ state: "hidden" });
+    expect(
+      await p.getByLabel("직원·업무 검색", { exact: true }).inputValue(),
+    ).toBe(a.title);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: the review count excludes blocked tasks in the employee detail", async () => {
+  const f = reviewFixture(),
+    m = f.staff(),
+    a = f.task("막힌 업무"),
+    b = f.task("검토할 업무");
+  f.assign(m, a);
+  f.assign(m, b);
+  f.mark(a, "hold");
+  f.mark(b, "review");
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p
+      .locator(".to-checks")
+      .getByRole("button", { name: "확인 필요 1", exact: true })
+      .click();
+    const d = p.getByRole("dialog");
+    await d.locator(".tt-item").first().waitFor();
+    expect(await d.locator(".tt-item").count()).toBe(1);
+    expect(await d.locator(".tt-item").getAttribute("data-task-id")).toBe(b.id);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: an open blocked group scope follows live classification changes", async () => {
+  const f = reviewFixture(),
+    m = f.staff(),
+    a = f.task("상위 업무"),
+    b = f.task("하위 업무", a.id);
+  f.assign(m, a);
+  f.assign(m, b);
+  f.mark(a, "hold");
+  f.mark(b, "review");
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    await p
+      .locator(".map-group-counts")
+      .getByRole("button", { name: /막힘/ })
+      .click();
+    const d = p.getByRole("dialog");
+    await d.locator(`.tt-item[data-task-id="${a.id}"]`).waitFor();
+    f.mark(a, "done");
+    f.mark(b, "hold");
+    await d.locator(`.tt-item[data-task-id="${b.id}"]`).waitFor();
+    await d
+      .locator(`.tt-item[data-task-id="${a.id}"]`)
+      .waitFor({ state: "detached" });
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: an open relation scope replaces obsolete sequence edges after a live reorder", async () => {
+  const f = reviewFixture(),
+    m = f.staff();
+  const tasks = ["선행 A", "중간 B", "후행 C"].map((s) => f.task(s));
+  for (const t of tasks) {
+    f.task(t.title + " 하위", t.id);
+    f.assign(m, t);
+  }
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    const links = p.locator(".map-link-count");
+    await links.first().click();
+    const d = p.getByRole("dialog");
+    await d.locator(".map-relations article").first().waitFor();
+    const oldText = await d.locator(".map-relations").innerText();
+    const oldCount = await d.locator(".map-relations article").count();
+    const beforeEdges = store
+      .projectState(f.pr.id)
+      .workflow!.edges.filter((e) => e.kind === "sequence");
+    store.db
+      .query(
+        "UPDATE deliveries SET rowid = (SELECT MAX(rowid)+1 FROM deliveries) WHERE member_id = ? AND task_id = ?",
+      )
+      .run(m.id, tasks[1].id);
+    expect(
+      store
+        .projectState(f.pr.id)
+        .workflow!.edges.filter((e) => e.kind === "sequence"),
+    ).not.toEqual(beforeEdges);
+    store.patchMember(m.id, { now: "순서 변경됨" });
+    await p.waitForFunction(
+      (old) =>
+        (document.querySelector(".map-relations") as HTMLElement)?.innerText !==
+        old,
+      oldText,
+      { timeout: 3000 },
+    );
+    const text = await d.locator(".map-relations").innerText();
+    // A-B disappears; B-C reverses. Either selected pair must no longer assert the old direction.
+    expect(
+      text === oldText &&
+        (await d.locator(".map-relations article").count()) === oldCount,
+    ).toBe(false);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: compact focus return restores the recreated task button and shell scroll", async () => {
+  const f = reviewFixture();
+  for (let i = 0; i < 11; i++)
+    f.assign(f.staff(`복귀 직원 ${i}`), f.task(`복귀 업무 ${i}`));
+  const p = await open(390, undefined, f.pr.id);
+  try {
+    const target = p.locator(".to-row").last().locator(".to-task").first();
+    await target.scrollIntoViewIfNeeded();
+    await target.focus();
+    const nodeId = await target.getAttribute("data-node-id");
+    const scroll = await p.locator(".shell__body").evaluate((e) => e.scrollTop);
+    expect(scroll).toBeGreaterThan(0);
+    await target.press("Shift+F10");
+    await p.locator(".map-task[data-center]").waitFor();
+    await p.getByRole("button", { name: "← 이전 보기", exact: true }).click();
+    await p.waitForFunction(
+      (id) => document.activeElement?.getAttribute("data-node-id") === id,
+      nodeId,
+      { timeout: 3000 },
+    );
+    expect(
+      Math.abs(
+        (await p.locator(".shell__body").evaluate((e) => e.scrollTop)) - scroll,
+      ),
+    ).toBeLessThan(2);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: returning from task focus preserves map zoom and pan", async () => {
+  const f = reviewFixture(),
+    m = f.staff(),
+    a = f.task("지도 업무");
+  f.task("지도 자식", a.id);
+  f.assign(m, a);
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    await p.getByLabel("지도 확대", { exact: true }).click();
+    await p.locator(".map-viewport").press("ArrowRight");
+    const before = await p.locator(".map-world").getAttribute("style");
+    await p.locator(".map-group-title").click();
+    await p.locator(".map-task[data-center]").waitFor();
+    await p.getByRole("button", { name: "← 이전 보기", exact: true }).click();
+    await p.locator(".map-group").waitFor();
+    await p.waitForFunction(
+      () => document.querySelector(".map-zoom")?.textContent?.includes("120%"),
+      undefined,
+      { timeout: 3000 },
+    );
+    expect(await p.locator(".map-zoom").innerText()).toContain("120%");
+    expect(await p.locator(".map-world").getAttribute("style")).toBe(before);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: optional workflow absence preserves staff, detail and team actions", async () => {
+  const f = reviewFixture();
+  f.staff();
+  const p = await open(1440, undefined, f.pr.id, async (p) => {
+    await p.route("**/api/sync?**", async (route) => {
+      const response = await route.fetch(),
+        body = await response.json();
+      delete body.state.workflow;
+      await route.fulfill({ response, json: body });
+    });
+  });
+  try {
+    await p
+      .getByText("업무 흐름을 확인할 수 없습니다.", { exact: true })
+      .waitFor();
+    expect(await p.locator(".to-filters .wf-count").count()).toBe(0);
+    await p.getByLabel("팀 메뉴", { exact: true }).click();
+    await p.getByRole("button", { name: "개발 기억", exact: true }).waitFor();
+    await p.getByLabel("팀 메뉴", { exact: true }).click();
+    await p.locator(".to-person").click();
+    await p.getByRole("dialog").locator(".tm-detail-tabs").waitFor();
+  } finally {
+    await p.close();
+  }
+}, 25000);
+test("review: crossed group relations remain clickable without overlapping count buttons", async () => {
+  const f = reviewFixture(),
+    m = f.staff("첫 직원"),
+    n = f.staff("둘째 직원");
+  const roots = Array.from({ length: 6 }, (_, i) =>
+    f.task("교차 묶음 " + i),
+  ).sort((a, b) => a.id.localeCompare(b.id));
+  for (const r of roots) f.task(r.title + " 자식", r.id);
+  f.assign(m, roots[0]);
+  f.assign(m, roots[4]);
+  f.assign(n, roots[1]);
+  f.assign(n, roots[3]);
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    await p.locator(".map-link-count").first().waitFor();
+    const boxes = await p.locator(".map-link-count").evaluateAll((es) =>
+      es.map((e) => {
+        const r = e.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      }),
+    );
+    for (let i = 0; i < boxes.length; i++)
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i],
+          b = boxes[j];
+        expect(
+          a.right <= b.left ||
+            b.right <= a.left ||
+            a.bottom <= b.top ||
+            b.bottom <= a.top,
+        ).toBe(true);
+      }
+    let edgeCount = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      await p.locator(".map-link-count").nth(i).click();
+      await p
+        .getByRole("dialog")
+        .locator(".map-relations article")
+        .first()
+        .waitFor();
+      edgeCount += await p
+        .getByRole("dialog")
+        .locator(".map-relations article")
+        .count();
+      await p.keyboard.press("Escape");
+    }
+    expect(edgeCount).toBe(2);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+
+test("review: an open participant list follows new live assignments", async () => {
+  const f = reviewFixture(),
+    a = f.task("참여 업무");
+  f.task("참여 하위", a.id);
+  for (let i = 0; i < 4; i++) f.assign(f.staff("참여 직원 " + i), a);
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    await p.locator(".map-group .more-members").click();
+    const d = p.getByRole("dialog");
+    await d.locator(".map-member-list button").first().waitFor();
+    expect(await d.locator(".map-member-list button").count()).toBe(4);
+    f.assign(f.staff("새 참여 직원"), a);
+    await d
+      .getByRole("button", { name: "새 참여 직원", exact: true })
+      .waitFor();
+    expect(await d.locator(".map-member-list button").count()).toBe(5);
+  } finally {
+    await p.close();
+  }
+}, 20000);
+test("review: map focus returns to the same group list and expanded task", async () => {
+  const f = reviewFixture(),
+    m = f.staff(),
+    a = f.task("목록 상위");
+  f.task("목록 하위", a.id);
+  f.assign(m, a);
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    await p.getByRole("button", { name: "전체 지도", exact: true }).click();
+    await p.locator(".map-group-top button").click();
+    const d = p.getByRole("dialog"),
+      t = d.locator(`.tt-item[data-task-id="${a.id}"] .tt-title`);
+    await t.click();
+    await t.press("Shift+F10");
+    await p.locator(".map-task[data-center]").waitFor();
+    await p.getByRole("button", { name: "← 이전 보기", exact: true }).click();
+    await d
+      .locator(`.tt-item[data-task-id="${a.id}"][data-expanded]`)
+      .waitFor();
+    await p.waitForFunction(
+      (id) =>
+        document.activeElement
+          ?.closest(".tt-item")
+          ?.getAttribute("data-task-id") === id,
+      a.id,
+      { timeout: 3000 },
+    );
+  } finally {
+    await p.close();
+  }
+}, 20000);

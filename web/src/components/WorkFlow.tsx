@@ -33,9 +33,9 @@ export default function WorkFlow({ state, selectedTaskId, overview = false, onMe
   return (
     <Glass as="section" level="regular" tint className="wf" aria-label="업무 흐름">
       {!online ? <p className="wf-connection" role="status">{connection === "connecting" ? "연결 확인 중 · 마지막으로 받은 상태입니다." : "연결이 끊겨 마지막으로 받은 상태를 표시합니다."}</p> : null}
-      {!state.workflow ? <><header className="wf-head"><h2>업무 흐름</h2></header><p className="wf-empty">업무 흐름을 확인할 수 없습니다.</p></> : overview && onMember ? <TeamOverview key={state.project.id} state={state} nodes={nodes} edges={edges} online={online} onMember={onMember} focusRequest={focusRequest} headerActions={headerActions} onRecords={onRecords}
+      {overview && onMember ? <TeamOverview key={state.project.id} state={state} nodes={nodes} edges={edges} online={online} onMember={onMember} focusRequest={focusRequest} headerActions={headerActions} onRecords={onRecords}
         onSelect={nodeId => { const node = nodes.find(n => n.id === nodeId); if (!node || !onNodeSelect?.(node)) setSelection({ projectId: state.project.id, nodeId }); }}
-        onAssign={(taskId, memberId, origin) => { assignmentOrigin.current = origin; setAssignment({ projectId: state.project.id, taskId, memberId }); }} /> : <WorkflowBoard key={state.project.id} state={state} nodes={nodes} edges={edges} online={online} selectedTaskId={selectedTaskId}
+        onAssign={(taskId, memberId, origin) => { assignmentOrigin.current = origin; setAssignment({ projectId: state.project.id, taskId, memberId }); }} /> : !state.workflow ? <><header className="wf-head"><h2>업무 흐름</h2></header><p className="wf-empty">업무 흐름을 확인할 수 없습니다.</p></> : <WorkflowBoard key={state.project.id} state={state} nodes={nodes} edges={edges} online={online} selectedTaskId={selectedTaskId}
         onSelect={nodeId => setSelection({ projectId: state.project.id, nodeId })}
         onAssign={(taskId, memberId, origin) => { assignmentOrigin.current = origin; setAssignment({ projectId: state.project.id, taskId, memberId }); }} />}
       <Overlay open={!!selected} onClose={() => setSelection(null)} title={task?.title ?? (selected ? "업무" : undefined)}>

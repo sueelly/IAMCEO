@@ -834,6 +834,10 @@
 }
 .map-link-count {
   position: absolute;
+  box-sizing: border-box;
+  width: 128px;
+  height: 28px;
+  white-space: nowrap;
   border: 1px solid var(--line);
   background: white;
   box-shadow: var(--card-shadow);

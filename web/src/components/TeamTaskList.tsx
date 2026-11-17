@@ -5,12 +5,7 @@ import { workflowBucket, workflowCategory } from "@shared/workflow-view";
 import { GlassButton } from "../glass";
 import WorkflowDetail from "./WorkflowDetail";
 export type TeamTaskTab =
-  | "all"
-  | "now"
-  | "next"
-  | "checks"
-  | "blocked"
-  | "done";
+  "all" | "now" | "next" | "checks" | "reviews" | "blocked" | "done";
 export const TEAM_TASK_TABS: [TeamTaskTab, string][] = [
   ["all", "전체"],
   ["now", "지금"],
@@ -25,7 +20,14 @@ export function teamTaskScope(nodes: WorkflowNode[], tab: TeamTaskTab) {
       ? nodes.filter((n) => workflowCategory(n) === "action")
       : tab === "blocked"
         ? nodes.filter((n) => n.state === "blocked" || n.state === "unknown")
-        : nodes.filter((n) => workflowBucket(n) === tab);
+        : tab === "reviews"
+          ? nodes.filter(
+              (n) =>
+                workflowCategory(n) === "action" &&
+                n.state !== "blocked" &&
+                n.state !== "unknown",
+            )
+          : nodes.filter((n) => workflowBucket(n) === tab);
 }
 export default function TeamTaskList({
   state,
@@ -46,7 +48,7 @@ export default function TeamTaskList({
   onTab?: (tab: TeamTaskTab) => void;
   expanded: string | null;
   onExpand: (id: string | null) => void;
-  onFocus: (taskId: string) => void;
+  onFocus: (taskId: string, origin?: HTMLElement) => void;
   onMember: (memberId: string) => void;
   onClose: () => void;
 }) {
@@ -70,7 +72,8 @@ export default function TeamTaskList({
               size="s"
               variant="ghost"
               ariaPressed={
-                tab === key || (tab === "blocked" && key === "checks")
+                tab === key ||
+                (["blocked", "reviews"].includes(tab) && key === "checks")
               }
               onClick={() => onTab(key)}
             >
@@ -84,6 +87,9 @@ export default function TeamTaskList({
       ) : null}
       {tab === "blocked" ? (
         <p className="tt-scope">막힘 {visible.length}</p>
+      ) : null}
+      {tab === "reviews" ? (
+        <p className="tt-scope">막힘 외 확인 필요 {visible.length}</p>
       ) : null}
       {expanded && !nodes.some((n) => n.id === expanded) ? (
         <p role="status" className="wf-empty">
@@ -103,11 +109,12 @@ export default function TeamTaskList({
             <button
               type="button"
               className="tt-title"
+              data-node-id={n.id}
               aria-expanded={isOpen}
               onClick={() => onExpand(isOpen ? null : n.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
-                onFocus(n.taskId);
+                onFocus(n.taskId, e.currentTarget);
               }}
               onKeyDown={(e) => {
                 if (

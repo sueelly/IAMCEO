@@ -8,7 +8,13 @@ import {
   workflowTaskCategories,
   type WorkflowFilter,
 } from "@shared/workflow-view";
-import { workflowTaskNodes } from "@shared/workflow-map";
+import {
+  workflowTaskNodes,
+  workflowMap,
+  resolveWorkflowMapScope,
+  type WorkflowMapScope,
+  type ResolvedMapScope,
+} from "@shared/workflow-map";
 import { memberIssueLabel, deliveryWaitText } from "@shared/execution-issues";
 import { GlassButton } from "../glass";
 import { useStore } from "../lib/store";
@@ -21,7 +27,7 @@ import {
   useMediaQuery,
 } from "./ui";
 import WorkflowMap from "./WorkflowMap";
-import TeamTaskList, { type TeamTaskTab } from "./TeamTaskList";
+import TeamTaskList, { teamTaskScope, type TeamTaskTab } from "./TeamTaskList";
 import "../styles/team-overview.css";
 const filters: [WorkflowFilter, string][] = [
   ["all", "전체"],
@@ -32,9 +38,8 @@ const filters: [WorkflowFilter, string][] = [
   ["unassigned", "미배정"],
 ];
 type Scope =
-  | { kind: "tasks"; ids: string[]; title: string }
-  | { kind: "members"; ids: string[]; title: string }
-  | { kind: "relations"; edges: WorkflowEdge[] };
+  | WorkflowMapScope
+  | { kind: "staff"; memberId: string; tab: TeamTaskTab; title: string };
 type Props = {
   state: ProjectState;
   nodes: WorkflowNode[];
@@ -70,13 +75,18 @@ export default function TeamOverview({
     [scope, setScope] = useState<Scope | null>(null),
     [expanded, setExpanded] = useState<string | null>(null),
     [unassignedOpen, setUnassignedOpen] = useState(false),
+    [unassignedDismissed, setUnassignedDismissed] = useState(false),
     [drop, setDrop] = useState<string | null>(null);
   const drag = useRef<string | null>(null),
     previous = useRef<{
       mode: "compact" | "map";
       origin: HTMLElement | null;
+      selector: string | null;
       x: number;
       y: number;
+      scope: Scope | null;
+      expanded: string | null;
+      dialogScroll: number;
       onReturn?: () => void;
     } | null>(null),
     scopeOrigin = useRef<HTMLElement | null>(null);
@@ -93,12 +103,14 @@ export default function TeamOverview({
   const title = (n: WorkflowNode) => tasks.get(n.taskId)?.title ?? "업무",
     name = (id: string) =>
       state.members.find((m) => m.id === id)?.name ?? "이전 직원";
+  const matchesQuery = (n: WorkflowNode) =>
+    !query ||
+    `${title(n)} ${n.memberId ? name(n.memberId) : "미배정"}`
+      .toLowerCase()
+      .includes(query.toLowerCase());
   const matches = (n: WorkflowNode) =>
     (filter === "all" || categories.get(n.taskId) === filter) &&
-    (!query ||
-      `${title(n)} ${n.memberId ? name(n.memberId) : "미배정"}`
-        .toLowerCase()
-        .includes(query.toLowerCase()));
+    matchesQuery(n);
   const visible = new Set(nodes.filter(matches).map((n) => n.taskId));
   const rows = [
     ...state.members.map((m) => ({ id: m.id, name: m.name, member: m })),
@@ -119,7 +131,12 @@ export default function TeamOverview({
         .filter((n) => n.memberId === m.id && matches(n))
         .sort((a, b) => a.order - b.order),
     }))
-    .filter((m) => m.nodes.length || (filter === "all" && !query));
+    .filter(
+      (m) =>
+        m.nodes.length ||
+        (filter === "all" &&
+          (!query || m.name.toLowerCase().includes(query.toLowerCase()))),
+    );
   const unowned = nodes.filter(
     (n) => !n.memberId && workflowBucket(n) !== "unassigned",
   );
@@ -132,6 +149,35 @@ export default function TeamOverview({
       nodes: unowned.filter(matches),
     });
   const free = nodes.filter((n) => workflowBucket(n) === "unassigned");
+  const matchingFree = free.filter(matchesQuery);
+  const unassignedShown =
+    unassignedOpen ||
+    (!!query && matchingFree.length > 0 && !unassignedDismissed);
+  const closeUnassigned = () => {
+    setUnassignedOpen(false);
+    setUnassignedDismissed(true);
+  };
+  const scopeView: ResolvedMapScope | null = !scope
+    ? null
+    : scope.kind === "staff"
+      ? {
+          kind: "tasks",
+          title: scope.title,
+          ids: teamTaskScope(
+            nodes.filter((n) =>
+              scope.memberId === "no-assignee"
+                ? !n.memberId && workflowBucket(n) !== "unassigned"
+                : n.memberId === scope.memberId,
+            ),
+            scope.tab,
+          ).map((n) => n.taskId),
+        }
+      : resolveWorkflowMapScope(
+          workflowMap(state.tasks ?? [], { nodes, edges }),
+          { nodes, edges },
+          scope,
+          visible,
+        );
   const Overlay = useMediaQuery(MQ_DESKTOP) ? Drawer : Sheet;
   const closeScope = () => {
     setScope(null);
@@ -146,15 +192,39 @@ export default function TeamOverview({
     setExpanded(null);
     setScope(value);
   };
-  const concentrate = (taskId: string, onReturn?: () => void) => {
-    if (!focus || onReturn)
+  const concentrate = (
+    taskId: string,
+    onReturn?: () => void,
+    origin = document.activeElement as HTMLElement,
+  ) => {
+    if (!focus || onReturn) {
+      const shell = document.querySelector(".shell__body");
+      const nodeId =
+        origin?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const groupId =
+        origin?.closest<HTMLElement>("[data-group-id]")?.dataset.groupId;
+      const originTaskId =
+        origin?.closest<HTMLElement>("[data-task-id]")?.dataset.taskId;
       previous.current = {
         mode,
-        origin: document.activeElement as HTMLElement,
-        x: window.scrollX,
-        y: window.scrollY,
+        origin,
+        selector: nodeId
+          ? `[data-node-id="${CSS.escape(nodeId)}"]`
+          : groupId
+            ? `[data-group-id="${CSS.escape(groupId)}"] .map-group-title`
+            : originTaskId
+              ? `[data-task-id="${CSS.escape(originTaskId)}"] .tt-title`
+              : null,
+        x: shell?.scrollLeft ?? 0,
+        y: shell?.scrollTop ?? 0,
+        scope,
+        expanded,
+        dialogScroll:
+          origin?.closest("dialog")?.querySelector(".dialog__body")
+            ?.scrollTop ?? 0,
         onReturn,
       };
+    }
     setFocus(taskId);
     setMode("map");
     setScope(null);
@@ -168,10 +238,24 @@ export default function TeamOverview({
     const p = previous.current;
     if (p) {
       setMode(p.mode);
-      requestAnimationFrame(() => {
-        p.origin?.isConnected && p.origin.focus({ preventScroll: true });
-        window.scrollTo(p.x, p.y);
-      });
+      setScope(p.scope);
+      setExpanded(p.expanded);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const root = p.scope
+            ? document.querySelector("dialog[open]")
+            : document.querySelector(".to-overview");
+          const origin = p.origin?.isConnected
+            ? p.origin
+            : p.selector
+              ? root?.querySelector<HTMLElement>(p.selector)
+              : null;
+          origin?.focus({ preventScroll: true });
+          document.querySelector(".shell__body")?.scrollTo(p.x, p.y);
+          if (p.scope)
+            root?.querySelector(".dialog__body")?.scrollTo(0, p.dialogScroll);
+        }),
+      );
       previous.current = null;
       p.onReturn?.();
     }
@@ -207,7 +291,7 @@ export default function TeamOverview({
       }
       onContextMenu={(e) => {
         e.preventDefault();
-        concentrate(n.taskId);
+        concentrate(n.taskId, undefined, e.currentTarget);
       }}
       onKeyDown={(e) => {
         if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
@@ -266,11 +350,14 @@ export default function TeamOverview({
               size="s"
               variant="ghost"
               ariaPressed={
-                key === "unassigned" ? unassignedOpen : !focus && filter === key
+                key === "unassigned"
+                  ? unassignedShown
+                  : !focus && filter === key
               }
               onClick={() => {
                 if (key === "unassigned") {
-                  setUnassignedOpen((v) => !v);
+                  if (unassignedShown) closeUnassigned();
+                  else setUnassignedOpen(true);
                   setMode("compact");
                 } else {
                   setFilter(key);
@@ -279,7 +366,9 @@ export default function TeamOverview({
               }}
             >
               {label}
-              <span className="wf-count">{counts[key]}</span>
+              {state.workflow ? (
+                <span className="wf-count">{counts[key]}</span>
+              ) : null}
             </GlassButton>
           ))}
         </nav>
@@ -290,10 +379,16 @@ export default function TeamOverview({
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
+            setUnassignedDismissed(false);
             clearFocus();
           }}
         />
       </div>
+      {!state.workflow ? (
+        <p className="wf-empty" role="status">
+          업무 흐름을 확인할 수 없습니다.
+        </p>
+      ) : null}
       {mode === "compact" ? (
         <>
           <div className="to-columns" aria-hidden="true">
@@ -347,8 +442,9 @@ export default function TeamOverview({
                       row.member
                         ? onMember(row.id)
                         : showScope({
-                            kind: "tasks",
-                            ids: row.all.map((n) => n.taskId),
+                            kind: "staff",
+                            memberId: row.id,
+                            tab: "all",
                             title: row.name + "의 업무",
                           })
                     }
@@ -365,7 +461,12 @@ export default function TeamOverview({
                           : row.name}
                       </b>
                     </span>
-                    <small>{issue ?? `업무 ${row.all.length}`}</small>
+                    <small>
+                      {issue ??
+                        (state.workflow
+                          ? `업무 ${row.all.length}`
+                          : "업무 흐름 확인 불가")}
+                    </small>
                   </button>
                   <div className="to-now">
                     {head ? (
@@ -375,7 +476,9 @@ export default function TeamOverview({
                         now.filter((n) => n.label === head.label).length - 1,
                       )
                     ) : (
-                      <span className="to-empty">현재 실행 없음</span>
+                      <span className="to-empty">
+                        {state.workflow ? "현재 실행 없음" : "—"}
+                      </span>
                     )}
                   </div>
                   <div
@@ -419,8 +522,9 @@ export default function TeamOverview({
                           row.member
                             ? onMember(row.id, "blocked")
                             : showScope({
-                                kind: "tasks",
-                                ids: blocked.map((n) => n.taskId),
+                                kind: "staff",
+                                memberId: row.id,
+                                tab: "blocked",
                                 title: "막힘",
                               })
                         }
@@ -433,10 +537,11 @@ export default function TeamOverview({
                         type="button"
                         onClick={() =>
                           row.member
-                            ? onMember(row.id, "checks")
+                            ? onMember(row.id, "reviews")
                             : showScope({
-                                kind: "tasks",
-                                ids: checks.map((n) => n.taskId),
+                                kind: "staff",
+                                memberId: row.id,
+                                tab: "reviews",
                                 title: "확인 필요",
                               })
                         }
@@ -454,9 +559,14 @@ export default function TeamOverview({
                         type="button"
                         className="to-task"
                         data-task-id={done[0].taskId}
+                        data-node-id={done[0].id}
                         onContextMenu={(e) => {
                           e.preventDefault();
-                          concentrate(done[0].taskId);
+                          concentrate(
+                            done[0].taskId,
+                            undefined,
+                            e.currentTarget,
+                          );
                         }}
                         onClick={() =>
                           row.member
@@ -479,7 +589,7 @@ export default function TeamOverview({
                       <span className="to-empty">—</span>
                     )}
                   </div>
-                  {row.member ? (
+                  {row.member && state.workflow ? (
                     <div className="to-mobile-counts">
                       <button
                         type="button"
@@ -505,7 +615,7 @@ export default function TeamOverview({
               );
             })}
           </div>
-          {!rows.length ? (
+          {!rows.length && !(query && matchingFree.length) ? (
             <p className="wf-empty">해당하는 직원·업무가 없습니다.</p>
           ) : null}
         </>
@@ -531,35 +641,32 @@ export default function TeamOverview({
               state.members.some((m) => m.id === id) && onMember(id)
             }
             onTask={selectTask}
-            onList={(ids, title) => showScope({ kind: "tasks", ids, title })}
-            onMembers={(ids, title) =>
-              showScope({ kind: "members", ids, title })
-            }
-            onRelations={(edges) => showScope({ kind: "relations", edges })}
+            onScope={showScope}
             onRecords={() => onRecords?.()}
           />
         </>
       )}
-      {unassignedOpen && mode === "compact" ? (
+      {unassignedShown && mode === "compact" ? (
         <aside className="to-unassigned" aria-label="미배정 업무">
           <header>
-            <h3>미배정 {free.length}</h3>
+            <h3>미배정 {matchingFree.length}</h3>
             <GlassButton
               size="s"
               variant="ghost"
               ariaLabel="미배정 닫기"
-              onClick={() => setUnassignedOpen(false)}
+              onClick={closeUnassigned}
             >
               ×
             </GlassButton>
           </header>
           <div>
-            {free.map((n) => (
+            {matchingFree.map((n) => (
               <article key={n.id}>
                 <button
                   type="button"
                   className="to-free"
                   data-task-id={n.taskId}
+                  data-node-id={n.id}
                   draggable={canAssign}
                   onDragStart={(e) => {
                     drag.current = n.id;
@@ -573,7 +680,7 @@ export default function TeamOverview({
                   onClick={() => onSelect(n.id)}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    concentrate(n.taskId);
+                    concentrate(n.taskId, undefined, e.currentTarget);
                   }}
                 >
                   {title(n)}
@@ -596,42 +703,40 @@ export default function TeamOverview({
               </article>
             ))}
           </div>
-          {!free.length ? (
+          {!matchingFree.length ? (
             <p className="wf-empty">미배정 업무가 없습니다.</p>
           ) : null}
         </aside>
       ) : null}
-      <Overlay
-        open={!!scope}
-        title={scope?.kind === "relations" ? "직원별 선후관계" : scope?.title}
-        onClose={closeScope}
-      >
-        {scope?.kind === "tasks" ? (
+      <Overlay open={!!scope} title={scopeView?.title} onClose={closeScope}>
+        {scopeView?.kind === "tasks" ? (
           <>
             <p className="tt-scope">
               업무{" "}
               {
                 new Set(
-                  scope.ids.filter((id) => nodes.some((n) => n.taskId === id)),
+                  scopeView.ids.filter((id) =>
+                    nodes.some((n) => n.taskId === id),
+                  ),
                 ).size
               }
               개
             </p>
             <TeamTaskList
               state={{ ...state, workflow: { nodes, edges } }}
-              nodes={workflowTaskNodes(nodes, scope.ids)}
+              nodes={workflowTaskNodes(nodes, scopeView.ids)}
               online={online}
               expanded={expanded}
               onExpand={setExpanded}
-              onFocus={concentrate}
+              onFocus={(id, origin) => concentrate(id, undefined, origin)}
               onMember={openMember}
               onClose={closeScope}
             />
           </>
         ) : null}
-        {scope?.kind === "members" ? (
+        {scopeView?.kind === "members" ? (
           <div className="map-member-list">
-            {scope.ids.map((id) => (
+            {scopeView.ids.map((id) => (
               <button
                 type="button"
                 key={id}
@@ -644,14 +749,19 @@ export default function TeamOverview({
             ))}
           </div>
         ) : null}
-        {scope?.kind === "relations" ? (
+        {scopeView?.kind === "relations" ? (
           <div className="map-relations">
-            {scope.edges.map((e) => {
+            {!scopeView.edges.length ? (
+              <p className="wf-empty" role="status">
+                현재 범위에 선후관계가 없습니다.
+              </p>
+            ) : null}
+            {scopeView.edges.map((e) => {
               const a = byNode.get(e.from),
                 b = byNode.get(e.to);
               if (!a || !b) return null;
               return (
-                <article key={e.id}>
+                <article key={e.id} data-edge-id={e.id}>
                   <button
                     type="button"
                     disabled={!state.members.some((m) => m.id === a.memberId)}

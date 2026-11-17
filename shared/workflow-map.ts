@@ -1,6 +1,10 @@
 import type { Task } from "./types";
 import type { ProjectWorkflow, WorkflowEdge, WorkflowNode } from "./workflow";
-import { workflowCategory, workflowSummary } from "./workflow-view";
+import {
+  workflowCategory,
+  workflowSummary,
+  workflowTaskCategories,
+} from "./workflow-view";
 
 /** Collapse presentation identities only. No inferred dependency or enrollment is created. */
 export function workflowMap(tasks: readonly Task[], flow: ProjectWorkflow) {
@@ -117,4 +121,117 @@ export function workflowTaskNodes(
     const node = best.get(id);
     return node ? [node] : [];
   });
+}
+
+/** Keep the selection's meaning, then resolve it against the current live projection. */
+export type WorkflowMapScope =
+  | {
+      kind: "tasks";
+      source: "group";
+      groupId: string;
+      category?: "blocked" | "action";
+    }
+  | {
+      kind: "tasks";
+      source: "neighbors";
+      taskId: string;
+      direction: "before" | "after";
+    }
+  | { kind: "members"; source: "group"; groupId: string }
+  | { kind: "members"; source: "task"; taskId: string }
+  | { kind: "relations"; pairs: string[] };
+export type ResolvedMapScope =
+  | { kind: "tasks" | "members"; ids: string[]; title: string }
+  | { kind: "relations"; edges: WorkflowEdge[]; title: string };
+export function resolveWorkflowMapScope(
+  model: ReturnType<typeof workflowMap>,
+  flow: ProjectWorkflow,
+  scope: WorkflowMapScope,
+  visible: ReadonlySet<string>,
+): ResolvedMapScope {
+  if (scope.kind === "relations")
+    return {
+      kind: "relations",
+      title: "직원별 선후관계",
+      edges: model.links
+        .filter((l) => scope.pairs.includes(l.id))
+        .flatMap((l) => l.edges)
+        .filter(
+          (e) =>
+            visible.has(model.byNode.get(e.from)!.taskId) &&
+            visible.has(model.byNode.get(e.to)!.taskId),
+        ),
+    };
+  const group =
+    scope.source === "group"
+      ? model.groups.find((g) => g.id === scope.groupId)
+      : null;
+  if (scope.kind === "members") {
+    const ids =
+      scope.source === "group"
+        ? (group?.taskIds ?? []).filter((id) => visible.has(id))
+        : [scope.taskId];
+    return {
+      kind: "members",
+      title:
+        (group?.title ??
+          (scope.source === "task"
+            ? model.taskMap.get(scope.taskId)?.title
+            : "업무 묶음") ??
+          "업무") + " · 참여 직원",
+      ids: [
+        ...new Set(
+          ids
+            .flatMap((id) => model.occurrences.get(id) ?? [])
+            .flatMap((n) => (n.memberId ? [n.memberId] : [])),
+        ),
+      ],
+    };
+  }
+  if (scope.source === "neighbors") {
+    const selected = new Set(
+      (model.occurrences.get(scope.taskId) ?? []).map((n) => n.id),
+    );
+    const ids = flow.edges.flatMap((e) => {
+      const target =
+        scope.direction === "before"
+          ? selected.has(e.to)
+            ? e.from
+            : null
+          : selected.has(e.from)
+            ? e.to
+            : null;
+      const n = target ? model.byNode.get(target) : null;
+      return n && n.taskId !== scope.taskId ? [n.taskId] : [];
+    });
+    return {
+      kind: "tasks",
+      ids: [...new Set(ids)],
+      title:
+        scope.direction === "before"
+          ? "선행·부모 업무 전체"
+          : "다음·파생 업무 전체",
+    };
+  }
+  const ids = (group?.taskIds ?? []).filter((id) => visible.has(id));
+  const categories = workflowTaskCategories(
+    ids.flatMap((id) => model.occurrences.get(id) ?? []),
+  );
+  return {
+    kind: "tasks",
+    title:
+      (group?.title ?? "업무 묶음") +
+      (scope.category === "blocked"
+        ? " · 막힘"
+        : scope.category === "action"
+          ? " · 확인 필요"
+          : ""),
+    ids: ids.filter((id) =>
+      scope.category === "blocked"
+        ? (model.occurrences.get(id) ?? []).some(
+            (n) => n.state === "blocked" || n.state === "unknown",
+          )
+        : !scope.category || categories.get(id) === scope.category,
+    ),
+  };
 }

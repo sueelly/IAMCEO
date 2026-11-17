@@ -1,9 +1,20 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Member, Task } from "@shared/types";
 import type { ProjectWorkflow, WorkflowNode } from "@shared/workflow";
 import { GlassButton } from "../glass";
-import { workflowMap, workflowTaskNodes } from "@shared/workflow-map";
-import { workflowSummary, workflowTaskCategories } from "@shared/workflow-view";
+import {
+  workflowMap,
+  workflowTaskNodes,
+  type WorkflowMapScope,
+} from "@shared/workflow-map";
+import { workflowSummary } from "@shared/workflow-view";
 type Data = {
   tasks: Task[];
   workflow: ProjectWorkflow;
@@ -16,9 +27,7 @@ type Props = {
   onFocus: (id: string | null) => void;
   onMember: (id: string) => void;
   onTask: (id: string) => void;
-  onList: (ids: string[], title: string) => void;
-  onRelations: (edges: ProjectWorkflow["edges"]) => void;
-  onMembers: (ids: string[], title: string) => void;
+  onScope: (scope: WorkflowMapScope) => void;
   onRecords: () => void;
 };
 export default function WorkflowMap({
@@ -28,9 +37,7 @@ export default function WorkflowMap({
   onFocus,
   onMember,
   onTask,
-  onList,
-  onRelations,
-  onMembers,
+  onScope,
   onRecords,
 }: Props) {
   const model = useMemo(
@@ -49,6 +56,10 @@ export default function WorkflowMap({
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(
     null,
   );
+  const overviewCamera = useRef<{
+    zoom: number;
+    offset: { x: number; y: number };
+  } | null>(null);
   useEffect(() => {
     const el = view.current;
     if (!el) return;
@@ -59,9 +70,16 @@ export default function WorkflowMap({
     sync();
     return () => ro.disconnect();
   }, [worldHeight, focusTask]);
-  useEffect(() => {
-    setZoom(1);
-    setOffset({ x: 0, y: 0 });
+  useLayoutEffect(() => {
+    if (focusTask) {
+      overviewCamera.current ??= { zoom, offset };
+      setZoom(1);
+      setOffset({ x: 0, y: 0 });
+    } else if (overviewCamera.current) {
+      setZoom(overviewCamera.current.zoom);
+      setOffset(overviewCamera.current.offset);
+      overviewCamera.current = null;
+    }
   }, [focusTask]);
   const name = (id: string) =>
     data.members
@@ -134,6 +152,25 @@ export default function WorkflowMap({
       y: middle - 12,
     };
   };
+  // Labels sharing a hit area open one live scope containing all of their real pairs.
+  // Keep one original anchor, so clustering cannot push labels out of the map.
+  let linkLabels: {
+    links: typeof activeLinks;
+    points: { x: number; y: number }[];
+  }[] = [];
+  for (const link of activeLinks) {
+    const p = linkGeometry(link);
+    const colliding = linkLabels.filter((label) =>
+      label.points.some(
+        (q) => Math.abs(p.x - q.x) < 128 && Math.abs(p.y - q.y) < 28,
+      ),
+    );
+    linkLabels = linkLabels.filter((label) => !colliding.includes(label));
+    linkLabels.push({
+      links: [...colliding.flatMap((label) => label.links), link],
+      points: [...colliding.flatMap((label) => label.points), p],
+    });
+  }
   const selectedNodes = new Set(
     (model.occurrences.get(focusTask ?? "") ?? []).map((n) => n.id),
   );
@@ -187,7 +224,11 @@ export default function WorkflowMap({
       }),
     ).values(),
   ].filter((e) => focusPos.has(e.a) && focusPos.has(e.b) && e.a !== e.b);
-  const participantChips = (ids: string[], max = 3, context = "참여 직원") => (
+  const participantChips = (
+    ids: string[],
+    max: number,
+    scope: Extract<WorkflowMapScope, { kind: "members" }>,
+  ) => (
     <div className="map-owners">
       {ids.slice(0, max).map((id) => (
         <button
@@ -200,10 +241,7 @@ export default function WorkflowMap({
         </button>
       ))}
       {ids.length > max && (
-        <button
-          className="more-members"
-          onClick={() => onMembers(ids, context)}
-        >
+        <button className="more-members" onClick={() => onScope(scope)}>
           외 {ids.length - max}
         </button>
       )}
@@ -239,7 +277,12 @@ export default function WorkflowMap({
           </span>
           <strong>{title(id)}</strong>
         </button>
-        {center && participantChips(members, 3, title(id) + " · 참여 직원")}
+        {center &&
+          participantChips(members, 3, {
+            kind: "members",
+            source: "task",
+            taskId: id,
+          })}
         {!center && (
           <button
             className="map-focus-action"
@@ -445,17 +488,23 @@ export default function WorkflowMap({
           </svg>
           {!focusTask ? (
             <>
-              {activeLinks.map((l) => {
-                const p = linkGeometry(l);
+              {linkLabels.map((label) => {
+                const p = label.points[0];
                 return (
                   <button
-                    key={l.id}
+                    key={label.links.map((l) => l.id).join(":")}
                     className="map-link-count"
                     style={{ left: p.x, top: p.y }}
-                    onClick={() => onRelations(l.edges)}
+                    onClick={() =>
+                      onScope({
+                        kind: "relations",
+                        pairs: label.links.map((l) => l.id),
+                      })
+                    }
                     title="개별 업무의 직원별 선후관계"
                   >
-                    순서 관계 {l.edges.length}
+                    순서 관계{" "}
+                    {label.links.reduce((n, l) => n + l.edges.length, 0)}
                   </button>
                 );
               })}
@@ -478,7 +527,13 @@ export default function WorkflowMap({
                       </span>
                       <button
                         aria-label={`${g.title} 업무 ${g.shown.length}개 전체`}
-                        onClick={() => onList(g.shown, g.title)}
+                        onClick={() =>
+                          onScope({
+                            kind: "tasks",
+                            source: "group",
+                            groupId: g.id,
+                          })
+                        }
                       >
                         {g.shown.length}
                         {g.shown.length !== g.taskIds.length
@@ -490,7 +545,11 @@ export default function WorkflowMap({
                       className="map-group-title"
                       onClick={() =>
                         g.id === "individual"
-                          ? onList(g.shown, g.title)
+                          ? onScope({
+                              kind: "tasks",
+                              source: "group",
+                              groupId: g.id,
+                            })
                           : onFocus(g.id)
                       }
                       onContextMenu={(e) => {
@@ -524,31 +583,24 @@ export default function WorkflowMap({
                       <button
                         data-warn={g.blocked > 0 || undefined}
                         onClick={() =>
-                          onList(
-                            g.shown.filter((id) =>
-                              (model.occurrences.get(id) ?? []).some((n) =>
-                                ["blocked", "unknown"].includes(n.state),
-                              ),
-                            ),
-                            g.title + " · 막힘",
-                          )
+                          onScope({
+                            kind: "tasks",
+                            source: "group",
+                            groupId: g.id,
+                            category: "blocked",
+                          })
                         }
                       >
                         막힘 <b>{g.blocked}</b>
                       </button>
                       <button
                         onClick={() =>
-                          onList(
-                            g.shown.filter(
-                              (id) =>
-                                workflowTaskCategories(
-                                  g.shown.flatMap(
-                                    (id) => model.occurrences.get(id) ?? [],
-                                  ),
-                                ).get(id) === "action",
-                            ),
-                            g.title + " · 확인 필요",
-                          )
+                          onScope({
+                            kind: "tasks",
+                            source: "group",
+                            groupId: g.id,
+                            category: "action",
+                          })
                         }
                       >
                         확인 {g.counts.action}
@@ -558,7 +610,11 @@ export default function WorkflowMap({
                       <span>완료 {g.counts.done}</span>
                       <span>미배정 {g.counts.unassigned}</span>
                     </div>
-                    {participantChips(g.members, 2, g.title + " · 참여 직원")}
+                    {participantChips(g.members, 2, {
+                      kind: "members",
+                      source: "group",
+                      groupId: g.id,
+                    })}
                   </article>
                 );
               })}
@@ -572,7 +628,14 @@ export default function WorkflowMap({
                 <button
                   className="map-more"
                   style={{ left: 24, top: 472 }}
-                  onClick={() => onList(leftIds, "선행·부모 업무 전체")}
+                  onClick={() =>
+                    onScope({
+                      kind: "tasks",
+                      source: "neighbors",
+                      taskId: focusTask,
+                      direction: "before",
+                    })
+                  }
                 >
                   연결 {leftIds.length}개 모두 보기
                 </button>
@@ -581,7 +644,14 @@ export default function WorkflowMap({
                 <button
                   className="map-more"
                   style={{ left: 782, top: 472 }}
-                  onClick={() => onList(rightIds, "다음·파생 업무 전체")}
+                  onClick={() =>
+                    onScope({
+                      kind: "tasks",
+                      source: "neighbors",
+                      taskId: focusTask,
+                      direction: "after",
+                    })
+                  }
                 >
                   연결 {rightIds.length}개 모두 보기
                 </button>
@@ -624,7 +694,12 @@ export default function WorkflowMap({
           </>
         ) : (
           activeGroups.map((g) => (
-            <button key={g.id} onClick={() => onList(g.shown, g.title)}>
+            <button
+              key={g.id}
+              onClick={() =>
+                onScope({ kind: "tasks", source: "group", groupId: g.id })
+              }
+            >
               <b>{g.title}</b>
               <span>
                 {g.shown.length}개 · 막힘 {g.blocked} · 확인 {g.counts.action} ·

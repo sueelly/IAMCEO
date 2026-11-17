@@ -958,13 +958,14 @@ function MemberInspector({
             onClick={() => setView({ ...view, section })}
           >
             {label}
-            {section === "tasks" ? (
+            {section === "tasks" && state.workflow ? (
               <span className="wf-count">{own.length}</span>
             ) : null}
           </GlassButton>
         ))}
       </nav>
-      {view.section === "summary" ? (
+      {!state.workflow && ["summary", "tasks"].includes(view.section) ? <p className="wf-empty" role="status">업무 흐름을 확인할 수 없습니다.</p> : null}
+      {view.section === "summary" && state.workflow ? (
         <div className="tm-detail-metrics">
           {(
             [
