@@ -34,19 +34,26 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
   const msg = (id: string): Message => ({ id, at: "2026-01-01", projectId: "p", body: id, attachments: [], mine: false,
     memberId: null, who: "", kind: "진행", title: "", targetMemberId: null, targetName: null, decisionId: null, fileId: null, delivery: null, deliveryNote: null });
   const project = { project: { id: "p" }, messages: [], members: [], decisions: [], todos: [], work: [], files: [] } as unknown as ProjectState;
-  const bootstrap = { projects: [{ id: "p" }], runtime: {} } as Bootstrap;
+  const bootstrap = { projects: [{ id: "p" }, { id: "q" }] } as Bootstrap;
   const calls: string[] = [];
   let replaced = false;
   let seq = 0;
   let denySync = false;
   const originalFetch = globalThis.fetch;
   const writes: ((response: Response) => void)[] = [];
+  const diagnoses: ((response: Response) => void)[] = [];
+  let delayHistory = false;
+  let finishHistory: ((response: Response) => void) | null = null;
   let activityResponse!: (response: Response) => void;
   install("fetch", async (input: string, init?: RequestInit) => {
     const path = String(input); calls.push(path);
     if (path === "/api/capabilities") return Response.json({ contractVersion: 2, capabilities: { browserRealtime: true } });
     if (path.includes("-session")) return new Response(null, { status: 204 });
     if (path === "/api/sync?projectId=p") return denySync ? Response.json({ error: "rotated code" }, { status: 401 }) : Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "p", projectStatus: "ok", bootstrap, state: project, revisions: { settings: 7, members: {}, todos: {} } });
+    if (path === "/api/sync?projectId=q") return Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "q", projectStatus: "ok", bootstrap, state: { ...project, project: { id: "q" } }, revisions: { settings: 7, members: {}, todos: {} } });
+    if (path.startsWith("/api/projects/q/messages/page?")) return delayHistory
+      ? new Promise<Response>(resolve => { finishHistory = resolve; })
+      : Response.json({ projectId: "q", scope: { kind: "project" }, items: [], nextCursor: null, hasOlder: false });
     if (path === "/api/messages/reauth") return Response.json({ ...msg("reauth"), mine: true, delivery: "delivered" });
     if (path === "/api/projects/p/messages" && init?.method === "POST") return new Promise<Response>((resolve) => { writes.push(resolve); });
     if (path === "/api/members/member/activity?limit=200") return new Promise<Response>((resolve) => { activityResponse = resolve; });
@@ -55,13 +62,46 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
       if (replaced) return Response.json({ projectId: "p", scope: { kind: "project" }, items: [msg("replacement")], nextCursor: null, hasOlder: false });
       return Response.json({ projectId: "p", scope: { kind: "project" }, items: [msg(cursor ? "older" : "recent")], nextCursor: cursor ? null : "opaque+/=", hasOlder: !cursor });
     }
-    if (path === "/api/runtime") return Response.json({});
+    if (path === "/api/runtime") return new Promise<Response>(resolve => { diagnoses.push(resolve); });
     if (path === "/api/bootstrap") return Response.json(bootstrap);
     if (path === "/api/projects/p/state") return Response.json(project);
     throw new Error(`Unexpected fixture request ${path}`);
   });
   try {
-    initStore(); expect(await login("fixture")).toBe(true);
+    initStore(); const entering = login("fixture");
+    for (let i = 0; i < 100 && getState().auth !== "ok"; i++) await Bun.sleep(1);
+    expect(getState().auth).toBe("ok");
+    expect(await entering).toBe(true);
+    expect(getState().bootstrap?.runtime).toBeUndefined();
+    await refresh();
+    expect(diagnoses).toHaveLength(1);
+    location.hash = "#/p/q/thread";
+    for (const fn of listeners.get("hashchange") ?? []) fn();
+    for (let i = 0; i < 1000 && getState().project?.project.id !== "q"; i++) await Bun.sleep(1);
+    expect(getState().project?.project.id).toBe("q");
+    expect(diagnoses).toHaveLength(2);
+    sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ type: "hello", protocol: 2, epoch: "e", seq: 0, heartbeatMs: 15000, staleAfterMs: 45000 }) });
+    await refresh();
+    diagnoses[0](Response.json({ backend: "core" }));
+    await Bun.sleep(5);
+    expect(getState().bootstrap?.runtime).toBeUndefined();
+    diagnoses[1](Response.json({ error: "temporary diagnosis failure" }, { status: 503 }));
+    for (let i = 0; i < 400 && diagnoses.length < 3; i++) await Bun.sleep(10);
+    expect(diagnoses).toHaveLength(3);
+    delayHistory = true;
+    const reading = refresh();
+    for (let i = 0; i < 1000 && !finishHistory; i++) await Bun.sleep(1);
+    expect(finishHistory).not.toBeNull();
+    diagnoses[2](Response.json({ backend: "core" }));
+    for (let i = 0; i < 100 && !getState().bootstrap?.runtime; i++) await Bun.sleep(1);
+    expect(getState().bootstrap?.runtime?.backend).toBe("core");
+    delayHistory = false;
+    finishHistory!(Response.json({ projectId: "q", scope: { kind: "project" }, items: [], nextCursor: null, hasOlder: false }));
+    await reading;
+    expect(getState().bootstrap?.runtime?.backend).toBe("core");
+    location.hash = "#/p/p/thread";
+    for (const fn of listeners.get("hashchange") ?? []) fn();
+    for (let i = 0; i < 1000 && getState().project?.project.id !== "p"; i++) await Bun.sleep(1);
     expect(calls.some((p) => p.startsWith("/api/sync?"))).toBe(true);
     expect(getState().project?.messages.map((m) => m.id)).toEqual(["recent"]);
     expect(getState().syncRevisions?.settings).toBe(7);
@@ -128,9 +168,12 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     expect(await lateWrite).toBeNull(); expect(getState().project).toBeNull();
     activityResponse(Response.json([{ id: 1, memberId: "member" }])); await lateActivity;
     expect(getState().activity).toEqual({});
+    diagnoses.at(-1)!(Response.json({ backend: "core" }));
+    await Bun.sleep(5);
+    expect(getState().bootstrap).toBeNull();
   } finally {
     logout();
     globalThis.fetch = originalFetch;
     for (const [name, descriptor] of saved) if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
   }
-});
+}, 15_000);

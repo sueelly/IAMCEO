@@ -204,6 +204,27 @@ test("large JSON GETs negotiate gzip without changing content or cache policy", 
   expect(tiny.headers.get("content-encoding")).toBeNull();
 });
 
+test("bundled screen code negotiates gzip and preserves content and security headers", async () => {
+  const html = await fetch(base + "/").then(r => r.text());
+  const paths = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map(m => m[1]!);
+  expect(paths.length).toBeGreaterThanOrEqual(2);
+  for (const path of paths) {
+    const compressed = await fetch(new URL(path, base), { headers: { "Accept-Encoding": "gzip" } });
+    expect(compressed.status).toBe(200);
+    expect(compressed.headers.get("content-encoding")).toBe("gzip");
+    expect(compressed.headers.get("vary")).toContain("Accept-Encoding");
+    expect(compressed.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(compressed.headers.get("x-content-type-options")).toBe("nosniff");
+    const content = await compressed.text();
+    expect(Number(compressed.headers.get("content-length"))).toBeLessThan(Buffer.byteLength(content) / 2);
+    const identity = await fetch(new URL(path, base), { headers: { "Accept-Encoding": "gzip;q=0, *;q=1" } });
+    expect(identity.headers.get("content-encoding")).toBeNull();
+    expect(identity.headers.get("etag")).toBe(compressed.headers.get("etag"));
+    expect(identity.headers.get("cache-control")).toBe(compressed.headers.get("cache-control"));
+    expect(await identity.text()).toBe(content);
+  }
+});
+
 function api(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Response> {
   const headers: Record<string, string> = { ...auth, ...init.headers };
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
