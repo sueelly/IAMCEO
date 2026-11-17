@@ -32,7 +32,7 @@ let base = "";
 let browser: Browser;
 let project: Project;
 /** 건수 경우: 홈(할 일)·결재함(결재)이 모두 n 건인 프로젝트. 한·두·세 자리(세 자리는 '99+'로 보인다) */
-const COUNT_CASES = [7, 12, 100, 999] as const;
+const COUNT_CASES = [7, 12, 99, 100, 999] as const;
 const counted: Record<number, Project> = {};
 
 const api = async <T,>(method: string, path: string, body?: unknown, token = CODE): Promise<T> => {
@@ -168,20 +168,34 @@ describe("라이트 테마 남은 일", () => {
 
   type Box = { l: number; r: number; t: number; b: number };
   const hit = (a: Box, b: Box) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
-  /** 건수가 상자 밖으로 나간 가장 큰 거리(px). 0 이면 안에 있다 */
-  const overflow = (inner: Box, outer: Box) => Math.max(0, outer.l - inner.l, inner.r - outer.r, outer.t - inner.t, inner.b - outer.b);
-  const measured: unknown[] = [];
-  afterAll(() => { if (process.env.LIGHT_TAB_MEASURE) Bun.write(process.env.LIGHT_TAB_MEASURE, JSON.stringify(measured, null, 2)); });
+  /** 안쪽 상자가 바깥 상자 테두리까지 남긴 가장 작은 여유(px). 음수면 그만큼 넘친다 */
+  const slack = (inner: Box, outer: Box) => Math.min(inner.l - outer.l, outer.r - inner.r, inner.t - outer.t, outer.b - inner.b);
+  /** 폭마다·건수마다 가장 작은 여유 */
+  const sweep: { n: number; width: number; tab: string; selected: string; cellSlack: number; dropSlack: number | null; gapToLabel: number; shown: string }[] = [];
+  afterAll(() => { if (process.env.LIGHT_TAB_MEASURE) Bun.write(process.env.LIGHT_TAB_MEASURE, JSON.stringify(sweep)); });
+  const TABS = ["home", "inbox", "team", "thread", "files"] as const;
+  const WIDTHS = Array.from({ length: 430 - 320 + 1 }, (_, i) => 320 + i);
 
-  for (const width of [390, 375, 320]) {
-    for (const n of COUNT_CASES) {
-      for (const tab of ["home", "inbox", "team", "thread", "files"]) {
-        test(`폰 ${width}px 건수 ${n} '${tab}' 고름: 건수가 자기 칸·고른 칸 테두리 안에 있고 글자와 겹치지 않으며 가로로 밀리지 않는다`, async () => {
-          const p = counted[n]!;
-          const page = await open(width, `#/p/${p.id}/${tab}`);
-          await page.locator(".gtabs__count").nth(1).waitFor();
-          await page.waitForTimeout(700); // 물방울이 제자리에 온 뒤
-          const m = await page.evaluate(() => {
+  // 폰 폭 전 구간: 320~430px 를 1px 간격으로, 고른 칸 다섯마다 잰다(같은 결함이 특정 폭에서 다시 생기지 않게).
+  // 칸 사이 물방울 움직임은 '움직임 줄이기'로 끄고 바로 잰다.
+  for (const n of COUNT_CASES) {
+    test(`폰 320~430px 전 구간, 건수 ${n}: 건수가 자기 칸·고른 칸 안에 있고 글자와 1px 이상 떨어지며 가로로 밀리지 않는다`, async () => {
+      const p = counted[n]!;
+      const ctx = await browser.newContext({ viewport: { width: 320, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      const page = await ctx.newPage();
+      await page.addInitScript((code) => localStorage.setItem("iamceo.accessCode", code), CODE);
+      await page.goto(`${base}/#/p/${p.id}/home`);
+      await page.locator(".gtabs__count").nth(1).waitFor();
+      const shown = n > 99 ? "99+" : String(n);
+      // 줄였으면 정확한 수는 탭 이름(읽어 주는 글)에 남는다
+      if (n > 99) for (const name of ["홈", "결재함"]) await page.getByRole("link", { name: new RegExp(`^${name}\\s*${n}건$`) }).waitFor({ timeout: 2000 });
+      const problems: string[] = [];
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 844 });
+        for (const tab of TABS) {
+          await page.evaluate((h) => { location.hash = h; }, `#/p/${p.id}/${tab}`);
+          await page.waitForFunction((t) => document.querySelector(`.gtabs__link[aria-current]`)?.getAttribute("href")?.endsWith(`/${t}`), tab);
+          const m = await page.evaluate(() => new Promise<any>((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
             const box = (e: Element | Range) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
             const links = [...document.querySelectorAll(".gtabs__link")].map((a) => ({
               text: a.querySelector(".gtabs__label")!.firstChild!.textContent!,
@@ -190,33 +204,46 @@ describe("라이트 테마 남은 일", () => {
               count: a.querySelector(".gtabs__count") ? { ...box(a.querySelector(".gtabs__count")!), n: a.querySelector(".gtabs__count")!.textContent } : null,
               current: a.hasAttribute("aria-current"),
             }));
-            return { links, drop: box(document.querySelector(".gtabs__drop")!), scrollW: document.documentElement.scrollWidth, winW: innerWidth };
-          });
-          if (process.env.LIGHT_TAB_SHOTS) await page.locator(".gtabs").screenshot({ path: join(process.env.LIGHT_TAB_SHOTS, `${width}-${n}-${tab}.png`) });
-          expect(m.scrollW).toBeLessThanOrEqual(m.winW);
-          const withCount = m.links.filter((l) => l.count);
+            done({ links, drop: box(document.querySelector(".gtabs__drop")!), scrollW: document.documentElement.scrollWidth, winW: innerWidth });
+          }))));
+          if (process.env.LIGHT_TAB_SHOTS && [320, 359, 360, 361, 375, 390, 430].includes(width) && (tab === "inbox" || tab === "home"))
+            await page.locator(".gtabs").screenshot({ path: join(process.env.LIGHT_TAB_SHOTS, `${width}-${n}-${tab}.png`) });
+          const at = `${width}px·${n}·${tab}`;
+          if (m.winW !== width) problems.push(`${at}: 창 폭 ${m.winW}`);
+          if (m.scrollW > m.winW) problems.push(`${at}: 가로 밀림 ${m.scrollW}>${m.winW}`);
+          const withCount = m.links.filter((l: any) => l.count);
+          const texts = withCount.map((l: any) => `${l.text}:${l.count.n}`).join(",");
+          if (texts !== `홈:${shown},결재함:${shown}`) problems.push(`${at}: 건수 글 ${texts}`);
           for (const l of withCount) {
-            const ownCell = overflow(l.count!, l.link);
-            const selected = l.current ? overflow(l.count!, m.drop) : null;
-            const gapToLabel = l.count!.l - l.label.r;
-            measured.push({ width, n, selected: tab, tab: l.text, count: l.count!.n, ownCellOverflow: +ownCell.toFixed(2), dropOverflow: selected === null ? null : +selected.toFixed(2), gapToLabel: +gapToLabel.toFixed(2), dropTopGap: l.current ? +(l.count!.t - m.drop.t).toFixed(2) : null });
-            for (const other of m.links) expect({ tab: l.text, over: other.text, hit: hit(l.count!, other.label) }).toEqual({ tab: l.text, over: other.text, hit: false });
-            expect(gapToLabel).toBeGreaterThanOrEqual(1 - 1e-6); // 글자와 1px 이상 떨어진다
-            expect({ tab: l.text, ownCell }).toEqual({ tab: l.text, ownCell: 0 });
-            if (l.current) {
-              expect({ tab: l.text, selected }).toEqual({ tab: l.text, selected: 0 });
-              expect(l.count!.t).toBeGreaterThanOrEqual(m.drop.t + 2); // 물방울 윗선에서 떨어져 있다
-            }
+            const cellSlack = slack(l.count, l.link);
+            const dropSlack = l.current ? slack(l.count, m.drop) : null;
+            const gapToLabel = l.count.l - l.label.r;
+            sweep.push({ n, width, tab: l.text, selected: tab, cellSlack: +cellSlack.toFixed(2), dropSlack: dropSlack === null ? null : +dropSlack.toFixed(2), gapToLabel: +gapToLabel.toFixed(2), shown: l.count.n });
+            // 넘침 0 에 더해 테두리까지 1px 를 남긴다(실기기 글꼴 차이로 다시 넘치지 않게)
+            if (cellSlack < 1) problems.push(`${at}: ${l.text} 건수와 칸 테두리 여유 ${cellSlack.toFixed(2)}px(1px 미만)`);
+            if (dropSlack !== null && dropSlack < 1) problems.push(`${at}: ${l.text} 건수와 고른 칸 테두리 여유 ${dropSlack.toFixed(2)}px(1px 미만)`);
+            if (l.current && l.count.t < m.drop.t + 2) problems.push(`${at}: ${l.text} 건수가 물방울 윗선에 붙음`);
+            if (gapToLabel < 1 - 1e-6) problems.push(`${at}: ${l.text} 글자 간격 ${gapToLabel.toFixed(2)}px`);
+            for (const other of m.links) if (hit(l.count, other.label)) problems.push(`${at}: ${l.text} 건수가 '${other.text}' 글자와 겹침`);
           }
-          const shown = n > 99 ? "99+" : String(n);
-          expect(withCount.map((l) => [l.text, l.count!.n])).toEqual([["홈", shown], ["결재함", shown]]);
-          // 줄였으면 정확한 수는 탭 이름(읽어 주는 글)에 남는다
-          if (n > 99) for (const name of ["홈", "결재함"]) await page.getByRole("link", { name: new RegExp(`^${name}\\s*${n}건$`) }).waitFor({ timeout: 2000 });
-          await page.context().close();
-        }, 20_000);
+        }
       }
-    }
+      await ctx.close();
+      expect(problems).toEqual([]);
+    }, 240_000);
   }
+
+  test("데스크톱 위 탭도 100 이상은 '99+'이고 탭 이름에 정확한 수가 남는다", async () => {
+    const page = await open(1440, `#/p/${counted[999]!.id}/home`);
+    await page.locator(".gtabs__count").nth(1).waitFor();
+    expect(await page.locator(".gtabs__count").allTextContents()).toEqual(["99+", "99+"]);
+    for (const name of ["홈", "결재함"]) await page.getByRole("link", { name: new RegExp(`^${name}\\s*999건$`) }).waitFor({ timeout: 2000 });
+    const small = await open(1440, `#/p/${counted[99]!.id}/home`);
+    await small.locator(".gtabs__count").nth(1).waitFor();
+    expect(await small.locator(".gtabs__count").allTextContents()).toEqual(["99", "99"]);
+    await page.context().close();
+    await small.context().close();
+  }, 30_000);
 });
 
 // 시험 파일이 import 한 그림 원본도 라이트인지(서버 번들과 같은 파일)
