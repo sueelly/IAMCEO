@@ -87,3 +87,14 @@ python3 scripts/migration_supervisor.py --config "$CONFIG" rollback
 운영 주소/build로 설정을 갱신한 뒤 현재 소유자가 새 관측을 검토하고 acknowledge한다. 남은 글이 실제 delivered이고 실행 근거가 확인돼야 전체 재개를 완료로 기록한다. 그전에는 감독을 유지하고 완료된 경계 감시·빈 점검 서버만 정리한다. 운영 서비스/진행 직원은 감독 교체로 중단하지 않는다. 최종 data 홈의 재시작 검증은 실제 업무 시작 전에 완료했으며 재부팅 시험과 구분한다.
 
 2026-11-16 22:52 KST 운영 보고: 최종 snapshot의 schema 33·ID와 첨부 275개 해시, 운영 HTTPS 로그인/12개 화면/모바일, 기존 관리 서비스 health가 검증됐다. 본사·Native·God의 재개 글은 delivered, Design은 폴더 신뢰 확인으로 held다. 자동 승인·미확인 글 재전송은 하지 않았다. 감독 단위 검사 25개와 이전 안전 검사 5개가 통과했다. 제품 전체 회귀 실패는 기존 TEST-FAILURES 기록대로 남긴다.
+
+
+## 2026-11-17 고정 e707 후속 교체의 실제 차단
+
+기존 이전 UUID가 Native 업무의 고정 `e707d825da1057d76a4824bb78cb9ac045dba7c4` 준비 자료를 이어받아 체크섬·서명·원격 main/작업 가지를 확인했다. 후보 build ID는 `9e4e6a15ee4455164c8d9d0e9e710813e897a24d58fac22c779f06651fcbafb5`다. 공식 server_check는 schema 35/35와 실행 증거 가용성을, server_backup은 schema35의 검증 백업을 반환했다. 운영 데이터 폴더·DB를 직접 열거나 복사하지 않았다.
+
+현재 서비스의 launchd profile 지문은 준비 때와 같고, 로드 파일·파일 SHA·CLI build-id·인증된 local/Tailscale readiness는 `b2c85daa8d6fe0c9ae605ad3fc4c4f5ad8c52b25893bfcf1cc13e88d3c5b105b`로 일치한다. 현재 43 경로에는 바이너리만 있으며 원 빌드의 소스 연속 영수증을 확인하지 못했다. 경로 이름과 깨끗한 소스 체크아웃만으로 과거 빌드 출처를 확정하지 않는다.
+
+현재 카탈로그는 readOnly=true이고 실제 관리 API의 start/stop/restart 제어도 모두 false, 이유는 service_read_only다. 조건부 인계는 이를 셸로 우회할 권한을 주지 않는다. 이번 고정판을 같은 서비스에 교체할 현재 운영 권한의 확정과 기존 산출물 출처 대조가 필요하다. 이 경계가 해결되지 않아 정상 detach 안전창에 진입하지 않았고, plist 변경·새 런타임 설치·stop/start·강제 종료·승인 응답·unknown 재생은 0이다. 기존 원 재개 글 4개는 delivered이며 서비스와 직원은 그대로 운영한다. 실제 활성화나 업무 전체 완료로 쓰지 않는다.
+
+비밀 없는 현재 영수증은 Git 밖 이전 루트의 E707_OPERATOR_OBSERVATION.json과 status.json의 fixed_release_followup에 있다. 원 이전 완료·꺼진 이전 감독은 다시 실행하지 않는다. 제품 전체 회귀를 반복하거나 준비 스크립트의 옛 DB 직접 접근/복사 경로를 사용하지 않는다.
