@@ -1012,6 +1012,11 @@ export class Orchestrator implements OrchestratorApi {
     const basis = effective ? this.store.completionEvidence(effective.taskId, effective.rev) : [];
     const sources = basis.filter(b => b.status === "passed").map(b => b.messageId);
     const byMessage = new Map(basis.map(b => [b.messageId, b]));
+    const deliveryTrace = this.store.taskDeliveryTrace(task.id);
+    const deliveryMetadata = (d: (typeof deliveryTrace.recent)[number]) => {
+      const { memberId, createdAt, ...rest } = d;
+      return { ...rest, to: name(memberId), at: createdAt };
+    };
     const reports = this.store.listTaskHarnessReports(task.id).map(id => {
       const m = this.store.getMessage(id);
       const h = this.store.getReportHarness(id);
@@ -1025,7 +1030,11 @@ export class Orchestrator implements OrchestratorApi {
       task: { id: task.id, title: task.title, createdAt: task.createdAt, origin: task.origin ?? null, parent: task.parentTaskId ?? null },
       contract: effective ? { on: effective.taskId, rev: effective.rev, binding: bindingContract(effective), author: effective.author, authorKind: effective.authorKind, confirmedBy: effective.confirmedBy ?? null } : null,
       contractRevs: this.store.listTaskContracts(task.id).map(c => ({ rev: c.rev, author: c.author, authorKind: c.authorKind, confirmed: !!c.confirmedAt, at: c.at, acceptance: c.acceptance.length, checks: c.checks })),
-      deliveries: this.store.listTaskDeliveries(task.id).map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
+      deliveries: deliveryTrace.history.map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
+      // Keep the original history sample for clients; expose recent/pending windows explicitly.
+      deliveryCoverage: deliveryTrace.coverage,
+      recentDeliveries: deliveryTrace.recent.map(deliveryMetadata),
+      unsettledDeliveries: deliveryTrace.unsettled.map(deliveryMetadata),
       reports,
       currentCompletion: { eligible: sources.length > 0, sources },
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),

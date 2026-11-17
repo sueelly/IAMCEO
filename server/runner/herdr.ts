@@ -283,6 +283,11 @@ export function backgroundWait(screen: string): string | null {
   for (const line of lines.slice(box.bottom + 1)) {
     const bar = BACKGROUND_BAR.exec(line);
     if (bar) return bar[1]!.replace(/\s+/g, " ");
+    // The observed modern footer has a permission prefix and complete count fields.
+    // Prose below the composer is not evidence of live work, even if it mentions counts.
+    const footer = /^\s*⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\))?\s*·\s*(\d+ (?:shells?|monitors?)(?:,\s*\d+ (?:shells?|monitors?))*)\s*$/.exec(line);
+    const counts = footer?.[1]?.match(/\b[1-9]\d* (?:shells?|monitors?)\b/g);
+    if (counts) return counts.join(", ");
   }
   return null;
 }
