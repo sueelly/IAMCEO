@@ -26,17 +26,21 @@
 **Files:** server/roles/writing.md, server/agent-tools.ts, server/writing-lint.ts, server/task-names.ts, tests/output-purpose.test.ts, tests/task-everywhere.test.ts.
 **Interfaces:** 기존 도구 인자와 반환 계약을 유지한다. lintTask를 추가하고 lintPost/lintAsk/lintFile가 제목의 목적을 구분한다.
 
-- [ ] 자동 이름의 목적 부분·대표의 60자 초과 이름 손실과 일반 제목의 도구 경고 누락을 먼저 재현한다.
-- [ ] 위치별 작성 기준·예시와 도구 설명을 맞추고 기존 API 범위에서 제목을 보존한다.
-- [ ] `bun test tests/output-purpose.test.ts tests/task-everywhere.test.ts tests/report-context.test.ts tests/writing-guide.test.ts tests/writing-lint.test.ts tests/terminal-approval-guide.test.ts`를 실행한다. Expected: 관련 검사 실패 0건.
-- [ ] 검증한 변경을 커밋한다.
+- [x] 자동 이름의 목적 부분·대표의 60자 초과 이름 손실과 일반 제목의 도구 경고 누락을 먼저 재현한다.
+- [x] 위치별 작성 기준·예시와 도구 설명을 맞추고 기존 API 범위에서 제목을 보존한다.
+- [x] `bun test tests/output-purpose.test.ts tests/task-everywhere.test.ts tests/report-context.test.ts tests/writing-guide.test.ts tests/writing-lint.test.ts tests/terminal-approval-guide.test.ts`를 실행한다. Expected: 관련 검사 실패 0건.
+- [x] 검증한 변경을 커밋한다.
 
 ### Task 2: 결정·상황 파악의 읽는 순서
 
 **Files:** web/src/screens/Inbox.tsx, web/src/screens/Home.tsx, web/src/styles/home.css, native/Sources/IAMCEO/Views/{InboxView,HomeView}.swift, tests/output-purpose.browser.ts, tests/browser.test.ts.
 **Interfaces:** 기존 결재·상황 필드를 소비한다. API와 승인 상태 변경은 없다.
 
-- [ ] 격리 가상 업무로 결재 상세의 순서와 홈 마지막 조건이 숨겨지는 실패를 먼저 재현한다. 같은 검사에서 보고·자료·상태·이름의 역할을 확인한다.
-- [ ] 웹·네이티브의 열린 결재 상세를 선택지 앞에 표시하고 판단 정보의 자동 접기를 제거한다.
-- [ ] `bun test tests/browser.test.ts --test-name-pattern '읽는 목적|자동 결재의 업무'`, `bun run typecheck`, `bun run build`, `swift test --package-path native`를 실행한다. Expected: 새 브라우저 검사와 빌드 통과. 기존 검사 실패는 근거와 함께 구분한다.
-- [ ] 독립 검토와 관련 회귀 검증 후 커밋·일반 푸시하고 원격 SHA를 대조한다.
+- [x] 격리 가상 업무로 결재 상세의 순서와 홈 마지막 조건이 숨겨지는 실패를 먼저 재현한다. 같은 검사에서 보고·자료·상태·이름의 역할을 확인한다.
+- [x] 웹·네이티브의 열린 결재 상세를 선택지 앞에 표시하고 판단 정보의 자동 접기를 제거한다.
+- [x] `bun test tests/browser.test.ts --test-name-pattern '읽는 목적|자동 결재의 업무'`, `bun run typecheck`, `bun run build`, `swift test --package-path native`를 실행한다. Expected: 새 브라우저 검사와 빌드 통과. 기존 검사 실패는 근거와 함께 구분한다.
+- [x] 독립 검토에서 발견한 문제를 보완하고 관련 회귀 검증을 통과시킨다.
+
+## 검증과 인계
+
+실제 결과와 남은 범위는 `docs/operations/output-purpose-validation.md`에 있다. 검증한 변경을 커밋·일반 푸시하고 원격 SHA를 대조한 결과는 인계 메시지로 보고한다. main 통합·운영 배포는 별도 단계다.

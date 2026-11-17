@@ -56,9 +56,13 @@ function contentLines(text: string): string[] {
 
 /** 길면 낱말 경계에서 자르고 '…'를 붙인다. */
 function cut(text: string, max: number): string {
-  const chars = [...text];
-  if (chars.length <= max) return text;
-  const head = chars.slice(0, max - 1).join("");
+  // Match oneLineProblem / Zod's UTF-16 bound without splitting a surrogate pair.
+  if (text.length <= max) return text;
+  let head = "";
+  for (const char of text) {
+    if (head.length + char.length > max - 1) break;
+    head += char;
+  }
   const space = head.lastIndexOf(" ");
   return `${(space >= max * 0.6 ? head.slice(0, space) : head).replace(/[\s,.;:·…-]+$/, "")}…`;
 }

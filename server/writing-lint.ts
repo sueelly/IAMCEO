@@ -74,8 +74,9 @@ type Bag = LintWarning[];
 
 /** Clearly generic whole titles only; advisory, never a rewrite or a save gate. */
 function titlePurpose(bag: Bag, title: string, surface: "업무 이름" | "결재 제목" | "보고 제목" | "자료 제목") {
-  const plain = stripMd(title).replace(/[.!?。？！:：]+$/u, "").trim();
-  if (!/^(?:검토|확인|확인 요청|후속 진행|진행 상황|진행 중|완료|업무|작업|자료|보고|결과물|알림)$/.test(plain)) return;
+  // Body normalization strips raw URLs; a URL can be the title's actual subject.
+  const plain = title.trim().replace(/^[#*_`]+\s*|\s*[*_`]+$/g, "").replace(/[.!?。？！:：]+$/u, "").trim();
+  if (!/^(?:검토|검토 중|검토 대기|확인|확인 대기|확인 요청|후속 진행|진행 상황|진행 중|완료|업무|작업|자료|보고|결과물|알림)$/.test(plain)) return;
   const purpose = surface === "업무 이름" ? "다시 찾을 대상과 목표를 이름으로 적으세요. 변하는 진행 상태는 별도 상태에 둡니다."
     : surface === "결재 제목" ? "어떤 업무의 무엇을 결정할 질문인지 적으세요. 상세에는 이유와 선택 후 결과를 씁니다."
     : surface === "보고 제목" ? "어떤 업무에서 이번에 달라진 결과인지 적으세요. 본문에는 근거와 남은 조건을 씁니다."

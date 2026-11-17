@@ -178,7 +178,7 @@ export function formatUserMessage(text: string, attachments: Attachment[], id: s
 export function formatTaskLine(task: Task | null): string {
   if (!task) return "작업: 없음(업무가 붙기 전의 옛 글). 이 일의 post·ask·file·todo 에는 이어 갈 업무의 task_id 를 넣거나, 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다";
   const where = [task.branch ? `브랜치 '${quotedInline(task.branch)}'` : null, task.worktree ? `워크트리 '${quotedInline(task.worktree)}'` : null].filter(Boolean).join(" · ");
-  const naming = provisionalTaskTitle(task) ? ` 이 이름은 서버가 글에서 지은 임시 이름이다. 목적이 드러나는 이름(40자 안)으로 task 도구(task_id "${task.id}", title)로 바꾸고, 대화 중 목적이 정해지거나 바뀌면 다시 바꾼다` : "";
+  const naming = provisionalTaskTitle(task) ? ` 이 이름은 서버가 글에서 지은 임시 이름이다. 대상과 목표가 드러나는 안정된 이름으로 task 도구(task_id "${task.id}", title)로 바꾼다. 글자 수에 맞추려고 대상·조건을 빼지 않고 도구의 입력 한도를 따른다. 진행 상태만 바뀌면 이름을 유지하고, 실제 목적·범위가 달라질 때만 조정한다` : "";
   return `작업 #${task.id} '${quotedInline(task.title)}'${where ? ` · ${where}` : ""}. 이 작업의 글이다. 이 일의 post·ask·file·todo 에 task_id "${task.id}" 를 넣는다${naming ? `.${naming}` : ""}`;
 }
 

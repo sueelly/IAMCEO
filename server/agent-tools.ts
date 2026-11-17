@@ -228,7 +228,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (a.task_id && a.parent_task_id) throw new ApiError(400, "parent_task_id 는 새로 만들 때만 넣습니다");
       const { task, created, contract } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree, parentTaskId: a.parent_task_id, contract: a.contract, confirmContractRev: a.confirm_contract_rev });
       const proposed = a.contract && member.kind === "worker" && contract?.authorKind === "worker" && !contract.confirmedAt ? "\n직원이 단 계약은 총괄 확인 전까지 완료 판정에 묶이지 않습니다. 총괄에게 확인 요청을 보냈습니다" : "";
-      return reply(withLint(`${a.confirm_contract_rev ? `계약 r${contract?.rev} 을 확인했습니다` : created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다${contract ? `\n${formatContract(contract)}` : ""}${proposed}`, lintTask(task.title)));
+      return reply(withLint(`${a.confirm_contract_rev ? `계약 r${contract?.rev} 을 확인했습니다` : created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다${contract ? `\n${formatContract(contract)}` : ""}${proposed}`, a.title !== undefined ? lintTask(a.title) : []));
     },
   ),
 
@@ -798,10 +798,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (item.taskId) {
         const progress = orch.store.taskProgress(item.taskId);
         const warn = item.sec === "done" && progress.stage !== "done" ? ` 업무 단계는 아직 '${STAGE_LABEL[progress.stage]}'입니다. 팀 목록은 업무 단계를 보입니다. 끝났으면 task_stage(done)로 근거를 남기세요` : "";
-        return reply(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`);
+        return reply(withLint(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`, lintTask(a.title)));
       }
       const task = orch.store.getTask(Store.workTaskId(item.id));
-      return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`);
+      return reply(withLint(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`, lintTask(a.title)));
     },
   ),
 
