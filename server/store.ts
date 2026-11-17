@@ -2011,6 +2011,17 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return null;
   }
 
+  /** Executable predecessors only: projection-only reports cannot authorize an order exception. */
+  taskSequencePredecessors(memberId: string, taskId: string): string[] {
+    const member = this.requireMember(memberId);
+    if (this.requireTask(taskId).projectId !== member.projectId) throw new ApiError(404, "이 프로젝트의 업무만 확인할 수 있습니다");
+    const tasks = this.listTasks(member.projectId), byId = new Map(tasks.map(t => [t.id, t]));
+    const open = orderAssignments(this.workflowAssignments(member.projectId, memberId), byId)
+      .filter(a => a.eligible && byId.has(a.taskId) && byId.get(a.taskId)!.progress?.stage !== "done" && !byId.get(a.taskId)!.mergedInto);
+    const index = open.findIndex(a => a.taskId === taskId);
+    return index < 0 ? [] : open.slice(0, index).map(a => a.taskId);
+  }
+
   taskContinuationPauses(projectId: string): { taskId: string; reason: string; pausedAt: string | null }[] {
     return activeTaskContinuationPauses(this, projectId);
   }
@@ -2093,6 +2104,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   workflowAssignmentReceipt(operationId: string): { request: WorkflowAssignmentRequest; result: WorkflowAssignmentResult } | null {
     const row = this.row("SELECT * FROM workflow_assignment_receipts WHERE operation_id = ?", operationId);
     return row ? { request: json(row.request_json), result: { operationId: row.operation_id, projectId: row.project_id, taskId: row.task_id, memberId: row.member_id, deliveryId: row.delivery_id, createdAt: row.created_at } } : null;
+  }
+
+  /** Read only: an order exception belongs to one existing delivery, never its whole task. */
+  workflowAssignmentReceiptForDelivery(deliveryId: string): { request: WorkflowAssignmentRequest; result: WorkflowAssignmentResult } | null {
+    const row = this.row("SELECT operation_id FROM workflow_assignment_receipts WHERE delivery_id = ? AND json_extract(request_json, '$.kind') = 'independent_delivery' ORDER BY created_at DESC, rowid DESC LIMIT 1", deliveryId);
+    return row ? this.workflowAssignmentReceipt(row.operation_id) : null;
   }
 
   saveWorkflowAssignmentReceipt(request: WorkflowAssignmentRequest, result: WorkflowAssignmentResult): void {

@@ -289,6 +289,9 @@ const AskWaitSchema = z.object({ decisionId: nonEmpty, timeoutMs: z.number().int
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const operationIdSchema = z.uuid();
 const WorkflowAssignmentSchema = z.strictObject({ operationId: operationIdSchema, memberId: z.string().min(1).max(256), revision: z.string().regex(/^[a-f0-9]{64}$/) });
+const IndependentDeliverySchema = z.strictObject({ operationId: operationIdSchema,
+  sourceMessageId: z.string().min(1).max(256), expectedSessionGeneration: revision,
+  expectedBlockerTaskId: z.string().min(1).max(256) });
 const FreshSessionSchema = z.strictObject({ operationId: operationIdSchema, expectedSessionGeneration: revision });
 const terminalIdentity = { operationId: operationIdSchema, expectedSessionGeneration: revision, claimId: z.string().min(1).max(256) };
 const terminalKey = z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]);
@@ -649,6 +652,12 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const body = await parseBody(req, WorkflowAssignmentSchema);
       if (!orch.assignWorkflow) throw new ApiError(501, "업무 배정을 지원하지 않습니다");
       return Response.json(await orch.assignWorkflow(id!, taskId!, body));
+    }),
+    route("POST", "/api/projects/:id/deliveries/:delivery/independent", async (req, url, [id, deliveryId]) => {
+      activeProject(id!); strictQuery(url, []);
+      const body = await parseBody(req, IndependentDeliverySchema);
+      if (!orch.authorizeIndependentDelivery) throw new ApiError(501, "독립 후속 전달을 지원하지 않습니다");
+      return Response.json(await orch.authorizeIndependentDelivery(id!, deliveryId!, body));
     }),
     route("GET", "/api/projects/:id/workflow/assignments/:operation", (_req, url, [id, operationId]) => {
       strictQuery(url, []); store.requireProject(id!);

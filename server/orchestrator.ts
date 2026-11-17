@@ -85,8 +85,9 @@ import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
-import type { WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
+import type { IndependentDeliveryRequest, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { commitWorkflowAssignment } from "./workflow-assignment.ts";
+import { authorizeIndependentDelivery as commitIndependentDelivery, independentDeliveryAuthorized } from "./independent-delivery.ts";
 import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TerminalKey, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
@@ -1055,6 +1056,11 @@ export class Orchestrator implements OrchestratorApi {
       deliveryCoverage: deliveryTrace.coverage,
       recentDeliveries: deliveryTrace.recent.map(deliveryMetadata),
       unsettledDeliveries: deliveryTrace.unsettled.map(deliveryMetadata),
+      inputAdmission: deliveryTrace.unsettled.filter(d => d.wake && this.store.getMember(d.memberId)?.kind === "worker")
+        .map(d => ({ deliveryId: d.id,
+          sequenceBlockerTaskId: this.store.taskSequenceBlocker(d.memberId, task.id)?.taskId ?? null,
+          sessionGeneration: this.store.memberRevisions(d.memberId).sessionGeneration,
+          independentAuthorized: independentDeliveryAuthorized(this.store, this.store.requireDelivery(d.id)) })),
       reports,
       currentCompletion: { eligible: sources.length > 0, sources },
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
@@ -3577,6 +3583,15 @@ export class Orchestrator implements OrchestratorApi {
     return result;
   }
 
+  /** Owner-confirmed order exception. Reuse the existing input; retries only read the receipt. */
+  async authorizeIndependentDelivery(projectId: string, deliveryId: string, request: IndependentDeliveryRequest): Promise<WorkflowAssignmentResult> {
+    this.requireActive(this.store.requireProject(projectId));
+    const prior = this.store.workflowAssignmentReceipt(request.operationId);
+    const result = commitIndependentDelivery(this.store, projectId, deliveryId, request);
+    if (!prior) await this.pump(result.memberId);
+    return result;
+  }
+
   async assign(projectId: string, memberRef: string, input: AssignInput, assignedBy?: Member): Promise<AssignResult> {
     const target = this.requireInProject(projectId, memberRef);
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
@@ -4820,7 +4835,7 @@ export class Orchestrator implements OrchestratorApi {
       const taskId = this.store.deliveryTaskId(d.id);
       if (!worker || !taskId) return true;
       if (!blocked.has(taskId)) blocked.set(taskId, this.store.taskSequenceBlocker(memberId, taskId) !== null);
-      return !blocked.get(taskId);
+      return !blocked.get(taskId) || independentDeliveryAuthorized(this.store, d);
     });
   }
 
