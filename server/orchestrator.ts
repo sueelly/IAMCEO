@@ -2731,23 +2731,21 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 마지막으로 카드에 보인 창(직원마다). 영수증의 '창 확인' 시각에 쓴다. */
   private nativeSeen = new Map<string, { promptId: string; observedAt: string | null }>();
-  private nativeInflight = new Map<string, { memberId: string; promptId: string; run: Promise<NativeAnswerReceipt> }>();
+  private nativeInflight = new Map<string, Promise<NativeAnswerReceipt>>();
 
   /**
    * 대표가 결재함·대화에서 직원 CLI 의 창에 답한다(대표 화면 HTTP 전용, AI 도구에는 없다). 업무 대기열을 거치지 않고 지금 창에 바로 넣는다.
-   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청·서버 재시작 뒤). 넣기 전에 대기 영수증을 DB 에 적고,
+   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청·서버 재시작 뒤). 넣는 중이든 끝난 뒤든 직원·프로젝트·요청 전체가 다르면 409 다. 넣기 전에 대기 영수증을 DB 에 적고,
    * 결과를 적기 전에 멈췄던 요청은 '모름'으로 답하며 다시 넣지 않는다. 직원·프로젝트·세대·실행·창 차례가 카드와 다르면 넣지 않는다.
    */
   async answerNativePrompt(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
-    const inflight = this.nativeInflight.get(req.operationId);
-    if (inflight) {
-      if (inflight.memberId !== memberId || inflight.promptId !== req.promptId) throw new ApiError(409, "다른 요청에 쓴 operationId 입니다", "OPERATION_CONFLICT");
-      return inflight.run;
-    }
     const member = this.store.requireMember(memberId);
-    const project = this.store.requireProject(member.projectId);
     const scope = { operationId: req.operationId, projectId: member.projectId, memberId, request: req };
+    // 넣는 중인 요청도 먼저 적은 대기 영수증과 같은 대조(직원·프로젝트·요청 전체)를 거친다. 하나라도 다르면 409 이고 넣지 않는다.
     const prior = this.store.getNativeAnswer(scope);
+    const inflight = this.nativeInflight.get(req.operationId);
+    if (inflight) return inflight;
+    const project = this.store.requireProject(member.projectId);
     if (prior) return prior.pending ? this.nativeReceipt(memberId, req, "unknown", "결과를 적기 전에 서버가 멈췄습니다. 들어갔는지 모르니 다시 넣지 않습니다. 팀 화면에서 터미널을 확인하세요", { terminal: "unknown" }) : prior.receipt as NativeAnswerReceipt;
     this.requireActive(project);
     this.store.beginNativeAnswer(scope);
@@ -2755,7 +2753,7 @@ export class Orchestrator implements OrchestratorApi {
       console.error("창 답 넣기 오류:", memberId, error);
       return this.nativeReceipt(memberId, req, "unknown", "넣는 중 결과를 확인하지 못했습니다. 다시 넣지 않습니다. 팀 화면에서 터미널을 확인하세요", { terminal: "unknown" });
     });
-    this.nativeInflight.set(req.operationId, { memberId, promptId: req.promptId, run });
+    this.nativeInflight.set(req.operationId, run);
     try {
       const receipt = await run;
       this.store.finishNativeAnswer(req.operationId, receipt);
