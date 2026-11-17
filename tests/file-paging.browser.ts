@@ -41,10 +41,10 @@ beforeAll(async () => {
   browser = await chromium.launch();
 });
 afterAll(async () => { await browser?.close(); await orch?.shutdown(); await server?.stop(); store?.db.close(); });
-async function open(page: Page, sub = "") {
+async function open(page: Page, sub = "", projectId = project.id) {
   await page.goto(base + "/api/health");
   await page.evaluate(c => localStorage.setItem("iamceo.accessCode", c), code);
-  await page.goto(`${base}/#/p/${project.id}/files${sub ? "/" + sub : ""}`);
+  await page.goto(`${base}/#/p/${projectId}/files${sub ? "/" + sub : ""}`);
 }
 async function count(page: Page, n: number) {
   await page.waitForFunction(n => document.querySelectorAll(".fl-list .fl-row").length === n, n);
@@ -125,5 +125,67 @@ test("an initial file request failure can be retried without reloading the proje
     await open(page);
     await page.getByRole("alert").filter({ hasText: "목록 일시 오류" }).waitFor();
     await page.getByRole("button", { name: "다시 불러오기" }).click(); await count(page, 20);
+  } finally { await page.close(); }
+}, 60_000);
+
+test("deleting a loaded page boundary keeps all surviving files after the final page", async () => {
+  const p = store.createProject({ name: "삭제 경계", cwd: project.cwd, runnerEnabled: false });
+  const docs = Array.from({ length: 45 }, (_, i) => store.createFile({ projectId: p.id, title: `삭제 ${i}`, kind: "document", body: "body" }));
+  const page = await browser.newPage({ viewport: { width: 1280, height: 850 } });
+  try {
+    await open(page, "", p.id); await count(page, 20);
+    await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
+    store.db.query("DELETE FROM files WHERE id = ?").run(docs[5]!.id);
+    await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; });
+    await page.waitForFunction(() => document.querySelectorAll(".fl-row").length !== 40);
+    expect(await page.locator(".fl-row").count()).toBe(44);
+    expect(await page.locator(".fl-row__title").first().innerText()).toBe("삭제 44");
+    expect(await page.locator(".fl-row__title").last().innerText()).toBe("삭제 0");
+  } finally { await page.close(); }
+}, 60_000);
+
+test("a full page of live arrivals preserves the previously read interval", async () => {
+  const p = store.createProject({ name: "일괄 추가", cwd: project.cwd, runnerEnabled: false });
+  for (let i = 0; i < 60; i++) store.createFile({ projectId: p.id, title: `일괄 ${i}`, kind: "document", body: "body" });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 850 } });
+  try {
+    await open(page, "", p.id); await count(page, 20);
+    await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
+    const anchor = await page.locator(".fl-list").evaluate(root => {
+      const box = root.getBoundingClientRect();
+      const row = [...root.querySelectorAll<HTMLAnchorElement>(".fl-row")].find(row => row.getBoundingClientRect().top >= box.top)!;
+      return { href: row.getAttribute("href"), offset: row.getBoundingClientRect().top - box.top };
+    });
+    store.transaction(() => { for (let i = 0; i < 20; i++) store.createFile({ projectId: p.id, title: `신규 ${i}`, kind: "document", body: "new" }); });
+    await page.waitForFunction(() => document.querySelector(".fl-row__title")?.textContent === "신규 19");
+    expect(await page.locator(".fl-row__title", { hasText: /^일괄 20$/ }).count()).toBe(1);
+    expect(await page.locator(".fl-row").count()).toBeGreaterThanOrEqual(60);
+    const offset = await page.locator(".fl-list").evaluate((root, href) => {
+      const row = [...root.querySelectorAll<HTMLAnchorElement>(".fl-row")].find(row => row.getAttribute("href") === href)!;
+      return row.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    }, anchor.href);
+    expect(Math.abs(offset - anchor.offset)).toBeLessThan(3);
+  } finally { await page.close(); }
+}, 60_000);
+
+test("moving an old file into an exhausted task updates the list and open reader", async () => {
+  const p = store.createProject({ name: "옛 자료 이동", cwd: project.cwd });
+  const lead = await orch.ensureConductor(p.id);
+  const a = store.saveTask({ projectId: p.id, memberId: lead.id, who: "담당", title: "목표 업무" }).task;
+  const b = store.saveTask({ projectId: p.id, memberId: lead.id, who: "담당", title: "원래 업무" }).task;
+  for (const task of [a, b]) store.createMessage({ projectId: p.id, kind: "진행", taskId: task.id, body: task.title });
+  const old = store.createFile({ projectId: p.id, title: "옮길 옛 자료", kind: "document", body: "old", taskId: b.id });
+  for (let i = 0; i < 40; i++) store.createFile({ projectId: p.id, title: `목표 ${i}`, kind: "document", body: "body", taskId: a.id });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 850 } });
+  try {
+    await open(page, old.id, p.id);
+    await page.locator(".cmp-task", { hasText: "목표 업무" }).click(); await count(page, 20);
+    await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
+    await page.locator(".fl-doc__task", { hasText: "원래 업무" }).waitFor();
+    store.moveRecordTask({ projectId: p.id, refType: "file", refId: old.id, from: b.id, to: a.id, basis: "classify", actor: "시험" });
+    await page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
+    expect(await page.locator(".fl-row").count()).toBe(41);
+    expect(await page.locator(".fl-row__title", { hasText: "옮길 옛 자료" }).count()).toBe(1);
+    expect(await page.locator(".fl-doc__task").count()).toBe(0);
   } finally { await page.close(); }
 }, 60_000);

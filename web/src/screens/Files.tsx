@@ -140,7 +140,8 @@ export default function Files() {
   const counts = paged ? feed.counts : files.reduce<Partial<Record<FileKind, number>>>((counts, f) => { counts[f.kind] = (counts[f.kind] ?? 0) + 1; return counts; }, {});
   const selectedId = sub ?? (desktop ? shown[0]?.id ?? null : null);
   const detail = useFileDetail(projectId, selectedId, paged);
-  const selected = paged ? detail.file : all.find(f => f.id === selectedId) ?? null;
+  const metadata = project?.files.find(f => f.id === selectedId) ?? feed.items.find(f => f.id === selectedId);
+  const selected = paged ? detail.file ? { ...detail.file, ...metadata, body: detail.file.body } : null : all.find(f => f.id === selectedId) ?? null;
   const otherTask = selected?.taskId && selected.taskId !== task?.id ? tasks.find((t) => t.id === selected.taskId) ?? null : null;
   const pickTask = (next: Task) => chooseTask(projectId, next);
   const reader = selected ? <Reader key={selected.id} file={selected} otherTask={otherTask} onTask={pickTask} />

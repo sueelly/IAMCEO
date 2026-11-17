@@ -8,8 +8,8 @@ Architecture: Check Claude transcript availability after owned-live-terminal rea
 - [x] Run new tests and observe missing preflight failing.
 - [x] Add the narrow preflight in server/runner/core.ts using strict filesystem checks. Do not mutate delivery recovery state.
 - [x] Run core/lifecycle/recovery regressions, typecheck and the project suite; compare known baseline failures.
-- [ ] Review and commit verified files; push the task branch and verify remote SHA.
-- [ ] Build an immutable candidate; arrange a service-safe rollout without interrupting active user work; verify the failed writer can open and its same eligible instruction is received once.
+- [x] Review and commit verified files; push the task branch and verify remote SHA.
+- [x] Build an immutable candidate; arrange a service-safe rollout without interrupting active user work; verify the failed writer can open and its same eligible instruction is received once.
 
 Constraints: Preserve conversations, drafts, approvals, old native logs, migrated held/unknown deliveries and other active work. Do not accept trust prompts, retry unknown input, create duplicate workers, force-push, or merge main. User request is continuation of the established migration, not authorization for new feature scope.
 
@@ -76,3 +76,11 @@ Full-suite observed failures (verbatim test names):
 - (fail) 2차 검수 회귀: 칸 소유·전달(가짜 소켓) > promptSeen: 세션 기록이나 화면에 표지가 있을 때만 true [1.69ms]
 
 Independent legacy timing check: herdr-contract.test.ts / events retain unknown observations passes in isolation (1 pass, 0 fail). This does not erase the observed full-suite failure. Final review confirms preflight is after live ownership reattachment and native-ID validation, before terminal.run; no delivery, approval or interrupt mutation was added.
+
+Production verification (2026-11-16): fa6581a62436f73a03177bf90bd48e0044606b2d was pushed and origin HEAD matched. An immutable git-archive build, frozen dependencies, code signature and compiled empty-home HTTP readiness passed. First launchd replacement did not settle and was rolled back. The second waited for the old log supervisor and web child to exit before bootstrap; local and Tailscale readiness now match binary SHA 91b7e6ec8ad35342f9fafcf31eebb86de5858a5fadd35785a4b70aefb83cb5c3. All five pre-existing live CLI PIDs were preserved.
+
+The writer reopened with a fresh native ID through the existing confirmed-missing path. Twelve current instructions proved not written were rechecked through the versioned official API with the same delivery IDs; all twelve have actual delivered_at receipts and matching inputReceivedAt in the six receiving workers. Historical restore-quarantined instructions were not replayed or relabeled received. The original writer completed its handoff-only instruction; the actual R1/R2 follow-up was then explicitly sent under the existing Agent-A task so handoff completion would not be mistaken for code work.
+
+The design conductor received the original user implementation approvals and resumed web leftovers. The separate old native app worker was inspected on the source: prior execution ended, no approval, empty composer. Target had no owned terminal, live execution or unresolved physical dispatch. Official sleep/resume normalized that inactive imported state; no source session was touched or live CLI killed. Native app verification remains blocked on missing Xcode. No new candidates, users, main merges or unknown-input retries were authorized.
+
+User's ongoing product tasks are distinct from this service fix: work continues in the registered projects, subject to the existing seven concurrent turns. Full-product failures above remain a limitation; this is not a claim that all backlog features are complete.

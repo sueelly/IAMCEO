@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
-import { EFFORTS, type Bootstrap, type Effort, type Member, type Project, type ProjectState } from "../shared/types.ts";
+import { EFFORTS, type Bootstrap, type ConnectionInfo, type ConnectionPatch, type Effort, type Member, type Project, type ProjectState } from "../shared/types.ts";
 import { DEFAULT_PORT, homeDir, detectTailscaleIp, isTailscaleV4, loadConfig, updateConfigFile, type Config } from "../server/config.ts";
 
 const USAGE = `쓰는 법: iamceo <명령>
@@ -18,6 +18,8 @@ const USAGE = `쓰는 법: iamceo <명령>
   open                   접속 주소와 접속 코드를 보여 준다
   status                 서버와 프로젝트 상태를 본다
   attach <직원ID>        관리 중인 CLI 터미널을 연다
+  connection [--ssh-host 주소|auto] [--ssh-user 사용자|auto] [--ssh-port 번호|auto]
+                         현재 서버의 터미널 접속 설정을 조회·변경한다
   join [--project 이름] [--name 이름] [--role 역할] [--handle 핸들] [--session UUID]
                          내가 띄운 CLI 를 직원으로 등록하고 연결 명령을 알려 준다
   import <덤프.json> [--name 이름] [--cwd 폴더]
@@ -275,6 +277,20 @@ async function attach(args: string[]): Promise<void> {
   } });
   const code = await proc.exited;
   if (code !== 0) throw new CliError(`터미널 연결이 끝났습니다(${code})`);
+}
+
+async function connection(args: string[]): Promise<void> {
+  const { values } = parseArgs({ args, options: { "ssh-host": { type: "string" }, "ssh-user": { type: "string" }, "ssh-port": { type: "string" } }, strict: true, allowPositionals: false });
+  const patch: ConnectionPatch = {};
+  if (values["ssh-host"] !== undefined) patch.sshHost = values["ssh-host"] === "auto" ? null : values["ssh-host"];
+  if (values["ssh-user"] !== undefined) patch.sshUser = values["ssh-user"] === "auto" ? null : values["ssh-user"];
+  if (values["ssh-port"] !== undefined) {
+    const raw = values["ssh-port"];
+    if (raw !== "auto" && (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 65535)) throw new CliError("SSH 포트는 1~65535 또는 auto로 적어 주세요");
+    patch.sshPort = raw === "auto" ? null : Number(raw);
+  }
+  const result = await api<ConnectionInfo>(loadConfig(), "/api/connection", Object.keys(patch).length ? { method: "PATCH", body: patch } : undefined);
+  console.log(JSON.stringify(result, null, 2));
 }
 
 // ---- setup ----
@@ -734,6 +750,8 @@ async function main(argv: string[]): Promise<void> {
       return join_(rest);
     case "attach":
       return attach(rest);
+    case "connection":
+      return connection(rest);
     case "status":
       return status();
     case "open":

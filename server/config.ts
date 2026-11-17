@@ -2,6 +2,8 @@ import { randomInt, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
+import { isIP } from "node:net";
+import type { ConnectionOverrides, ConnectionPatch } from "../shared/types.ts";
 import pkg from "../package.json";
 import { withHomeOwner } from "./home-owner.ts";
 import { toStorageError } from "./storage-errors.ts";
@@ -22,6 +24,7 @@ export interface ConfigFile {
   coreBin?: string;
   coreSocket?: string;
   herdrSocket?: string;
+  connection?: ConnectionOverrides;
 }
 
 export interface Config {
@@ -97,7 +100,36 @@ function validateConfig(value: unknown, path: string): Partial<ConfigFile> {
   if (file.hosts !== undefined && (!Array.isArray(file.hosts) || file.hosts.some((host) => typeof host !== "string" || !host || host.includes("\0")))) {
     throw new Error(`설정 파일 hosts가 잘못되었습니다: ${path}`);
   }
+  if (file.connection !== undefined) {
+    const c = file.connection as ConnectionOverrides;
+    if (!c || typeof c !== "object" || Array.isArray(c) || Object.keys(c).some(k => !["sshHost", "sshUser", "sshPort"].includes(k)) ||
+        c.sshHost !== undefined && !validSshHost(c.sshHost) || c.sshUser !== undefined && !validSshUser(c.sshUser) ||
+        c.sshPort !== undefined && (!Number.isInteger(c.sshPort) || c.sshPort < 1 || c.sshPort > 65535)) {
+      throw new Error(`설정 파일 connection이 잘못되었습니다: ${path}`);
+    }
+  }
   return file as Partial<ConfigFile>;
+}
+
+export const validSshHost = (value: unknown): value is string => typeof value === "string" && value.length <= 253 &&
+  (isIP(value) === 6 || /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value));
+export const validSshUser = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(value);
+
+/** Address overrides are read on demand so edits do not require a daemon restart. */
+export function readConnectionConfig(config: Pick<Config, "configPath">): ConnectionOverrides {
+  return readConfigFile(config.configPath)?.connection ?? {};
+}
+
+export function updateConnectionConfig(config: Pick<Config, "home">, patch: ConnectionPatch): void {
+  withHomeOwner(config.home, home => {
+    const file = readConfigFile(join(home, "config.json"));
+    const connection = { ...file?.connection };
+    for (const key of ["sshHost", "sshUser", "sshPort"] as const) {
+      if (patch[key] === null) delete connection[key];
+      else if (patch[key] !== undefined) Object.assign(connection, { [key]: patch[key] });
+    }
+    atomicConfigWrite(home, { ...file, connection });
+  });
 }
 
 function readConfigFile(path: string): Partial<ConfigFile> | undefined {

@@ -9,6 +9,7 @@ import type {
   ApprovalPrompt,
   Attachment,
   Bootstrap,
+  ConnectionInfo,
   CreateProjectReq,
   CreateMemberReq,
   RuntimeInfo,
@@ -159,6 +160,7 @@ const slowPost = <T>(path: string, body?: unknown) => request<T>("POST", path, b
 const get = <T>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, READ_TIMEOUT_MS, { signal });
 
 export const api = {
+  connection: (signal?: AbortSignal) => get<ConnectionInfo>("/api/connection", signal),
   bootstrap: (signal?: AbortSignal) => get<Bootstrap>("/api/bootstrap", signal),
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
