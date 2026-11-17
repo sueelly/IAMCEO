@@ -732,6 +732,10 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
         expect([saved.status, saved.json?.revision]).toEqual([200, revision + 1]);
         expect(session().draft_revision).toBe(revision + 1);
         revision += 1;
+        // 방금 쓴 요청 id 에 지금 초안 판·다른 그림 목록을 붙여 보내면 새 저장으로 받지 않는다(독립 재확인 5f7f626). 붙인 그림과 초안 판이 그대로다.
+        const reused = await post("draft/attachments", { session: first, attachments: [], revision, opId: "other-screen-attach-01" });
+        expect([reused.status, reused.json?.code]).toEqual([409, "AGENT_A_IDEMPOTENCY_CONFLICT"]);
+        expect([session().draft_revision, session().draft.globalAttachments]).toEqual([revision, [up]]);
       }
       // 같은 글로 다시 누른다: 다른 화면의 초안(충돌)으로 보이지 않고 저장으로 끝난다. 초안은 다시 쓰이지 않았다.
       await page.getByRole("button", { name: "초안 저장" }).click();

@@ -223,28 +223,62 @@ const revisionOr = (sent: number | null | undefined, first: unknown, current: nu
  * - 기록이 남아 있어도 그 칸의 값이 요청한 값과 다르면 저장된 것으로 보지 않는다(기록까지 실어 그 칸을 바꾼 다른 화면).
  * - 요청 id 는 화면이 저장마다 정해 보낸다. id 가 다르면 초안 판·값이 같아도 다른 요청이다.
  *   id 없이 온 요청(이 클래스를 직접 부르는 쪽)은 문서·검토·칸·초안 판·값이 같으면 같은 요청으로 본다(둘을 가릴 것이 없다).
+ * - 요청 id 는 처음 입력에 묶인다(독립 재확인 5f7f626). key 만으로는 '이 id 를 이미 썼는가'를 알 수 없어, 지금 초안 판에 맞춘 다른 값이
+ *   같은 id 로 오면 새 저장으로 받았다. 그래서 기록마다 id 의 지문을 따로 싣는다(ids: 기록 key → id 지문).
+ *   기록에 남은 id 가 다른 입력(다른 초안 판·다른 값·다른 칸)으로 오면 아무것도 쓰지 않고 거절한다. 처음 입력 그대로는 위의 '이미 저장됨'이다.
+ *   묶이는 범위는 이 문서·이 검토의 기록에 남아 있는 동안이다: 기록에서 빠진 id(SAVE_KEEP 밖·값이 바뀐 칸), id 없이 온 요청,
+ *   id 를 싣지 않은 기록은 묶지 않는다(모든 요청 id 를 따로 보관하지 않는다).
  * Agent-A 는 초안의 모르는 칸을 그대로 보관한다(POST /api/draft, 주석 하나를 더할 때도). 기록을 싣지 않고 초안을 통째로 저장하는 쪽이 쓰면
  * 기록이 사라지고 그 뒤의 재전송은 충돌이다. 기록을 그대로 다시 실은 저장은 그 칸의 값을 바꾸지 않은 한 앞 요청의 확인을 막지 않는다.
  */
 const SAVE_MARK = "iamceoSave";
 const SAVE_KEEP = 4;
+const SAVE_HASH = /^[0-9a-f]{64}$/;
 type SaveKind = "body" | "attachments";
-type SaveMark = { kind: SaveKind; key: string; holds: (draft: Json) => boolean };
+type SaveMark = { kind: SaveKind; key: string; id: string | null; holds: (draft: Json) => boolean };
 const saveKey = (artifactId: string, sid: string, kind: SaveKind, revision: number, value: unknown, opId: string | null): string =>
   createHash("sha256").update(JSON.stringify([artifactId, sid, kind, revision, value, opId])).digest("hex");
+/** 요청 id 의 지문. 문서·검토에 묶고 칸은 넣지 않는다(한 id 는 어느 칸에 보내든 한 요청이다). id 없이 온 요청은 null. */
+const saveId = (artifactId: string, sid: string, opId: string | null): string | null =>
+  opId === null ? null : createHash("sha256").update(JSON.stringify(["id", artifactId, sid, opId])).digest("hex");
 /** 초안에 남은 한 칸의 저장 기록(최근 것부터). 모양이 다르면 기록이 없는 것으로 본다(그러면 재전송은 충돌이다). */
 const savesOf = (draft: Json, kind: SaveKind): string[] => {
   const m = draft[SAVE_MARK];
   const list = obj(m) && m.v === 1 ? m[kind] : null;
-  return Array.isArray(list) ? list.filter((k): k is string => typeof k === "string" && /^[0-9a-f]{64}$/.test(k)).slice(0, SAVE_KEEP) : [];
+  return Array.isArray(list) ? list.filter((k): k is string => typeof k === "string" && SAVE_HASH.test(k)).slice(0, SAVE_KEEP) : [];
+};
+/** 남아 있는 기록(두 칸)의 요청 id 지문: 기록 key → id 지문. 남지 않은 기록의 것과 모양이 틀린 것은 없는 것으로 본다. */
+const saveIdsOf = (draft: Json): Map<string, string> => {
+  const m = draft[SAVE_MARK];
+  const ids = obj(m) && m.v === 1 && obj(m.ids) ? m.ids : {};
+  const out = new Map<string, string>();
+  for (const key of [...savesOf(draft, "body"), ...savesOf(draft, "attachments")]) {
+    const id = ids[key];
+    if (typeof id === "string" && SAVE_HASH.test(id)) out.set(key, id);
+  }
+  return out;
 };
 /** 지금 초안이 이 요청의 저장을 담고 있는가: 이 요청의 기록이 남아 있고, 그 칸의 값도 요청한 값 그대로다. */
 const savedAlready = (draft: Json, mark: SaveMark): boolean => savesOf(draft, mark.kind).includes(mark.key) && mark.holds(draft);
-/** 이 저장을 실은 뒤의 기록. 다른 칸의 기록은 그대로 싣고, 이 칸은 값이 그대로일 때만 앞 기록을 잇는다. */
+/** 이 요청의 id 가 기록에 남은 다른 요청의 것인가(같은 id 에 다른 입력). */
+const idTaken = (draft: Json, mark: SaveMark): boolean => {
+  if (mark.id === null) return false;
+  for (const [key, id] of saveIdsOf(draft)) if (id === mark.id && key !== mark.key) return true;
+  return false;
+};
+/** 이 저장을 실은 뒤의 기록. 다른 칸의 기록은 그대로 싣고, 이 칸은 값이 그대로일 때만 앞 기록을 잇는다. id 지문은 남는 기록의 것만 싣는다. */
 const savesWith = (draft: Json, mark: SaveMark): Json => {
   const other: SaveKind = mark.kind === "body" ? "attachments" : "body";
   const before = mark.holds(draft) ? savesOf(draft, mark.kind).filter((k) => k !== mark.key) : [];
-  return { v: 1, [other]: savesOf(draft, other), [mark.kind]: [mark.key, ...before].slice(0, SAVE_KEEP) };
+  const kept = savesOf(draft, other);
+  const mine = [mark.key, ...before].slice(0, SAVE_KEEP);
+  const had = saveIdsOf(draft);
+  const ids: Record<string, string> = {};
+  for (const key of [...kept, ...mine]) {
+    const id = key === mark.key ? mark.id : had.get(key);
+    if (id) ids[key] = id;
+  }
+  return { v: 1, [other]: kept, [mark.kind]: mine, ids };
 };
 
 const STATUSES: AgentAProposalStatus[] = ["pending", "held", "rejected", "applied", "conflict"];
@@ -636,15 +670,18 @@ export class AgentAReview {
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision). 초안의 다른 칸(주석·첨부)은 그대로 다시 싣는다.
    * 같은 요청(같은 요청 id·같은 초안 판·같은 본문)을 다시 보내면 다시 쓰지 않고 지금 초안을 돌려준다(저장은 됐는데 응답만 잃은 경우).
    * 그사이 그림 저장이나 댓글이 끼어 초안 판이 더 올랐어도 같다. 본문이 다시 바뀌었으면 충돌이다.
+   * 기록에 남은 요청 id 에 다른 입력(다른 초안 판·다른 본문)을 붙여 보내면 초안 판이 맞아도 쓰지 않고 거절한다(AGENT_A_IDEMPOTENCY_CONFLICT).
    */
   async saveDraft(fileId: string, sessionId: string, input: { markdown: string | null; revision: number; opId?: string | null }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
     if (input.markdown !== null && (typeof input.markdown !== "string" || input.markdown.length > 500_000)) throw new ApiError(400, "본문이 너무 깁니다");
     if (input.opId != null && !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
+    const artifactId = this.service.docOf(fileId).artifactId;
     const mark: SaveMark = {
       kind: "body",
-      key: saveKey(this.service.docOf(fileId).artifactId, sid, "body", input.revision, input.markdown, input.opId ?? null),
+      key: saveKey(artifactId, sid, "body", input.revision, input.markdown, input.opId ?? null),
+      id: saveId(artifactId, sid, input.opId ?? null),
       holds: (draft) => (input.markdown === null ? typeof draft.editedMarkdown !== "string" : draft.editedMarkdown === input.markdown),
     };
     return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", mark, (kept) => {
@@ -657,6 +694,7 @@ export class AgentAReview {
    * 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). 정본은 바뀌지 않고, 검토 제출 때 함께 넘어간다.
    * 본문 고치기와 같은 조건 저장이다: revision 뒤에 초안이 다시 저장됐으면 아무것도 바꾸지 않는다. 초안의 다른 칸(주석·고친 본문)은 그대로 둔다.
    * 같은 요청(같은 요청 id·같은 초안 판·같은 목록)을 다시 보내면 다시 쓰지 않고 지금 초안을 돌려준다. 그사이 본문 저장이 끼었어도 같다.
+   * 기록에 남은 요청 id 에 다른 입력을 붙여 보내면 본문 저장과 같이 거절한다.
    */
   async saveAttachments(fileId: string, sessionId: string, input: { attachments: unknown; revision: number; opId?: string | null }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
@@ -664,9 +702,11 @@ export class AgentAReview {
     if (input.opId != null && !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
     const list = attachments(input.attachments);
     if (new Set(list.map((x) => x.path)).size !== list.length) throw new ApiError(400, "같은 그림이 두 번 들어 있습니다");
+    const artifactId = this.service.docOf(fileId).artifactId;
     const mark: SaveMark = {
       kind: "attachments",
-      key: saveKey(this.service.docOf(fileId).artifactId, sid, "attachments", input.revision, list.map((x) => [x.path, x.name]), input.opId ?? null),
+      key: saveKey(artifactId, sid, "attachments", input.revision, list.map((x) => [x.path, x.name]), input.opId ?? null),
+      id: saveId(artifactId, sid, input.opId ?? null),
       holds: (draft) => {
         const stored = Array.isArray(draft.globalAttachments) ? draft.globalAttachments : [];
         return stored.length === list.length && list.every((x, i) => obj(stored[i]) && stored[i].path === x.path && stored[i].name === x.name);
@@ -680,6 +720,7 @@ export class AgentAReview {
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision).
    * 초안 판이 이미 올라 있으면 이 요청이 저장된 것인지 본다(mark: 초안에 남은 이 요청의 기록과 그 칸의 값). 저장됐으면 다시 쓰지 않고 지금 초안을 돌려준다.
    * 이 요청의 기록이 없거나 그 칸의 값이 달라졌으면 충돌이다. 쓸 때는 이 요청의 기록을 더하고 다른 칸의 기록은 그대로 싣는다(savesWith).
+   * 초안 판이 맞아도, 이 요청 id 가 기록에 남은 다른 요청의 것이면 쓰지 않는다(idTaken: 한 id 는 처음 입력에만 쓴다).
    */
   private async writeDraft(fileId: string, sid: string, revision: number, stale: string, mark: SaveMark, change: (kept: Json) => Json): Promise<AgentAReviewDraft> {
     const doc = this.service.docOf(fileId);
@@ -691,6 +732,8 @@ export class AgentAReview {
       if (got.revision > revision && savedAlready(got.json, mark)) return this.draftView(got.revision, got.json);
       throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
     }
+    // 초안 판은 맞지만 이 요청 id 가 기록에 남은 다른 요청의 것이다: 이미 쓴 id 에 다른 입력을 붙인 것이라 새 저장으로 받지 않는다.
+    if (idTaken(got.json, mark)) throw new ApiError(409, KNOWN.idempotency_conflict!, "AGENT_A_IDEMPOTENCY_CONFLICT");
     const { draftGeneration, documents: _d, found: _f, ...kept } = got.json;
     const body = {
       ...change({

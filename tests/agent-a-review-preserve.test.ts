@@ -405,9 +405,111 @@ describe("R1 초안 저장 뒤 응답 유실: 같은 요청은 다시 쓰지 않
     const now = Number((await s.other("GET", "/api/draft")).revision);
     await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: now, opId: "odd-mark-00002" });
     const after = (await s.other("GET", "/api/draft")).json.iamceoSave;
-    expect(Object.keys(after).sort()).toEqual(["attachments", "body", "v"]);
+    expect(Object.keys(after).sort()).toEqual(["attachments", "body", "ids", "v"]);
     expect(after.body).toEqual([key]);
     expect(after.attachments).toHaveLength(1);
+    // 번호는 기록에 남은 요청의 것만 싣는다. 번호 칸 없이 실려 온 기록(본문)에는 번호가 없다.
+    expect(after.ids).toEqual({ [after.attachments[0]]: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
+  // 독립 재확인(5f7f626): 요청 id 가 요청 전체의 지문에만 들어 있어, 이미 쓴 id 에 지금 초안 판·다른 값을 붙이면 새 저장으로 받았다(200, 초안 판 +1).
+  for (const kind of ["body", "attachments"] as const) {
+    test(`${kind === "body" ? "본문" : "그림"}: 기록에 남은 요청 id 에 다른 입력을 붙이면 새 저장으로 받지 않는다. 처음 입력의 재전송과 새 id 의 저장은 그대로 된다`, async () => {
+      const s = await setup();
+      const USED = { status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" };
+      const base = (await s.review.draft(s.fileId, s.sid)).revision;
+      const one = await s.review.upload(s.fileId, s.sid, { name: "one.png", mediaType: "image/png", base64: pngBase64(10, 10) });
+      const two = await s.review.upload(s.fileId, s.sid, { name: "two.png", mediaType: "image/png", base64: pngBase64(11, 11) });
+      const [first, changed, third] = kind === "body" ? ["첫 번호의 글", "다른 글", "셋째 글"] : [[one], [one, two], [two]];
+      const body = (revision: number, markdown: string | null, opId?: string) => s.review.saveDraft(s.fileId, s.sid, { markdown, revision, ...(opId ? { opId } : {}) });
+      const images = (revision: number, attachments: unknown, opId?: string) => s.review.saveAttachments(s.fileId, s.sid, { attachments, revision, ...(opId ? { opId } : {}) });
+      const save = (revision: number, value: unknown, opId?: string) => (kind === "body" ? body(revision, value as string, opId) : images(revision, value, opId));
+      const beside = (revision: number, opId?: string) => (kind === "body" ? images(revision, [two], opId) : body(revision, "옆 칸의 글", opId));
+      const posts = () => s.fake.calls.filter((c) => c.method === "POST" && c.path === "/api/draft").length;
+      expect((await save(base, first, "used-number-0001")).revision).toBe(base + 1);
+      // 기록이 한 건뿐일 때: 같은 id · 지금 초안 판 · 다른 값은 새 저장이 아니다. 초안도 초안 판도 그대로다.
+      const single = await s.other("GET", "/api/draft");
+      expect(await failure(save(base + 1, changed, "used-number-0001"))).toEqual(USED);
+      expect(await s.other("GET", "/api/draft")).toEqual(single);
+      // 다른 칸의 저장과 댓글이 끼어도 번호는 기록에 남는다
+      expect((await beside(base + 1, "beside-save-0001")).revision).toBe(base + 2);
+      await s.review.addComment(s.fileId, s.sid, { id: "kept-comment", kind: "global", text: "거절이 건드리면 안 되는 댓글" });
+      const stored = await s.other("GET", "/api/draft");
+      const written = posts();
+      const now = Number(stored.revision);
+      expect(now).toBe(base + 3);
+      expect(await failure(save(now, changed, "used-number-0001"))).toEqual(USED);
+      // 값이 같아도 초안 판이 다르면 처음 입력이 아니다
+      expect(await failure(save(now, first, "used-number-0001"))).toEqual(USED);
+      // 같은 id 를 다른 칸에 보내도, 다른 칸의 id 를 이 칸에 보내도 새 저장이 아니다
+      expect(await failure(beside(now, "used-number-0001"))).toEqual(USED);
+      expect(await failure(save(now, changed, "beside-save-0001"))).toEqual(USED);
+      // 같은 id · 처음 초안 판 · 다른 값은 앞에서처럼 초안 충돌이다
+      expect(await failure(save(base, changed, "used-number-0001"))).toEqual(CONFLICT);
+      // 거절은 아무것도 쓰지 않았다: 본문·주석·그림·기록·초안 판이 그대로다
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      expect(posts()).toBe(written);
+      // 처음 입력 그대로는 저장된 것으로 확인한다(다시 쓰지 않는다)
+      expect((await save(base, first, "used-number-0001")).revision).toBe(now);
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      expect(posts()).toBe(written);
+      // 새 id 의 지금 판 저장은 된다. 다른 칸과 주석은 그대로다.
+      expect((await save(now, changed, "fresh-number-0001")).revision).toBe(now + 1);
+      const next = (await s.other("GET", "/api/draft")).json;
+      expect(next.annotations).toEqual(stored.json.annotations);
+      expect(kind === "body" ? next.globalAttachments : next.editedMarkdown).toEqual(kind === "body" ? stored.json.globalAttachments : stored.json.editedMarkdown);
+      expect(kind === "body" ? next.editedMarkdown : next.globalAttachments).toEqual(changed);
+      // 방금 쓴 새 id 도 곧바로 묶인다
+      expect(await failure(save(now + 1, third, "fresh-number-0001"))).toEqual(USED);
+      // 묶이는 범위는 기록에 남아 있는 동안이다: 값이 바뀌어 기록에서 빠진 id(used-number-0001)는 새 요청으로 받는다. id 없는 호출도 묶지 않는다.
+      expect(Object.keys(next.iamceoSave.ids)).toHaveLength(2);
+      expect((await save(now + 1, third, "used-number-0001")).revision).toBe(now + 2);
+      expect((await save(now + 2, first)).revision).toBe(now + 3);
+      expect((await save(now + 3, changed)).revision).toBe(now + 4);
+    });
+  }
+
+  test("요청 id 의 기록: 남은 저장 기록의 번호만 싣고, 다른 문서·다른 검토의 번호나 모양이 틀린 번호는 묶지 않는다", async () => {
+    const s = await setup();
+    const USED = { status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" };
+    const base = (await s.review.draft(s.fileId, s.sid)).revision;
+    const record = async () => (await s.other("GET", "/api/draft")).json.iamceoSave as { body: string[]; attachments: string[]; ids: Record<string, string> };
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: "같은 글", revision: base, opId: "ledger-id-0001" });
+    await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: base + 1, opId: "ledger-id-0002" });
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: "같은 글", revision: base + 2 });
+    // 기록 세 건 가운데 번호가 있는 두 건만 번호를 싣는다(기록 key → 번호 지문). 번호 지문은 요청 전체의 지문과 다른 값이다.
+    const kept = await record();
+    expect([kept.body.length, kept.attachments.length]).toEqual([2, 1]);
+    expect(Object.keys(kept.ids).sort()).toEqual([kept.body[1]!, kept.attachments[0]!].sort());
+    for (const [key, id] of Object.entries(kept.ids)) expect([/^[0-9a-f]{64}$/.test(id), id === key]).toEqual([true, false]);
+    // 그 초안을 기록까지 통째로 다른 문서의 검토에 옮겨 써도, 그 문서에서는 쓴 적 없는 번호다(지금 판의 저장이 된다)
+    const stored = await s.other("GET", "/api/draft");
+    const view = await s.service.createDoc(s.project.id, { title: "다른 문서", markdown: MARKDOWN });
+    const other = await s.review.open(view.fileId);
+    const copied = await s.fake.transport("http://127.0.0.1:4999/api/draft", { method: "POST", headers: { "x-enouv-artifact": view.artifactId, "x-enouv-review-session": other.sessionId, "content-type": "application/json" }, body: JSON.stringify({ ...stored.json, documents: undefined }) });
+    expect(copied.status).toBe(200);
+    const there = (await s.review.draft(view.fileId, other.sessionId)).revision;
+    expect((await s.review.saveDraft(view.fileId, other.sessionId, { markdown: "다른 문서의 글", revision: there, opId: "ledger-id-0001" })).revision).toBe(there + 1);
+    // 번호 칸의 모양이 틀리면 번호가 없는 기록으로 본다: 재전송 확인은 그대로 되고, 번호는 묶이지 않는다
+    for (const ids of [null, "x", [kept.ids[kept.body[1]!]], { [kept.body[1]!]: 7 }, { [kept.body[1]!]: "zz" }, { ["f".repeat(64)]: kept.ids[kept.body[1]!] }]) {
+      await s.other("POST", "/api/draft", { ...stored.json, documents: undefined, iamceoSave: { ...stored.json.iamceoSave, ids } });
+      const now = await s.other("GET", "/api/draft");
+      expect((await s.review.saveDraft(s.fileId, s.sid, { markdown: "같은 글", revision: base, opId: "ledger-id-0001" })).revision).toBe(Number(now.revision));
+      expect(await s.other("GET", "/api/draft")).toEqual(now);
+    }
+    const loose = Number((await s.other("GET", "/api/draft")).revision);
+    expect((await s.review.saveDraft(s.fileId, s.sid, { markdown: "같은 글", revision: loose, opId: "ledger-id-0001" })).revision).toBe(loose + 1);
+    // 그 저장으로 번호가 다시 실렸다: 이제 같은 번호의 다른 입력은 거절이다
+    expect(Object.values((await record()).ids)).toHaveLength(1);
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { markdown: "또 다른 글", revision: loose + 1, opId: "ledger-id-0001" }))).toEqual(USED);
+    // 같은 글이 네 번 더 저장돼 그 기록이 네 건 밖으로 밀리면 번호도 함께 빠진다. 그 뒤의 같은 번호는 새 요청으로 받는다.
+    let at = loose + 1;
+    for (const n of [1, 2, 3, 4]) {
+      await s.review.saveDraft(s.fileId, s.sid, { markdown: "같은 글", revision: at, opId: `ledger-push-000${n}` });
+      at += 1;
+    }
+    expect(Object.keys((await record()).ids).sort()).toEqual([...(await record()).body].sort());
+    expect((await s.review.saveDraft(s.fileId, s.sid, { markdown: "밀린 번호의 새 글", revision: at, opId: "ledger-id-0001" })).revision).toBe(at + 1);
   });
 
   test("닫힌 검토와 초안 규약을 모르는 Agent-A 에서는 재전송도 그대로 거절한다", async () => {

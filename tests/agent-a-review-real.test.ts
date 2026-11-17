@@ -481,6 +481,64 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     }
   }, 60_000);
 
+  // 독립 재확인(5f7f626)의 남은 조건: 이미 쓴 요청 id 에 지금 초안 판·다른 값을 붙이면 새 저장(200, 초안 판 +1)이 됐다.
+  test("R1 요청 id 재사용: 기록에 남은 id 에 다른 입력을 붙이면 쓰지 않고 거절한다. 처음 입력의 재전송과 새 id 의 저장은 된다", async () => {
+    const USED = { status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" };
+    for (const kind of ["body", "attachments"] as const) {
+      const s = await setup(`실제: R1 번호 ${kind}`);
+      const base = (await s.review.draft(s.fileId, s.sid)).revision;
+      const one = await s.review.upload(s.fileId, s.sid, { name: "one.png", mediaType: "image/png", base64: pngBase64(10, 10) });
+      const two = await s.review.upload(s.fileId, s.sid, { name: "two.png", mediaType: "image/png", base64: pngBase64(11, 11) });
+      const [first, changed] = kind === "body" ? ["첫 번호의 글", "다른 글"] : [[one], [one, two]];
+      const body = (revision: number, markdown: string, opId: string) => s.review.saveDraft(s.fileId, s.sid, { markdown, revision, opId });
+      const images = (revision: number, attachments: unknown, opId: string) => s.review.saveAttachments(s.fileId, s.sid, { attachments, revision, opId });
+      const save = (revision: number, value: unknown, opId: string) => (kind === "body" ? body(revision, value as string, opId) : images(revision, value, opId));
+      const beside = (revision: number, opId: string) => (kind === "body" ? images(revision, [two], opId) : body(revision, "옆 칸의 글", opId));
+      const used = `r1-used-${kind}-0001`;
+      expect((await save(base, first, used)).revision).toBe(base + 1);
+      // 기록이 한 건뿐일 때(독립 재확인의 조건): 같은 id · 지금 초안 판 · 다른 값
+      const single = await s.other("GET", "/api/draft");
+      expect(single.json!.iamceoSave.ids).toEqual({ [single.json!.iamceoSave[kind][0]]: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      expect(await failure(save(base + 1, changed, used))).toEqual(USED);
+      expect(await s.other("GET", "/api/draft")).toEqual(single);
+      // 다른 칸의 저장과 실제 Agent-A 의 주석 추가가 끼어도 번호는 기록에 남는다
+      expect((await beside(base + 1, `r1-beside-${kind}-001`)).revision).toBe(base + 2);
+      await s.review.addComment(s.fileId, s.sid, { id: `r1-number-${kind}`, kind: "deletion", text: "", quote: "배경 문장 둘." });
+      const stored = await s.other("GET", "/api/draft");
+      const now = Number(stored.revision);
+      expect(now).toBe(base + 3);
+      expect(await failure(save(now, changed, used))).toEqual(USED);
+      expect(await failure(save(now, first, used))).toEqual(USED);
+      expect(await failure(beside(now, used))).toEqual(USED);
+      expect(await failure(save(base, changed, used))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
+      // 거절은 아무것도 쓰지 않았다
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 처음 입력 그대로는 저장된 것으로 확인한다
+      expect((await save(base, first, used)).revision).toBe(now);
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 새 id 의 지금 판 저장은 된다. 다른 칸과 주석은 그대로다.
+      expect((await save(now, changed, `r1-fresh-${kind}-0001`)).revision).toBe(now + 1);
+      const next = (await s.other("GET", "/api/draft")).json!;
+      expect(next.annotations).toEqual(stored.json!.annotations);
+      expect(next.annotations).toHaveLength(1);
+      expect(kind === "body" ? next.globalAttachments : next.editedMarkdown).toEqual(kind === "body" ? stored.json!.globalAttachments : stored.json!.editedMarkdown);
+      expect(kind === "body" ? next.editedMarkdown : next.globalAttachments).toEqual(changed);
+    }
+    // 요청 id 는 문서·검토에 묶는다: 그 초안을 기록까지 통째로 새 검토에 옮겨 써도, 그 검토에서는 쓴 적 없는 id 다.
+    const s = await setup("실제: R1 번호 다른 검토");
+    const base = (await s.review.draft(s.fileId, s.sid)).revision;
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: "옛 검토의 글", revision: base, opId: "r1-scope-number-01" });
+    const raw = await s.other("GET", "/api/draft");
+    const m = await s.review.manage(s.fileId);
+    await s.review.contextUpdate(s.fileId, { opId: "r1-scope-context-01", goal: "새 검토를 여는 목표", constraints: [], contextRevision: m.contextRevision });
+    const later = await s.review.open(s.fileId);
+    expect(later.sessionId).not.toBe(s.sid);
+    const head = { "x-enouv-artifact": s.artifactId, "x-enouv-review-session": later.sessionId, "content-type": "application/json" };
+    expect((await fetch(`${REAL}/api/draft`, { method: "POST", headers: head, body: JSON.stringify({ ...raw.json, documents: undefined }) })).status).toBe(200);
+    const there = (await s.review.draft(s.fileId, later.sessionId)).revision;
+    expect(await s.review.saveDraft(s.fileId, later.sessionId, { markdown: "새 검토의 글", revision: there, opId: "r1-scope-number-01" })).toMatchObject({ revision: there + 1, editedMarkdown: "새 검토의 글" });
+  }, 60_000);
+
   // 독립 재검토 R2: 문맥 판·배치 판 없이 보낸 요청이 저장된 뒤 응답을 잃고, 그사이 문맥(목표)이 바뀐 경우.
   test("R2 판을 생략한 직접 고치기·되살리기: 응답을 잃고 그사이 목표가 바뀌어도 같은 요청은 처음 결과다", async () => {
     for (const kind of ["edit", "restore"] as const) {
