@@ -21,7 +21,8 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { checkCompletionReviews, completionReviewAllowsDelivery, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
+import { currentReviewedCommit, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -473,6 +474,7 @@ export interface PostInput {
   checks?: ReportCheckInput[];
   /** 현재 담당 업무를 같은 계약으로 이어서 수행한다는 진행 보고. */
   continueWork?: boolean;
+  artifactCommit?: string;
   /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
   unverified?: string[];
   /** 검사가 따른 계약 판 번호. 계약이 있는 업무의 완료는 지금 판과 같아야 받는다. */
@@ -1093,6 +1095,7 @@ export class Orchestrator implements OrchestratorApi {
       const h = this.store.getReportHarness(id);
       return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
         correctsMessageId: this.store.getReportReferences(member.projectId, id)?.correctsMessageId ?? null,
+        artifact: h?.artifactCommit ? { branch: h.artifactBranch, commit: h.artifactCommit } : null,
         completionBasis: m?.kind === "완료" ? byMessage.get(id) ?? { messageId: id, eligible: false, status: "not_current", correctedBy: null } : null,
         checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null, workdir: c.workdir ?? null })) ?? [],
         claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
@@ -1112,7 +1115,8 @@ export class Orchestrator implements OrchestratorApi {
           sessionGeneration: this.store.memberRevisions(d.memberId).sessionGeneration,
           independentAuthorized: independentDeliveryAuthorized(this.store, this.store.requireDelivery(d.id)) })),
       reports,
-      currentCompletion: { eligible: sources.length > 0, sources },
+      currentCompletion: { eligible: sources.length > 0, sources, finalReview: this.store.taskProgress(task.id).finalReview ?? null },
+      integration: integrationStatus(this.store, task),
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
       findings: this.store.listHarnessFindings(member.projectId, { taskId: task.id, limit: 30 }).map(f => ({ id: f.id, kind: f.kind, who: name(f.memberId), detail: f.detail, at: f.at })),
     };
@@ -4418,6 +4422,11 @@ export class Orchestrator implements OrchestratorApi {
     }
     const checks = harnessChecks(input);
     const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
+    const artifactBranch = input.artifactCommit && taskId ? this.store.getTask(taskId)?.branch : null;
+    if (input.artifactCommit && (member.kind !== "worker" || input.kind !== "완료" || !artifactBranch || !fullCommit.test(input.artifactCommit))) {
+      throw new ApiError(400, "검수할 커밋은 등록된 작업 브랜치의 직원 완료 보고에 전체 SHA로 적어 주세요");
+    }
+    const artifact = artifactBranch && input.artifactCommit ? { branch: artifactBranch, commit: input.artifactCommit.toLowerCase() } : undefined;
     if (input.continueWork && (member.kind !== "worker" || input.kind !== "진행" || !taskId ||
       !this.repairWorkScope(member).includes(taskId) || !bindingContract(contract) ||
       missingExecutionContractFields(contract).length || input.contractRev !== contract?.rev)) {
@@ -4436,7 +4445,7 @@ export class Orchestrator implements OrchestratorApi {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
-      if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
+      if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, artifact, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
         gate: gate?.gate ?? null, evidenceStatus: gate?.evidenceStatus ?? null, evidence: gate?.evidence, claims: gate?.claims ?? claims.map(c => ({ ...c, verified: false, via: null })) });
       if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
       // 반복 감시: 멈춘 뒤 같은 실패의 막힘은 총괄을 다시 깨우지 않는다. 처음 멈출 때 총괄에게 한 번 알린다.
@@ -4878,30 +4887,53 @@ export class Orchestrator implements OrchestratorApi {
    * - 이미 완료인 업무에 done 을 다시 부르면(응답 유실 재시도) 새 표시·알림 없이 같은 결과를 돌려준다.
    * - reopen 은 완료·보류·반복 감시 멈춤을 푼다. 감시의 시작 시각·시도 수·기록은 남는다.
    */
-  markTaskStage(member: Member, input: { taskId: string; stage: MarkFact["stage"]; evidence: string }): { mark: MarkFact; progress: TaskProgress; noticeId: string | null; repeated: boolean } {
+  markTaskStage(member: Member, input: { taskId: string; stage: MarkFact["stage"]; evidence: string; reviewedCommit?: string; integrationReport?: string; mainCommit?: string }): { mark: MarkFact; progress: TaskProgress; noticeId: string | null; repeated: boolean; followup?: WorkItem } {
     const task = this.store.resolveTask(this.requireTaskInProject(member, input.taskId));
     const pendingFailure = input.stage === "reopen" ? this.store.pendingTaskFailureDecision(task.id) : null;
     if (pendingFailure) throw new ApiError(409, `같은 실패 세 번의 결재 #${pendingFailure.id} 에 대표 답이 필요합니다. 결재함에서 재개 조건을 정한 뒤 다시 열 수 있습니다`);
-    const evidence = normalizeSpace(cleanText(input.evidence));
-    if (!evidence) throw new ApiError(400, "evidence 에 근거를 적어 주세요(보고 id·커밋·확인한 화면 등)");
+    const reason = normalizeSpace(cleanText(input.evidence));
+    if (!reason) throw new ApiError(400, "evidence 에 근거를 적어 주세요(보고 id·커밋·확인한 화면 등)");
+    if (input.reviewedCommit && (input.stage !== "done" || !task.branch || !fullCommit.test(input.reviewedCommit))) {
+      throw new ApiError(400, "등록된 작업 브랜치의 최종 검수에만 전체 커밋 SHA를 사용할 수 있습니다");
+    }
+    const gitReview = input.reviewedCommit && task.branch ? { branch: task.branch, commit: input.reviewedCommit.toLowerCase() } : undefined;
+    const evidence = gitReview ? `작업 브랜치 ${gitReview.branch} 검수 커밋 ${gitReview.commit} · ${reason}` : reason;
     // Persist invalidation before the audit transaction can refuse stale completion.
     if (input.stage === "done") synchronizeRelatedTaskCompletion(this.store, task.id);
     return this.store.transaction(() => {
       const before = this.store.taskProgress(task.id);
       const done = this.store.doneMark(task.id);
-      if (input.stage !== "reopen" && done) {
+      const afterReviewedMerge = !!task.branch && (input.stage === "merged" || input.stage === "applied") &&
+        !!done && !!currentReviewedCommit(this.store, task);
+      if (input.stage !== "reopen" && done && !afterReviewedMerge) {
         if (input.stage === "done") {
-          confirmCompletionReview(this.store, task.id, member, evidence);
+          if (input.reviewedCommit && latestCompletionReview(this.store, task.id)?.reviewed_commit &&
+            currentReviewedCommit(this.store, task) !== input.reviewedCommit.toLowerCase()) {
+            throw new ApiError(409, "현재 최종 검수가 이 커밋을 가리키지 않습니다. 최신 작업 브랜치의 검사와 검수를 다시 확인해 주세요");
+          }
+          const confirmed = confirmCompletionReview(this.store, task.id, member, evidence, gitReview);
+          if (input.reviewedCommit && !confirmed) throw new ApiError(409, "하네스가 수행 완료를 판정한 뒤 검수한 커밋을 남겨 주세요");
+          const followup = input.reviewedCommit ? queueReviewedIntegration(this.store, task, input.reviewedCommit) : undefined;
           const notice = this.store.createTaskNotice(task.projectId, task.id, done.id, this.noticeLines(task.id, done));
-          return { mark: done, progress: this.store.taskProgress(task.id), noticeId: notice.id, repeated: true };
+          return { mark: done, progress: this.store.taskProgress(task.id), noticeId: notice.id, repeated: true, followup };
         }
         throw new ApiError(409, "이미 완료된 업무입니다. 다시 열려면 stage reopen 과 까닭을 남기세요");
       }
+      if (input.reviewedCommit) throw new ApiError(409, "하네스가 수행 완료를 판정한 뒤 검수한 커밋을 남겨 주세요");
       const marks = this.store.listStageMarks(task.id);
       let from = 0;
       marks.forEach((m, i) => { if (m.stage === "reopen") from = i + 1; });
       const active = marks.slice(from);
-      if (input.stage === "merged" && !/\b[0-9a-f]{7,40}\b/i.test(evidence)) throw new ApiError(400, "merged 는 메인에 합친 커밋 id 를 evidence 에 적어야 합니다");
+      const contract = input.stage === "merged" && task.branch ? this.store.getEffectiveContract(task.id) : null;
+      if (contract && bindingContract(contract) && !missingExecutionContractFields(contract).length &&
+        !afterReviewedMerge && !active.some(mark => mark.stage === "merged")) {
+        throw new ApiError(409, "main 통합 전에 직원 수행 완료와 검수한 작업 브랜치의 전체 커밋을 확인해 주세요");
+      }
+      const integration = input.stage === "merged" && afterReviewedMerge
+        ? requireIntegrationResult(this.store, task, input.integrationReport, input.mainCommit) : null;
+      const recordedMerge = integration ? active.findLast(mark => mark.stage === "merged" && mark.id > done!.id) : null;
+      if (recordedMerge) return { mark: recordedMerge, progress: before, noticeId: null, repeated: true };
+      if (input.stage === "merged" && !/\b(?:[0-9a-f]{7,40}|[0-9a-f]{64})\b/i.test(evidence)) throw new ApiError(400, "merged 는 메인에 합친 커밋 id 를 evidence 에 적어야 합니다");
       if (input.stage === "applied" && !active.some((m) => m.stage === "merged")) throw new ApiError(409, "대표 화면 반영은 메인 합침(merged) 표시 뒤에만 남깁니다");
       if (input.stage === "done") {
         const refuse = this.doneRefusal(task, before, active);
@@ -4909,6 +4941,7 @@ export class Orchestrator implements OrchestratorApi {
       }
       const reopened = input.stage === "reopen" ? requestCompletionChanges(this.store, task.id, evidence, member) : null;
       const mark = reopened ?? this.store.addStageMark({ projectId: task.projectId, taskId: task.id, stage: input.stage, evidence, memberId: member.id, who: member.name });
+      const followup = integration ? queueBranchCleanup(this.store, task, integration, mark.id, input.mainCommit!) : undefined;
       if (input.stage === "reopen") {
         const w = this.store.getTaskWatch(task.id);
         if (w) this.store.saveTaskWatch(task.projectId, task.id, watchOnReopen(w, mark.at));
@@ -4927,7 +4960,7 @@ export class Orchestrator implements OrchestratorApi {
       }
       if (input.stage === "reopen" && task.parentTaskId) synchronizeRelatedTaskCompletion(this.store, task.parentTaskId);
       const notice = input.stage === "done" ? this.store.createTaskNotice(task.projectId, task.id, mark.id, this.noticeLines(task.id, mark)) : null;
-      return { mark, progress: this.store.taskProgress(task.id), noticeId: notice?.id ?? null, repeated: false };
+      return { mark, progress: this.store.taskProgress(task.id), noticeId: notice?.id ?? null, repeated: false, followup };
     });
   }
 
@@ -5098,6 +5131,9 @@ export class Orchestrator implements OrchestratorApi {
 
   private admittedInputs(memberId: string, deliveries: Delivery[]): Delivery[] {
     const member = this.store.requireMember(memberId), worker = member.kind === "worker";
+    for (const taskId of new Set(deliveries.map(d => this.store.deliveryTaskId(d.id)))) {
+      if (taskId) holdStaleIntegration(this.store, taskId);
+    }
     const sequence = worker && deliveries.length ? this.store.taskSequenceSnapshot(member.projectId, memberId) : undefined;
     const blocked = new Map<string, boolean>();
     return deliveries.filter(d => {
@@ -5107,6 +5143,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.taskContinuations.canDispatch(d) || !completionReviewAllowsDelivery(this.store, d)) return false;
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
+      if (!integrationTaskAllowsInput(this.store, taskId)) return false;
       if (!worker || !taskId) return true;
       // Independent order permission never resolves an intervention or owner decision.
       if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
@@ -5845,6 +5882,7 @@ export class Orchestrator implements OrchestratorApi {
       // contract may have changed while the runner was inspecting the terminal.
       if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
+      if (!integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
       if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || this.store.taskSequenceBlocker(member.id, taskId, sequence))
         && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;

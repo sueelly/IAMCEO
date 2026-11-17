@@ -2874,6 +2874,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 출처 키로 만든 업무(없으면 null). */
+  taskSourceRef(taskId: string): string | null {
+    return this.row("SELECT source_ref FROM tasks WHERE id = ?", taskId)?.source_ref ?? null;
+  }
+
   sourceTask(projectId: string, sourceRef: string): Task | null {
     const r = this.row("SELECT * FROM tasks WHERE project_id = ? AND source_ref = ?", projectId, sourceRef);
     return r ? toTask(r) : null;
@@ -4148,11 +4152,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판, 검사마다 대조한 실행 증거, 조사 주장을 함께 남긴다. */
-  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
+  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; artifact?: { branch: string; commit: string }; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
     checks = publicHarness(checks);
     extra = publicHarness(extra);
     const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
-    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at);
+    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at, artifact_branch, artifact_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at, extra.artifact?.branch ?? null, extra.artifact?.commit ?? null);
     checks.forEach((c, i) => {
       const e = extra.evidence?.find(x => x.idx === i);
       this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, workdir, criterion, exec_status, exec_ref, exec_exit, exec_at, exec_output_sha, exec_command) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -4267,11 +4271,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 보고 글의 하네스 기록(실행·계약 판·검토 요청)과 검사. 기록이 없으면 null. */
-  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; reviewNeeded: string | null; memberId: string; gate: HarnessGate | null; evidenceStatus: string | null; checks: ReportCheck[]; claims: ClaimResult[] } | null {
+  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; artifactBranch: string | null; artifactCommit: string | null; reviewNeeded: string | null; memberId: string; gate: HarnessGate | null; evidenceStatus: string | null; checks: ReportCheck[]; claims: ClaimResult[] } | null {
     const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.message_id = ?", messageId);
     if (!h) return null;
     const checks = this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", messageId).map(r => toCheck(r, h));
-    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null, reviewNeeded: h.review_needed ? redactHarnessText(h.review_needed as string) : null, memberId: h.member_id as string,
+    return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null,
+      artifactBranch: h.artifact_branch ?? null, artifactCommit: h.artifact_commit ?? null, reviewNeeded: h.review_needed ? redactHarnessText(h.review_needed as string) : null, memberId: h.member_id as string,
       gate: (h.gate as HarnessGate | null) ?? null, evidenceStatus: (h.evidence_status as string | null) ?? null, checks, claims: this.listReportClaims(messageId) };
   }
 

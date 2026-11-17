@@ -8,6 +8,7 @@ interface CompletionReviewRow {
   report_id: string; task_id: string; contract_task_id: string; contract_rev: number;
   mark_id: number; status: "pending" | "confirmed" | "changes_requested";
   reviewed_at: string | null; completed_at: string; evidence: string | null; delivery_id: string | null;
+  reviewed_branch: string | null; reviewed_commit: string | null;
 }
 
 export function latestCompletionReview(store: Store, taskId: string): CompletionReviewRow | null {
@@ -92,14 +93,22 @@ export function requestCompletionChanges(store: Store, taskId: string, evidence:
     ? store.addStageMark({ projectId: task.projectId, taskId, stage: "reopen", evidence, memberId: member?.id ?? null, who: member?.name ?? "하네스" }) : null;
 }
 
-export function confirmCompletionReview(store: Store, taskId: string, member: Member, evidence: string): boolean {
+export function confirmCompletionReview(store: Store, taskId: string, member: Member, evidence: string,
+  gitReview?: { branch: string; commit: string }): boolean {
   const review = latestCompletionReview(store, taskId);
   if (!review) return false;
   synchronizeTaskCompletion(store, taskId);
   if (store.doneMark(taskId)?.id !== review.mark_id) throw new ApiError(409, "완료 근거가 변경되었습니다. 남은 조건과 최신 검사 결과를 확인하세요");
-  if (review.status === "confirmed") return true;
-  store.db.query("UPDATE task_completion_reviews SET status='confirmed',reviewed_at=?,reviewer_id=?,evidence=? WHERE task_id=? AND report_id=?")
-    .run(new Date().toISOString(), member.id, evidence, taskId, review.report_id);
+  if (gitReview) {
+    const artifact = store.getReportHarness(review.report_id);
+    if (artifact?.artifactBranch !== gitReview.branch || artifact.artifactCommit !== gitReview.commit) {
+      throw new ApiError(409, "같은 작업 브랜치와 커밋에서 검사한 직원 완료 보고가 필요합니다");
+    }
+  }
+  if (review.status === "confirmed" && (!gitReview || review.reviewed_commit)) return true;
+  store.db.query(`UPDATE task_completion_reviews SET status='confirmed',reviewed_at=?,reviewer_id=?,evidence=?,
+      reviewed_branch=?,reviewed_commit=? WHERE task_id=? AND report_id=?`)
+    .run(new Date().toISOString(), member.id, evidence, gitReview?.branch ?? null, gitReview?.commit ?? null, taskId, review.report_id);
   retireReminder(store, review);
   store.queueProgress([taskId]);
   return true;
@@ -131,7 +140,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
       if (now - Date.parse(last?.deliveredAt ?? last?.createdAt ?? review.completed_at) < intervalMs) continue;
       if (store.listPending(lead.id).some(d => d.kind === "report" && d.refId === review.report_id)) continue;
       const delivery = store.enqueue({ projectId: project.id, memberId: lead.id, taskId: task.id, kind: "system", wake: true,
-        text: `[시스템] 비동기 최종 확인: #${task.id} '${task.title}'\n계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}\n후속 업무는 이미 진행할 수 있습니다. 현재 계약·산출물·검사 근거를 조회한 뒤 task_stage(done, evidence)로 최종 확인하거나, 문제를 찾으면 task_stage(reopen, evidence)로 보완을 맡기세요. 보고 수신 확인만으로 이 검수를 끝내지 마세요.` });
+        text: `[시스템] 비동기 최종 확인: #${task.id} '${task.title}'\n계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}\n일반 후속 업무는 이미 진행할 수 있습니다. 계약·산출물·검사 근거를 대조한 뒤 task_stage(done, evidence)로 최종 확인하세요. main에 통합할 작업 브랜치는 reviewed_commit에 전체 SHA를 적어 통합 업무를 만드세요. 문제를 찾으면 원 업무에 문제 보고를 남기고 task_followup(kind: repair)로 수정 업무를 올리세요.` });
       store.db.query("UPDATE task_completion_reviews SET delivery_id=? WHERE task_id=? AND report_id=?").run(delivery.id, task.id, review.report_id);
       out.push(delivery);
     }

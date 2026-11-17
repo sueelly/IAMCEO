@@ -1028,6 +1028,11 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE members ADD COLUMN codex_speed TEXT NOT NULL DEFAULT 'standard' CHECK (codex_speed IN ('standard', 'fast'));`,
   // v46: retain an optional per-check location without changing command bytes.
   `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
+  // v47: a final review binds a branch and its exact commit. Legacy notes do not authorize integration.
+  `ALTER TABLE task_completion_reviews ADD COLUMN reviewed_branch TEXT;
+   ALTER TABLE task_completion_reviews ADD COLUMN reviewed_commit TEXT;
+   ALTER TABLE report_harness ADD COLUMN artifact_branch TEXT;
+   ALTER TABLE report_harness ADD COLUMN artifact_commit TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

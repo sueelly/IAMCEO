@@ -46,8 +46,8 @@ function snapshot(db: Database) {
   });
 }
 
-for (const version of [35, 37, 41, 42, 43, 44, 45]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
-  expect(MIGRATIONS).toHaveLength(46);
+for (const version of [35, 37, 41, 42, 43, 44, 45, 46]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
+  expect(MIGRATIONS[45]).toBe("ALTER TABLE report_checks ADD COLUMN workdir TEXT;");
   expect(MIGRATIONS[44]).toBe("ALTER TABLE members ADD COLUMN codex_speed TEXT NOT NULL DEFAULT 'standard' CHECK (codex_speed IN ('standard', 'fast'));");
   expect(MIGRATIONS[40]).toBe('ALTER TABLE members ADD COLUMN execution_issue_json TEXT;');
   const path = join(mkdtempSync(join(tmpdir(), `workdir-v${version}-`)), "synthetic.db");
