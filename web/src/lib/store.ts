@@ -388,19 +388,32 @@ async function readHistory(context: SyncContext, kind: "refresh" | "older"): Pro
   if (context.isCurrent() && range.error) throw new Error(range.error);
 }
 
+let runtimeRead: { generation: number; context: SyncContext } | null = null;
+/** 실행기 진단은 실행 버튼의 조건이며 프로젝트를 읽는 데 필요한 조건은 아니다. */
+function readRuntime(context: SyncContext): void {
+  if (state.bootstrap?.runtime || !context.isCurrent()
+    || runtimeRead?.generation === sessionGeneration && runtimeRead.context.isCurrent()) return;
+  const request = { generation: sessionGeneration, context };
+  runtimeRead = request;
+  void api.runtime(context.signal).then(runtime => {
+    if (request.generation === sessionGeneration && context.isCurrent() && state.bootstrap) {
+      set({ bootstrap: { ...state.bootstrap, runtime } });
+    }
+  }).catch(error => {
+    if (!isUnauthorized(error) && request.generation === sessionGeneration && context.isCurrent()) {
+      setTimeout(() => readRuntime(context), 3000);
+    }
+  }).finally(() => { if (runtimeRead === request) runtimeRead = null; });
+}
+
 async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Promise<void> {
-  let runtime = state.bootstrap?.runtime;
-  if (!runtime) {
-    try { runtime = await api.runtime(context.signal); } catch (error) { if (isUnauthorized(error)) throw error; }
-    if (!context.isCurrent()) return;
-  }
   if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh");
   if (!context.isCurrent()) return;
   const pending = buffered ?? [];
   buffered = null; clearRemoteEvents();
   const oldMessages = state.project?.project.id === context.projectId ? state.project.messages : [];
   let next: AppState = {
-    ...state, auth: "ok", authError: null, bootstrap: { ...snapshot.bootstrap, runtime },
+    ...state, auth: "ok", authError: null, bootstrap: { ...snapshot.bootstrap, runtime: state.bootstrap?.runtime },
     project: snapshot.state ? { ...snapshot.state, messages: usesCursorHistory() ? historyFor(context.projectId).items : mergeMessages(oldMessages, snapshot.state.messages) } : null,
     projectLoading: false, projectError: null, historyError: null,
     hasOlderMessages: snapshot.state ? usesCursorHistory() ? historyFor(context.projectId).hasOlder : snapshot.state.messages.length >= MSG_PAGE : false,
@@ -412,6 +425,7 @@ async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Pro
   next.project = shareJSON(state.project, next.project);
   next.syncRevisions = shareJSON(state.syncRevisions, next.syncRevisions);
   set(next);
+  readRuntime(context);
   if (!snapshot.state && context.projectId !== HQ_ID && state.route.settings) {
     set({ route: { ...state.route, projectId: HQ_ID, tab: "home" } });
     coordinator.select(HQ_ID);
