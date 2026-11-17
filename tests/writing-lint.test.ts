@@ -75,6 +75,24 @@ describe("보고 검사", () => {
     expect(ws[0]!.code).toBe("owner-first");
     expect(ws.at(-1)!.code).toBe("length-sentence");
   });
+
+  test("보고 근거의 길이 권고를 한 줄로 묶고 긴 원문을 경고에 복사하지 않는다", () => {
+    const input = { title: "확인 결과", checks: [{ name: "가".repeat(200), evidence: "나".repeat(1000), command: "x".repeat(500) }],
+      claims: [{ text: "다".repeat(400), source: "s".repeat(500), quote: "라".repeat(600) }], unverified: ["마".repeat(300)], reviewNeeded: "바".repeat(600) };
+    expect(lintPost(input)).toEqual([]);
+    const warnings = lintPost({ ...input,
+      checks: input.checks.map(c => ({ name: `${c.name}가`, evidence: `${c.evidence}나`, command: `${c.command}x` })),
+      claims: input.claims.map(c => ({ text: `${c.text}다`, source: `${c.source}s`, quote: `${c.quote}라` })),
+      unverified: [`${input.unverified[0]}마`], reviewNeeded: `${input.reviewNeeded}바`,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.code).toBe("length-report");
+    for (const field of ["검사 이름", "검사 근거", "명령", "주장", "출처", "인용", "미확인", "검토 요청"]) expect(warnings[0]!.text).toContain(field);
+    expect(warnings[0]!.text).toContain("권고");
+    expect(warnings[0]!.text).toContain("원문");
+    expect(warnings[0]!.text).not.toContain("x".repeat(20));
+    expect(warnings[0]!.text).not.toContain("\n");
+  });
 });
 
 describe("결재 카드 검사", () => {
