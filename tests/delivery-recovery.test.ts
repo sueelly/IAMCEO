@@ -387,8 +387,8 @@ describe("자동 재전송과 제출 복구", () => {
 
   test("부분 묶음 재전송은 미수신 업무의 저장된 계약 문맥만 보존한다", async () => {
     const f = setup();
-    const taskA = f.store.saveTask({ projectId: f.project.id, memberId: null, who: "대표", title: "첫 업무" }).task;
-    const taskB = f.store.saveTask({ projectId: f.project.id, memberId: null, who: "대표", title: "둘째 업무" }).task;
+    const taskA = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "대표", title: "첫 업무" }).task;
+    const taskB = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "대표", title: "둘째 업무" }).task;
     const a = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "첫 원문", taskId: taskA.id });
     const b = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "둘째 원문", taskId: taskB.id });
     const contexts = [
