@@ -104,6 +104,45 @@ test("390px에서 세로로 재배치하고 메뉴와 초점을 유지한다",as
  await p.screenshot({path:join(SHOTS,"product-mobile.png")});await p.close();
 },30000);
 
+test("좁은 팀 화면에서 다음·완료 업무 제목을 필터와 검색으로 찾는다", async () => {
+  const p = await open(390);
+  try {
+    const filters = p.getByRole("navigation", { name: "업무 상태" });
+    const employee = p.locator(`.to-row[data-member-id="${worker.id}"]`);
+    const nextTask = employee.locator(".to-next .to-task");
+    const doneTask = employee.getByRole("button", { name: new RegExp(done.title) });
+
+    await filters.getByRole("button", { name: /^다음/ }).click();
+    expect(await nextTask.isVisible()).toBe(true);
+    await filters.getByRole("button", { name: /^완료/ }).click();
+    expect(await doneTask.isVisible()).toBe(true);
+    await doneTask.focus();
+    await p.keyboard.press("Enter");
+    const detail = p.getByRole("dialog");
+    await detail.locator(`.tt-item[data-task-id="${done.id}"][data-expanded]`).waitFor();
+    await p.keyboard.press("Escape");
+    await p.waitForFunction(() => document.activeElement?.closest(".to-done") !== null);
+
+    await filters.getByRole("button", { name: /^전체/ }).click();
+    const search = p.getByRole("searchbox", { name: "직원·업무 검색" });
+    await p.setViewportSize({ width: 320, height: 900 });
+    await search.fill(done.title);
+    expect(await doneTask.isVisible()).toBe(true);
+    expect(await p.locator(".to-table").evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+
+    await search.clear();
+    await filters.getByRole("button", { name: /^미배정/ }).click();
+    const tray = p.getByRole("complementary", { name: "미배정 업무" });
+    expect((await tray.boundingBox())!.y).toBeLessThan((await employee.boundingBox())!.y);
+
+    await p.setViewportSize({ width: 1024, height: 900 });
+    expect(await nextTask.isVisible()).toBe(true);
+    expect(await p.locator(".to-table").evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  } finally {
+    await p.close();
+  }
+}, 30000);
+
 test("프로젝트를 바꾸면 이전 배정 검토를 닫는다",async()=>{
  const t=ready("프로젝트 전환 검토"),p=await open();await assignMenu(p,t);
  await p.evaluate(id=>{location.hash=`#/p/${id}/team`},other.id);
