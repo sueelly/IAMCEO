@@ -114,6 +114,7 @@ test("좁은 팀 화면에서 다음·완료 업무 제목을 필터와 검색�
 
     await filters.getByRole("button", { name: /^다음/ }).click();
     expect(await nextTask.isVisible()).toBe(true);
+    const nextTitle = await nextTask.locator("strong").innerText();
     await filters.getByRole("button", { name: /^완료/ }).click();
     expect(await doneTask.isVisible()).toBe(true);
     await doneTask.focus();
@@ -125,10 +126,19 @@ test("좁은 팀 화면에서 다음·완료 업무 제목을 필터와 검색�
 
     await filters.getByRole("button", { name: /^전체/ }).click();
     const search = p.getByRole("searchbox", { name: "직원·업무 검색" });
+    await search.fill(worker.name);
+    const blockedTasks = employee.getByRole("button", { name: /^막힘/ });
+    expect(await blockedTasks.isVisible()).toBe(true);
+    await blockedTasks.click();
+    await detail.getByText(current.title, { exact: true }).waitFor();
+    await p.keyboard.press("Escape");
+
     await p.setViewportSize({ width: 320, height: 900 });
     await search.fill(done.title);
     expect(await doneTask.isVisible()).toBe(true);
     expect(await p.locator(".to-table").evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+    await search.fill(nextTitle);
+    expect(await nextTask.isVisible()).toBe(true);
 
     await search.clear();
     await filters.getByRole("button", { name: /^미배정/ }).click();

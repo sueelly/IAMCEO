@@ -497,8 +497,7 @@ export default function TeamOverview({
               const issue = row.member ? memberIssueLabel(row.member) : null;
               const displayName = row.name === state.project.name + " 총괄" ? "총괄" : row.name;
               const lead = !!row.member && row.member.kind !== "worker";
-              const role = row.member?.role || (lead ? "총괄" : "");
-              const subtitle = issue || (role !== displayName ? role : "");
+              const role = row.member?.role || (row.member?.kind === "conductor" ? "총괄" : "");
               return (
                 <article
                   className="to-row"
@@ -530,7 +529,8 @@ export default function TeamOverview({
                     </span>
                     <span className="to-person-text">
                       <b title={displayName}>{displayName}</b>
-                      {subtitle ? <small title={subtitle} data-issue={!!issue || undefined}>{subtitle}</small> : null}
+                      {role && role !== displayName ? <small title={role}>{role}</small> : null}
+                      {issue ? <small title={issue} data-issue="">{issue}</small> : null}
                     </span>
                   </button>
                   <div className="to-now" data-has-task={!!head || undefined}>

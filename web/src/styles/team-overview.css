@@ -721,7 +721,7 @@
   .to-row[data-former] :is(.to-next, .to-done)[data-has-task] {
     display: block;
   }
-  .to-table[data-filter="action"] .to-checks[data-has-checks],
+  .to-table:is([data-filter="action"], [data-search]) .to-checks[data-has-checks],
   .to-row[data-former] .to-checks[data-has-checks] {
     display: flex;
     flex-flow: row wrap;
