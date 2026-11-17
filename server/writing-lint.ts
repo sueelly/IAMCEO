@@ -9,6 +9,8 @@ import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
 import { josa } from "./roles.ts";
 
 export const LIMITS = { title: 45, askTitle: 40, req: 40, desc: 60 } as const;
+/** 보고 설명의 권장 길이. 접수·증거 대조·저장에는 상한으로 쓰지 않는다. */
+export const REPORT_LENGTH_GUIDANCE = { checkName: 200, evidence: 1000, command: 500, claim: 400, source: 500, quote: 600, unverified: 300, review: 600 } as const;
 /** 도구 결과에 붙일 경고 줄 수(머리 줄 제외). */
 export const MAX_WARNING_LINES = 4;
 
@@ -123,6 +125,35 @@ function charLen(value: string): number {
 // ---------- 검사 ----------
 type Bag = LintWarning[];
 
+interface PostLintInput {
+  title: string;
+  body?: string | null;
+  ownerAction?: string | null;
+  checks?: readonly { name: string; evidence: string; command?: string | null }[];
+  claims?: readonly { text: string; source?: string | null; quote?: string | null }[];
+  unverified?: readonly string[];
+  reviewNeeded?: string | null;
+}
+
+function reportLength(bag: Bag, input: PostLintInput) {
+  const guide = REPORT_LENGTH_GUIDANCE;
+  const fields: [string, number, readonly (string | null | undefined)[]][] = [
+    ["검사 이름", guide.checkName, input.checks?.map(c => c.name) ?? []],
+    ["검사 근거", guide.evidence, input.checks?.map(c => c.evidence) ?? []],
+    ["명령", guide.command, input.checks?.map(c => c.command) ?? []],
+    ["주장", guide.claim, input.claims?.map(c => c.text) ?? []],
+    ["출처", guide.source, input.claims?.map(c => c.source) ?? []],
+    ["인용", guide.quote, input.claims?.map(c => c.quote) ?? []],
+    ["미확인", guide.unverified, input.unverified ?? []],
+    ["검토 요청", guide.review, [input.reviewNeeded]],
+  ];
+  const over = fields.flatMap(([label, limit, values]) => {
+    const count = values.filter(value => value && charLen(value) > limit).length;
+    return count ? [`${label} ${count}건(${limit}자 권장)`] : [];
+  });
+  if (over.length) bag.push({ code: "length-report", text: `보고 길이 권고: ${over.join(" · ")}. 필요한 원문은 줄이지 않아도 됩니다` });
+}
+
 function titleLength(bag: Bag, label: string, value: string | undefined, limit: number) {
   if (value && charLen(value) > limit) bag.push({ code: "length-title", text: `${label} ${limit}자 넘음(${charLen(value)}자): "${clip(value)}"` });
 }
@@ -188,7 +219,7 @@ function hedging(bag: Bag, plain: string) {
   }
 }
 
-const ORDER = ["owner-first", "length-title", "done", "bold", "codeish", "vocab", "reflect", "hedge", "heading", "length-sentence"];
+const ORDER = ["owner-first", "length-report", "length-title", "done", "bold", "codeish", "vocab", "reflect", "hedge", "heading", "length-sentence"];
 
 function finish(bag: Bag): LintWarning[] {
   const seen = new Set<string>();
@@ -206,9 +237,10 @@ function safe(run: () => LintWarning[]): LintWarning[] {
 
 // ---------- 통로별 ----------
 
-export function lintPost(input: { title: string; body?: string | null; ownerAction?: string | null }): LintWarning[] {
+export function lintPost(input: PostLintInput): LintWarning[] {
   return safe(() => {
     const bag: Bag = [];
+    reportLength(bag, input);
     const body = input.body ?? "";
     const owner = input.ownerAction?.trim() || "";
     const parsed = parseOwnerLine(body);
