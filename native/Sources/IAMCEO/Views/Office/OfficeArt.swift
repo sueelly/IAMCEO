@@ -551,6 +551,8 @@ enum OfficeArt {
     static let accessoryOrder: [OfficeAccessory] = [.bow, .beanie, .cap, .glasses, .headphones, .sprout, .star, .flower, .antenna, .party, .tophat, .catears]
 
     // MARK: Furniture (each piece with its own palette; '@' is a state light, coloured at draw time)
+    // Light theme (2026-11-17): furniture is white-to-lilac with a mid-violet outline, not the art set's dark navy;
+    // lit screens are paper-white with coloured code. `LightThemeContrastTests` keeps every fill light.
 
     /// A member desk (28x13).
     static let desk = Piece(rows: [
@@ -567,7 +569,7 @@ enum OfficeArt {
         "KKKKKKKKKKKKKKKKKKKKKKKKKKKK",
         ".KEeK..................KEeK.",
         ".KKKK..................KKKK.",
-    ], palette: ["K": 0x1A1433, "A": 0x7466B4, "B": 0x5B4F98, "C": 0x4E4388, "D": 0x4A3F80, "F": 0x3B316D, "G": 0x30285B, "E": 0x433A78, "e": 0x28214C])
+    ], palette: ["K": 0x7A6FB8, "A": 0xFFFFFF, "B": 0xF3EFFF, "C": 0xE4DDFC, "D": 0xDCD4F8, "F": 0xCFC5F3, "G": 0xBFB3EB, "E": 0xCBC1F0, "e": 0xA89CDB])
     /// The lead's desk (47x14): the lead sits behind it, two monitor backs flank the face.
     static let deskLead = Piece(rows: [
         ".KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.",
@@ -584,7 +586,7 @@ enum OfficeArt {
         "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
         ".KEeK.....................................KEeK.",
         ".KKKK.....................................KKKK.",
-    ], palette: ["K": 0x1A1433, "A": 0x7466B4, "B": 0x5B4F98, "C": 0x4E4388, "D": 0x4A3F80, "F": 0x3B316D, "G": 0x30285B, "E": 0x433A78, "e": 0x28214C])
+    ], palette: ["K": 0x7A6FB8, "A": 0xFFFFFF, "B": 0xF3EFFF, "C": 0xE4DDFC, "D": 0xDCD4F8, "F": 0xCFC5F3, "G": 0xBFB3EB, "E": 0xCBC1F0, "e": 0xA89CDB])
     /// A laptop lid seen from behind (top row), drawn after the resident at desk (9, -2). '@' is the state LED.
     static let lid = Piece(rows: [
         ".KKKKKKKK.",
@@ -594,14 +596,14 @@ enum OfficeArt {
         "KUUUUUUUUK",
         "KuuuuuuuuK",
         ".KKKKKKKK.",
-    ], palette: ["K": 0x1A1433, "j": 0xB2A8E2, "J": 0x8C82C6, "U": 0x7067A8, "u": 0x2E2559, "@": 0x4A3F82])
+    ], palette: ["K": 0x7A6FB8, "j": 0xFFFFFF, "J": 0xEAE5FC, "U": 0xD3CAF3, "u": 0xAFA3DF, "@": 0xB4A8E2])
     /// The shut laptop of a top-row resident in error or asleep on the desk, at desk (9, 2).
     static let lidClosed = Piece(rows: [
         ".KKKKKKKK.",
         "KjjjjjjjjK",
         "KUUUU@@UUK",
         ".KKKKKKKK.",
-    ], palette: ["K": 0x1A1433, "j": 0xB2A8E2, "U": 0x7067A8, "@": 0x4A3F82])
+    ], palette: ["K": 0x7A6FB8, "j": 0xFFFFFF, "U": 0xD3CAF3, "@": 0xB4A8E2])
     /// A monitor facing the viewer (bottom row) at desk (5, -8); its screen is desk (7, -6), 14x5.
     static let monitor = Piece(rows: [
         ".KKKKKKKKKKKKKKKK.",
@@ -616,7 +618,7 @@ enum OfficeArt {
         "........KnK.......",
         "......KKnNKK......",
         "......KKKKKK......",
-    ], palette: ["K": 0x1A1433, "N": 0x2C2554, "n": 0x443B7A, "#": 0x1B1631])
+    ], palette: ["K": 0x7A6FB8, "N": 0xD8D0F5, "n": 0xF6F3FF, "#": 0xC4BAEA])
     /// The lead's monitors from behind, at lead desk (3, -8) and (32, -8).
     static let monitorBack = Piece(rows: [
         ".KKKKKKKKKK.",
@@ -631,13 +633,13 @@ enum OfficeArt {
         ".....KnK....",
         "...KKnNNKK..",
         "...KKKKKKK..",
-    ], palette: ["K": 0x1A1433, "N": 0x2C2554, "n": 0x443B7A, "@": 0x4A3F82])
+    ], palette: ["K": 0x7A6FB8, "N": 0xD8D0F5, "n": 0xF6F3FF, "@": 0xB4A8E2])
     /// The keyboard on a bottom-row desk, at desk (8, 3).
     static let keyboard = Piece(rows: [
         "KKKKKKKKKKKK",
         "KqQqQqQqQqQK",
         "KKKKKKKKKKKK",
-    ], palette: ["K": 0x1A1433, "Q": 0x2A2350, "q": 0x6A5FA6])
+    ], palette: ["K": 0x7A6FB8, "Q": 0xD3CAF3, "q": 0xFFFFFF])
     /// A desk chair facing the viewer: an empty top-row seat; a bottom-row resident turned around sits on it at desk (6, 9).
     static let chairFront = Piece(rows: [
         "...KKKKKKKKKK...",
@@ -660,7 +662,7 @@ enum OfficeArt {
         ".KWWWWK...KWWWWK",
         ".KKK.........KKK",
         "..K...........K.",
-    ], palette: ["K": 0x1A1433, "c": 0x504893, "h": 0x3C3573, "d": 0x2B2554, "w": 0x5E56A2, "W": 0x241D46, "p": 0x6A5EB0])
+    ], palette: ["K": 0x7A6FB8, "c": 0xEFEBFF, "h": 0xDDD5F8, "d": 0xC2B7EC, "w": 0xFFFFFF, "W": 0xAEA2DE, "p": 0xF8F6FF])
     /// A desk chair from behind (bottom row), drawn after the resident at desk (7, 18).
     static let chairBack = Piece(rows: [
         "..KKKKKKKKKK..",
@@ -674,7 +676,7 @@ enum OfficeArt {
         "......KK......",
         "..KKKKKKKKKK..",
         "..K..K..K..K..",
-    ], palette: ["K": 0x1A1433, "c": 0x504893, "h": 0x3C3573, "d": 0x2B2554, "w": 0x5E56A2, "W": 0x241D46, "p": 0x6A5EB0])
+    ], palette: ["K": 0x7A6FB8, "c": 0xEFEBFF, "h": 0xDDD5F8, "d": 0xC2B7EC, "w": 0xFFFFFF, "W": 0xAEA2DE, "p": 0xF8F6FF])
     /// The lead's tall chair, drawn first at (seat.x - 12, desk.y - 28).
     static let chairLead = Piece(rows: [
         "......KKKKKKKKKKKK......",
@@ -696,7 +698,7 @@ enum OfficeArt {
         "KdhhhhhhhhhhhhhhhhhhhddK",
         "KddddddddddddddddddddddK",
         ".KKKKKKKKKKKKKKKKKKKKKK.",
-    ], palette: ["K": 0x1A1433, "c": 0x504893, "h": 0x3C3573, "d": 0x2B2554, "w": 0x5E56A2, "W": 0x241D46, "p": 0x6A5EB0])
+    ], palette: ["K": 0x7A6FB8, "c": 0xEFEBFF, "h": 0xDDD5F8, "d": 0xC2B7EC, "w": 0xFFFFFF, "W": 0xAEA2DE, "p": 0xF8F6FF])
     /// The context warning: an upright low battery on the desk's left end.
     static let battery = Piece(rows: [
         ".WW.",
@@ -706,7 +708,7 @@ enum OfficeArt {
         "WddW",
         "WrrW",
         "WWWW",
-    ], palette: ["W": 0xE6DEFF, "d": 0x2A2148, "r": 0xFF6A3D])
+    ], palette: ["W": 0x7A6FB8, "d": 0xFFFFFF, "r": 0xFF6A3D])
     /// chairFront's seat front, drawn after a turned-around bottom-row resident.
     static let chairFrontLip = Piece(rows: [
         "................",
@@ -729,11 +731,11 @@ enum OfficeArt {
         ".KWWWWK...KWWWWK",
         ".KKK.........KKK",
         "..K...........K.",
-    ], palette: ["K": 0x1A1433, "c": 0x504893, "h": 0x3C3573, "d": 0x2B2554, "w": 0x5E56A2, "W": 0x241D46, "p": 0x6A5EB0])
+    ], palette: ["K": 0x7A6FB8, "c": 0xEFEBFF, "h": 0xDDD5F8, "d": 0xC2B7EC, "w": 0xFFFFFF, "W": 0xAEA2DE, "p": 0xF8F6FF])
 
     // MARK: Screens (14x5, bottom-row monitors) and fx
 
-    static let screenPalette: [Character: UInt32] = ["0": 0x2A1F66, "1": 0xC9BCFF, "2": 0xB4F0FF, "3": 0x9DEBD2, "4": 0x5A4AA8, "a": 0xFFB070, "W": 0xF1E9FF, "r": 0xFF8A80, "v": 0x7A5BFF, "g": 0x8F88B2, "E": 0x4A1230, "R": 0xFF5A62, "x": 0xFF9AA2]
+    static let screenPalette: [Character: UInt32] = ["0": 0xF3EEFF, "1": 0x8E78EE, "2": 0x4FA8D0, "3": 0x3FB38D, "4": 0x6A55D8, "a": 0xF08A2C, "W": 0xFFFFFF, "r": 0xFF6A6A, "v": 0x7A5BFF, "g": 0xA9A3C6, "E": 0xFFE3E6, "R": 0xE5414B, "x": 0xFF9AA2]
     static let screenWaiting = Piece(rows: [
         "00000000000000",
         "04444404440000",
