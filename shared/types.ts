@@ -660,6 +660,8 @@ export interface SyncSnapshot {
   projectStatus: "none" | "ok" | "not_found" | "archived";
   bootstrap: Omit<Bootstrap, "runtime">;
   state: ProjectState | null;
+  /** Opt-in latest page read synchronously with state/revisions/cursor. */
+  history?: MessagePage;
   /** state/cursor와 같은 동기 읽기 경계. 선택 프로젝트가 없으면 members/todos는 빈 map. */
   revisions: import("./operations.ts").SyncRevisions;
 }

@@ -19,6 +19,8 @@ jobs:
       - name: 태그와 package.json 버전이 같은지
         run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "$GITHUB_REF_NAME"
       - run: bun run typecheck
+      - name: 내장 운영 화면 검사에 필요한 Chromium
+        run: bunx playwright install chromium
       - name: 단위 시험
         run: bun test $(ls tests/*.test.ts | grep -v -e herdr.test.ts -e browser.test.ts)
       - run: bun run build:release

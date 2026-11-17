@@ -165,7 +165,7 @@ export const api = {
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
   realtimeSession: (signal?: AbortSignal) => request<void>("POST", "/api/realtime-session", undefined, WRITE_TIMEOUT_MS, { signal }),
-  sync: (projectId: string, signal?: AbortSignal, compact = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}`, signal),
+  sync: (projectId: string, signal?: AbortSignal, compact = false, history = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}${history ? "&history=50" : ""}`, signal),
   filePage: (id: string, opts: FilePageOptions = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({ limit: String(opts.limit ?? 20) });
     if (opts.taskId) query.set("taskId", opts.taskId);
@@ -175,7 +175,7 @@ export const api = {
   },
   file: (id: string, signal?: AbortSignal) => get<FileDoc>(`/api/files/${seg(id)}`, signal),
   /** <img>·<video> 가 쓸 첨부 쿠키를 받는다. 화면을 그리기 전에 부른다. */
-  filesSession: () => post<void>("/api/files-session"),
+  filesSession: (signal?: AbortSignal) => request<void>("POST", "/api/files-session", undefined, WRITE_TIMEOUT_MS, { signal }),
 
   projectState: (id: string, signal?: AbortSignal) => get<ProjectState>(`/api/projects/${seg(id)}/state`, signal),
   archivedProjects: () => get<Project[]>("/api/projects/archived"),

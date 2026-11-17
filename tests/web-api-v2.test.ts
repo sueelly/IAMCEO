@@ -60,6 +60,14 @@ test("cursor history and message reconciliation preserve opaque IDs and scope", 
   expect(calls[1].path).toBe("/api/messages/message%2Fone");
 });
 
+test("combined snapshot history is an explicit compact read option", async () => {
+  await client.api.sync("p/1", undefined, true);
+  await client.api.sync("p/1", undefined, true, true);
+  expect(calls.map(call => call.path)).toEqual([
+    "/api/sync?projectId=p%2F1&view=compact", "/api/sync?projectId=p%2F1&view=compact&history=50",
+  ]);
+});
+
 test("reviewed strict write conflict is preserved without a weaker retry", async () => {
   await expect(client.api.putSettingsV2({ maxAwakeWorkers: 3 }, 12)).rejects.toMatchObject({ status: 409 });
   expect(calls).toHaveLength(1);
