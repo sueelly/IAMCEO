@@ -937,6 +937,17 @@ export const MIGRATIONS: string[] = [
              WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
        AND e.rowid = (SELECT MAX(x.rowid) FROM execution_journal x WHERE x.member_id = e.member_id AND x.generation = e.generation)
      GROUP BY e.member_id, d.task_id;`,
+  // A workflow assignment is committed with its queue input. No pending external action is replayed.
+  `CREATE TABLE workflow_assignment_receipts (
+     operation_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     task_id TEXT NOT NULL,
+     member_id TEXT NOT NULL,
+     delivery_id TEXT NOT NULL,
+     request_json TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX workflow_assignment_receipts_project ON workflow_assignment_receipts(project_id, created_at);`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

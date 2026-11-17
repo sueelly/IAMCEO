@@ -29,6 +29,7 @@ export interface ServerCapabilities {
     snapshotHistory?: boolean;
     push: boolean;
     operations: boolean;
+    workflowAssignment?: boolean;
   };
 }
 

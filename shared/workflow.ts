@@ -29,3 +29,23 @@ export interface ProjectWorkflow {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 }
+
+export interface WorkflowAssignmentRequest { operationId: string; memberId: string; revision: string }
+export interface WorkflowAssignmentResult {
+  operationId: string; projectId: string; taskId: string; memberId: string; deliveryId: string; createdAt: string;
+}
+export interface WorkflowAssignmentPreview {
+  projectId: string;
+  task: { id: string; title: string; branch: string | null; worktree: string | null; parentTaskId: string | null };
+  member: { id: string; name: string };
+  contract: { taskId: string; rev: number; goal: string; scope: string | null; acceptance: string[]; forbidden: string[]; evidence: string[]; checks: string[]; confirmed: boolean } | null;
+  originals: { id: string; taskId: string | null; who: string; at: string; body: string }[];
+  reports: { id: string; taskId: string | null; who: string; at: string; kind: string; title: string; body: string }[];
+  files: { id: string; taskId: string | null; title: string; summary: string }[];
+  attachments: { id: string; name: string }[];
+  omitted: { originals: number; reports: number; files: number };
+  position: number;
+  startCondition: string;
+  blockers: string[];
+  revision: string;
+}

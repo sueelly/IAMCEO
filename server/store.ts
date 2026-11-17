@@ -1,5 +1,5 @@
 import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
-import type { ProjectWorkflow } from "../shared/workflow.ts";
+import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { canonicalAgentRequest as stableJson, agentRequestHash, encodeAgentResult, decodeAgentResult, type AgentReceiptState } from "./agent-receipts.ts";
 import { encodeStoredText, decodeStoredText } from "./stored-text.ts";
@@ -2012,6 +2012,40 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         WHERE m.project_id = ? AND a.member_id IN (${runningIds.map(() => '?').join(',')}) AND a.kind IN ('tool','text','error') GROUP BY a.member_id) latest ON latest.id = a.id`, projectId, ...runningIds)
       .map(r => ({ memberId: r.member_id as string, kind: r.kind as string, title: redactHarnessText(decodeStoredText(r.text)).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").slice(0, 180), at: r.at as string })) : [];
     return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity);
+  }
+
+  /** Bounded task evidence, independent of the latest message window. Ancestors stay in-project. */
+  workflowAssignmentContext(taskId: string) {
+    const task = this.requireTask(taskId), lineage: Task[] = [], seen = new Set<string>();
+    let next: Task | null = task;
+    while (next && !seen.has(next.id) && seen.size < 32) {
+      if (next.projectId !== task.projectId) throw new ApiError(409, "부모 업무의 프로젝트가 다릅니다");
+      seen.add(next.id); lineage.push(next);
+      next = next.parentTaskId ? this.requireTask(next.parentTaskId) : null;
+    }
+    if (next) throw new ApiError(409, "부모 업무 연결을 먼저 확인해 주세요");
+    const ids = lineage.map(t => t.id), placeholders = ids.map(() => "?").join(",");
+    const originals = this.rows(`SELECT * FROM messages WHERE project_id = ? AND task_id IN (${placeholders}) AND mine = 1 ORDER BY at, id LIMIT 101`, task.projectId, ...ids).map(toMessage);
+    const reports = this.rows(`SELECT * FROM messages WHERE project_id = ? AND task_id IN (${placeholders}) AND mine = 0 AND kind IN ('진행','완료','막힘','질문','답변') ORDER BY at DESC, id DESC LIMIT 10`, task.projectId, ...ids).map(toMessage).reverse();
+    const files = this.rows(`SELECT id, task_id, title, summary, body, attachments FROM files WHERE project_id = ? AND task_id IN (${placeholders}) ORDER BY sort_order DESC, rowid DESC LIMIT 30`, task.projectId, ...ids);
+    const total = (table: string, condition = "") => Number(this.row(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ? AND task_id IN (${placeholders}) ${condition}`, task.projectId, ...ids)!.n);
+    const attachmentIds = new Set(originals.flatMap(m => m.attachments.map(a => a.id)));
+    for (const file of files) for (const attachment of json<Attachment[]>(file.attachments) ?? []) attachmentIds.add(attachment.id);
+    const attachments = [...attachmentIds].map(id => this.getAttachment(id)).filter((a): a is Attachment => !!a && this.isProjectAttachment(task.projectId, a.id));
+    const assigned = !!this.row("SELECT 1 FROM deliveries WHERE task_id = ? AND wake = 1 AND kind IN ('instruction','user_message') LIMIT 1", taskId)
+      || !!this.row("SELECT 1 FROM task_sequence WHERE task_id = ? LIMIT 1", taskId);
+    return { lineage, originals: originals.slice(0, 100), reports,
+      files: files.map(f => ({ id: f.id as string, taskId: f.task_id as string | null, title: f.title as string, summary: f.summary as string, fingerprint: createHash("sha256").update(String(f.body)).digest("hex") })), attachments, assigned,
+      omitted: { originals: Math.max(0, total("messages", "AND mine = 1") - 100), reports: Math.max(0, total("messages", "AND mine = 0 AND kind IN ('진행','완료','막힘','질문','답변')") - reports.length), files: Math.max(0, total("files") - files.length) } };
+  }
+
+  workflowAssignmentReceipt(operationId: string): { request: WorkflowAssignmentRequest; result: WorkflowAssignmentResult } | null {
+    const row = this.row("SELECT * FROM workflow_assignment_receipts WHERE operation_id = ?", operationId);
+    return row ? { request: json(row.request_json), result: { operationId: row.operation_id, projectId: row.project_id, taskId: row.task_id, memberId: row.member_id, deliveryId: row.delivery_id, createdAt: row.created_at } } : null;
+  }
+
+  saveWorkflowAssignmentReceipt(request: WorkflowAssignmentRequest, result: WorkflowAssignmentResult): void {
+    this.run("INSERT INTO workflow_assignment_receipts(operation_id, project_id, task_id, member_id, delivery_id, request_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", result.operationId, result.projectId, result.taskId, result.memberId, result.deliveryId, stableJson(request), result.createdAt);
   }
 
   // ---- 업무 단계 ----

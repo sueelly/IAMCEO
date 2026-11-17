@@ -83,6 +83,8 @@ import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
+import type { WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
+import { commitWorkflowAssignment } from "./workflow-assignment.ts";
 import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TerminalKey, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
@@ -3537,6 +3539,19 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** team_assign. member 는 핸들 또는 화면 이름. 다른 프로젝트 직원은 찾지 못한다. */
+  async assignWorkflow(projectId: string, taskId: string, request: WorkflowAssignmentRequest): Promise<WorkflowAssignmentResult> {
+    this.requireActive(this.store.requireProject(projectId));
+    const prior = this.store.workflowAssignmentReceipt(request.operationId);
+    const result = commitWorkflowAssignment(this.store, projectId, taskId, request, preview => {
+      const member = this.store.requireMember(request.memberId);
+      const attachments = preview.attachments.map(a => this.store.getAttachment(a.id)).filter((a): a is Attachment => !!a);
+      return attachmentLines(this.attachmentsFor(member, attachments)).join("\n");
+    });
+    // A repeated confirmation only reads the committed result. It cannot wake or resend a turn.
+    if (!prior) await this.pump(result.memberId);
+    return result;
+  }
+
   async assign(projectId: string, memberRef: string, input: AssignInput, assignedBy?: Member): Promise<AssignResult> {
     const target = this.requireInProject(projectId, memberRef);
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
