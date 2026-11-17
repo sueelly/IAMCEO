@@ -249,6 +249,15 @@ describe("역할 경계 보완: 단계별 판정·승인 범위·경계 한 번"
       const second = renderRole(kind, vars, again);
       expect(count(second, HEAD[kind])).toBe(1);
       expect(second).toBe(normal);
+      // effort·기억 줄이 든 완성된 글을 다시 써도 그 줄은 한 번이다.
+      const full = { ...vars, SUBAGENT_EFFORT: "서브에이전트 effort=high", MEMORY: "## 개발 기억\n기억 단락 한 줄" };
+      const fullNormal = renderRole(kind, full);
+      const fullAgain = mkdtempSync(join(tmpdir(), "iamceo-role-boundary-full-"));
+      writeFileSync(join(fullAgain, `${kind}.md`), fullNormal);
+      const fullSecond = renderRole(kind, full, fullAgain);
+      expect(count(fullSecond, "서브에이전트 effort=high")).toBe(1);
+      expect(count(fullSecond, "기억 단락 한 줄")).toBe(1);
+      expect(fullSecond).toBe(fullNormal);
     }
     // 같은 경계 글이 두 번 든 템플릿: 뒤 사본만 빠지고 사이 글은 남는다.
     const body = ROLE_BOUNDARY.worker.trim();

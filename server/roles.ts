@@ -90,8 +90,9 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
   }
   const template = withBoundary(raw, kind);
   // 줄이 통째로 자리표시면 비었을 때 빈 줄을 남기지 않는다. 고쳐 쓴 템플릿에 자리표시가 없어도 규칙은 빠지지 않게 끝에 붙인다.
+  // 같은 글이 이미 들어 있으면(완성된 역할 글을 다시 쓴 경우) 다시 붙이지 않는다.
   const place = (text: string, key: "SUBAGENT_EFFORT" | "MEMORY", value: string, gap: string): string =>
-    text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value ? `${text.trimEnd()}${gap}${value}\n` : text;
+    text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value && !text.includes(value.trim()) ? `${text.trimEnd()}${gap}${value}\n` : text;
   const placed = place(place(template, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n");
   return placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
 }
