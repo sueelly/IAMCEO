@@ -227,8 +227,10 @@ test("moving an old file into an exhausted task updates the list and open reader
     await page.locator(".cmp-task", { hasText: "목표 업무" }).click(); await count(page, 20);
     await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
     await page.locator(".fl-doc__task", { hasText: "원래 업무" }).waitFor();
+    const refreshed = page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
     store.moveRecordTask({ projectId: p.id, refType: "file", refId: old.id, from: b.id, to: a.id, basis: "classify", actor: "시험" });
-    await page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
+    await refreshed;
+    await count(page, 41);
     expect(await page.locator(".fl-row").count()).toBe(41);
     expect(await page.locator(".fl-row__title", { hasText: "옮길 옛 자료" }).count()).toBe(1);
     expect(await page.locator(".fl-doc__task").count()).toBe(0);

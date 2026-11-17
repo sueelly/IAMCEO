@@ -70,6 +70,8 @@ export interface AppState {
   syncProjectId: string | null;
   /** A completed authoritative read, independent of whether its domain values changed. */
   acceptedSnapshotVersion: number;
+  /** File events outside the compact preview still invalidate paged file reads. */
+  fileRevision: number;
   historyError: string | null;
 }
 
@@ -269,6 +271,7 @@ let state: AppState = {
   syncRevisions: null,
   syncProjectId: null,
   acceptedSnapshotVersion: 0,
+  fileRevision: 0,
   historyError: null,
 };
 
@@ -309,6 +312,7 @@ let buffered: WsEvent[] | null = null;
 let historyRange: CursorHistory | null = null;
 let remoteEvents: WsEvent[] = [];
 let remoteTimer: ReturnType<typeof setTimeout> | null = null;
+let fileRevision = 0;
 const usesCursorHistory = () => coordinator.usesSnapshots && (state.capabilities?.capabilities.paging === true || state.capabilities?.capabilities.browserRealtime === true);
 
 function clearRemoteEvents(): void {
@@ -320,6 +324,7 @@ function drainRemoteEvents(base: AppState): AppState {
   return events.reduce(reduce, base);
 }
 function withHistory(next: AppState): AppState {
+  if (next.fileRevision !== fileRevision) next = { ...next, fileRevision };
   return usesCursorHistory() && next.project && historyRange?.projectId === next.project.project.id
     ? { ...next, project: { ...next.project, messages: historyRange.items } } : next;
 }
@@ -337,6 +342,7 @@ function historyFor(projectId: string): CursorHistory {
 
 function handleEvent(e: WsEvent, local = false): void {
   if (e.type === "hello" || e.type === "ping") return;
+  if (e.type === "file" && e.file.projectId === state.route.projectId) fileRevision++;
   if (buffered) buffered.push(e);
   if (usesCursorHistory() && e.type === "message" && historyRange?.projectId === e.message.projectId) {
     historyRange.receive(e.message, local);
@@ -348,6 +354,7 @@ function handleEvent(e: WsEvent, local = false): void {
 
 function receiveRemote(event: WsEvent): void {
   if (coordinator.protocol !== 2) { handleEvent(event); return; }
+  if (event.type === "file" && event.file.projectId === state.route.projectId) fileRevision++;
   if (buffered) buffered.push(event);
   if (event.type === "message" && historyRange?.projectId === event.message.projectId) historyRange.receive(event.message);
   remoteEvents.push(event);
@@ -423,6 +430,7 @@ async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Pro
     hasOlderMessages: snapshot.state ? usesCursorHistory() ? historyFor(context.projectId).hasOlder : snapshot.state.messages.length >= MSG_PAGE : false,
     syncRevisions: snapshot.revisions, syncProjectId: context.projectId,
     acceptedSnapshotVersion: state.acceptedSnapshotVersion + 1,
+    fileRevision,
   };
   for (const event of pending) next = reduce(next, event);
   next.bootstrap = shareJSON(state.bootstrap, next.bootstrap);

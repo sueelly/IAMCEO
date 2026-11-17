@@ -341,6 +341,9 @@ test("employee-detail direct send survives lost acknowledgement and reload with 
   const restored = page.locator("form.tm-send").getByRole("textbox", { name: /직접 지시/ });
   await restored.waitFor({ state: "visible" });
   expect(await restored.inputValue()).toBe("다음 직접 지시는 그대로 유지");
+  // Faster first paint may precede the initial online reconciliation. Keep its
+  // deliberately failed lookup in place until that connection has settled.
+  await page.locator('.conn[data-state="online"]').waitFor({ state: "visible" });
   await form.getByRole("button", { name: "같은 내용 재시도", exact: true }).waitFor({ state: "visible" });
   await page.unroute("**/api/messages/*");
   await form.getByRole("button", { name: "다시 확인", exact: true }).click();
