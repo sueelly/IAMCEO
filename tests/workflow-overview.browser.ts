@@ -110,8 +110,9 @@ test("프로젝트를 바꾸면 이전 배정 검토를 닫는다",async()=>{
 },30000);
 
 test("별도 저장된 실패 검사 근거를 인계 창에서 읽을 수 있다",async()=>{
- const t=ready("실패 근거 인계"),message=store.createMessage({projectId:project.id,taskId:t.id,memberId:worker.id,who:worker.name,mine:false,kind:"막힘",title:"중단 실패",body:""});
- store.recordReportChecks(message,worker,[{kind:"behavior",name:"중단 입력 검사",result:"fail",command:"bun test stop-handoff",evidence:"중단 뒤 입력이 남았습니다"}],{contractTaskId:t.id,contractRev:1,evidenceStatus:"missing",reviewNeeded:"실행 대조 필요"});
+ const parent=ready("중단 검사의 원래 업무"),t=ready("실패 근거 인계");store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id,t.id);
+ const message=store.createMessage({projectId:project.id,taskId:parent.id,memberId:worker.id,who:worker.name,mine:false,kind:"막힘",title:"중단 실패",body:""});
+ store.recordReportChecks(message,worker,[{kind:"behavior",name:"중단 입력 검사",result:"fail",command:"bun test stop-handoff",evidence:"중단 뒤 입력이 남았습니다"}],{contractTaskId:parent.id,contractRev:1,evidenceStatus:"missing",reviewNeeded:"실행 대조 필요"});
  const p=await open();await assignMenu(p,t);const d=p.getByRole("dialog");await d.getByText(`${worker.name} · 막힘 · 중단 실패`,{exact:true}).click();
  await d.getByText("중단 뒤 입력이 남았습니다",{exact:true}).waitFor();expect(await d.getByText("bun test stop-handoff",{exact:true}).count()).toBe(1);await p.close();
 },30000);

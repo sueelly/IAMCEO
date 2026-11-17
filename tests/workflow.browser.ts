@@ -10,6 +10,7 @@ import { openDb } from "../server/db.ts";
 import { startServer, type RunningServer } from "../server/http.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import { Store, type ExecutionJournal } from "../server/store.ts";
+import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 import type { Member, Project, Task } from "../shared/types.ts";
 
 const CODE = "workflow-fixture-code";
@@ -244,8 +245,9 @@ test("최근 스냅샷 밖의 원래 지시는 업무별 이전 페이지에서 
   for (let i = 1; i <= 60; i++) store.createMessage({ projectId: project.id, taskId: task.id, memberId: worker.id, who: worker.name, kind: "진행", title: `확인 기록 ${i}`, body: `검사 경과 ${i}`, at: new Date(Date.UTC(2000, 0, 1, 0, 0, i)).toISOString() });
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   await open(page);
-  await node(page, task.id, null).click();
+  await node(page, task.id, worker.id).click();
   const detail = page.getByRole("dialog", { name: task.title, exact: true });
+  expect(await detail.textContent()).toContain("이 직원이 수행 보고를 남겼습니다");
   const older = detail.getByRole("button", { name: "이전 지시·보고" });
   await older.waitFor();
   expect(await detail.getByText("처음 확정한 지시 원문입니다.", { exact: true }).count()).toBe(0);
@@ -309,5 +311,69 @@ test("미완료 과거 배정을 모두 현재에 남기고 보류 입력과 실
   expect(await node(page, held.id, member.id).count()).toBe(1);
   expect(await node(page, old[1].id, member.id).count()).toBe(1);
   expect(await row.locator(".wf-node").count()).toBe(6);
+  await page.close();
+}, 60_000);
+
+test("순서 등록 전 미완료 보고는 접히지 않고 복원 입력의 원인과 다음 조치를 상세에서 설명한다", async () => {
+  const member = store.createMember({ projectId: project.id, handle: "followup", name: "미완료 확인 담당", kind: "worker" });
+  const unfinished: Task[] = [];
+  for (let i = 0; i < 5; i++) {
+    const task = store.ensureSourceTask({ projectId: project.id, sourceRef: `workflow-open-${i}`, title: `검토가 남은 업무 ${i}`, origin: "owner" }).task;
+    unfinished.push(task);
+    const d = store.enqueue({ projectId: project.id, memberId: member.id, taskId: task.id, kind: "instruction", text: task.title });
+    store.markDelivered(d.id);
+    store.createMessage({ projectId: project.id, taskId: task.id, memberId: member.id, who: member.name, kind: "완료", title: "작성자 납품", body: "독립 검토와 최종 완료 확인이 남았습니다" });
+  }
+  const restored = store.ensureSourceTask({ projectId: project.id, sourceRef: "workflow-restore-reason", title: "복원 입력 확인", origin: "owner" }).task;
+  const d = store.enqueue({ projectId: project.id, memberId: member.id, taskId: restored.id, kind: "instruction", text: restored.title, status: "held", holdReason: "delivery_unknown" });
+  const recovery = store.getDeliveryRecovery(d.id)!;
+  store.updateDeliveryRecovery(d.id, recovery.version, { phase: "stopped", reason: "restore_reconciliation_required" });
+  store.db.query("DELETE FROM task_sequence WHERE member_id = ?").run(member.id);
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+  await open(page);
+  const row = page.locator(`.wf-row[data-member-id="${member.id}"]`);
+  expect(await row.locator(".wf-node").count()).toBe(6);
+  for (const task of unfinished) expect(await node(page, task.id, member.id).textContent()).toContain("작성자 납품");
+  await node(page, restored.id, member.id).click();
+  const detail = page.getByRole("dialog", { name: restored.title, exact: true });
+  expect(await detail.textContent()).toContain("복원 확인 필요");
+  expect(await detail.textContent()).toContain("총괄이 원래 지시와 복원된 기록을 대조");
+  expect(await detail.getByRole("link", { name: "업무 대화", exact: true }).count()).toBe(1);
+  expect(await detail.getByRole("link", { name: "직원 확인" }).count()).toBe(0);
+  expect(store.requireDelivery(d.id).status).toBe("held");
+  expect(store.getDeliveryRecovery(d.id)!.phase).toBe("stopped");
+  await page.close();
+}, 60_000);
+
+test("총괄의 실제 후속 실행과 대표 중단을 표시하고 같은 업무의 새 대표 지시로 중단 표시를 해제한다", async () => {
+  const task = store.saveTask({ projectId: project.id, memberId: worker.id, who: worker.name, title: "총괄 후속 실행 표시" }).task;
+  store.createMessage({ projectId: project.id, taskId: task.id, memberId: worker.id, who: worker.name, kind: "막힘", title: "통합 확인 필요", body: "검증 조건이 남았습니다" });
+  const d = store.enqueue({ projectId: project.id, memberId: registrar.id, taskId: task.id, kind: "system", text: "후속 확인", wake: true });
+  store.db.query("INSERT INTO task_continuation_deliveries(delivery_id,task_id,round,created_at) VALUES(?,?,?,?)").run(d.id, task.id, 1, d.createdAt);
+  store.markDelivered(d.id);
+  const at = new Date().toISOString();
+  const run: ExecutionJournal = { runId: "workflow-browser-continuation", memberId: registrar.id, projectId: project.id,
+    identity: { terminalId: null, sessionId: registrar.sessionId, sessionGeneration: store.memberRevisions(registrar.id).sessionGeneration, process: null },
+    turn: 1, deliveryIds: [d.id], phase: "running", inputReceivedAt: at, startedAt: at, lastProgressAt: at,
+    endedAt: null, result: null, reason: null, exitCode: null, interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at };
+  store.saveExecutionJournal(run);
+  store.patchMember(registrar.id, { status: "working", statusObservation: { source: "core", observedAt: at, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: null } });
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+  await open(page);
+  const current = node(page, task.id, registrar.id);
+  expect(await current.getAttribute("data-state")).toBe("running");
+  expect(await current.getAttribute("data-current")).toBe("true");
+  new TaskContinuationCoordinator(store, { intervalMs: 1_000, sameLimit: 3 }).pause([task.id], "browser-stop", "대표가 업무 실행을 중단했습니다");
+  store.saveExecutionJournal({ ...run, phase: "ended", endedAt: new Date().toISOString(), result: "interrupted" });
+  store.patchMember(registrar.id, { status: "idle" });
+  await page.waitForFunction(selector => document.querySelector(selector)?.textContent?.includes("대표가 중단"), `.wf-node[data-task-id="${task.id}"][data-member-id="${registrar.id}"]`);
+  await current.click();
+  const detail = page.getByRole("dialog", { name: task.title, exact: true });
+  expect(await detail.textContent()).toContain("대표가 업무 실행을 중단했습니다");
+  expect(await detail.textContent()).toContain("같은 업무에 새 대표 지시");
+  await page.keyboard.press("Escape");
+  store.enqueue({ projectId: project.id, memberId: registrar.id, taskId: task.id, kind: "user_message", text: "이 업무를 다시 진행해 주세요", wake: true });
+  await page.waitForFunction(selector => !document.querySelector(selector)?.textContent?.includes("대표가 중단"), `.wf-node[data-task-id="${task.id}"][data-member-id="${registrar.id}"]`);
+  expect(await current.textContent()).not.toContain("대표가 중단");
   await page.close();
 }, 60_000);

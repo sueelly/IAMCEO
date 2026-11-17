@@ -4,6 +4,7 @@ import { canonicalAgentRequest } from "./agent-receipts.ts";
 import { bindingContract } from "./harness.ts";
 import { redactHarnessText } from "./harness-redaction.ts";
 import { ApiError, type Store } from "./store.ts";
+import { activeTaskContinuationPauses } from "./task-continuation.ts";
 
 /** Read-only: no runner probes, queue writes, contract confirmation, or owner approval. */
 export function previewWorkflowAssignment(store: Store, projectId: string, taskId: string, memberId: string): WorkflowAssignmentPreview {
@@ -11,6 +12,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (task.projectId !== projectId || member.projectId !== projectId) throw new ApiError(404, "이 프로젝트의 업무와 직원만 배정할 수 있습니다");
   const context = store.workflowAssignmentContext(taskId), contract = store.getEffectiveContract(taskId), progress = store.taskProgress(taskId);
   const queue = store.listPending(memberId), flow = store.projectWorkflow(projectId);
+  const pauses = activeTaskContinuationPauses(store, projectId).filter(p => p.taskId === taskId);
   const row = flow.nodes.filter(n => n.memberId === memberId && n.state !== "done" && !n.historical).sort((a,b) => a.order-b.order);
   const placement = store.workflowAssignmentPlacement(taskId, memberId);
   const observation = member.statusObservation, age = Date.now() - Date.parse(observation?.observedAt ?? "");
@@ -20,7 +22,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (project.archived) blockers.push("보관된 프로젝트입니다");
   if (!project.runnerEnabled) blockers.push("프로젝트 실행이 꺼져 있습니다");
   if (task.mergedInto || progress.stage === "done") blockers.push("이미 합쳐졌거나 완료한 업무입니다");
-  if (context.assigned) blockers.push("이미 배정된 업무입니다. 기존 담당과 전달을 먼저 확인해 주세요");
+  if (context.assigned || flow.nodes.some(n => n.taskId === taskId && n.memberId)) blockers.push("이미 배정된 업무입니다. 기존 담당과 전달을 먼저 확인해 주세요");
+  if (pauses.length) blockers.push("대표가 중단한 업무입니다. 같은 업무의 새 지시나 다시 열기 근거를 먼저 확인해 주세요");
   if (!bindingContract(contract) || !contract?.goal.trim() || !contract.acceptance.length) blockers.push("업무의 목표와 완료 조건이 아직 확정되지 않았습니다");
   if (context.omitted.originals) blockers.push("원래 지시가 100건을 넘습니다. 업무 범위를 정리한 뒤 배정해 주세요");
   if (!context.originals.length && !bindingContract(contract)) blockers.push("확정된 지시를 확인할 수 없습니다");
@@ -54,7 +57,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
     blockers,
   };
   // Changes not visible in the compact preview still invalidate the reviewed instruction.
-  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, files: context.files,
+  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, pauses, files: context.files,
     originals: context.originals, reports: context.reports, lineage: context.lineage,
     member: { revisions: store.memberRevisions(memberId), status: member.status, blockedReason: member.blockedReason, origin: member.origin, cwd: member.cwd, execution: member.executionState, lifecycle: member.lifecycleState, targetTrust },
     queue: queue.map(d => ({id:d.id,taskId:d.taskId,status:d.status,holdReason:d.holdReason})),

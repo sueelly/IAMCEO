@@ -1,6 +1,16 @@
 /** One occurrence of a task on an employee's row. Task registration is not an assignment. */
 export const WORKFLOW_OBSERVATION_MAX_AGE_MS = 90_000;
 export type WorkflowState = "running" | "starting" | "waiting" | "queued" | "blocked" | "review" | "done" | "unknown";
+/** Read-only delivery evidence. A task remaining open does not authorize replaying its input. */
+export interface WorkflowInputBlock {
+  deliveryId: string;
+  phase: string;
+  reason: string | null;
+  holdReason: string | null;
+  retryReason?: string | null;
+  lastCheckedAt: string | null;
+  nextCheckAt: string | null;
+}
 export interface WorkflowNode {
   id: string;
   taskId: string;
@@ -12,6 +22,9 @@ export interface WorkflowNode {
   current: boolean;
   /** Historical deliveries shown as evidence, not retroactively enrolled as prerequisites. */
   historical?: boolean;
+  /** Participation evidence, independent of executable sequence enrollment. */
+  assignmentSource?: "delivery" | "report" | "board";
+  inputBlock?: WorkflowInputBlock;
   reason: string | null;
   action: { label: string; tab: "team" | "thread" | "inbox"; sub: string | null } | null;
   assignedAt: string;

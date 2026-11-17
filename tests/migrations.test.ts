@@ -116,6 +116,19 @@ function historicalDb(path: string, target: number): Database {
   return db;
 }
 
+test("deployed v38 continuation state survives the additive workflow receipt migration", () => {
+  expect(MIGRATIONS[37]).toContain("CREATE TABLE task_continuations");
+  const {path}=fixture("deployed-v38.db"),old=historicalDb(path,38),store=new Store(old,new Bus());
+  const task=store.ensureSourceTask({projectId:"p",sourceRef:"migration-continue",title:"멈춘 업무",origin:"owner"}).task;
+  old.query("INSERT INTO task_continuations(task_id,project_id,pause_token,pause_reason,updated_at) VALUES(?,?,?,?,?)").run(task.id,"p","keep-stop","중단 보존",at);
+  const before=old.query("SELECT id,scope_seq FROM deliveries ORDER BY id").all();old.close();
+  const migrated=track(openDb(path));expect(version(migrated)).toBe(MIGRATIONS.length);
+  expect(migrated.query("SELECT pause_token FROM task_continuations WHERE task_id=?").get(task.id)).toEqual({pause_token:"keep-stop"});
+  expect(migrated.query("SELECT id,scope_seq FROM deliveries ORDER BY id").all()).toEqual(before);
+  expect(migrated.query("SELECT name FROM sqlite_master WHERE name='workflow_assignment_receipts'").get()).not.toBeNull();
+  expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+
 function seed(db: Database): void {
   db.query(`INSERT INTO projects
     (id,name,cwd,backend,permission_mode,runner_enabled,created_at,updated_at)

@@ -1,4 +1,5 @@
 import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
+import { activeTaskContinuationPauses } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { canonicalAgentRequest as stableJson, agentRequestHash, encodeAgentResult, decodeAgentResult, type AgentReceiptState } from "./agent-receipts.ts";
@@ -1943,24 +1944,32 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** Actual recipients and queue classes, one aggregate query regardless of task count. */
   private workflowAssignments(projectId: string, memberId?: string): WorkflowAssignment[] {
     const work = "d.kind IN ('instruction','user_message') AND d.wake = 1";
+    const continuation = "d.kind = 'system' AND d.wake = 1 AND c.delivery_id IS NOT NULL AND (c.retired_reason IS NULL OR d.status = 'delivered')";
+    const assignment = `(${work} OR (${continuation}))`;
     const retryableResolved = "COALESCE(r.reason,'') = 'not_received' AND COALESCE((SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1),'') = 'rejected'";
     const protectedHistory = `(COALESCE(r.phase,'none') = 'stopped' OR (COALESCE(r.phase,'none') = 'resolved' AND NOT (${retryableResolved})))`;
     const protectedInput = `(COALESCE(r.phase,'none') IN ('needs_owner','checking','waiting') OR ${protectedHistory})`;
-    return this.rows(`SELECT d.task_id, d.member_id, MIN(CASE WHEN ${work} THEN d.rowid END) AS first_order,
-      MIN(CASE WHEN ${work} THEN d.created_at END) AS assigned_at,
+    return this.rows(`SELECT d.task_id, d.member_id, MIN(CASE WHEN ${assignment} THEN d.rowid END) AS first_order,
+      MIN(CASE WHEN ${assignment} THEN d.created_at END) AS assigned_at,
+      MAX(CASE WHEN ${continuation} THEN 1 ELSE 0 END) AS continuation,
       MAX(CASE WHEN ${work} AND q.task_id IS NOT NULL AND (d.status = 'delivered' OR NOT ${protectedHistory}) THEN 1 ELSE 0 END) AS eligible,
       MAX(CASE WHEN q.task_id IS NOT NULL THEN 1 ELSE 0 END) AS enrolled,
       SUM(CASE WHEN d.status = 'queued' AND d.wake = 1 AND NOT (${protectedInput}) THEN 1 ELSE 0 END) AS queued,
       SUM(CASE WHEN d.status = 'held' AND d.wake = 1 THEN 1 ELSE 0 END) AS held,
       SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 0 THEN 1 ELSE 0 END) AS notices,
-      SUM(CASE WHEN d.status IN ('queued','held','delivering') AND d.wake = 1 AND ${protectedInput} THEN 1 ELSE 0 END) AS protected,
+      SUM(CASE WHEN (d.status IN ('queued','held','delivering') OR (d.status = 'failed' AND r.phase = 'stopped')) AND d.wake = 1 AND ${protectedInput} THEN 1 ELSE 0 END) AS protected,
+      json_group_array(json_object('deliveryId', d.id, 'phase', COALESCE(r.phase,'none'), 'reason', r.reason,
+        'holdReason', d.hold_reason, 'retryReason', d.retry_reason, 'lastCheckedAt', r.last_checked_at, 'nextCheckAt', r.next_check_at))
+        FILTER (WHERE (d.status IN ('queued','held','delivering') OR (d.status = 'failed' AND r.phase = 'stopped')) AND d.wake = 1 AND (${protectedInput} OR d.status = 'held')) AS input_blocks_json,
       MIN(CASE WHEN d.status = 'queued' THEN d.next_attempt_at END) AS retry_at
       FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
       LEFT JOIN task_sequence q ON q.member_id = d.member_id AND q.task_id = d.task_id
+      LEFT JOIN task_continuation_deliveries c ON c.delivery_id = d.id AND c.task_id = d.task_id
       WHERE d.project_id = ? AND d.task_id IS NOT NULL ${memberId ? "AND d.member_id = ?" : ""}
       GROUP BY d.task_id, d.member_id HAVING first_order IS NOT NULL ORDER BY first_order`, projectId, ...(memberId ? [memberId] : [])).map(r => ({
         taskId: r.task_id, memberId: r.member_id, order: r.first_order, assignedAt: r.assigned_at, eligible: !!r.eligible, enrolled: !!r.enrolled,
         queued: Number(r.queued), held: Number(r.held), notices: Number(r.notices), protected: Number(r.protected), retryAt: r.retry_at ?? null,
+        inputBlocks: JSON.parse(r.input_blocks_json ?? "[]"), continuation: !!r.continuation,
       }));
   }
 
@@ -2002,16 +2011,21 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return null;
   }
 
+  taskContinuationPauses(projectId: string): { taskId: string; reason: string; pausedAt: string | null }[] {
+    return activeTaskContinuationPauses(this, projectId);
+  }
+
   projectWorkflow(projectId: string, tasks = this.listTasks(projectId), members = this.listMembers(projectId)): ProjectWorkflow {
-    const reports = this.rows(`SELECT m.task_id, m.member_id, m.kind, m.title, m.at FROM messages m
-      JOIN (SELECT MAX(rowid) AS rid FROM messages WHERE project_id = ? AND mine = 0 AND task_id IS NOT NULL GROUP BY task_id, member_id) latest ON m.rowid = latest.rid
-      ORDER BY m.rowid`, projectId).map(r => ({ taskId: r.task_id as string, memberId: r.member_id as string | null, kind: r.kind as string, title: r.title as string, at: r.at as string }));
+    const reports = this.rows(`SELECT m.task_id, m.member_id, m.kind, m.title, m.at, latest.participated_at FROM messages m
+      JOIN (SELECT MAX(rowid) AS rid, MIN(CASE WHEN kind IN ('진행','막힘','완료') THEN at END) AS participated_at
+        FROM messages WHERE project_id = ? AND mine = 0 AND task_id IS NOT NULL GROUP BY task_id, member_id) latest ON m.rowid = latest.rid
+      ORDER BY m.rowid`, projectId).map(r => ({ taskId: r.task_id as string, memberId: r.member_id as string | null, kind: r.kind as string, title: r.title as string, at: r.at as string, participatedAt: r.participated_at as string | null }));
     const runningIds = members.filter(m => m.executionState && !m.executionState.endedAt && m.executionState.taskIds?.length).map(m => m.id);
     const activity = runningIds.length ? this.rows(`SELECT a.member_id, a.kind, a.text, a.at FROM activity a
       JOIN (SELECT MAX(a.id) AS id FROM activity a JOIN members m ON m.id = a.member_id
         WHERE m.project_id = ? AND a.member_id IN (${runningIds.map(() => '?').join(',')}) AND a.kind IN ('tool','text','error') GROUP BY a.member_id) latest ON latest.id = a.id`, projectId, ...runningIds)
       .map(r => ({ memberId: r.member_id as string, kind: r.kind as string, title: redactHarnessText(decodeStoredText(r.text)).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").slice(0, 180), at: r.at as string })) : [];
-    return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity);
+    return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity, this.listWork(projectId), this.taskContinuationPauses(projectId));
   }
 
   /** Simulate display order without enrolling anything; admission uses the same worker policy as pump. */
@@ -2230,7 +2244,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   addStageMark(input: { projectId: string; taskId: string; stage: MarkFact["stage"]; evidence: string; memberId: string | null; who: string }): MarkFact {
     return this.transaction(() => {
       const at = nowIso();
-      const row = this.row("INSERT INTO task_stage_marks (project_id, task_id, stage, evidence, member_id, who, at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
+      const row = this.row("INSERT INTO task_stage_marks (project_id, task_id, stage, evidence, member_id, who, at, source_seq) VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(scope_seq),0) FROM deliveries)) RETURNING *",
         input.projectId, input.taskId, input.stage, input.evidence, input.memberId, input.who, at)!;
       this.queueProgress([input.taskId]);
       return toMark(row);

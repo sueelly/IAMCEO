@@ -5,6 +5,7 @@ import { previewWorkflowAssignment, commitWorkflowAssignment, workflowHandoffTex
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
 import { startServer } from "../server/http.ts";
+import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 
 function setup() {
   const f = fixture();
@@ -143,12 +144,14 @@ test("conductor preview does not promise worker-style predecessor completion", (
 
 test("structured failure and its correction survive newer routine reports and affect the review digest", () => {
   const f=setup();
-  const failed=f.store.createMessage({projectId:f.project.id,taskId:f.task.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"보완",body:""});
+  const parent=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"검사했던 원래 업무",origin:"owner"}).task;
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id,f.task.id);
+  const failed=f.store.createMessage({projectId:f.project.id,taskId:parent.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"보완",body:""});
   f.store.recordReportChecks(failed,f.worker2,[{kind:"behavior",name:"중단 입력",result:"fail",command:"bun test stop-unique",evidence:"UNIQUE_LEFTOVER_INPUT",criterion:1}],{contractTaskId:f.task.id,contractRev:1,evidenceStatus:"missing",reviewNeeded:"실행 대조 필요"});
-  const corrected=f.store.createMessage({projectId:f.project.id,taskId:f.task.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"정정",body:"재현 조건을 정정합니다"});
+  const corrected=f.store.createMessage({projectId:f.project.id,taskId:parent.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"정정",body:"재현 조건을 정정합니다"});
   f.store.saveReportReferences(f.project.id,{sourceMessageId:corrected.id,fileIds:[],decisionIds:[],authoredAt:corrected.at,sequence:0,correctsMessageId:failed.id});
   for(let i=0;i<15;i++)f.store.createMessage({projectId:f.project.id,taskId:f.task.id,mine:false,who:"직원",kind:"진행",body:"계속 확인 중"});
-  const p=f.preview(),text=workflowHandoffText(p);expect(JSON.stringify(p)).toContain("UNIQUE_LEFTOVER_INPUT");expect(text).toContain("bun test stop-unique");expect(text).toContain(corrected.id);expect(text).toContain(failed.id);expect(text).toContain("실행 대조 필요");
+  const p=f.preview(),text=workflowHandoffText(p);expect(p.blockers).toEqual([]);expect(JSON.stringify(p)).toContain("UNIQUE_LEFTOVER_INPUT");expect(text).toContain("bun test stop-unique");expect(text).toContain(corrected.id);expect(text).toContain(failed.id);expect(text).toContain("실행 대조 필요");
   f.store.db.query("UPDATE report_checks SET evidence=? WHERE message_id=?").run("CHANGED_FAILURE",failed.id);
   expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:p.revision})).toThrow();
 });
@@ -164,4 +167,23 @@ test.each(["missing","stale","expired","conflict"])("%s target observation canno
 test("a fresh verified heartbeat does not invalidate an unchanged review", () => {
   const f=setup(),p=f.preview();f.store.patchMember(f.worker.id,{statusObservation:{source:"core",observedAt:new Date().toISOString(),freshness:"fresh",ownership:"verified",consecutiveFailures:0,error:null}});
   expect(f.preview().revision).toBe(p.revision);
+});
+
+test("an inherited owner stop cannot be bypassed by assigning an unassigned child", () => {
+  const f=setup(),parent=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"중단된 부모",origin:"owner"}).task;
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id,f.task.id);
+  const req=f.request();new TaskContinuationCoordinator(f.store,{intervalMs:30_000,sameLimit:3}).pause([parent.id],"owner-stop","대표가 중단했습니다");
+  expect(f.preview().blockers.some(b=>b.includes("중단"))).toBe(true);
+  expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,req)).toThrow();
+  expect(f.store.listDeliveries().filter(d=>d.taskId===f.task.id)).toHaveLength(0);
+});
+
+test("report and board assignees are not treated as unassigned by the assignment API", () => {
+  for(const evidence of ["report","board"]){
+    const f=setup();
+    if(evidence==="report")f.store.createMessage({projectId:f.project.id,taskId:f.task.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"진행",body:"이 업무를 수행 중입니다"});
+    else f.store.upsertWork({projectId:f.project.id,taskId:f.task.id,title:f.task.title,sec:"doing",who:f.worker2.name});
+    const p=f.preview();expect(p.blockers.some(b=>b.includes("이미 배정"))).toBe(true);
+    expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:p.revision})).toThrow();
+  }
 });

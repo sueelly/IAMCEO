@@ -937,7 +937,47 @@ export const MIGRATIONS: string[] = [
              WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
        AND e.rowid = (SELECT MAX(x.rowid) FROM execution_journal x WHERE x.member_id = e.member_id AND x.generation = e.generation)
      GROUP BY e.member_id, d.task_id;`,
-  // A workflow assignment is committed with its queue input. No pending external action is replayed.
+  // v38: task completion survives the end of one CLI turn. Generated followups
+  // and user stops have durable identities; source inputs are never replayed.
+  `CREATE TABLE delivery_scope_sequence (
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     delivery_id TEXT NOT NULL UNIQUE
+   );
+   ALTER TABLE deliveries ADD COLUMN scope_seq INTEGER NOT NULL DEFAULT 0;
+   INSERT INTO delivery_scope_sequence(delivery_id) SELECT id FROM deliveries ORDER BY rowid;
+   UPDATE deliveries SET scope_seq=(SELECT seq FROM delivery_scope_sequence WHERE delivery_id=deliveries.id);
+   CREATE TRIGGER delivery_scope_sequence_insert AFTER INSERT ON deliveries BEGIN
+     INSERT INTO delivery_scope_sequence(delivery_id) VALUES(NEW.id);
+     UPDATE deliveries SET scope_seq=(SELECT seq FROM delivery_scope_sequence WHERE delivery_id=NEW.id) WHERE id=NEW.id;
+   END;
+   ALTER TABLE task_stage_marks ADD COLUMN source_seq INTEGER;
+   CREATE TABLE task_continuations (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     source_delivery_id TEXT,
+     evidence_key TEXT NOT NULL DEFAULT '',
+     delivery_id TEXT,
+     round INTEGER NOT NULL DEFAULT 0,
+     no_progress_count INTEGER NOT NULL DEFAULT 0,
+     next_attempt_at TEXT,
+     pause_token TEXT,
+     pause_reason TEXT,
+     paused_at TEXT,
+     pause_source_seq INTEGER NOT NULL DEFAULT 0,
+     pause_mark_seq INTEGER NOT NULL DEFAULT 0,
+     attention_decision_id TEXT,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX task_continuations_project ON task_continuations(project_id, next_attempt_at);
+   CREATE TABLE task_continuation_deliveries (
+     delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     round INTEGER NOT NULL,
+     created_at TEXT NOT NULL,
+     retired_reason TEXT
+   );
+   CREATE INDEX task_continuation_deliveries_task ON task_continuation_deliveries(task_id, round);`,
+  // v39: A workflow assignment is committed with its queue input. No pending external action is replayed.
   `CREATE TABLE workflow_assignment_receipts (
      operation_id TEXT PRIMARY KEY,
      project_id TEXT NOT NULL,

@@ -16,7 +16,7 @@ test("unfinished historical work keeps its real blocker without enrolling or red
     checks: [{ kind: "behavior", name: "중단 보호", result: "fail", evidence: "중단 후 입력이 남았습니다" }] });
   const before = f.store.listDeliveries();
   const state = f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === a.id)!;
-  expect(state.historical).toBe(true);
+  expect(state.historical).toBe(false); // The latest main marks current failed evidence as actionable, even before sequence enrollment.
   expect(state.state).toBe("blocked");
   expect(state.label).not.toBe("이전 업무");
   expect(f.store.db.query("SELECT * FROM task_sequence WHERE task_id = ?").all(a.id)).toHaveLength(0);
