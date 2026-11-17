@@ -13,6 +13,29 @@ import type { Runner } from "../server/runner/types";
 import type { FileDoc, Project, Task } from "../shared/types";
 
 const code = "isolated-file-page-test";
+
+test("first screen opens while runtime diagnostics are delayed", async () => {
+  const page = await browser.newPage();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route("**/api/runtime", async route => {
+    requested = true;
+    await gate;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await page.addInitScript(value => localStorage.setItem("iamceo.accessCode", value), code);
+    await page.goto(`${base}/#/p/${project.id}/home`);
+    await page.locator(".shell").waitFor({ timeout: 2000 });
+    expect(requested).toBe(true);
+    expect(await page.locator(".splash").count()).toBe(0);
+    expect(await page.locator("body").innerText()).toContain("작은 목록");
+  } finally {
+    release();
+    await page.close();
+  }
+});
 let store: Store, server: RunningServer, orch: Orchestrator, browser: Browser, project: Project;
 let base = "";
 let files: FileDoc[];
