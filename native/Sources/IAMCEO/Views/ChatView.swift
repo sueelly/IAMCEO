@@ -296,7 +296,7 @@ struct ChatMineRow: View {
         }
     }
 
-    /// Web .th-mine: gap 8, padding 10 15 11; violet #7A5BFF → #6D4DF2 in white, a lit top edge and a soft violet
+    /// Web .th-mine: gap 8, padding 10 15 11; violet #7152F5 → #6D4DF2 in white, a lit top edge and a soft violet
     /// shadow below (0 8px 18px -10px rgb(109 77 242 / .6)).
     private var bubble: some View {
         let shape = ChatBubbleShape.shape
@@ -1737,9 +1737,9 @@ private struct ChatBodyText: View {
 
 /// Web thread colours that are not foundation tokens.
 private enum ChatPalette {
-    /// Mockup .th-mine (--mine): linear-gradient(180deg, #7A5BFF, #6D4DF2) under white text.
-    static let bubble = LinearGradient(colors: [CE.violet, CE.accentFill], startPoint: .top, endPoint: .bottom)
-    /// "{name}에게" subline and links on the bubble (--mine-to #E6DFFF).
+    /// Web .th-mine (--mine): linear-gradient(180deg, #7152F5, #6D4DF2) under white text.
+    static let bubble = LinearGradient(colors: CE.mineHex.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom)
+    /// "{name}에게" subline and links on the bubble (--mine-to #F7F5FF, AA on every stop).
     static let bubbleTo = CE.onAccentSub
     static let bubbleLink = CE.onAccentSub
     /// `code` on the bubble: a deep violet chip rgb(28 12 96 / .35), as MarkdownText draws it on accent.
