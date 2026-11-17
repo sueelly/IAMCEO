@@ -1,5 +1,6 @@
 // 실행 근거 진단의 실제 도구 경로. 가짜 등록 세션·격리 DB만 쓴다. 실제 비서 기록은 읽지 않는다.
 import { afterAll, expect, test } from "bun:test";
+import { decodeStoredText } from "../server/stored-text.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -237,7 +238,12 @@ test("진단 MCP 작업 경계: 공통 응답 보관 외에는 상태가 같고 
   expect(await s.orch.handleAgentOperation(s.member, "exec_diagnose", s.args, context)).toEqual(first);
   expect(domain()).toBe(before); expect(readFileSync(path, "utf8")).toBe(raw); expect(JSON.stringify(s.runner.sent)).toBe(sent);
   const receipts = s.store.db.query("SELECT * FROM agent_operation_receipts").all();
-  expect(receipts).toHaveLength(2); privateValuesAbsent(receipts, s);
+  expect(receipts).toHaveLength(1);
+  expect((receipts[0] as { state: string }).state).toBe("completed");
+  privateValuesAbsent(receipts.map(row => {
+    const r = row as { request_json: unknown; result_json: unknown };
+    return { ...r, request_json: decodeStoredText(r.request_json), result_json: decodeStoredText(r.result_json) };
+  }), s);
 });
 
 test("진단 도구 목록은 세 범위 인자만 공개하고 자유 경로를 허용하지 않는다", async () => {
