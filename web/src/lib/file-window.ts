@@ -37,6 +37,15 @@ export async function reconcileFileWindow(previous: FilePage | null, page: FileP
   const retained = cursor !== null ? old : last.hasMore && boundary ? old.filter(file => compareFiles(file, boundary) > 0) : [];
   let items = merge(retained, fresh, additions);
   const total = totalOf(last, scope.kind);
+  if (cursor === null && !previous.hasMore && items.length < total) {
+    // A previously complete list must stay complete when a moved old row is
+    // outside the compact preview. Reopening a scroll sentinel can leave both
+    // that row and its open reader stale, so finish the authoritative traversal.
+    while (last.hasMore) {
+      last = await next(last); fresh = merge(fresh, last.items);
+    }
+    return { ...last, items: fresh };
+  }
   if (items.length > total) {
     // An unseen deletion inside an already-read page is rare. Re-read only that visible interval to prune it.
     const target = items.at(-1);
