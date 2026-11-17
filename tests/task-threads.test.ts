@@ -100,7 +100,13 @@ async function setup() {
   // 귀속 검사에서 실행하는 업무만 총괄의 구체적인 완료 기준을 준비한다. 후보 등록에는 붙이지 않는다.
   const setCriteria = async (taskId: string, acceptance: string) => {
     const task = store.requireTask(taskId);
-    const result = await call(lead, "task", { task_id: taskId, contract: { kind: task.branch || task.worktree ? "coding" : "other", goal: task.title, acceptance: [acceptance], checks: ["real"] } });
+    const result = await call(lead, "task", { task_id: taskId, contract: {
+      kind: task.branch || task.worktree ? "coding" : "other", goal: task.title,
+      inputs: [`${task.title} 작업 정보와 총괄이 해당 작업에 연결한 지시`],
+      outputs: [`${task.title}의 완료 기준에 맞는 결과와 해당 작업에 연결한 보고`],
+      scope: `${task.title}의 명시된 완료 기준을 수행하고 지시와 결과의 작업 출처를 유지한다`,
+      constraints: [], exclusions: [], acceptance: [acceptance], checks: ["real"],
+    } });
     expect(result.isError, result.text).toBeFalsy();
   };
   const completion = async (member: Member, taskId: string, title: string, evidence: string) => {
