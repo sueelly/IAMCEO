@@ -74,3 +74,7 @@
 - Combined focused test:56 pass; combined real-browser checks:10 web-state scenarios and8 paging/startup scenarios pass. TypeScript and diff whitespace checks pass.
 - Independent final review: no Critical or Important findings; the indexed orphan-history scan remains documented. Full unit aggregate is rerun on the combined source.
 - Build, activation, remote-SHA and live-state evidence are recorded outside source Git in the task-owned runtime directory and immutable release manifest. These checkboxes describe planned actions, not service activation receipts.
+
+## Concurrent storage rollout compatibility
+
+During activation, another authorized task migrated the shared live database fromv34 to v35. The v34 candidate correctly refused to open it. HTTP was restored using the already-built v35-compatible storage releaseb92f225; the optimization branch then integrated that exact source. The web optimization itself adds no database schema or compression format. There was no database downgrade, restore or repeat VACUUM. Final activation must verify the actual database version as well as the current service executable before replacement, and verify existing terminal/member identities afterward.
