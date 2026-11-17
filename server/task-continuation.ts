@@ -19,6 +19,7 @@ interface Context {
   enrolled: Set<string>; pending: Delivery[]; running: Set<string>; own: Set<string>; boardDone: Set<string>; paused: Set<string>;
   markSources: Map<number, number | null>;
   criteriaSources: Map<string, Source>;
+  sequence: ReturnType<Store["taskSequenceSnapshot"]>;
   sequenceSources: Map<string, { source: Source; blocker: { taskId: string; title: string } }>;
 }
 const waiting = new Set(["queued", "held", "delivering"]);
@@ -94,14 +95,14 @@ export class TaskContinuationCoordinator {
       dispatch?.transportState === "rejected" && (recovery?.phase === "none" || recovery?.phase === "resolved" && recovery.reason === "not_received");
   }
 
-  private awaitingSequence(delivery: Delivery): { taskId: string; title: string } | null {
+  private awaitingSequence(delivery: Delivery, sequence: ReturnType<Store["taskSequenceSnapshot"]>): { taskId: string; title: string } | null {
     if (!delivery.taskId || !delivery.wake || !["instruction", "user_message"].includes(delivery.kind) ||
       !["queued", "held"].includes(delivery.status) || !ordinaryInputAdmitted(this.store, delivery.id)) return null;
     const recovery = this.store.getDeliveryRecovery(delivery.id), dispatch = this.store.listDeliveryDispatches(delivery.id).at(-1);
     const untouched = delivery.attempts === 0 && !dispatch && (!recovery || recovery.phase === "none");
     const refused = dispatch?.transportState === "rejected" && (recovery?.phase === "none" || recovery?.phase === "resolved" && recovery.reason === "not_received");
     if (!untouched && !refused) return null;
-    const blocker = this.store.taskSequenceBlocker(delivery.memberId, delivery.taskId);
+    const blocker = this.store.taskSequenceBlocker(delivery.memberId, delivery.taskId, sequence);
     // A scoped hold/stop on this task is not permission to coordinate around it.
     return blocker && blocker.taskId !== delivery.taskId ? blocker : null;
   }
@@ -157,14 +158,15 @@ export class TaskContinuationCoordinator {
       });
       if (awaiting) criteriaSources.set(taskId, awaiting);
     }
+    const sequence = this.store.taskSequenceSnapshot(projectId);
     const sequenceSources = new Map<string, { source: Source; blocker: { taskId: string; title: string } }>();
     for (const [taskId, list] of sources) {
       const source = list.at(-1), delivery = source && this.store.getDelivery(source.id);
-      const blocker = delivery && this.awaitingSequence(delivery);
+      const blocker = delivery && this.awaitingSequence(delivery, sequence);
       if (source && blocker && !relatedWork(taskId, blocker.taskId, tasks)) sequenceSources.set(taskId, { source, blocker });
     }
     return { tasks, facts, sources, enrolled, pending: this.store.listUndelivered(projectId), running, own, boardDone,
-      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources, sequenceSources };
+      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources, sequenceSources, sequence };
   }
 
   private authorized(task: Task, ctx: Context): boolean {
@@ -189,7 +191,7 @@ export class TaskContinuationCoordinator {
     if ([...ctx.running].some(id => this.family(task.id, id, ctx))) return true;
     return ctx.pending.some(d => d.id !== except && d.wake && this.family(task.id, d.taskId ?? null, ctx) &&
       !(ctx.criteriaSources.has(task.id) && this.awaitingCriteria(d, task.id)) &&
-      !(ctx.sequenceSources.has(task.id) && d.taskId === task.id && this.awaitingSequence(d)));
+      !(ctx.sequenceSources.has(task.id) && d.taskId === task.id && this.awaitingSequence(d, ctx.sequence)));
   }
   private familyGated(task: Task, ctx: Context): boolean {
     const ancestors = new Set<string>();
@@ -211,6 +213,15 @@ export class TaskContinuationCoordinator {
   private paused(task: Task, ctx: Context): boolean {
     return ctx.paused.has(task.id);
   }
+  private dispatchScope(task: Task, ctx: Context) {
+    const criteria = ctx.criteriaSources.get(task.id), sequence = ctx.sequenceSources.get(task.id);
+    return criteria ? { mode: "criteria", source: criteria.id, blocker: null }
+      : sequence ? { mode: "sequence", source: sequence.source.id, blocker: sequence.blocker.taskId }
+      : { mode: "continuation", source: ctx.sources.get(task.id)?.at(-1)?.id ?? null, blocker: null };
+  }
+  private progressKey(key: string): string {
+    try { const parsed = JSON.parse(key); delete parsed.dispatch; return JSON.stringify(parsed); } catch { return key; }
+  }
   private key(task: Task, ctx: Context): string {
     const f = ctx.facts.get(task.id), outcome = f?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
     const mark = f?.marks.at(-1), contract = this.store.getEffectiveContract(task.id);
@@ -219,7 +230,7 @@ export class TaskContinuationCoordinator {
     const assignment = sources.findLast(s => s.kind === "instruction");
     const scopeText = assignment ? this.store.getDelivery(assignment.id)?.text.replace(/\s+/g, " ").trim() : null;
     // Deliberately omit timestamps, heartbeat, report wording and our own input.
-    return JSON.stringify({ sequenceBlocker: ctx.sequenceSources.get(task.id)?.blocker.taskId ?? null, stage: task.progress?.stage, contract: contract ? [contract.taskId, contract.rev] : null,
+    return JSON.stringify({ dispatch: this.dispatchScope(task, ctx), sequenceBlocker: ctx.sequenceSources.get(task.id)?.blocker.taskId ?? null, stage: task.progress?.stage, contract: contract ? [contract.taskId, contract.rev] : null,
       // A repeated downstream assignment is not progress. A genuinely new
       // owner instruction may explicitly revise scope or authorize a new attempt.
       source: { owner: owner?.id ?? null, assignment: scopeText },
@@ -251,6 +262,12 @@ export class TaskContinuationCoordinator {
     else if (finalOrExternal.has(task.progress?.stage ?? "")) reason = task.progress?.next ?? "완료되었거나 외부 확인을 기다립니다";
     else if (this.familyGated(task, ctx)) reason = "연결된 업무의 완료·보류·대표 확인 범위를 먼저 확인합니다";
     else if (this.occupied(task, ctx, delivery.id)) reason = "기존 실행이나 후속 지시가 처리 중입니다";
+    if (!reason && task) {
+      const state = this.row(task.id);
+      let scope: unknown;
+      try { scope = JSON.parse(state?.evidence_key ?? "{}").dispatch; } catch { /* Legacy requests are regenerated, never assumed current. */ }
+      if (state?.delivery_id !== delivery.id || JSON.stringify(scope) !== JSON.stringify(this.dispatchScope(task, ctx))) reason = "원래 지시 또는 선행 업무가 바뀌어 후속 조정 범위를 다시 확인합니다";
+    }
     if (reason) { this.retire(delivery, reason); return false; }
     return true;
   }
@@ -290,7 +307,7 @@ export class TaskContinuationCoordinator {
         const key = this.key(task, ctx);
         const attention = state.attention_decision_id ? this.store.getDecision(state.attention_decision_id) : null;
         const answered = attention && ["answered", "delivered"].includes(attention.status);
-        const noProgress = answered || key !== state.evidence_key || retired?.retired_reason ? 0 : state.no_progress_count + (old ? 1 : 0);
+        const noProgress = answered || this.progressKey(key) !== this.progressKey(state.evidence_key) || retired?.retired_reason ? 0 : state.no_progress_count + (old ? 1 : 0);
         if (noProgress >= this.options.sameLimit) {
           // Repeated no-op coordination remains an OPEN task with an actionable
           // owner item. It is neither silently abandoned nor retried forever.

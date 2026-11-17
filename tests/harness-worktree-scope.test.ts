@@ -51,3 +51,17 @@ test("completion and failure diagnosis both use the task worktree while session 
   const completed = await f.tool(member, "post", { task_id: task.id, kind: "완료", title: "Typecheck succeeded", contract_rev: 1, checks: [{ ...check, criterion: 1 }] });
   expect(completed.isError).toBeUndefined();
 });
+
+test("a matching cd command cannot move the actual check outside its assigned worktree", () => {
+  const command = "cd ../other && npm run typecheck";
+  const result = matchExecChecks([{ ...check, command }], { status: "ok", code: "ok", ...parseCodexLog(log(root, 0, command), since) }, () => null, "/repo/main", root);
+  expect(result.results).toEqual([]);
+});
+test("a symbolic link inside the worktree cannot borrow a different directory's success", async () => {
+  const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = await import("node:fs");
+  const dir = mkdtempSync("/private/tmp/iamceo-proof-scope-");
+  try {
+    mkdirSync(dir + "/task"); mkdirSync(dir + "/outside"); symlinkSync(dir + "/outside", dir + "/task/alias");
+    expect(matchExecChecks([check], { status: "ok", code: "ok", ...parseCodexLog(log(dir + "/task/alias"), since) }, () => null, dir + "/main", dir + "/task").results).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

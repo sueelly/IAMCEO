@@ -75,7 +75,7 @@ async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>, s
     async stop() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
-for (const scope of ["project", "global", "failure", "criteria", "execution_issue", "legacy_limit"] as const) {
+for (const scope of ["project", "global", "failure", "criteria", "execution_issue", "legacy_limit", "sequence"] as const) {
   test(`${scope} policy changed during real core preflight prevents physical input and preserves its queue`, async () => {
     const runtime = createIsolatedRuntime();
     const core = await capacityPeer(runtime);
@@ -92,7 +92,7 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
       const first = await orch.createMember(project.id, { name: "First", cli: "claude" });
       const second = await orch.createMember(project.id, { name: "Second", cli: "claude" });
       const lead = scope === "criteria" ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
-      const task = scope === "failure" ? store.saveTask({ projectId: project.id, memberId: second.id, who: "대표", title: "실패 정책 경합" }).task
+      const task = scope === "failure" || scope === "sequence" ? store.saveTask({ projectId: project.id, memberId: second.id, who: "대표", title: "실패 정책 경합" }).task
         : lead ? orch.saveTask(lead, { title: "기준 정책 경합", contract: { kind: "other", goal: "인계 문서를 전달한다", acceptance: ["담당자와 미정 사항을 확인할 수 있다"], checks: [] } }).task : null;
       await orch.assign(project.id, first.handle, { text: "First remains running" });
       core.holdNextRead();
@@ -112,6 +112,9 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
         expect(store.unconfirmedDelegatedTask(pending.id)).toBeNull();
         store.db.query("DELETE FROM task_contracts WHERE task_id=?").run(task!.id);
         expect(store.unconfirmedDelegatedTask(pending.id)).toBe(task!.id);
+      }
+      else if (scope === "sequence") {
+        store.addStageMark({ projectId: project.id, taskId: task!.id, stage: "hold", memberId: null, who: "대표", evidence: "Hold during terminal preflight" });
       }
       else {
         const at = new Date().toISOString();

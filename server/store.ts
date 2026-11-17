@@ -1,6 +1,6 @@
 import { describeTaskContext } from "./task-context.ts";
 import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
-import { activeTaskContinuationPauses } from "./task-continuation.ts";
+import { activeTaskContinuationPauses, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { canonicalAgentRequest as stableJson, agentRequestHash, encodeAgentResult, decodeAgentResult, type AgentReceiptState } from "./agent-receipts.ts";
@@ -1976,10 +1976,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const held = new Set([...facts].filter(([, f]) => deriveProgress(f).stage === "hold").map(([id]) => id));
     const out = new Map<string, { taskId: string; title: string }>();
     for (const task of tasks) {
+      if (paused.has(task.id)) { out.set(task.id, { taskId: task.id, title: task.title }); continue; }
       const seen = new Set<string>(); let current: Row | undefined = task;
       while (current && !seen.has(current.id)) {
         seen.add(current.id);
-        if (paused.has(current.id) || held.has(current.id)) { out.set(task.id, { taskId: current.id, title: current.title }); break; }
+        if (held.has(current.id)) { out.set(task.id, { taskId: current.id, title: current.title }); break; }
         current = byId.get(current.parent_task_id);
       }
     }
@@ -1987,13 +1988,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** Actual recipients and queue classes, one aggregate query regardless of task count. */
-  private workflowAssignments(projectId: string, memberId?: string): WorkflowAssignment[] {
-    const facts = this.taskProgressFacts(projectId);
+  private workflowAssignments(projectId: string, memberId?: string, facts = this.taskProgressFacts(projectId)): WorkflowAssignment[] {
     const suspended = this.taskSequenceSuspensions(projectId, facts);
-    const running = new Set(this.rows(`SELECT DISTINCT e.member_id,d.task_id FROM execution_journal e
-      JOIN members m ON m.id=e.member_id JOIN json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id=j.value
+    const running = new Set<string>();
+    for (const run of this.rows(`SELECT e.member_id,e.delivery_ids_json FROM execution_journal e JOIN members m ON m.id=e.member_id
       WHERE e.project_id=? AND e.generation=m.session_generation AND e.ended_at IS NULL
-      AND e.phase NOT IN ('ended','interrupted')`, projectId).map(r => `${r.member_id}:${r.task_id}`));
+      AND e.phase NOT IN ('ended','interrupted')`, projectId)) {
+      for (const taskId of taskScopeForDeliveryIds(this, JSON.parse(run.delivery_ids_json))) running.add(`${run.member_id}:${taskId}`);
+    }
     const work = "d.kind IN ('instruction','user_message') AND d.wake = 1";
     const continuation = "d.kind = 'system' AND d.wake = 1 AND c.delivery_id IS NOT NULL AND (c.retired_reason IS NULL OR d.status = 'delivered')";
     const assignment = `(${work} OR (${continuation}))`;
@@ -2052,19 +2054,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     )`, taskId, taskId).map(r => r.id as string);
   }
 
+  /** Read once per synchronous admission/context batch. Never retain across writes. */
+  taskSequenceSnapshot(projectId: string, memberId?: string) {
+    const facts = this.taskProgressFacts(projectId);
+    const tasks = this.rows(`SELECT t.id,t.title,t.parent_task_id,t.merged_into FROM tasks t WHERE t.project_id=?`, projectId);
+    const byId = new Map(tasks.map(t => [t.id as string, { title: t.title as string, done: deriveProgress(facts.get(t.id) ?? emptyFacts()).stage === "done",
+      merged_into: t.merged_into as string | null, parentTaskId: t.parent_task_id as string | null }]));
+    return { projectId, memberId, byId, suspended: this.taskSequenceSuspensions(projectId, facts), assignments: this.workflowAssignments(projectId, memberId, facts) };
+  }
+
   /** Worker row order is executable policy. A stopped historical input never becomes a predecessor. */
-  taskSequenceBlocker(memberId: string, taskId: string | null): { taskId: string; title: string } | null {
+  taskSequenceBlocker(memberId: string, taskId: string | null, snapshot?: ReturnType<Store["taskSequenceSnapshot"]>, prospective = false): { taskId: string; title: string } | null {
     if (!taskId) return null;
     const m = this.requireMember(memberId);
-    if (m.kind !== "worker") return null; // coordinators must receive reports/approvals across their team
-    const suspended = this.taskSequenceSuspensions(m.projectId).get(taskId);
-    if (suspended) return suspended;
-    const tasks = this.rows(`SELECT t.id, t.title, t.parent_task_id, t.merged_into,
-      EXISTS(SELECT 1 FROM task_stage_marks s WHERE s.task_id = t.id AND s.stage = 'done'
-        AND s.id > COALESCE((SELECT MAX(r.id) FROM task_stage_marks r WHERE r.task_id = t.id AND r.stage = 'reopen'),0)) AS done
-      FROM tasks t WHERE t.project_id = ?`, m.projectId);
-    const byId = new Map(tasks.map(t => [t.id as string, { title: t.title as string, done: !!t.done, merged_into: t.merged_into as string | null, parentTaskId: t.parent_task_id as string | null }]));
-    const open = orderAssignments(this.workflowAssignments(m.projectId, memberId), byId).filter(a => a.eligible && a.blocksSequence !== false && byId.has(a.taskId) && !byId.get(a.taskId)!.done && !byId.get(a.taskId)!.merged_into);
+    if (m.kind !== "worker") return null;
+    const state = snapshot && snapshot.projectId === m.projectId && (!snapshot.memberId || snapshot.memberId === memberId)
+      ? snapshot : this.taskSequenceSnapshot(m.projectId, memberId);
+    const suspended = state.suspended.get(taskId); if (suspended) return suspended;
+    const byId = state.byId;
+    const row = orderAssignments(state.assignments.filter(a => a.memberId === memberId), byId);
+    if (!prospective && row.some(a => a.taskId === taskId && a.eligible && a.blocksSequence === false)) return null;
+    const open = row.filter(a => a.eligible && (a.blocksSequence !== false || prospective && a.taskId === taskId) && byId.has(a.taskId) && !byId.get(a.taskId)!.done && !byId.get(a.taskId)!.merged_into);
     const first = open[0];
     if (!first) return null;
     if (!relatedWork(first.taskId, taskId, byId)) return { taskId: first.taskId, title: byId.get(first.taskId)!.title };
@@ -2107,7 +2117,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       eligible: true, enrolled: true, queued: 1, held: 0, notices: 0, protected: 0, retryAt: null };
     const row = this.buildProjectWorkflow(task.projectId, tasks, this.listMembers(task.projectId), [...existing.filter(a => a.taskId !== taskId), candidate]).nodes
       .filter(n => n.memberId === memberId && n.state !== "done");
-    return { position: row.findIndex(a => a.taskId === taskId) + 1, blocker: this.taskSequenceBlocker(memberId, taskId),
+    return { position: row.findIndex(a => a.taskId === taskId) + 1, suspended: this.taskSequenceSuspensions(task.projectId).get(taskId) ?? null, blocker: this.taskSequenceBlocker(memberId, taskId, undefined, true),
       continuation: existing.some(a => a.enrolled && a.taskId !== taskId && byId.get(a.taskId)?.progress?.stage !== "done" && relatedWork(a.taskId, taskId, byId)) };
   }
 

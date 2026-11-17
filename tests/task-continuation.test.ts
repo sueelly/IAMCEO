@@ -410,3 +410,17 @@ test("a generated sequence request is retired once the original input can procee
   expect(f.store.requireDelivery(request.id).status).toBe("failed");
   expect(f.store.requireDelivery(f.input.id)).toEqual(f.input);
 });
+
+test("a queued sequence reminder is retired when a different predecessor becomes responsible", () => {
+  const f = sequenceBlockedFixture();
+  const middle = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "middle", title: "Different predecessor", origin: "owner" }).task;
+  // The middle assignment arrived before the target; make its initial sequence explicit.
+  const d = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", taskId: middle.id, text: "Existing middle work" });
+  f.store.db.query("UPDATE deliveries SET rowid=rowid+10000 WHERE id=?").run(f.input.id);
+  const request = f.next.check(f.start, () => true)[0]!; expect(request).toBeDefined();
+  f.store.addStageMark({ projectId: f.project.id, taskId: f.earlier.id, stage: "hold", who: f.lead.name, memberId: f.lead.id, evidence: "Old blocker is held" });
+  expect(f.store.taskSequenceBlocker(f.worker.id, f.task.id)?.taskId).toBe(middle.id);
+  expect(f.next.canDispatch(request)).toBe(false);
+  expect(f.store.requireDelivery(request.id).status).toBe("failed");
+  expect(f.store.requireDelivery(d.id).attempts).toBe(0);
+});

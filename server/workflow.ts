@@ -191,7 +191,7 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
     if (a?.suspendedBy) return { ...n, current: inRun, state: "blocked", label: "보류", reason: `‘${a.suspendedBy.title}’의 보류·중단 범위에 포함됩니다` };
-    if (m?.kind === "worker" && a?.eligible && a.blocksSequence !== false && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
+    if (m?.kind === "worker" && a?.eligible && a.blocksSequence !== false && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
     if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
@@ -218,7 +218,7 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
       const node = make(t, a, memberMap.get(memberId), first);
       if (first && memberMap.get(memberId)?.kind === "worker" && a.eligible && a.blocksSequence !== false && !pausedTasks.has(t.id) && node.state !== "running" && node.state !== "starting" && node.state !== "done") {
         const predecessor = row.find(x => x.order < a.order && x.eligible && x.blocksSequence !== false && taskMap.get(x.taskId)?.progress?.stage !== "done" && relatedWork(first.taskId, x.taskId, taskMap) && !relatedWork(x.taskId, a.taskId, taskMap));
-        if (predecessor) { node.state = "waiting"; node.label = "선행 업무 대기"; node.reason = `‘${taskMap.get(predecessor.taskId)!.title}’ 완료 후 시작합니다`; }
+        if (predecessor) { node.state = "waiting"; node.label = "선행 업무 대기"; node.reason = `‘${taskMap.get(predecessor.taskId)!.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다`; }
       }
       assigned.add(t.id); nodes.push(node);
       if (prev && a.eligible && a.blocksSequence !== false && memberMap.get(memberId)?.kind === "worker" && !relatedWork(prev.taskId, t.id, taskMap)) edges.push({ id: `seq:${prev.id}:${node.id}`, from: prev.id, to: node.id, kind: "sequence" });

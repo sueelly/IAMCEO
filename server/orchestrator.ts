@@ -4984,7 +4984,8 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   private admittedInputs(memberId: string, deliveries: Delivery[]): Delivery[] {
-    const worker = this.store.requireMember(memberId).kind === "worker";
+    const member = this.store.requireMember(memberId), worker = member.kind === "worker";
+    const sequence = worker && deliveries.length ? this.store.taskSequenceSnapshot(member.projectId, memberId) : undefined;
     const blocked = new Map<string, boolean>();
     return deliveries.filter(d => {
       if (!ordinaryInputAdmitted(this.store, d.id)) return false;
@@ -4994,7 +4995,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
       if (!worker || !taskId) return true;
-      if (!blocked.has(taskId)) blocked.set(taskId, this.store.pendingTaskFailureDecision(taskId) !== null || this.store.taskSequenceBlocker(memberId, taskId) !== null);
+      if (!blocked.has(taskId)) blocked.set(taskId, this.store.pendingTaskFailureDecision(taskId) !== null || this.store.taskSequenceBlocker(memberId, taskId, sequence) !== null);
       return !blocked.get(taskId);
     });
   }
@@ -5694,9 +5695,11 @@ export class Orchestrator implements OrchestratorApi {
       this.waiting.add(member.id);
       return false;
     }
+    const sequence = member.kind === "worker" && deliveries.length ? this.store.taskSequenceSnapshot(member.projectId, member.id) : undefined;
     return deliveries.every(delivery => {
+      if (!this.taskContinuations.canDispatch(delivery)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
-      if (member.kind === "worker" && taskId && this.store.pendingTaskFailureDecision(taskId)) return false;
+      if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.taskSequenceBlocker(member.id, taskId, sequence))) return false;
       return this.instructionCriteriaAllow(delivery);
     });
   }

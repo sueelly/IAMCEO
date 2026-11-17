@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,4 +25,17 @@ export function executionExpectedCwd(actual: string | null, registered: string |
     if (path !== ".." && !path.startsWith("../") && !isAbsolute(path)) return cwd;
   }
   return executionPath(registered);
+}
+
+/** Compare real locations when they still exist; historical removed paths retain
+ * their lexical meaning, but existing symlinks never widen a task's scope. */
+export function executionCwdAllowed(cwd: string | null, registered: string | null, worktree?: string | null): boolean {
+  if (cwd === null) return registered === null && !worktree;
+  const physical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  const actual = executionPath(cwd); if (!actual) return false;
+  return [registered, worktree].some(value => {
+    const root = executionPath(value); if (!root || root === "/") return false;
+    const rel = relative(physical(root), physical(actual));
+    return rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel);
+  });
 }

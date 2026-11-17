@@ -43,7 +43,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   const safe = (text: string | null | undefined) => redactHarnessText(text ?? "");
   const startCondition = [member.status === "blocked" ? "직원의 승인·선택 응답이 필요합니다." : "",
     member.kind !== "worker" ? "총괄은 업무 완료 순서와 별개로 입력을 받습니다. 기존 전달·실행 검사를 통과하면 시작합니다"
-      : placement.blocker ? `‘${placement.blocker.title}’ 완료 후 기존 전달·실행 검사를 통과하면 시작합니다`
+      : placement.suspended ? `‘${placement.suspended.title}’의 보류·중단 범위입니다. 이 업무의 재개 조건을 먼저 확인해야 합니다`
+      : placement.blocker ? `‘${placement.blocker.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀린 뒤 기존 전달·실행 검사를 통과하면 시작합니다`
       : placement.continuation ? "부모·파생 업무의 연속 작업입니다. 현재 입력 처리 뒤 기존 전달·실행 검사를 통과하면 시작합니다"
       : "기존 전달·실행 가능 검사를 통과하면 시작합니다"].filter(Boolean).join(" ");
   const preview: Omit<WorkflowAssignmentPreview, "revision"> = {
