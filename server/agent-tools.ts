@@ -10,6 +10,7 @@ import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, W
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { CHECK_KINDS, formatContract } from "./harness.ts";
+import { isExecutionWorkdir } from "./harness-workdir.ts";
 import { toStorageError } from "./storage-errors.ts";
 import type { AgentToolDef, AgentToolResult, OrchestratorApi } from "./orchestrator-api.ts";
 import type { AgentWorkflowService } from "./service-contracts.ts";
@@ -81,6 +82,7 @@ const checkSchema = z.strictObject({
   result: z.enum(["pass", "fail", "not_run"]).describe("실제 결과. 돌리지 않았으면 not_run"),
   evidence: z.string().trim().min(1).describe("근거: 통과·실패 수, 출처, 확인한 화면. 필요한 근거는 그대로 남긴다. 명령이 끝났다는 사실만으로 통과라 하지 않는다"),
   command: z.string().optional().describe("실행한 명령 원문(길어도 자르지 않는다). behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)"),
+  workdir: z.string().max(4096).refine(isExecutionWorkdir, "workdir는 실제 도구가 사용한 절대 경로여야 합니다").optional().describe("실제 실행 도구의 workdir 절대 경로. command 원문과 별도로 적는다. 생략하면 등록된 직원의 실행 위치를 기준으로 한다"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 검사가 확인한 합격 기준 번호"),
 });
 

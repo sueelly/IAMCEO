@@ -52,6 +52,8 @@ export interface ReportCheckInput {
   result: CheckResult;
   evidence: string;
   command?: string | null;
+  /** 실제 도구의 실행 위치. 생략한 과거 보고는 등록된 직원 cwd를 기준으로 한다. */
+  workdir?: string | null;
   /** 이 검사가 확인한 합격 기준 번호(1부터). */
   criterion?: number | null;
 }

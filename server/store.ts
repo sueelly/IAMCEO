@@ -3992,8 +3992,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at);
     checks.forEach((c, i) => {
       const e = extra.evidence?.find(x => x.idx === i);
-      this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, criterion, exec_status, exec_ref, exec_exit, exec_at, exec_output_sha, exec_command) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        message.id, i, c.name, c.kind, c.result, c.evidence, c.command ?? null, c.criterion ?? null, e?.status ?? null, e?.ref ?? null, e?.exitCode ?? null, e?.at ?? null, e?.outputSha ?? null, e?.command ?? null);
+      this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, workdir, criterion, exec_status, exec_ref, exec_exit, exec_at, exec_output_sha, exec_command) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        message.id, i, c.name, c.kind, c.result, c.evidence, c.command ?? null, c.workdir ?? null, c.criterion ?? null, e?.status ?? null, e?.ref ?? null, e?.exitCode ?? null, e?.at ?? null, e?.outputSha ?? null, e?.command ?? null);
       // 한 실행은 한 업무의 증거로만 쓴다(같은 업무의 다른 검사·다시 올린 보고는 같은 실행을 가리켜도 된다).
       if (e?.status === "matched" && e.ref) this.run("INSERT OR IGNORE INTO harness_exec_refs (exec_ref, message_id, contract_task_id, task_id, member_id, at) VALUES (?, ?, ?, ?, ?, ?)", e.ref, message.id, extra.contractTaskId, message.taskId ?? null, member.id, message.at);
     });
@@ -4353,7 +4353,7 @@ function toContract(r: Row): TaskContract {
 function toCheck(r: Row, h: Row): ReportCheck {
   return publicHarness({
     messageId: r.message_id as string, name: r.name as string, kind: r.kind as ReportCheck["kind"], result: r.result as ReportCheck["result"],
-    evidence: r.evidence as string, command: (r.command as string | null) ?? null, criterion: (r.criterion as number | null) ?? null,
+    evidence: r.evidence as string, command: (r.command as string | null) ?? null, workdir: (r.workdir as string | null) ?? null, criterion: (r.criterion as number | null) ?? null,
     taskId: (h.task_id as string | null) ?? null, memberId: h.member_id as string, who: h.who as string, runId: (h.run_id as string | null) ?? null,
     contractTaskId: (h.contract_task_id as string | null) ?? null,
     contractRev: (h.contract_rev as number | null) ?? null, at: h.at as string,

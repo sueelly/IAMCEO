@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CoreSupervisor, ensureCoreServer, type CoreSupervisorDeps } from "../server/core-supervisor.ts";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,7 +72,7 @@ test("concurrent owned startup invokes only its fake executable once with isolat
     const one = ensureCoreServer(options), two = ensureCoreServer(options); expect(one).toBe(two);
     expect((await Promise.allSettled([one, two])).every(result => result.status === "rejected")).toBe(true);
     expect(readFileSync(marker, "utf8").trim().split("\n")).toEqual([options.socketPath, options.session, options.stateDir, options.configDir]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { /* Preserve this isolated test directory for review. */ }
 });
 
 test("a connected hello timeout never invokes the startup executable", async () => {
@@ -84,5 +84,5 @@ test("a connected hello timeout never invokes the startup executable", async () 
   try {
     await expect(ensureCoreServer({ coreBin: bin, socketPath: path, session: "iamceo-test", stateDir: join(dir, "state"), configDir: join(dir, "config") })).rejects.toMatchObject({ kind: "timeout" });
     expect(existsSync(marker)).toBe(false);
-  } finally { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); /* Preserve this isolated test directory for review. */ }
 });

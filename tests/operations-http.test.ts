@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -51,7 +51,7 @@ beforeAll(async () => {
   while (server.port === 7878) { await server.stop(); server = await startServer({ config, store, bus, orch }); }
   base = `http://127.0.0.1:${server.port}`;
 });
-afterAll(async () => { await server?.stop(); store?.db.close(); rmSync(home, { recursive: true }); });
+afterAll(async () => { await server?.stop(); store?.db.close(); /* Preserve this isolated test directory for review. */ });
 
 test("미지원 v2는 501이며 v1 포트로 쓰지 않는다; capability는 false", async () => {
   const before = calls.length;

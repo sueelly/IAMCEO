@@ -1,5 +1,5 @@
 // No import-time config reads, listeners, environment mutations, or provider discovery.
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { CoreRunnerOptions } from "../../server/runner/core";
 
@@ -45,6 +45,7 @@ await import(${JSON.stringify(fakeClaude)});
   const children = new Set<ReturnType<typeof Bun.spawn>>();
   let stopped = false;
   let stopping: Promise<void> | undefined;
+  let retainedDir: string | null = null;
   function assertOpen() { if (stopped) throw new Error("Isolated runtime is stopped"); }
   function assertOwnedPath(path: string): string {
     assertOpen();
@@ -149,9 +150,12 @@ await import(${JSON.stringify(fakeClaude)});
       await Promise.all([...servers].map((server) => server.stop(true)));
       // Never follow a replaced root when cleaning up.
       if (lstatSync(dir).isSymbolicLink() || realpathSync(dir) !== dir) throw new Error("Fixture root ownership changed");
-      rmSync(dir, { recursive: true });
+      // Retire the active path without deleting the fixture or replacing another root.
+      const archive = mkdtempSync("/private/tmp/iq-retained-");
+      retainedDir = join(archive, "fixture");
+      renameSync(dir, retainedDir);
     })();
     return stopping;
   }
-  return { dir, paths, bins, providerHomes, socketPath, herdrSocketPath, runnerOptions, requireProviderHomes, childEnv, assertOwnedPath, assertFakeExecutable, assertURL, spawnFake, serve, stop };
+  return { dir, paths, bins, providerHomes, socketPath, herdrSocketPath, runnerOptions, requireProviderHomes, childEnv, assertOwnedPath, assertFakeExecutable, assertURL, spawnFake, serve, stop, get retainedDir() { return retainedDir; } };
 }

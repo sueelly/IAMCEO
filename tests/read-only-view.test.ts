@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile, type Config } from "../server/config.ts";
@@ -34,7 +34,7 @@ beforeAll(async () => {
   before = digest(config.dbPath);
   view = await startReadOnlyView(config, "readonly-test-build"); origin = `http://127.0.0.1:${view.server.port}`;
 });
-afterAll(async () => { await view?.stop(); rmSync(home, { recursive: true, force: true }); });
+afterAll(async () => { await view?.stop(); /* Preserve this isolated test directory for review. */ });
 
 test("restored fenced data is readable with normal authentication", async () => {
   expect((await request("/api/bootstrap", "GET", false)).status).toBe(401);

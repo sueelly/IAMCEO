@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { openDb } from "../server/db";
@@ -26,7 +26,7 @@ function fixture() {
       return (...params: unknown[]) => { reads++; statements.push(String(args[0])); return value.apply(target, params); };
     } });
   }) as typeof db.query;
-  cleanups.push(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
+  cleanups.push(() => { db.close(); /* Preserve this isolated test directory for review. */ });
   const measure = <T>(read: () => T) => { reads = 0; statements.length = 0; const start = performance.now(); const result = read(); return { result, reads, ms: performance.now() - start }; };
   return { root, db, bus, store, project, member, recovery, measure, statements };
 }

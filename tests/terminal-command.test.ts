@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConnectionInfo, Member } from "../shared/types";
 import { terminalCommand, isLocalTerminalHost } from "../web/src/lib/terminal-command";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { roots.splice(0); /* Preserve these isolated test directories for review. */ });
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-command-"))); roots.push(root);
   const bin = join(root, "bin"), home = join(root, "server's data"), cwd = join(root, "project's files");

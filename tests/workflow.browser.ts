@@ -1,6 +1,6 @@
 // Actual HTTP/snapshot/UI exercise in an owned DB. No CLI, worker, live socket or approval is used.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page, type WebSocketRoute } from "playwright";
@@ -54,7 +54,7 @@ afterAll(async () => {
   await orch?.shutdown();
   await server?.stop();
   store?.db.close();
-  if (home) rmSync(home, { recursive: true, force: true });
+  /* Preserve the isolated test home for review. */
   console.log(`workflow screenshots: ${SHOTS}`);
 });
 

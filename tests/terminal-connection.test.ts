@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
@@ -23,7 +23,7 @@ async function fixture() {
     cliCommand: () => "/fixture/current/iamceo",
   } as unknown as OrchestratorApi;
   const server: RunningServer = await startServer({ config, store, bus, orch });
-  cleanups.push(async () => { await server.stop(); store.db.close(); rmSync(home, { recursive: true, force: true }); });
+  cleanups.push(async () => { await server.stop(); store.db.close(); /* Preserve this isolated test directory for review. */ });
   async function request(path: string, host: string, patch?: unknown, auth = true) {
     return fetch(`http://127.0.0.1:${server.port}${path}`, {
       method: patch === undefined ? "GET" : "PATCH",

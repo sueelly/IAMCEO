@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
-import { existsSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { loadConfig } from "../server/config.ts";
@@ -114,7 +114,7 @@ exec ${quote(process.execPath)} ${quote(script)} "$@"
     peers.forEach(s => s.destroy()); await new Promise<void>(resolve => rpc.close(() => resolve()));
     db.close();
     for (const { pid } of pids()) expect(alive(pid)).toBe(false);
-    rmSync(dir, { recursive: true, force: true });
+    /* Preserve this isolated test directory for review. */
   });
   const headers = { Authorization: `Bearer ${config.accessCode}` };
   async function status(query = "mode=observe", id = member.id, authorization = true) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { openDb } from "../server/db.ts";
@@ -141,7 +141,7 @@ describe("Member journal 상태 투영", () => {
 
   test.each(["unknown", "confirmed"] as const)("재오픈 후 %s 결과를 보존하고 조회는 DB나 방송을 바꾸지 않는다", phase => {
     const dir = mkdtempSync("/private/tmp/iamceo-projection-");
-    cleanups.push(() => { for (const file of readdirSync(dir)) unlinkSync(join(dir, file)); rmdirSync(dir); });
+    cleanups.push(() => { /* Preserve projection fixtures for review. */ });
     const f = fixture(join(dir, "test.db"));
     f.store.saveLifecycleJournal(f.lifecycle({ intent: "sleep", phase, reason: "recovery_evidence", exitCode: 23 }));
     f.store.saveExecutionJournal(f.execution({ phase: phase === "confirmed" ? "interrupted" : "unknown", result: phase === "confirmed" ? "interrupted" : null, reason: "recovery_evidence", endedAt: phase === "confirmed" ? at : null, exitCode: 23 }));

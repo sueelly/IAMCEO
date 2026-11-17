@@ -35,7 +35,7 @@ test("FIFO fixture is rejected before opening within a subprocess deadline", asy
   try {
     expect(await child.exited).toBe(0); expect(expired).toBe(false);
     expect(await new Response(child.stdout).text()).toContain("403 no opens");
-  } finally { clearTimeout(timer); fs.unlinkSync(fifo); fs.rmdirSync(root); }
+  } finally { clearTimeout(timer); /* Preserve the closed FIFO and its directory for review. */ }
 }, 5000);
 
 test("growth, truncation and same-size mutation during reading reject with 409", () => {
@@ -51,7 +51,7 @@ test("growth, truncation and same-size mutation during reading reject with 409",
       try { readLocalFile(localStore, "p", path, root, [], injected); throw new Error("must reject"); }
       catch (error) { expect(error).toMatchObject({ status: 409 }); }
     }
-  } finally { fs.unlinkSync(path); fs.rmdirSync(root); }
+  } finally { /* Preserve the closed fixture file and its directory for review. */ }
 });
 
 test("opened FD hard links are rejected before read and links created during read are rejected afterwards", () => {

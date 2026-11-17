@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -20,7 +20,7 @@ async function fixture() {
   const orch = { cliCommand: () => "/fixture/iamceo", herdrInfo: async () => ({ installed: false, running: false, version: null, protocol: null, compatible: false, warning: null }) } as unknown as OrchestratorApi;
   const server = await startServer({ config, store, bus, orch });
   const builds = spyOn(store, "projectState");
-  stops.push(async () => { builds.mockRestore(); await server.stop(); db.close(); rmSync(root, { recursive: true, force: true }); });
+  stops.push(async () => { builds.mockRestore(); await server.stop(); db.close(); /* Preserve this isolated test directory for review. */ });
   async function sync(opts: { host?: string; projectId?: string; compact?: boolean; auth?: boolean } = {}) {
     const query = new URLSearchParams({ projectId: opts.projectId ?? project.id });
     if (opts.compact !== false) query.set("view", "compact");

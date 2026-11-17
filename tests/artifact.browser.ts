@@ -94,7 +94,7 @@ for (const [label, type] of [["chromium", chromium], ["webkit", webkit]] as [str
     let browser: Browser;
     beforeAll(async () => {
       browser = await type.launch();
-    });
+    }, 30_000); // Match the browser startup budget; assertion deadlines stay unchanged.
     afterAll(async () => {
       await browser.close();
     });
@@ -235,7 +235,7 @@ for (const [label, type] of [["chromium", chromium], ["webkit", webkit]] as [str
     let browser: Browser;
     beforeAll(async () => {
       browser = await type.launch();
-    });
+    }, 30_000); // Match the browser startup budget; assertion deadlines stay unchanged.
     afterAll(async () => {
       await browser.close();
     });

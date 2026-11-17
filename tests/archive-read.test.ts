@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -47,7 +47,7 @@ beforeAll(async () => {
   bus.subscribe((event) => events.push(event.type));
 });
 
-afterAll(async () => { await server.stop(); store.db.close(); rmSync(home, { recursive: true }); });
+afterAll(async () => { await server.stop(); store.db.close(); /* Preserve this isolated test directory for review. */ });
 
 describe("archive read HTTP", () => {
   test("목록·상태·page·단건·around는 원본을 읽고 runner/pump/이벤트가 0회다", async () => {

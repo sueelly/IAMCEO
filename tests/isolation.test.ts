@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
 import { CoreError, coreRpc, type CoreTerminal } from "../server/runner/core-client";
@@ -77,8 +77,12 @@ test("fallback binaries fail closed and only fixture children are stopped", asyn
   const child = f.spawnFake([f.bins.claudeBin, "--session-id", "owned", "-p"], { cwd: f.paths.work, env: { FAKE_CLAUDE_DIRECTIVES: "@fake:hang" } });
   child.stdin.write("fixture prompt"); child.stdin.end();
   await until(() => existsSync(join(f.paths.sessions, "owned.txt")));
+  writeFileSync(join(f.dir, "retention-proof.txt"), "synthetic fixture bytes");
   const first = f.stop(); expect(f.stop()).toBe(first); await first;
   expect(await child.exited).not.toBe(0); expect(existsSync(f.dir)).toBe(false);
+  expect(f.retainedDir).not.toBeNull();
+  expect(readFileSync(join(f.retainedDir!, "retention-proof.txt"), "utf8")).toBe("synthetic fixture bytes");
+  expect(existsSync(join(f.retainedDir!, "sessions", "owned.txt"))).toBe(true);
   expect(() => f.childEnv()).toThrow("stopped");
 });
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -49,7 +49,7 @@ beforeAll(async () => {
   while (server.port === 7878) { await server.stop(); server = await startServer(ctx); }
   base = `http://127.0.0.1:${server.port}`;
 });
-afterAll(async () => { await recovery?.shutdown(); await server?.stop(); store?.db.close(); rmSync(home, { recursive: true }); });
+afterAll(async () => { await recovery?.shutdown(); await server?.stop(); store?.db.close(); /* Preserve this isolated test directory for review. */ });
 
 test("notice/state/sync GET은 전체 DB 집계와 keyset을 반환하고 입력·이벤트·DB 쓰기는 0회다", async () => {
   const path = `/api/members/${memberId}/delivery-notices`;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -32,7 +32,7 @@ async function fixture(herdrInfo: () => Promise<HerdrInfo> = async () => unavail
   let server = await startServer({ config, store, bus, orch });
   while (server.port === 7878) { await server.stop(); server = await startServer({ config, store, bus, orch }); }
   const base = `http://127.0.0.1:${server.port}`;
-  cleanup.push(async () => { await Bun.sleep(0); await server.stop(); store.db.close(); rmSync(home, { recursive: true }); });
+  cleanup.push(async () => { await Bun.sleep(0); await server.stop(); store.db.close(); /* Preserve this isolated test directory for review. */ });
   const sync = async (query = ""): Promise<SyncSnapshot> => {
     const response = await fetch(`${base}/api/sync${query}`, { headers: auth });
     expect(response.status).toBe(200);

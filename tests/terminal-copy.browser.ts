@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { chromium } from "playwright";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
@@ -71,5 +71,5 @@ test("Team copies freshly managed SSH settings and never copies stale text after
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("preserve clipboard");
     expect(connectionReads).toBe(3); expect(errors).toEqual([]);
     await context.close();
-  } finally { await browser.close(); await server.stop(); store.db.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { await browser.close(); await server.stop(); store.db.close(); /* Preserve this isolated test directory for review. */ }
 }, 30000);

@@ -1001,6 +1001,8 @@ export const MIGRATIONS: string[] = [
    );`,
   // v41: persistent CLI failure prevents automatic restart loops.
   `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
+  // v42: Preserve the command independently from an optional explicit execution workdir.
+  `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

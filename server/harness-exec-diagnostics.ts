@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { jsonObject } from "./runner/delivery-evidence.ts";
 import { commandObservation } from "./harness-command.ts";
 import type { ExecRecord } from "./harness-evidence.ts";
+import { codexWorkdir } from "./harness-workdir.ts";
 
 export interface LogSelectionObservation {
   code: "selected" | "provider_homes_missing" | "session_missing" | "no_matching_session" | "cwd_mismatch" | "ambiguous" | "lookup_failed" | "unsupported";
@@ -112,17 +113,18 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
       observeReference(key, isCompleted ? "result" : "call");
       if (isCompleted) resultKeys.add(key);
       const command = codexCommand(item.command);
+      const cwd = codexWorkdir(item.cwd);
       const old = candidates.get(key);
       if (command === null && !old) continue;
-      const c = old ?? fresh(key, "codex_command_execution", command ?? "", text(item.cwd), isStarted ? at : null);
+      const c = old ?? fresh(key, "codex_command_execution", command ?? "", cwd, isStarted ? at : null);
       if (!old) c.startObserved = isStarted;
       // 시작/결과의 상충을 먼저 남긴다. 아래 값은 해당 대표 이벤트의 D2 대조용이다.
       if (old) c.pairAmbiguous ||= (isStarted && old.resultObserved) ||
-        (command !== null && command !== old.command) || (typeof item.cwd === "string" && old.cwd !== null && item.cwd !== old.cwd);
-      if (command !== null) c.relatedToTarget ||= isRelated(command, text(item.cwd));
+        (command !== null && command !== old.command) || (typeof item.cwd === "string" && old.cwd !== null && cwd !== old.cwd);
+      if (command !== null) c.relatedToTarget ||= isRelated(command, cwd);
       c.origin = { line: lineIndex, item: 0 };
       if (command !== null) c.command = command;
-      if (typeof item.cwd === "string") c.cwd = item.cwd;
+      if (typeof item.cwd === "string") c.cwd = cwd;
       c.parserSupported = isEnvelope && isCompleted;
       if (isStarted) { c.startObserved = true; c.callAt ??= at; c.combined = false; }
       else { c.resultObserved = true; c.resultAt = at; c.combined = !c.startObserved; Object.assign(c, observeNumeric(item)); }

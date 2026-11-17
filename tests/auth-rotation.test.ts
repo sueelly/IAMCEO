@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
@@ -104,7 +104,7 @@ describe("global access code rotation", () => {
       expect(f.config.accessCode).toBe(oldCode);
       expect((await f.request("/api/capabilities", oldCode)).status).toBe(200);
       expect((await f.request("/pair/claim", "", "POST", JSON.stringify({ code: qr.code }))).status).toBe(200);
-    } finally { rmdirSync(f.config.configPath); renameSync(savedPath, f.config.configPath); }
+    } finally { renameSync(f.config.configPath, f.config.configPath + ".invalid-directory"); renameSync(savedPath, f.config.configPath); }
     const results = await Promise.all([f.request("/api/auth/rotate", oldCode, "POST", "{}"), f.request("/api/auth/rotate", oldCode, "POST", "{}")]);
     expect(results.map(result => result.status).sort()).toEqual([200, 401]);
     expect(JSON.parse(readFileSync(f.config.configPath, "utf8")).accessCode).toBe(f.config.accessCode);

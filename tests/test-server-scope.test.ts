@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createTestServerScope } from "./fixtures/test-server-scope";
@@ -8,7 +8,7 @@ const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 const home = () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-owned-server-")));
-  cleanups.push(async () => { rmSync(directory, { recursive: true }); });
+  cleanups.push(async () => { /* Preserve this isolated test directory for review. */ });
   return directory;
 };
 const env = (directory: string) => ({ PATH: process.env.PATH!, IAMCEO_TEST: "1", IAMCEO_HOME: directory });
