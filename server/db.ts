@@ -977,6 +977,8 @@ export const MIGRATIONS: string[] = [
      retired_reason TEXT
    );
    CREATE INDEX task_continuation_deliveries_task ON task_continuation_deliveries(task_id, round);`,
+  // v39: 실행 원문과 실제 도구 workdir를 별도로 보존한다. 과거 검사는 NULL(등록 위치 기준)이다.
+  `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
