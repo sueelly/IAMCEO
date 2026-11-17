@@ -175,8 +175,9 @@ for (const scope of ["project", "global", "failure", "criteria", "contract_revis
       if (scope === "project" || scope === "global") {
         if (scope === "project") await orch.patchProject(project.id, { maxConcurrentTurns: 2 });
         else await orch.updateSettings({ maxConcurrentTurns: 2 });
-        await until(() => core.count("terminal.send") === 2);
-        expect(store.requireDelivery(pending[0].id).status).toBe("delivered");
+        // The socket peer sees the request before the sender records its receipt.
+        await until(() => store.requireDelivery(pending[0].id).status === "delivered");
+        expect(core.count("terminal.send")).toBe(2);
       } else if (scope !== "contract_revision") {
         await orch.pump(second.id);
         expect(core.count("terminal.send")).toBe(1);
