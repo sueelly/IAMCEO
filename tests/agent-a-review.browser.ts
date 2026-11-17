@@ -743,8 +743,8 @@ describe("Agent-A 문서 화면", () => {
     await page.close();
   }, 150_000);
 
-  // ---- R3 보완: 갈래가 다른 원래 댓글은 이름이 같아도 붙지 않는다. 문서에 이어지지 않는 새 자리는 받지 않는다 ----
-  test("데스크톱: Graphviz·다른 갈래의 원래 댓글은 목록에만 남고 Mermaid 도식의 같은 이름에 붙지 않는다. 문서 밖 줄의 새 도식 댓글은 받지 않는다", async () => {
+  // ---- R3 보완: Graphviz 의 원래 댓글은 이름이 같아도 붙지 않는다. Mermaid 안의 갈래는 원래 화면처럼 견주지 않는다. 지금 본문의 도식에 묶이지 않는 새 자리는 받지 않는다 ----
+  test("데스크톱: Graphviz 의 원래 댓글은 목록에만 남고 Mermaid 도식의 같은 이름에 붙지 않는다. 다른 Mermaid 갈래의 원래 댓글은 같은 이름의 부분에 붙는다. 묶이지 않는 새 도식 댓글은 받지 않는다", async () => {
     const fileId = await newDiagramDoc("갈래가 다른 댓글 문서");
     const doc = await review.open(fileId);
     const fence = doc.markdown.split("\n").indexOf("```mermaid") + 1;
@@ -769,18 +769,23 @@ describe("Agent-A 문서 화면", () => {
     // 목록에는 셋 다 '도식' 댓글로 남아 있다(지우거나 숨기지 않는다)
     for (const a of foreign) await pane(page).locator(".aar-row", { hasText: a.text }).waitFor({ timeout: 20_000 });
     await expect(pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).count()).resolves.toBe(3);
-    // 이 도식에도 B(검토)가 있지만, 갈래가 다른 댓글의 번호 표시는 없다
+    // 이 도식에도 B(검토)가 있다. Graphviz 댓글 둘의 번호 표시는 없고, 상태도의 B 에 남긴 댓글만 원래 화면처럼 같은 이름의 부분에 붙는다(번호 1)
     await expect(diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').count()).resolves.toBeGreaterThan(0);
+    await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 1, null, { timeout: 20_000 });
     await page.waitForTimeout(600);
-    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(0);
-    // 목록에서 그 댓글을 열면 읽을 수 있고, 도식에 고른 표시는 생기지 않는다
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await diagram.getByRole("button", { name: "도식 댓글 1 열기" }).click();
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("상태도의 B 에 남긴 원래 댓글");
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    // 목록에서 Graphviz 댓글을 열면 읽을 수 있고, 도식에 고른 표시는 생기지 않는다(표시는 상태도 댓글의 것 하나 그대로다)
     await pane(page).locator(".aar-row", { hasText: "Graphviz 의 B 에 남긴 원래 댓글" }).click();
     await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("Graphviz 의 B 에 남긴 원래 댓글");
     await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("검토");
-    await expect(diagram.locator(".aar-diagram__mark, .aar-diagram__ring").count()).resolves.toBe(0);
+    await expect(diagram.locator(".aar-diagram__ring[data-active], .aar-diagram__mark[data-active]").count()).resolves.toBe(0);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
     await shot(page, "35-desk-diagram-other-family");
 
-    // 정상군: 같은 도식의 B 에 새 댓글을 달면 그것만 번호 1 로 표시된다
+    // 정상군: 같은 도식의 B 에 새 댓글을 달면 표시가 둘이 된다(번호는 댓글 목록의 차례라 방금 단 댓글이 1 이다). 화면은 본 본문의 표를 함께 보낸다
     await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
     await diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first().click();
     await pane(page).getByLabel("댓글", { exact: true }).fill("이 화면에서 단 댓글입니다");
@@ -788,31 +793,73 @@ describe("Agent-A 문서 화면", () => {
     await answered(page, 1, "시험 답: 이 화면에서 단 댓글입니다");
     const mine: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] };
     await expect(stored()).resolves.toEqual([...kept, ["이 화면에서 단 댓글입니다", mine]]);
-    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(2);
     await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
     await diagram.getByRole("button", { name: "도식 댓글 1 열기" }).click();
     await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("이 화면에서 단 댓글입니다");
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await diagram.getByRole("button", { name: "도식 댓글 2 열기" }).click();
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("상태도의 B 에 남긴 원래 댓글");
 
-    // 문서에 없는 줄·도식 글에 없는 이름의 새 댓글을 서버 길로 직접 보내면 거절하고 아무것도 쓰지 않는다(모양은 맞다)
-    const send = async (id: string, anchor: AgentAReviewDiagramAnchor) => {
+    // 지금 본문의 도식에 묶이지 않는 새 댓글을 서버 길로 직접 보내면 거절하고 아무것도 쓰지 않는다(모양은 맞다):
+    // 문서에 없는 줄 · 도식 글에 없는 이름 · 도식 밖 줄 · 그 부분이 처음 적힌 줄이 아닌 줄. 화면이 본 본문이 아닌 표를 실은 것도 쓰지 않는다
+    const send = async (id: string, anchor: AgentAReviewDiagramAnchor, bodyMark?: string) => {
       const res = await fetch(`${base}/api/agent-a/docs/${fileId}/review/comments`, { method: "POST", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ session: await sessionOf(page), id, kind: "comment", text: "직접 보낸 도식 댓글", diagram: anchor }) });
+        body: JSON.stringify({ session: await sessionOf(page), id, kind: "comment", text: "직접 보낸 도식 댓글", diagram: anchor, ...(bodyMark ? { bodyMark } : {}) }) });
       return [res.status, ((await res.json()) as { code?: string }).code];
     };
     await expect(send("direct-unbound-1", { ...mine, sourceLine: [999_999, 999_999] })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
     await expect(send("direct-unbound-2", { ...mine, id: "없는이름", label: "없는 글" })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+    await expect(send("direct-unbound-3", { ...mine, sourceLine: [1, 1] })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+    await expect(send("direct-unbound-4", { ...mine, sourceLine: [fence + 3, fence + 3] })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+    await expect(send("direct-unbound-5", mine, `d:${"0".repeat(32)}`)).resolves.toEqual([409, "AGENT_A_BODY_CHANGED"]);
     await expect(stored()).resolves.toHaveLength(4);
 
-    // 다시 열어도(새로고침) 같다: 표시는 내 댓글 하나, 목록에는 넷
+    // 다시 열어도(새로고침) 같다: 표시는 상태도 댓글과 내 댓글 둘, 목록에는 넷
     await page.reload();
     await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
     await drawn(page);
-    await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 1, null, { timeout: 20_000 });
+    await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 2, null, { timeout: 20_000 });
     for (const a of foreign) await pane(page).locator(".aar-row", { hasText: a.text }).waitFor({ timeout: 20_000 });
     await expect(pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).count()).resolves.toBe(4);
     await page.waitForTimeout(600);
-    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(2);
     await expect(stored()).resolves.toEqual([...kept, ["이 화면에서 단 댓글입니다", mine]]);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 180_000);
+
+  // ---- R3 잔여: 화면이 보던 본문이 그사이 바뀌었으면 새 도식 댓글을 쓰지 않고, 지금 본문을 다시 불러온다 ----
+  test("데스크톱: 다른 화면이 본문을 바꾼 뒤 옛 화면에서 단 도식 댓글은 쓰지 않는다. 지금 본문을 다시 불러와 다시 보내면 달린다", async () => {
+    const fileId = await newDiagramDoc("본문이 바뀐 도식 문서");
+    const doc = await review.open(fileId);
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await open(page, fileId);
+    const diagram = page.locator(".aar-diagram");
+    await drawn(page);
+    // 이 화면이 정본을 보는 동안 다른 화면이 본문 초안을 저장했다: 글 끝에 문단 하나를 더했다(도식의 줄은 그대로다)
+    const d = await review.draft(fileId, doc.sessionId);
+    await review.saveDraft(fileId, doc.sessionId, { markdown: `${doc.markdown}\n\n다른 화면이 더한 문단입니다.`, revision: d.revision, opId: "ui-body-changed-0001" });
+    const stored = async () => (await review.comments(fileId, doc.sessionId, null))!.annotations.filter((a) => !a.ai).map((a) => a.text);
+    // 옛 화면에서 B 에 댓글을 단다: 쓰지 않고 까닭을 보인다. 쓰던 글은 남는다
+    await diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first().click();
+    const box = pane(page).getByLabel("댓글", { exact: true });
+    await box.fill("옛 화면에서 단 댓글입니다");
+    await box.press("Enter");
+    await pane(page).locator(".aar-error", { hasText: "그사이 본문이 바뀌었습니다" }).waitFor({ timeout: 20_000 });
+    await expect(stored()).resolves.toEqual([]);
+    await expect(box.inputValue()).resolves.toBe("옛 화면에서 단 댓글입니다");
+    // 화면이 지금 본문(다른 화면의 초안)을 다시 불러왔다
+    await page.locator(".aar-doc", { hasText: "다른 화면이 더한 문단입니다." }).waitFor({ timeout: 20_000 });
+    await drawn(page);
+    await shot(page, "36-desk-diagram-body-changed");
+    // 다시 보내면 지금 본문의 그 도식에 달린다
+    await box.press("Enter");
+    await answered(page, 1, "시험 답: 옛 화면에서 단 댓글입니다");
+    await expect(stored()).resolves.toEqual(["옛 화면에서 단 댓글입니다"]);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
     expect(errors).toEqual([]);
     await page.close();
   }, 180_000);

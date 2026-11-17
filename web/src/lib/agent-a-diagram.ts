@@ -143,22 +143,24 @@ export interface DiagramBlockInfo {
 }
 
 /**
- * 도식 댓글이 본문의 몇 번째 도식 것인지. 주인은 갈래가 같은 도식뿐이다: 이름·글만 같은 다른 갈래의 도식은 주인이 아니다
- * (Graphviz 댓글의 B 는 Mermaid 흐름도의 B 가 아니고, 상태도 댓글의 B 도 흐름도의 B 가 아니다. 원래 화면도 Graphviz 댓글을 Mermaid 도식에 대 보지 않는다).
- * 이 화면은 Mermaid 만 그리므로 Graphviz 댓글은 늘 null 이다: 표시 없이 댓글 목록에만 남는다.
+ * 이미 있는 도식 댓글이 본문의 몇 번째 도식 것인지(표시를 어디에 그릴지). 새 댓글의 자리 검사(서버의 diagramInBody)와는 다른 일이다.
+ * 원래 화면의 규칙을 따른다:
+ * - Graphviz 댓글은 Mermaid 도식의 것이 아니다(B 라는 이름이 같아도 DOT 의 부분이다). 이 화면은 Mermaid 만 그리므로 Graphviz 댓글은 늘 null 이다: 목록에만 남는다.
+ * - Mermaid 안의 갈래는 견주지 않는다. 본문의 도식을 흐름도에서 상태도로 바꿔도 같은 이름의 부분이 있으면 옛 댓글이 다시 붙는다.
+ *   이름의 문법이 다른 갈래(순서도의 msg-2 같은 차례 이름)는 그 이름의 부분이 없어 붙지 않는다.
  * 자리의 문서 줄이 그 도식의 줄 안이고 그 도식에 그 부분이 있으면 그 도식이다. 줄이 없거나 맞지 않으면(본문이 바뀌었으면)
- * 갈래가 같고 그 자리를 찾는 첫 도식이다(원래 화면과 같다). 가릴 도식을 아직 그리는 중이면 기다린다(null).
- * 어느 도식에서도 못 찾으면 null 이다: 표시 없이 댓글 목록에만 남는다.
+ * 그 자리를 찾는 문서 차례의 첫 도식이다(원래 화면과 같다). 가릴 도식을 아직 그리는 중이면 기다린다(null).
+ * 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다). 어느 도식에서도 못 찾으면 null 이다: 표시 없이 댓글 목록에만 남는다.
  */
 export function ownerOf(anchor: AgentAReviewDiagramAnchor, blocks: readonly DiagramBlockInfo[]): number | null {
-  const has = (b: DiagramBlockInfo): boolean => b.drawn != null && b.drawn.family === anchor.family && (anchor.kind === "diagram" || findPart(b.drawn.parts, anchor) !== null);
+  const has = (b: DiagramBlockInfo): boolean => b.drawn != null && (b.drawn.family === "graphviz") === (anchor.family === "graphviz") && (anchor.kind === "diagram" || findPart(b.drawn.parts, anchor) !== null);
   if (anchor.sourceLine) {
     const [first, last] = anchor.sourceLine;
     const at = blocks.findIndex((b) => first > b.line && last <= b.line + b.lines);
     if (at !== -1) {
       const b = blocks[at]!;
       if (b.drawn === undefined) return null;
-      // 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다). 그 도식의 갈래가 다르면 표시하지 않는다.
+      // 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다).
       if (anchor.kind === "diagram") return has(b) ? at : null;
       if (has(b)) return at;
     }

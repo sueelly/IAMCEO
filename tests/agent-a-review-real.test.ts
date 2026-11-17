@@ -13,7 +13,8 @@ import { AgentAClient, AgentAService } from "../server/integrations/agent-a.ts";
 import type { AgentAImageInput, AgentAReviewDiagramAnchor } from "../shared/agent-a.ts";
 import { AgentAReview } from "../server/integrations/agent-a-review.ts";
 import { ApiError, Store } from "../server/store.ts";
-import { anchorFor, type DiagramPart } from "../web/src/lib/agent-a-diagram.ts";
+import { mermaidBlocks } from "../shared/agent-a-diagram.ts";
+import { anchorFor, ownerOf, type DiagramPart } from "../web/src/lib/agent-a-diagram.ts";
 import { splitDoc } from "../web/src/lib/agent-a-review.ts";
 import { pngBase64 } from "./fixtures/png.ts";
 
@@ -21,6 +22,7 @@ const REAL = process.env.IAMCEO_AGENT_A_REAL_URL ?? null;
 const ORIGINAL = process.env.IAMCEO_AGENT_A_REAL_PROTOCOL === "1";
 const MARKDOWN = "머리 문단입니다.\n\n## 배경\n\n배경 문장 하나. 배경 문장 둘.\n\n## 계획\n\n계획은 세 단계입니다.";
 
+const BOX = { x: 0.1, y: 0.1, w: 0.2, h: 0.2 };
 type Hook = (input: string, init: RequestInit, res: Response) => void | Promise<void>;
 async function setup(title: string, content: { markdown?: string; images?: AgentAImageInput[] } = {}) {
   const store = new Store(openDb(join(mkdtempSync(join(tmpdir(), "iamceo-aa-real-")), "iamceo.db")), new Bus());
@@ -414,10 +416,11 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     expect((await s.review.comments(s.fileId, s.sid, null))!.annotations.filter((a) => !a.ai).map((a) => a.id)).toEqual(["real-dg-node", "real-dg-edge", "real-dg-whole", "real-rg-good"]);
   }, 90_000);
 
-  test("R3 보완: 문서의 도식에 이어지지 않는 새 도식 댓글은 실제 초안에 쓰지 않는다. 이미 있는 문서 밖 줄·Graphviz 댓글은 그대로 읽히고 남는다", async () => {
+  test("R3 보완: 지금 본문의 도식에 묶이지 않는 새 도식 댓글은 실제 초안에 쓰지 않는다. 이미 있는 문서 밖 줄·Graphviz 댓글은 그대로 읽히고 남는다", async () => {
     const flow = ["graph TD", "  A[시작] --> B[검토]", "  B -->|통과| C[끝]"];
     const s = await setup("실제: 도식 자리 연결", { markdown: ["도식이 있는 문서입니다.", "", "```mermaid", ...flow, "```", "", "끝 문장입니다."].join("\n") });
-    const edited = `${s.doc.canonical}\n\n다른 창의 편집`;
+    // 다른 창이 본문 초안을 저장했다: 앞에 세 줄을 넣어 도식의 줄이 정본보다 세 줄 뒤다
+    const edited = `앞에 넣은 줄 하나\n앞에 넣은 줄 둘\n\n${s.doc.canonical}`;
     await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: edited });
     // 원래 화면(또는 옛 판)이 실제 Agent-A 에 직접 남긴 댓글 둘: 줄이 문서 밖인 것, Graphviz 의 B(지금 문서에 없는 블록 이름)
     const far: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [999_999, 999_999] };
@@ -428,46 +431,166 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     const read = async () => (await s.review.comments(s.fileId, s.sid, null))!.annotations.filter((a) => !a.ai).map((a) => [a.id, a.text, a.diagram]);
     const old = [["old-far-line", "줄이 문서 밖인 옛 댓글", far], ["old-graphviz", "Graphviz 의 B 에 남긴 옛 댓글", graphviz]];
     expect(await read()).toEqual(old);
-    // 화면이 하는 대로 만든 자리
-    const diagram = splitDoc(s.doc.markdown).find((p) => p.kind === "mermaid")!;
-    if (diagram.kind !== "mermaid") throw new Error("도식 조각이 없습니다");
-    const box = { x: 0.1, y: 0.1, w: 0.2, h: 0.2 };
-    const node = anchorFor("flowchart", { kind: "node", id: "B", label: "검토", box, hits: [box] }, diagram.code, diagram.line);
-    expect(node.sourceLine).toEqual([diagram.line + 2, diagram.line + 2]);
-    // 모양은 맞지만 이 문서의 도식에 이어지지 않는 새 댓글: 실제 초안의 판과 내용이 그대로다
+    // 화면이 하는 대로 만든 자리: 초안을 다시 연 화면의 것(now)과, 초안이 생기기 전에 정본을 보던 화면의 것(stale)
+    const now = await s.review.open(s.fileId, s.sid);
+    expect([now.edited, now.markdown]).toEqual([true, edited]);
+    const [shown] = mermaidBlocks(now.markdown), [canonical] = mermaidBlocks(s.doc.markdown);
+    const partB: DiagramPart = { kind: "node", id: "B", label: "검토", box: BOX, hits: [BOX] };
+    const node = anchorFor("flowchart", partB, shown!.code, shown!.line), whole = anchorFor("flowchart", null, shown!.code, shown!.line);
+    const stale = anchorFor("flowchart", partB, canonical!.code, canonical!.line);
+    expect([node.sourceLine, stale.sourceLine, whole.sourceLine]).toEqual([[shown!.line + 2, shown!.line + 2], [shown!.line - 1, shown!.line - 1], [shown!.line + 1, shown!.line + 3]]);
+    // 모양은 맞지만 지금 본문의 도식에 묶이지 않는 새 댓글: 실제 초안의 판과 내용이 그대로다
     const before = await s.other("GET", "/api/draft");
     const end = edited.split("\n").length;
     const unbound: [string, AgentAReviewDiagramAnchor][] = [
       ["real-unbound-1", { ...node, sourceLine: [999_999, 999_999] }],
       ["real-unbound-2", { ...node, sourceLine: [end + 1, end + 1] }],
       ["real-unbound-3", { ...node, id: "없는이름", label: "없는 글" }],
-      ["real-unbound-4", { v: 1, family: "flowchart", kind: "diagram", label: "sequenceDiagram", sourceLine: [diagram.line + 1, diagram.line + 3] }],
+      ["real-unbound-4", { ...whole, label: "sequenceDiagram" }],
+      // 정본에만 맞는 줄(초안이 있으면 초안만 본다), 도식 밖 줄, 그 부분이 처음 적힌 줄이 아닌 줄, 도식 글의 일부만 가리키는 도식 전체
+      ["real-unbound-5", stale],
+      ["real-unbound-6", { ...node, sourceLine: [end, end] }],
+      ["real-unbound-7", { ...node, sourceLine: [shown!.line + 3, shown!.line + 3] }],
+      ["real-unbound-8", { ...whole, sourceLine: [shown!.line + 1, shown!.line + 2] }],
     ];
     for (const [id, anchor] of unbound) {
-      expect([id, await failure(s.review.addComment(s.fileId, s.sid, { id, kind: "comment", text: "이어지지 않는 새 댓글", diagram: anchor }))]).toEqual([id, { status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" }]);
+      expect([id, await failure(s.review.addComment(s.fileId, s.sid, { id, kind: "comment", text: "묶이지 않는 새 댓글", diagram: anchor }))]).toEqual([id, { status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" }]);
     }
     const after = await s.other("GET", "/api/draft");
     expect([after.status, after.revision, after.json]).toEqual([200, before.revision, before.json]);
     expect(await read()).toEqual(old);
-    // 정상군: 화면이 만든 자리와 본문 초안에만 있는 줄(정본보다 긴 줄 번호)의 자리는 받는다. 옛 댓글 둘과 다른 창의 편집은 그대로다
-    await s.review.addComment(s.fileId, s.sid, { id: "real-bound-1", kind: "comment", text: "이어지는 새 댓글", diagram: node });
-    const tail: AgentAReviewDiagramAnchor = { ...node, sourceLine: [end, end] };
-    expect(end).toBeGreaterThan(s.doc.canonical.split("\n").length);
-    await s.review.addComment(s.fileId, s.sid, { id: "real-bound-2", kind: "comment", text: "초안 줄의 새 댓글", diagram: tail });
-    expect(await read()).toEqual([...old, ["real-bound-1", "이어지는 새 댓글", node], ["real-bound-2", "초안 줄의 새 댓글", tail]]);
+    // 정상군: 지금 본문(초안)의 부분과 도식 전체는 받는다. 옛 댓글 둘과 다른 창의 편집은 그대로다. Agent-A 가 답도 시작한다
+    await s.review.addComment(s.fileId, s.sid, { id: "real-bound-1", kind: "comment", text: "묶이는 새 댓글", diagram: node, bodyMark: now.bodyMark });
+    await s.review.addComment(s.fileId, s.sid, { id: "real-bound-2", kind: "comment", text: "도식 전체의 새 댓글", diagram: whole });
+    expect(await read()).toEqual([...old, ["real-bound-1", "묶이는 새 댓글", node], ["real-bound-2", "도식 전체의 새 댓글", whole]]);
     const raw = (await s.other("GET", "/api/draft")).json!;
     expect([raw.editedMarkdown, raw.annotations.map((a: Record<string, unknown>) => a.id)]).toEqual([edited, ["old-far-line", "old-graphviz", "real-bound-1", "real-bound-2"]]);
-    // 응답을 잃은 재전송: 그사이 본문 초안이 짧아져 그 줄이 없어져도, 이미 저장된 id 는 처음 결과를 확인한다(새로 쓰지 않는다). 새 id 는 거절한다
+    const answered = await until(async () => (await s.review.comments(s.fileId, s.sid, null))!.annotations.filter((a) => a.ai).map((a) => a.inReplyTo).sort(), (ids) => ids.includes("real-bound-1") && ids.includes("real-bound-2"), "도식 댓글의 답");
+    expect(answered.filter((id) => id === "real-bound-1" || id === "real-bound-2")).toEqual(["real-bound-1", "real-bound-2"]);
+    // 응답을 잃은 재전송: 그사이 본문 초안이 바뀌어 그 줄이 도식 밖이 돼도, 이미 저장된 id 는 처음 결과를 확인한다(새로 쓰지 않는다). 새 id 는 거절한다
     const draft = await s.review.draft(s.fileId, s.sid);
     await s.review.saveDraft(s.fileId, s.sid, { markdown: `${s.doc.canonical.trimEnd()}\n`, revision: draft.revision, opId: "real-diagram-retry-0001" });
     const settled = await s.other("GET", "/api/draft");
-    expect(await s.review.addComment(s.fileId, s.sid, { id: "real-bound-2", kind: "comment", text: "초안 줄의 새 댓글", diagram: tail })).toEqual({ ok: true, id: "real-bound-2" });
-    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-bound-2", kind: "comment", text: "다른 내용", diagram: tail }))).toEqual({ status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" });
-    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-unbound-5", kind: "comment", text: "초안 줄의 새 댓글", diagram: tail }))).toEqual({ status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" });
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "real-bound-1", kind: "comment", text: "묶이는 새 댓글", diagram: node, bodyMark: now.bodyMark })).toEqual({ ok: true, id: "real-bound-1" });
+    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-bound-1", kind: "comment", text: "다른 내용", diagram: node }))).toEqual({ status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" });
+    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-unbound-9", kind: "comment", text: "묶이는 새 댓글", diagram: node }))).toEqual({ status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" });
+    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-unbound-9", kind: "comment", text: "묶이는 새 댓글", diagram: node, bodyMark: now.bodyMark }))).toEqual({ status: 409, code: "AGENT_A_BODY_CHANGED" });
     const final = await s.other("GET", "/api/draft");
     expect([final.status, final.revision, final.json]).toEqual([200, settled.revision, settled.json]);
-    expect(await read()).toEqual([...old, ["real-bound-1", "이어지는 새 댓글", node], ["real-bound-2", "초안 줄의 새 댓글", tail]]);
+    expect(await read()).toEqual([...old, ["real-bound-1", "묶이는 새 댓글", node], ["real-bound-2", "도식 전체의 새 댓글", whole]]);
   }, 90_000);
+
+  test("R3 잔여: 다른 도식의 글·줄을 섞은 자리와 초안에서 지운 대상에는 새로 쓰지 않는다. 화면이 본 본문이 바뀌었으면 쓰지 않는다", async () => {
+    const s = await setup("실제: 도식 둘의 연결", { markdown: ["## 첫째", "", "```mermaid", "flowchart TD", "  A[첫 도식] --> C[다른 부분]", "```", "", "## 둘째", "", "```mermaid", "flowchart LR", "  B[둘째 도식] --> D[끝]", "```"].join("\n") });
+    const [a, b] = mermaidBlocks(s.doc.markdown);
+    const part = (id: string, label: string): DiagramPart => ({ kind: "node", id, label, box: BOX, hits: [BOX] });
+    const wholeA = anchorFor("flowchart", null, a!.code, a!.line), wholeB = anchorFor("flowchart", null, b!.code, b!.line);
+    const nodeA = anchorFor("flowchart", part("A", "첫 도식"), a!.code, a!.line), nodeB = anchorFor("flowchart", part("B", "둘째 도식"), b!.code, b!.line);
+    expect([wholeA.label, wholeB.label]).toEqual(["flowchart TD", "flowchart LR"]);
+    const refused = { status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" };
+    const raw = () => s.other("GET", "/api/draft");
+    const add = (id: string, diagram: AgentAReviewDiagramAnchor, bodyMark?: string) => s.review.addComment(s.fileId, s.sid, { id, kind: "comment", text: `댓글 ${id}`, diagram, bodyMark });
+    // ① 정상군: 둘째 도식 전체와 그 부분 B. 화면은 그 줄의 도식(둘째)에 표시한다
+    expect(await add("real-two-whole", wholeB, s.doc.bodyMark)).toEqual({ ok: true, id: "real-two-whole" });
+    expect(await add("real-two-node", nodeB, s.doc.bodyMark)).toEqual({ ok: true, id: "real-two-node" });
+    const drawn = [a!, b!].map((x) => ({ line: x.line, lines: x.code.split("\n").length, drawn: { family: "flowchart" as const, parts: x === a ? [part("A", "첫 도식")] : [part("B", "둘째 도식")] } }));
+    expect([ownerOf(wholeB, drawn), ownerOf(nodeB, drawn), ownerOf(wholeA, drawn)]).toEqual([1, 1, 0]);
+    // ② 둘째 도식의 글·이름에 첫째 도식의 줄을 섞은 자리(그 반대도): 쓰지 않는다. 초안의 판과 내용이 그대로다
+    const before = await raw();
+    const mixed: [string, AgentAReviewDiagramAnchor][] = [
+      ["real-mixed-1", { ...wholeB, sourceLine: wholeA.sourceLine }],
+      ["real-mixed-2", { ...wholeA, sourceLine: wholeB.sourceLine }],
+      ["real-mixed-3", { ...nodeB, sourceLine: nodeA.sourceLine }],
+      ["real-mixed-4", { ...nodeA, sourceLine: nodeB.sourceLine }],
+      ["real-mixed-5", { ...wholeB, sourceLine: [wholeA.sourceLine![0], wholeB.sourceLine![1]] }],
+    ];
+    for (const [id, diagram] of mixed) expect([id, await failure(add(id, diagram))]).toEqual([id, refused]);
+    const afterMixed = await raw();
+    expect([afterMixed.status, afterMixed.revision, afterMixed.json]).toEqual([200, before.revision, before.json]);
+    // ③ 다른 화면이 본문 초안에서 도식을 모두 지웠다: 같은 id 의 재전송은 처음 결과를 확인하고, 새 id 는 쓰지 않는다. 빈 초안도 같다
+    for (const [markdown, opId] of [["# 지금 본문 초안\n\n도식과 부분 B 를 모두 지웠습니다.", "real-removal-0001"], ["", "real-removal-0002"]] as const) {
+      const d = await s.review.draft(s.fileId, s.sid);
+      expect((await s.review.saveDraft(s.fileId, s.sid, { markdown, revision: d.revision, opId })).editedMarkdown).toBe(markdown);
+      const kept = await raw();
+      expect(await add("real-two-node", nodeB)).toEqual({ ok: true, id: "real-two-node" });
+      expect(await failure(add("real-removed-1", nodeB))).toEqual(refused);
+      expect(await failure(add("real-removed-2", wholeB))).toEqual(refused);
+      expect(await failure(add("real-removed-3", { ...nodeB, sourceLine: null }))).toEqual(refused);
+      // 정본을 보던 화면의 표를 실으면 본문이 바뀐 것으로 거절한다
+      expect(await failure(add("real-removed-4", nodeB, s.doc.bodyMark))).toEqual({ status: 409, code: "AGENT_A_BODY_CHANGED" });
+      const after = await raw();
+      expect([after.status, after.revision, after.json]).toEqual([200, kept.revision, kept.json]);
+    }
+    // ④ 고친 본문을 버리면 다시 정본이 지금 본문이다: 정본의 자리와 표로 쓴다
+    const d = await s.review.draft(s.fileId, s.sid);
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: null, revision: d.revision, opId: "real-removal-0003" });
+    expect((await s.review.open(s.fileId, s.sid)).bodyMark).toBe(s.doc.bodyMark);
+    expect(await add("real-two-node-2", nodeA, s.doc.bodyMark)).toEqual({ ok: true, id: "real-two-node-2" });
+    expect((await raw()).json!.annotations.map((x: Record<string, unknown>) => x.id)).toEqual(["real-two-whole", "real-two-node", "real-two-node-2"]);
+  }, 90_000);
+
+  test("R3 잔여: 검사와 쓰기 사이에 다른 창이 초안을 저장하면 그 본문에 다시 대 본다. 이미 받은 id·지난 판·닫힌 검토에는 새로 쓰지 않는다", async () => {
+    const markdown = ["도식이 있는 문서입니다.", "", "```mermaid", "graph TD", "  A[시작] --> B[검토]", "```", "", "끝 문장입니다."].join("\n");
+    const partB: DiagramPart = { kind: "node", id: "B", label: "검토", box: BOX, hits: [BOX] };
+    const nodeOf = (text: string) => { const [block] = mermaidBlocks(text); return anchorFor("flowchart", partB, block!.code, block!.line); };
+    /** 서버가 이 댓글을 쓰려고 초안을 읽은 직후에 다른 창의 저장을 한 번 끼운다. */
+    const interleave = (s: Awaited<ReturnType<typeof setup>>, write: () => Promise<{ status: number }>) => {
+      let done = 0;
+      s.hooks.after = async (input, init) => {
+        if (done || init.method !== "GET" || new URL(input).pathname !== "/api/draft") return;
+        done += 1;
+        expect((await write()).status).toBe(200);
+      };
+      return () => done;
+    };
+    // ① 다른 창(원래 편집기)이 도식을 지운 본문을 통째로 저장했다: 검사한 본문과 다른 본문에 쓰지 않는다. 남은 것은 다른 창의 저장뿐이다
+    {
+      const s = await setup("실제: 경합 1", { markdown });
+      const count = interleave(s, () => s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: "도식을 지운 본문" }));
+      expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-race-1", kind: "comment", text: "그사이 지워진 대상", diagram: nodeOf(s.doc.markdown) }))).toEqual({ status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" });
+      s.hooks.after = undefined;
+      const draft = await s.other("GET", "/api/draft");
+      expect([count(), draft.revision, draft.json!.editedMarkdown, draft.json!.annotations]).toEqual([1, "1", "도식을 지운 본문", []]);
+    }
+    // ② 다른 창이 상관없는 댓글 하나를 더했다: 대상은 그대로라 쓴다. 다른 창의 댓글도 남는다
+    {
+      const s = await setup("실제: 경합 2", { markdown });
+      const count = interleave(s, () => s.other("POST", "/api/draft/annotations", { annotation: { id: "real-other-window", blockId: "", startOffset: 0, endOffset: 0, type: "GLOBAL_COMMENT", text: "다른 창의 댓글", originalText: "" } }));
+      expect(await s.review.addComment(s.fileId, s.sid, { id: "real-race-2", kind: "comment", text: "그사이 다른 댓글", diagram: nodeOf(s.doc.markdown), bodyMark: s.doc.bodyMark })).toEqual({ ok: true, id: "real-race-2" });
+      s.hooks.after = undefined;
+      const draft = await s.other("GET", "/api/draft");
+      expect([count(), draft.revision, draft.json!.annotations.map((x: Record<string, unknown>) => x.id)]).toEqual([1, "2", ["real-other-window", "real-race-2"]]);
+    }
+    // ③ 화면이 본 본문의 표를 실었는데 그사이 본문이 바뀌었다(대상 줄은 그대로다): 화면이 본 본문이 아니므로 쓰지 않는다
+    {
+      const s = await setup("실제: 경합 3", { markdown });
+      const count = interleave(s, () => s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: `${s.doc.markdown}\n끝에 더한 줄` }));
+      expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-race-3", kind: "comment", text: "그사이 바뀐 본문", diagram: nodeOf(s.doc.markdown), bodyMark: s.doc.bodyMark }))).toEqual({ status: 409, code: "AGENT_A_BODY_CHANGED" });
+      s.hooks.after = undefined;
+      const draft = await s.other("GET", "/api/draft");
+      expect([count(), draft.revision, draft.json!.annotations]).toEqual([1, "1", []]);
+    }
+    // ④ Agent-A 가 이미 받은 id 는 초안에서 빠졌어도 새로 쓰지 않는다. 지난 판·닫힌 검토는 자리가 맞든 틀리든 409 다
+    {
+      const s = await setup("실제: 이미 받은 id", { markdown });
+      const B = nodeOf(s.doc.markdown), wrong: AgentAReviewDiagramAnchor = { ...B, sourceLine: [1, 1] };
+      const req = { id: "real-known-1", kind: "comment" as const, text: "처음 보낸 댓글", diagram: B };
+      expect(await s.review.addComment(s.fileId, s.sid, req)).toEqual({ ok: true, id: "real-known-1" });
+      expect((await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [] })).status).toBe(200);
+      const before = await s.other("GET", "/api/draft");
+      expect(await s.review.addComment(s.fileId, s.sid, req)).toEqual({ ok: true, id: "real-known-1" });
+      expect(await failure(s.review.addComment(s.fileId, s.sid, { ...req, text: "다른 내용" }))).toEqual({ status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" });
+      const block = (await s.review.manage(s.fileId)).blocks[0]!;
+      await s.review.edit(s.fileId, { blockId: block.id, revision: block.revision, title: block.title, body: `${block.body}\n새 판의 줄`, opId: "real-known-edit-0001" });
+      for (const diagram of [B, wrong]) expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-known-stale", kind: "comment", text: "지난 판의 새 댓글", diagram }))).toEqual({ status: 409, code: "AGENT_A_REVISION_CONFLICT" });
+      const after = await s.other("GET", "/api/draft");
+      expect([after.revision, after.json]).toEqual([before.revision, before.json]);
+      const now = await s.review.open(s.fileId);
+      const d = await s.review.draft(s.fileId, now.sessionId);
+      await s.review.submit(s.fileId, now.sessionId, { revision: d.revision, decision: "feedback" });
+      for (const diagram of [nodeOf(now.markdown), wrong]) expect(await failure(s.review.addComment(s.fileId, now.sessionId, { id: "real-known-closed", kind: "comment", text: "닫힌 검토의 새 댓글", diagram }))).toEqual({ status: 409, code: "AGENT_A_ALREADY_DECIDED" });
+    }
+  }, 120_000);
 
   test("문서 대화 가르기와 AI 의 권한 요청: 허용·거절·멈춤", async () => {
     const s = await setup("실제: 가르기와 권한");

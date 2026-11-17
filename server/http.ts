@@ -639,9 +639,9 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
         sourceLine: z.tuple([z.number().int(), z.number().int()]).nullable() });
       const ai = reviewAi;
       const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
-      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(), diagram: diagram.nullable().optional(),
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(), diagram: diagram.nullable().optional(), bodyMark: z.string().max(40).nullable().optional(),
         images: z.array(image).max(10).optional(), ai: ai.nullable().optional(), quickLabel: z.strictObject({ tip: z.string().max(2_000).nullable().optional() }).nullable().optional() }));
-      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, diagram: body.diagram ?? null, images: body.images, ai: body.ai ?? null, quickLabel: body.quickLabel ?? null }));
+      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, diagram: body.diagram ?? null, bodyMark: body.bodyMark ?? null, images: body.images, ai: body.ai ?? null, quickLabel: body.quickLabel ?? null }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/replies", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000), ai: reviewAi.nullable().optional() }));

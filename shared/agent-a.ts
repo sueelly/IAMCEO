@@ -263,6 +263,11 @@ export interface AgentAReviewDoc {
   /** 화면에 그릴 본문. 보내지 않은 직접 편집 초안이 있으면 그 초안이다(edited). */
   markdown: string;
   edited: boolean;
+  /**
+   * 화면에 그릴 본문(markdown)의 표: 본문 초안인지 정본인지와 그 글의 지문. 새 도식 댓글에 그대로 실어 보낸다.
+   * 서버는 그 본문이 지금도 그대로일 때만 쓴다(그사이 다른 화면이 본문을 바꿨으면 쓰지 않는다).
+   */
+  bodyMark: string;
   /** 이 검토가 고정한 정본 본문(직접 고치기 전의 것). 고친 것을 버리면 이 본문으로 돌아간다. */
   canonical: string;
   artifactRevision: number | null;
@@ -477,6 +482,8 @@ export interface AgentAReviewCommentReq {
   region?: AgentAReviewImageRegion | null;
   /** 도식의 한 부분(또는 도식 전체)에 다는 댓글이면 그 자리. kind 는 comment 여야 하고, 고른 글(quote)·그림 영역·라벨과 함께 쓰지 않는다. */
   diagram?: AgentAReviewDiagramAnchor | null;
+  /** 도식 댓글을 고른 화면이 보이던 본문의 표(문서 열기의 bodyMark). 주면 그 본문이 지금 본문과 다를 때 쓰지 않는다(AGENT_A_BODY_CHANGED). 도식 댓글에만 쓴다. */
+  bodyMark?: string | null;
   images?: AgentAReviewAttachment[];
   ai?: AgentAReviewAiSettings | null;
   /** 빠른 라벨로 남기는 댓글이면 준다. 글(text)은 '이모지 이름' 한 줄이고, tip 은 그 라벨에 딸린 지침이다. 고른 글이나 그림 영역이 있어야 한다. */

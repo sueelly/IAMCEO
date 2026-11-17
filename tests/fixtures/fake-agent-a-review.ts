@@ -470,8 +470,6 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     const s = context();
     if (s instanceof Response) return s;
     const state = artifacts.get(s.artifact_id)!;
-    // 이 검토의 문서 글(실제 Agent-A 의 GET /api/plan 과 같다: 그 검토가 열린 판의 글)
-    if (path === "/api/plan" && method === "GET") return Response.json({ plan: s.projection.markdown, origin: "codex", mode: "annotate", renderAs: "markdown" });
     if (path === "/api/plan/revision") return Response.json({ revision: state.artifact_revision });
     if (path === "/api/plan/versions" || path === "/api/plan/version") {
       const versions = [...new Map(sessions.filter((x) => x.artifact_id === s.artifact_id).map((x) => [x.projection_key, x])).values()];

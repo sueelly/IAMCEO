@@ -266,6 +266,8 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
       await work();
     } catch (e) {
       setError(errorText(e));
+      // 도식 댓글을 고른 뒤 다른 화면이 본문을 바꿨다: 지금 본문을 다시 불러온다(쓰던 글은 남는다). 지금 도식에서 다시 고르면 된다.
+      if (e instanceof ApiError && (e.code === "AGENT_A_BODY_CHANGED" || e.code === "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT")) setReload((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -357,7 +359,7 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
         const same = `${key}\n${text}\n${images.map((x) => x.path).join(",")}\n${JSON.stringify(ai)}${target.kind === "diagram" ? `\n${JSON.stringify(target.anchor)}` : ""}`;
         if (pendingId.current?.key !== same) pendingId.current = { key: same, id: newId() };
         const id = pendingId.current.id;
-        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null, diagram: target.kind === "diagram" ? target.anchor : null, images, ai });
+        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null, diagram: target.kind === "diagram" ? target.anchor : null, bodyMark: target.kind === "diagram" ? doc.bodyMark : null, images, ai });
         pendingId.current = null;
         setImages([]);
         setDraft(key, "");

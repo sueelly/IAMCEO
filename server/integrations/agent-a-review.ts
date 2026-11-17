@@ -148,21 +148,34 @@ function diagramAnchorIn(v: unknown): AgentAReviewDiagramAnchor {
 }
 
 /**
- * 새 도식 댓글의 자리가 이 문서의 도식에 이어지는지. 모양 검사(diagramAnchorIn)와 다른 검사다: 모양이 맞아도 이 문서에 없는 자리는 쓰지 않는다.
- * - 문서에 Mermaid 도식이 하나는 있어야 한다.
- * - 자리에 문서 줄이 있으면 그 줄이 문서 안이어야 한다.
- * - 도식 전체는 그 글이 문서의 어느 도식의 첫 줄 글이어야 한다(화면이 도식 전체의 글로 싣는 것).
- * - 줄이 있는 부분은 그 이름(선은 양 끝)이 문서의 어느 도식 글에 있어야 한다(화면이 줄을 찾는 것과 같은 규칙).
- * 가리지 않는 것(서버는 도식을 그리지 않는다): 줄이 그 부분이 적힌 바로 그 줄인지, 갈래와 보이는 글이 그려진 도식과 같은지,
- * 줄이 없는 부분의 이름(글에서 이름을 찾을 수 없어 화면이 줄을 싣지 못한 부분이다).
- * 읽기(parseDiagramAnchor)에는 쓰지 않는다: 이미 있는 댓글은 문서 밖 줄·다른 갈래의 자리여도 그대로 읽는다.
+ * 새 도식 댓글의 자리가 이 본문(지금 화면이 보이는 본문)의 한 도식에 묶이는지. 모양 검사(diagramAnchorIn)와 다른 검사다: 모양이 맞아도 묶이지 않는 자리는 쓰지 않는다.
+ * - 자리에 문서 줄이 있으면 그 줄을 품은 Mermaid 조각 하나가 대상이다. 줄은 화면이 자리를 만드는 규칙(sourceLineOf)으로 그 조각에서 찾은 줄과 같아야 한다:
+ *   부분은 그 이름(선은 양 끝)이 그 조각에 처음 적힌 줄, 도식 전체는 그 조각의 글 전부. 도식 전체는 글(label)도 그 조각의 첫 줄 글이어야 한다.
+ *   그래서 다른 조각에서 따로 맞는 글·이름·줄을 섞은 자리는 묶이지 않는다.
+ * - 도식 전체는 줄이 있어야 한다(그려진 도식은 글이 있어 화면이 늘 줄을 싣는다).
+ * - 줄이 없는 부분(글에서 이름을 찾을 수 없어 화면이 줄을 싣지 못한 부분: 번호뿐인 선 등)은 본문에 Mermaid 조각이 있으면 받는다.
+ * 가리지 않는 것(서버는 도식을 그리지 않는다): 갈래와 부분의 보이는 글이 그려진 도식과 같은지, 줄이 없는 부분이 어느 조각의 것인지.
+ * 읽기(parseDiagramAnchor)와 이미 저장된 댓글에는 쓰지 않는다: 이미 있는 댓글은 문서 밖 줄·다른 갈래의 자리여도 그대로 읽는다.
  */
-export function diagramInDocument(a: AgentAReviewDiagramAnchor, markdown: string): boolean {
+export function diagramInBody(a: AgentAReviewDiagramAnchor, markdown: string): boolean {
   const blocks = mermaidBlocks(markdown);
-  if (!blocks.length) return false;
-  if (a.sourceLine && a.sourceLine[1] > markdown.split("\n").length) return false;
-  if (a.kind === "diagram") return blocks.some((b) => diagramLabel(b.code) === a.label);
-  return !a.sourceLine || blocks.some((b) => sourceLineOf(b.code, a) !== null);
+  if (!a.sourceLine) return a.kind !== "diagram" && blocks.length > 0;
+  const [first, last] = a.sourceLine;
+  const block = blocks.find((b) => first > b.line && last <= b.line + b.code.split("\n").length);
+  if (!block) return false;
+  const at = sourceLineOf(block.code, a);
+  if (!at || at[0] + block.line !== first || at[1] + block.line !== last) return false;
+  return a.kind !== "diagram" || diagramLabel(block.code) === a.label;
+}
+
+/** 화면이 본 본문의 표의 모양. */
+const BODY_MARK = /^[cd]:[0-9a-f]{32}$/;
+/**
+ * 화면에 보이는 본문의 표: 본문 초안(d)인지 정본(c)인지와 그 글의 지문. 문서 열기가 주고, 새 도식 댓글이 그대로 돌려보낸다.
+ * 글이 같아도 초안과 정본은 표가 다르다(빈 초안도 초안이다).
+ */
+export function bodyMarkOf(draft: boolean, markdown: string): string {
+  return `${draft ? "d" : "c"}:${createHash("sha256").update(markdown).digest("hex").slice(0, 32)}`;
 }
 
 /** 도식 자리의 원문 칸에 싣는 글: 그 부분에 보이는 글, 없으면 선의 양 끝, 없으면 이름(원래 화면과 같다). */
@@ -461,6 +474,7 @@ export class AgentAReview {
       title: doc.title || s.markdown.split("\n")[0]!.replace(/^#\s*/, ""),
       markdown: edited ? (draft!.editedMarkdown as string) : s.markdown,
       edited,
+      bodyMark: bodyMarkOf(edited, edited ? (draft!.editedMarkdown as string) : s.markdown),
       canonical: s.markdown,
       artifactRevision,
       images,
@@ -521,6 +535,7 @@ export class AgentAReview {
   /**
    * 새 댓글(문장·전체·그림 영역·도식의 부분·삭제 표시). 검토 초안에 주석 하나만 더한다. 그때 Agent-A 가 답을 시작한다(삭제 표시는 답이 없다).
    * - 초안을 읽어 통째로 다시 쓰지 않으므로 다른 창이 그사이 저장한 직접 편집·첨부·주석이 그대로 남는다.
+   *   새 도식 댓글만 다르다: 화면이 본 본문의 그 도식에 묶어야 해서 초안 판 조건 저장으로 쓴다(writeDiagramComment). 그 길도 다른 창의 저장을 덮지 않는다.
    * - 같은 id·같은 내용으로 다시 보내면 Agent-A 가 처음 결과를 확인해 준다(댓글은 하나). 같은 id 로 다른 내용이면 거절한다.
    * - 지난 판의 검토·제출로 닫힌 검토에는 새 댓글을 받지 않는다. 그 확인은 Agent-A 가 쓰기와 같은 트랜잭션에서 한다.
    * - 이 규약을 모르는 Agent-A 에는 아무것도 보내지 않고 거절한다(AGENT_A_UNSUPPORTED).
@@ -536,6 +551,13 @@ export class AgentAReview {
     if (req.diagram != null) {
       if (req.kind !== "comment" || req.region != null || req.quickLabel != null) throw new ApiError(400, "도식의 부분에는 댓글만 답니다");
       diagram = diagramAnchorIn(req.diagram);
+    }
+    // 화면이 본 본문의 표는 도식 댓글에만 쓴다(그 본문의 도식에 묶는 데 쓴다).
+    let bodyMark: string | null = null;
+    if (req.bodyMark != null) {
+      if (!diagram) throw new ApiError(400, "본문 표는 도식 댓글에만 씁니다");
+      if (typeof req.bodyMark !== "string" || !BODY_MARK.test(req.bodyMark)) throw new ApiError(400, "본문 표가 올바르지 않습니다");
+      bodyMark = req.bodyMark;
     }
     const quote = diagram ? diagramText(diagram) : req.kind === "global" ? "" : (req.quote ?? "");
     if (req.kind === "deletion" ? !quote.trim() : !text) throw new ApiError(400, req.kind === "deletion" ? "지울 글을 골라 주세요" : "댓글은 1~30000자입니다");
@@ -561,41 +583,87 @@ export class AgentAReview {
     const cur = await this.call(fileId, sid, "GET", "/api/draft");
     if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
     if (cur.draftRevision === null) unsupported();
-    // 2) 새 도식 댓글이면 자리가 이 검토의 문서에 이어지는지 본다. 화면은 본문 초안이 있으면 그 글의 줄로 자리를 만드므로 정본과 초안 어느 쪽에든 이어지면 받는다.
-    //    이어지지 않으면 아무것도 쓰지 않는다. 지난 판·닫힌 검토의 거절(409)은 아래 쓰기에서 Agent-A 가 한다.
-    //    이미 초안에 있는 id 는 새 쓰기가 아니다(응답을 잃은 재전송): Agent-A 가 같은 내용이면 처음 결과를 확인하고 다르면 거절한다.
-    //    그사이 본문이 바뀌었어도 처음 결과를 확인해야 하므로 연결을 다시 보지 않는다.
-    const stored = cur.status === 200 && obj(cur.json) && Array.isArray(cur.json.annotations) && cur.json.annotations.some((a) => obj(a) && a.id === req.id);
-    if (diagram && !stored) {
-      const anchor = diagram;
-      const plan = await this.call(fileId, sid, "GET", "/api/plan");
-      if (plan.status !== 200) refuse(plan.status, plan.json, "문서를 읽지 못했습니다");
-      const texts = [obj(plan.json) ? plan.json.plan : null, cur.status === 200 && obj(cur.json) ? cur.json.editedMarkdown : null].filter((t): t is string => typeof t === "string");
-      if (!texts.some((t) => diagramInDocument(anchor, t))) throw new ApiError(400, "이 문서의 도식에서 고른 부분을 찾지 못했습니다. 화면을 새로 고친 뒤 다시 골라 주세요", "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT");
-    }
+    const annotation: Json = {
+      id: req.id,
+      blockId: "",
+      startOffset: 0,
+      endOffset: 0,
+      type: req.kind === "global" ? "GLOBAL_COMMENT" : req.kind === "deletion" ? "DELETION" : "COMMENT",
+      ...(text ? { text } : {}),
+      originalText: quote,
+      ...(region ? { imageRegion: region } : {}),
+      ...(diagram ? { diagramAnchor: diagram } : {}),
+      ...(images.length ? { images } : {}),
+      ...(ai ? { aiSettings: ai } : {}),
+      ...(label ? { isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) } : {}),
+    };
+    // 2) 새 도식 댓글은 화면이 본 본문의 그 도식에 묶어 쓴다. 묶이지 않으면 아무것도 쓰지 않는다.
+    //    새 쓰기가 아닌 것(이미 받은 id 의 재전송, 지난 판·닫힌 검토)은 아래 주석 추가 길로 간다: Agent-A 가 처음 결과를 확인하거나 거절한다.
+    if (diagram && (await this.writeDiagramComment(fileId, sid, cur, annotation, diagram, bodyMark))) return { ok: true, id: req.id };
     // 3) 주석 하나만 더한다. 여기서 읽은 초안은 보내지 않는다(그사이 다른 창이 저장해도 그 저장이 남는다).
-    const saved = await this.call(fileId, sid, "POST", "/api/draft/annotations", {
-      annotation: {
-        id: req.id,
-        blockId: "",
-        startOffset: 0,
-        endOffset: 0,
-        type: req.kind === "global" ? "GLOBAL_COMMENT" : req.kind === "deletion" ? "DELETION" : "COMMENT",
-        ...(text ? { text } : {}),
-        originalText: quote,
-        ...(region ? { imageRegion: region } : {}),
-        ...(diagram ? { diagramAnchor: diagram } : {}),
-        ...(images.length ? { images } : {}),
-        ...(ai ? { aiSettings: ai } : {}),
-        ...(label ? { isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) } : {}),
-      },
-    });
+    const saved = await this.call(fileId, sid, "POST", "/api/draft/annotations", { annotation });
     if (saved.status === 200) return { ok: true, id: req.id };
     const body = obj(saved.json) ? saved.json : {};
     if (saved.status === 409 && body.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
     // 길 자체가 없으면(404, Agent-A 의 code 없음) 규약을 모르는 Agent-A 다.
     if (saved.status === 404 && typeof body.code !== "string") unsupported();
     refuse(saved.status, saved.json, "댓글을 저장하지 못했습니다");
+  }
+
+  /**
+   * 새 도식 댓글을 지금 화면이 보이는 본문의 그 도식에 묶어 쓴다. 썼으면 true 다. 새 쓰기가 아니면 아무것도 쓰지 않고 false 다(주석 추가 길이 맡는다).
+   * - 대상 본문: 본문 초안이 있으면 그 초안이다(빈 글이어도 초안이다). 없으면 이 검토가 고정한 정본이다.
+   *   화면이 그렇게 보인다(open 의 markdown). 초안에서 지운 도식을 정본에 있다는 이유로 받지 않는다.
+   * - bodyMark(화면이 본 본문의 표)를 실었으면 그 본문이 지금 본문과 같아야 한다. 다르면 쓰지 않는다(409 AGENT_A_BODY_CHANGED).
+   * - 자리는 그 본문의 한 도식에 묶여야 한다(diagramInBody). 아니면 쓰지 않는다(400 AGENT_A_DIAGRAM_NOT_IN_DOCUMENT).
+   * - 쓰기는 초안 판 조건 저장이다(ifDraftRevision): 본문을 읽은 그 초안 판에만 주석을 더한다. 그사이 다른 화면이 초안을 저장했으면 Agent-A 가 받지 않고,
+   *   그러면 다시 읽어 처음부터 본다(몇 번 해도 끼어들면 AGENT_A_DRAFT_CONFLICT). 그래서 검사한 본문과 다른 본문에 쓰지 않고, 다른 화면이 그사이 저장한 것도 덮지 않는다.
+   *   읽은 초안의 다른 칸(본문·첨부·다른 주석·저장 기록)은 그대로 다시 싣는다.
+   * 새 쓰기가 아닌 것(false): 이미 초안에 있는 id · Agent-A 가 받은 적 있는 id(초안에서 빠졌어도 Agent-A 가 기억한다) · 지난 판 또는 닫힌 검토.
+   *   앞의 둘은 재전송이라 그사이 본문이 바뀌었어도 Agent-A 가 처음 결과를 확인하고(같은 내용) 다른 내용이면 거절한다. 뒤의 것은 Agent-A 가 409 로 거절한다.
+   * 지난 판인지는 쓰기 전에 한 번 본다(조건 저장은 초안 판만 견준다. 그 사이에 정본이 바뀌면 방금 지난 판이 된 검토의 초안에 남는다: 본문 연결은 그대로다).
+   * 닫힌 검토는 Agent-A 가 쓰는 순간에도 거절한다.
+   */
+  private async writeDiagramComment(fileId: string, sid: string, first: { status: number; json: unknown; draftRevision: number | null }, annotation: Json, anchor: AgentAReviewDiagramAnchor, bodyMark: string | null): Promise<boolean> {
+    const stored = (json: unknown): boolean => obj(json) && Array.isArray(json.annotations) && json.annotations.some((a) => obj(a) && a.id === annotation.id);
+    if (first.status === 200 && stored(first.json)) return false;
+    const session = await this.ok(fileId, null, "POST", "/api/plannotator/sessions", { artifact_id: this.service.docOf(fileId).artifactId, resume_session_id: sid }, "검토를 찾지 못했습니다");
+    if (session.decision || session.stale === true) return false;
+    if (typeof session.markdown !== "string") throw new ApiError(502, "Agent-A 가 검토를 돌려주지 않았습니다", "AGENT_A_BAD_RESPONSE");
+    const listed = await this.call(fileId, sid, "GET", "/api/external-annotations");
+    if (listed.status !== 200 || !obj(listed.json)) refuse(listed.status, listed.json, "댓글을 불러오지 못했습니다");
+    const ids = (list: unknown, key: string): unknown[] => (Array.isArray(list) ? list.map((x) => (obj(x) ? x[key] : x)) : []);
+    if ([...ids(listed.json.annotations, "id"), ...ids(listed.json.deleted_ids, "id"), ...ids(listed.json.historical, "annotation_id")].includes(annotation.id)) return false;
+    let cur = first;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt) {
+        cur = await this.call(fileId, sid, "GET", "/api/draft");
+        if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
+        if (cur.draftRevision === null) unsupported();
+        // 그사이 같은 요청이 먼저 저장됐다: 재전송으로 다룬다.
+        if (cur.status === 200 && stored(cur.json)) return false;
+      }
+      const read = obj(cur.json) ? cur.json : {};
+      const { draftGeneration, documents: _d, found: _f, ...kept } = cur.status === 200 ? read : {};
+      const edited = typeof kept.editedMarkdown === "string";
+      const shown = edited ? (kept.editedMarkdown as string) : session.markdown;
+      if (bodyMark !== null && bodyMark !== bodyMarkOf(edited, shown)) throw new ApiError(409, "그사이 본문이 바뀌었습니다. 지금 본문의 도식에서 다시 골라 주세요", "AGENT_A_BODY_CHANGED");
+      if (!diagramInBody(anchor, shown)) throw new ApiError(400, "지금 본문의 도식에서 고른 부분을 찾지 못했습니다. 도식에서 다시 골라 주세요", "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT");
+      const saved = await this.call(fileId, sid, "POST", "/api/draft", {
+        ...kept,
+        // 주석 추가 길처럼 쓴 때를 싣는다(Agent-A 는 방금 쓴 댓글에만 답을 시작한다).
+        annotations: [...(Array.isArray(kept.annotations) ? kept.annotations : []), { ...annotation, createdA: Date.now() }],
+        globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
+        draftGeneration: num(draftGeneration ?? read.draftGeneration) ?? 0,
+        ifDraftRevision: cur.draftRevision,
+      });
+      if (saved.status === 200) return true;
+      const refusal = obj(saved.json) ? saved.json : null;
+      if (saved.status === 409 && refusal?.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
+      // 읽은 뒤에 초안이 바뀌었다(다른 화면의 저장). 아무것도 쓰이지 않았다: 다시 읽어 처음부터 본다.
+      if (!(saved.status === 409 && refusal && (refusal.code === undefined || refusal.code === "draft_conflict"))) refuse(saved.status, saved.json, "댓글을 저장하지 못했습니다");
+    }
+    throw new ApiError(409, "다른 화면이 초안을 계속 저장하고 있어 댓글을 쓰지 못했습니다. 잠시 뒤 다시 보내 주세요", "AGENT_A_DRAFT_CONFLICT");
   }
 
   /** 대댓글. 첫 댓글 id 에 단다. Agent-A 가 같은 대화로 답한다. ai 를 주면 이 답글의 답만 그 AI·모델·추론 수준으로 받는다. */
