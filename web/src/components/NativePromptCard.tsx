@@ -63,22 +63,28 @@ const TERMINAL_TEXT: Record<NativeAnswerReceipt["terminal"], string> = {
   not_sent: "넣지 않음",
   unknown: "모름 · 다시 넣지 않습니다",
 };
-/** 넣은 뒤 직원 CLI 의 상태만 보인다. 명령의 종료·출력은 이 화면이 보지 못한다(직원 보고와 팀 화면 터미널에 있다). */
-function cliText(r: NativeAnswerReceipt, status: Member["status"]): string {
+/**
+ * 넣은 뒤 직원 CLI 의 상태만 보인다. 명령의 종료·출력은 이 화면이 보지 못한다(직원 보고와 팀 화면 터미널에 있다).
+ * 직원 상태는 답한 뒤에 바뀐 것만 쓴다. 그 전 값(답하기 전의 승인 대기)은 넣은 직후 서버가 본 상태(after)로 대신한다.
+ */
+function cliText(r: NativeAnswerReceipt, member: Pick<Member, "status" | "updatedAt">): string {
   if (r.terminal === "not_sent") return "없음";
   if (r.terminal !== "accepted") return "팀 화면 터미널에서 확인하세요";
-  const now = status === "working" || status === "blocked" ? status : r.after === "gone" || status === "offline" ? "gone" : status === "error" ? "error" : "idle";
+  const live = member.updatedAt > r.at ? member.status : null;
+  const now = live === null ? r.after
+    : live === "working" || live === "blocked" ? live : r.after === "gone" || live === "offline" ? "gone" : live === "error" ? "error" : "idle";
+  if (!now) return "팀 화면 터미널에서 확인하세요";
   const text = now === "working" ? "일하는 중" : now === "blocked" ? "다음 창이 떴습니다" : now === "gone" ? "세션이 끝났습니다" : now === "error" ? "오류가 났습니다" : "턴이 끝났습니다";
   return r.reject ? `거절을 넣음 · ${text}` : `${text} · 명령 결과는 직원 보고에서 보세요`;
 }
 
-function Stages({ r, status }: { r: NativeAnswerReceipt; status: Member["status"] }) {
+function Stages({ r, member }: { r: NativeAnswerReceipt; member: Pick<Member, "status" | "updatedAt"> }) {
   return (
     <ol className="npc-stages" aria-label="답 단계">
       <li><span>창 확인</span><span className="t-tabular">{clock(r.observedAt)}</span></li>
       <li><span>응답 기록</span><span className="t-tabular">{clock(r.at)}</span></li>
       <li><span>터미널 접수</span><span>{TERMINAL_TEXT[r.terminal]}</span></li>
-      <li><span>CLI 상태</span><span>{cliText(r, status)}</span></li>
+      <li><span>CLI 상태</span><span>{cliText(r, member)}</span></li>
     </ol>
   );
 }
@@ -225,7 +231,7 @@ export default function NativePromptCard({ member, tasks, place = "thread", just
         {result.status === "answered" && result.terminal !== "unconfirmed" ? "답했습니다 · " : result.status === "already_answered" ? "이미 답한 창 · " : ""}
         {result.note}
       </p>
-      {result.terminal ? <Stages r={result} status={member.status} /> : null}
+      {result.terminal ? <Stages r={result} member={member} /> : null}
     </>
   ) : null;
 
