@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Bus } from "../server/bus.ts";
 import { openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
@@ -125,4 +125,25 @@ test("일괄 완료 근거는 계약별 승계와 작성자 정정의 경계를 
   current = passed();
   expect([current.get(original.id), current.get(inherited.id), current.get(withoutSource.id)]).toEqual([false, false, false]);
   expect(f.store.completionEvidence(bound.taskId, bound.rev)).toContainEqual({ messageId: original.id, eligible: false, status: "superseded", correctedBy: correction.id });
+});
+
+test("프로젝트 상태와 배정도는 같은 응답 안에서 진행 근거를 한 번 읽는다", () => {
+  const f = fixture(), task = f.task();
+  const reads = spyOn(f.store, "taskProgressFacts");
+  try {
+    for (const compact of [true, false]) {
+      reads.mockClear();
+      const state = f.store.projectState(f.project.id, { compact });
+      expect(state.tasks?.find(t => t.id === task.id)?.progress?.stage).toBe("new");
+      expect(reads).toHaveBeenCalledTimes(1);
+    }
+    f.store.createDecision({ projectId: f.project.id, taskId: task.id, who: "대표", title: "요구사항 승인" });
+    reads.mockClear();
+    const updated = f.store.projectState(f.project.id, { compact: true });
+    expect(updated.tasks?.find(t => t.id === task.id)?.progress?.stage).toBe("owner");
+    expect(reads).toHaveBeenCalledTimes(1);
+    reads.mockClear();
+    expect(f.store.projectWorkflow(f.project.id)).toEqual(updated.workflow!);
+    expect(reads).toHaveBeenCalledTimes(1);
+  } finally { reads.mockRestore(); }
 });

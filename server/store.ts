@@ -1303,11 +1303,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   projectState(id: string, opts: { compact?: boolean } = {}): ProjectState {
     const project = this.requireProject(id);
-    const members = this.listMembers(id), tasks = this.listTasks(id);
+    const facts = this.taskProgressFacts(id);
+    const members = this.listMembers(id), tasks = this.listTasks(id, facts);
     return {
       project,
       members,
-      workflow: this.projectWorkflow(id, tasks, members),
+      workflow: this.projectWorkflow(id, tasks, members, facts),
       decisions: this.listDecisions(id),
       doneDecisionCount: this.row("SELECT COUNT(*) AS n FROM decisions WHERE project_id = ? AND status != 'open'", id)!.n as number,
       todos: this.listTodos(id),
@@ -2202,8 +2203,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return activeTaskContinuationPauses(this, projectId);
   }
 
-  projectWorkflow(projectId: string, tasks = this.listTasks(projectId), members = this.listMembers(projectId)): ProjectWorkflow {
-    return this.buildProjectWorkflow(projectId, tasks, members, this.workflowAssignments(projectId));
+  projectWorkflow(projectId: string, tasks?: Task[], members = this.listMembers(projectId), facts = this.taskProgressFacts(projectId)): ProjectWorkflow {
+    return this.buildProjectWorkflow(projectId, tasks ?? this.listTasks(projectId, facts), members, this.workflowAssignments(projectId, undefined, facts));
   }
 
   private buildProjectWorkflow(projectId: string, tasks: Task[], members: Member[], assignments: WorkflowAssignment[]): ProjectWorkflow {
