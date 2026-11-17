@@ -251,8 +251,10 @@ private struct RepoRowStyle: ButtonStyle {
                         shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
                             .overlay { shape.fill(CE.violet.opacity(configuration.isPressed ? 0.06 : 0)) }
                             .overlay { shape.strokeBorder(CE.focus, lineWidth: 1.5) }
+                    } else if configuration.isPressed {
+                        shape.fill(CE.violet.opacity(0.09))
                     } else {
-                        shape.fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0))
+                        RowLift(shape: shape, lifted: hovering)
                     }
                 }
                 .onHover { hovering = $0 }

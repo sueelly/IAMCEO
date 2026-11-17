@@ -1140,15 +1140,17 @@ struct OptionTile: View {
     }
 
     private var lit: Bool { hovering && isEnabled }
+    /// Opaque, so the plate's light never shows through a choice (web `--btn-soft` / `--btn-sel` / `--btn-press`).
     private var fill: AnyShapeStyle {
-        if picked { return AnyShapeStyle(CE.violet.opacity(0.2)) }
-        // mockup .opt.rec --sel-bg: violet .16 → .10 top to bottom (a touch deeper on hover)
+        if picked { return AnyShapeStyle(CE.pressedSolid) }
+        // web .ibx-opt[data-rec] --btn-sel: violet .16 → .10 on white; hover lays the soft violet over it
         if recommended && !somethingPicked {
-            let top = lit ? CE.violet.opacity(0.2) : CE.selectedTop
-            let bottom = lit ? CE.violet.opacity(0.14) : CE.selectedBottom
-            return AnyShapeStyle(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
+            if lit {
+                return AnyShapeStyle(LinearGradient(colors: [CE.violetOnWhite(0.219), CE.violetOnWhite(0.163)], startPoint: .top, endPoint: .bottom))
+            }
+            return AnyShapeStyle(CE.selectedSolid)
         }
-        return AnyShapeStyle(lit ? CE.violet.opacity(0.11) : CE.soft)
+        return AnyShapeStyle(lit ? CE.softHoverSolid : CE.softSolid)
     }
     private var stroke: (color: Color, width: CGFloat) {
         if picked { return (CE.focus, 2) }

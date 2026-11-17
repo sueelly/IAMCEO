@@ -76,14 +76,14 @@ private enum SetupMetrics {
 }
 
 extension View {
-    /// A small white well for a value typed inside a settings row (a number): mockup --field (white .9, ink .12 ring)
+    /// A small white well for a value typed inside a settings row (a number): web --field (opaque white, ink .12 ring)
     /// at row height, a violet focus ring while focused.
     func settingsWell(focused: Bool = false) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         return self.textFieldStyle(.plain)
             .padding(.horizontal, 11)
             .frame(height: SetupMetrics.rowControlHeight)
-            .background(Color.white.opacity(0.9), in: shape)
+            .background(Color.white, in: shape)
             .overlay {
                 shape.strokeBorder(focused ? CE.focus.opacity(0.85) : CE.wash(0.12), lineWidth: focused ? 1.5 : 1)
             }
@@ -363,8 +363,8 @@ private struct SettingsChoiceTiles: View {
     }
 }
 
-/// A picked option among several (mockup .opt): violet .07 with a violet .16 ring, a little more violet on hover;
-/// picked (mockup .opt.rec): the violet .16 → .10 selection with a 1.5pt #7A5BFF ring.
+/// A picked option among several (web .choice): opaque violet .07 on white with a violet .16 ring, a little more violet
+/// on hover; picked: the opaque violet .16 → .10 selection (--btn-sel) with a 1.5pt #7A5BFF ring.
 private struct ChoiceTileStyle: ButtonStyle {
     var selected = false
     var radius: CGFloat = 13
@@ -384,11 +384,12 @@ private struct ChoiceTileStyle: ButtonStyle {
             configuration.label
                 .contentShape(shape)
                 .background {
+                    // Opaque (web .choice --btn-soft / --btn-sel): the panel's light never shows through a tile.
                     if selected {
-                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                        shape.fill(CE.selectedSolid)
                             .overlay { shape.fill(CE.violet.opacity(configuration.isPressed ? 0.06 : 0)) }
                     } else {
-                        shape.fill(CE.violet.opacity(idle))
+                        shape.fill(CE.violetOnWhite(idle))
                     }
                 }
                 .overlay {
@@ -445,7 +446,7 @@ private struct SetupSelectLabel: View {
         }
         .padding(.leading, compact ? 11 : 13).padding(.trailing, compact ? 11 : 13)
         .frame(maxWidth: .infinity, minHeight: compact ? SetupMetrics.rowControlHeight : SetupMetrics.inputHeight)
-        .background(Color.white.opacity(0.9), in: shape)
+        .background(Color.white, in: shape)
         .overlay { shape.strokeBorder(CE.wash(0.12)) }
         .contentShape(shape)
     }
@@ -537,7 +538,8 @@ private struct CopyChipStyle: ButtonStyle {
     }
 }
 
-/// web `.glass--thick` in the light glass (dense white 84% → 64%): radius 30, a 1.5pt rim and a soft two-layer
+/// web `.glass--thick` + `.glass-tint` in the clearer light glass (white 58% → 32% plus the text tint): radius 30, the
+/// thick bevel, a 2pt rim and a soft two-layer
 /// shadow (violet-ink .22 and violet .22, after the mockup --g-shadow), cut out of the card so the see-through
 /// inside stays clear. Reduce Transparency: the solid plate.
 private struct ThickCardSurface: ViewModifier {
@@ -548,8 +550,8 @@ private struct ThickCardSurface: ViewModifier {
             content.background(CE.plateRaisedSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
         } else {
             content
-                .background { CardGlassFill(shape: shape, tint: 0.66) }
-                .overlay { CardRim(shape: shape, width: 1.5) }
+                .background { CardGlassFill(shape: shape, level: .thick, depth: .thick) }
+                .overlay { CardRim(shape: shape, width: 2) }
                 .background {
                     ZStack {
                         shape.inset(by: 34).fill(CE.shadowFar.opacity(0.22)).offset(y: 44).blur(radius: 50)
@@ -645,17 +647,18 @@ struct ConnectionView: View {
         #endif
     }
 
-    /// Web Setup LocalLight: a pale violet glow above the card, orchid low right (light aurora strengths).
+    /// Web Setup LocalLight: a pale violet glow above the card, orchid low right (light aurora strengths, scaled by
+    /// `CE.localLightK` like the web's `--light-k` .55 → .75).
     private var localLight: some View {
         GeometryReader { geo in
             let width = min(1000, geo.size.width * 1.5)
             ZStack {
                 Rectangle()
-                    .fill(EllipticalGradient(colors: [CE.violet.opacity(0.2), CE.violet.opacity(0.08), .clear]))
+                    .fill(EllipticalGradient(colors: [CE.violet.opacity(0.2 * CE.localLightK), CE.violet.opacity(0.08 * CE.localLightK), .clear]))
                     .frame(width: width, height: width * 0.6)
                     .position(x: geo.size.width * 0.5, y: geo.size.height * 0.24)
                 Rectangle()
-                    .fill(EllipticalGradient(colors: [CE.orchid.opacity(0.14), CE.orchid.opacity(0.05), .clear]))
+                    .fill(EllipticalGradient(colors: [CE.orchid.opacity(0.14 * CE.localLightK), CE.orchid.opacity(0.05 * CE.localLightK), .clear]))
                     .frame(width: width * 0.8, height: width * 0.48)
                     .position(x: geo.size.width * 0.72, y: geo.size.height * 0.88)
             }
@@ -1841,7 +1844,7 @@ struct SettingsView: View {
 }
 
 #if os(macOS)
-/// The settings sidebar item: the main window rail's row (mockup .pj: a faint violet wash on hover; chosen: the light
+/// The settings sidebar item: the main window rail's row (web .pj: hover lifts it onto an opaque white plate; chosen: the light
 /// violet gradient, violet .16 → .10, inside a violet .3 ring).
 private struct SettingsNavStyle: ButtonStyle {
     var selected = false
@@ -1861,8 +1864,8 @@ private struct SettingsNavStyle: ButtonStyle {
                             .overlay { shape.strokeBorder(CE.selectedRing, lineWidth: 1) }
                     } else if configuration.isPressed {
                         shape.fill(CE.violet.opacity(0.09))
-                    } else if hovering {
-                        shape.fill(CE.violet.opacity(0.05))
+                    } else {
+                        RowLift(shape: shape, lifted: hovering)
                     }
                 }
                 .onHover { hovering = $0 }
@@ -2188,7 +2191,8 @@ private struct QuietMenuLabel: View {
             .frame(minHeight: isMac ? 32 : 38)
             .background {
                 if isEnabled {
-                    Capsule().fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                    // web --btn2: opaque #FFF → #FBFAFF
+                    Capsule().fill(LinearGradient(colors: [Color.white, Color(hex: 0xFBFAFF)], startPoint: .top, endPoint: .bottom))
                         .overlay { Capsule().fill(CE.violet.opacity(hovering ? 0.05 : 0)) }
                 } else {
                     Capsule().fill(Color.white.opacity(0.35))
@@ -2245,7 +2249,8 @@ private struct FolderSourceTileStyle: ButtonStyle {
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
             configuration.label
-                .background(CE.violet.opacity(configuration.isPressed ? 0.12 : hovering && isEnabled ? 0.1 : 0.07), in: shape)
+                // Opaque like web .choice (--btn-soft): the panel's light never shows through.
+                .background(CE.violetOnWhite(configuration.isPressed ? 0.12 : hovering && isEnabled ? 0.1 : 0.07), in: shape)
                 .overlay { shape.strokeBorder(hovering && isEnabled ? CE.violet.opacity(0.55) : CE.softRing, lineWidth: hovering && isEnabled ? 1.25 : 1) }
                 .scaleEffect(configuration.isPressed ? 0.985 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)

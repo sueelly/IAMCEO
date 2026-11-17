@@ -668,7 +668,7 @@ private struct RailBadge: View {
     }
 }
 
-/// Web `.pj` row: hover tint, violet gradient when current, dimmed when disabled. `quiet` rows (web .pj--add,
+/// Web `.pj` row: hover lifts it onto an opaque white plate, violet gradient when current, dimmed when disabled. `quiet` rows (web .pj--add,
 /// .pj--foot) draw their label in ink-2 and brighten it to ink-1 on hover or press.
 private struct RailRowStyle: ButtonStyle {
     var selected = false
@@ -694,9 +694,9 @@ private struct RailRowStyle: ButtonStyle {
                             .overlay { shape.strokeBorder(CE.selectedRing) }
                     } else if configuration.isPressed {
                         shape.fill(CE.wash(0.08))
-                    } else if hovering && isEnabled {
-                        // web --hover: ink .05
-                        shape.fill(CE.wash(0.05))
+                    } else {
+                        // web .pj:hover: lifts onto an opaque white plate (--row-hover / --row-lift)
+                        RowLift(shape: shape, lifted: hovering && isEnabled)
                     }
                 }
                 .animation(.linear(duration: 0.12), value: lit)

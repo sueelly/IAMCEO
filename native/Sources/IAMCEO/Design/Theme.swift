@@ -5,7 +5,8 @@ import SwiftUI
 /// violet kept for buttons, selection, badges and links only. Content sits on calm plates; glass is reserved for chrome
 /// (sidebar, toolbar, tab bar, composer, sticky bars).
 ///
-/// State colours come in two strengths: `CE.live`, `CE.attention`, … are the TEXT strength (≥ 4.5:1 on white glass),
+/// State colours come in two strengths: `CE.live`, `CE.attention`, … are the TEXT strength (≥ 4.5:1 on the clear white
+/// glass, white 24% at its bottom, over the aurora's violet peak),
 /// safe for labels and icons; `CE.liveDot`, `CE.attentionDot`, … are the bright DOT strength for dots, glows and bars
 /// only (never text). `Tone.color` is text strength, `Tone.dot` dot strength.
 enum CE {
@@ -38,11 +39,13 @@ enum CE {
     static let ice = Color(hex: 0xA8ECFF)
     // Member states and semantic colours, TEXT strength (web --tx-*).
     static let live = Color(hex: 0x5B3FD9)         // 일하는 중
-    static let attention = Color(hex: 0xA8530A)    // 내 답 기다림
-    static let approval = Color(hex: 0xC2372E)     // 승인 창 앞
-    static let danger = Color(hex: 0xC2372E)       // 오류 · 실패 (text)
-    static let success = Color(hex: 0x0B7F55)      // 받음 · 완료
-    static let warn = Color(hex: 0x8A5A00)         // 보류
+    // 2026-11-09 clearer glass: over the stronger aurora (×1.5) through white 24% the old #A8530A / #C2372E / #8A5A00
+    // fell to 3.7–4.1:1 at the violet peak, so they take the web's --warn / --danger (≥ 4.8:1 there).
+    static let attention = Color(hex: 0x8F4508)    // 내 답 기다림 (web --warn)
+    static let approval = Color(hex: 0xA82A22)     // 승인 창 앞 (web --danger)
+    static let danger = Color(hex: 0xA82A22)       // 오류 · 실패 (text, web --danger)
+    static let success = Color(hex: 0x065A3B)      // 받음 · 완료 (web --ok, ≥ 4.5:1 over the stronger aurora)
+    static let warn = Color(hex: 0x7A4E00)         // 보류 (same hue, ≥ 5:1 on the clearer glass)
     static let idle = Color(hex: 0x5F5983)         // 대기
     static let dim = Color(hex: 0x5F5983)          // 잠듦 · 안 보임
     // The same states, DOT strength (web --st-*): dots, glows, meters. Never text.
@@ -56,8 +59,34 @@ enum CE {
     static let dimDot = Color(hex: 0x8F88B2)       // hollow ring
     /// Primary button gradient (mockup .btn--p).
     static let primaryGradient = LinearGradient(colors: [Color(red: 134/255, green: 104/255, blue: 252/255).opacity(0.95), Color(red: 104/255, green: 68/255, blue: 246/255).opacity(0.95), Color(red: 92/255, green: 54/255, blue: 234/255).opacity(0.97)], startPoint: .top, endPoint: .bottom)
-    /// Glass tint: white (the light glass is white 74% → 52%).
+    /// Glass tint: white.
     static let glassTint = Color.white
+    /// The light glass fill, white top → bottom (web tokens `--glass-a1` / `--glass-a2`). 2026-11-09 owner request
+    /// "더 맑게": 74% → 52% became 50% → 24%; blur 24 / saturation 200% on the web.
+    static let glassA1 = 0.5
+    static let glassA2 = 0.24
+    /// Bars and pills that must not show what passes beneath (web `--opaque-bar`: top bar, tab bar, segment pill,
+    /// save bar, dialogs): white 97% → 94%.
+    static let opaqueBar = 0.97
+    /// Aurora strength (web `--aurora-k`, 1 → 1.5 with the clearer glass: the light behind must carry colour for a
+    /// clear plate to read as glass, not as white paper) and local light strength (web `--light-k`, .55 → .75).
+    static let auroraK = 1.5
+    static let localLightK = 0.75 / 0.55
+    /// Violet `alpha` laid on opaque white (web `linear-gradient(rgb(violet / a), …), #fff`): the opaque fill of
+    /// everything pressable (options, chips, link buttons), so the light behind a plate never shows through it.
+    static func violetOnWhite(_ alpha: Double) -> Color { tintOnWhite(0x7A5BFF, alpha) }
+    /// Any colour `hex` at `alpha` laid on opaque white, as one opaque colour.
+    static func tintOnWhite(_ hex: UInt32, _ alpha: Double) -> Color {
+        func channel(_ shift: UInt32) -> Double { 1 - alpha * (1 - Double((hex >> shift) & 255) / 255) }
+        return Color(.sRGB, red: channel(16), green: channel(8), blue: channel(0), opacity: 1)
+    }
+    /// Opaque `soft` / `soft-hover` (web `--btn-soft` / `--btn-soft-hover`).
+    static let softSolid = violetOnWhite(0.07)
+    static let softHoverSolid = violetOnWhite(0.12)
+    /// Opaque selected / recommended option (web `--btn-sel`).
+    static let selectedSolid = LinearGradient(colors: [violetOnWhite(0.16), violetOnWhite(0.10)], startPoint: .top, endPoint: .bottom)
+    /// Opaque pressed option (web `--btn-press`).
+    static let pressedSolid = LinearGradient(colors: [violetOnWhite(0.22), violetOnWhite(0.14)], startPoint: .top, endPoint: .bottom)
     /// Card tint: white (cards are white glass; text-heavy cards white 86%).
     static let cardTint = Color.white
     /// Soft violet surface for chips, option tiles and jump buttons (mockup --soft) and its ring (--soft-ring).
@@ -207,7 +236,8 @@ let isMac = false
 #endif
 
 /// Light aurora (mockup `.lt --aurora`): #FBFAFF → #F3F0FC with soft light bleeding in: violet upper right, orchid
-/// in the top corner, ice at the bottom left, a faint violet at the left and a hint of rose low right. Static.
+/// in the top corner, ice at the bottom left, a faint violet at the left and a hint of rose low right. Static. Every
+/// alpha below is the mockup value; `CE.auroraK` (web `--aurora-k` 1.5) scales them.
 struct AmbientBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     /// A radial light: colour, centre (x, y), diameter as a fraction of the longer side (w, h), and its stops as
@@ -235,7 +265,7 @@ struct AmbientBackground: View {
                         let blob = blobs[index]
                         let color = Color(red: blob.r / 255, green: blob.g / 255, blue: blob.b / 255)
                         Ellipse()
-                            .fill(EllipticalGradient(stops: blob.stops.map { .init(color: color.opacity($0.0), location: $0.1) }))
+                            .fill(EllipticalGradient(stops: blob.stops.map { .init(color: color.opacity(min(1, $0.0 * CE.auroraK)), location: $0.1) }))
                             .frame(width: vmax * blob.w, height: vmax * blob.h)
                             .position(x: geo.size.width * blob.x, y: geo.size.height * blob.y)
                     }
@@ -248,26 +278,21 @@ struct AmbientBackground: View {
     }
 }
 
-/// The light glass rim (mockup `--rim`): white light from the top left, violet → ice glow at the bottom right, over a
-/// faint violet base ring. Same drawing as the card rim, a touch heavier when `strong`.
+/// The light glass rim (web `.glass::before`): white light from the top left, violet → ice glow at the bottom right,
+/// over a faint violet base ring. Same drawing as the card rim: 1.75pt, 2pt when `strong` (web `.glass--thick`).
 struct GlassRim<S: InsettableShape>: View {
     let shape: S
     var strong = false
     var body: some View {
-        CardRim(shape: shape, width: strong ? 1.4 : 1.2)
+        CardRim(shape: shape, width: strong ? 2 : 1.75)
     }
 }
 
-// MARK: - Glass chrome (Liquid Glass on macOS/iOS 26+, material fallback before)
+// MARK: - Glass chrome
 
-@available(macOS 26.0, iOS 26.0, *)
-private func ceGlass(tint: Color?, interactive: Bool) -> Glass {
-    var glass = Glass.regular
-    if let tint { glass = glass.tint(tint) }
-    if interactive { glass = glass.interactive() }
-    return glass
-}
-
+/// Chrome that floats over content (the settings save bar): opaque white 97% → 94% on every OS version (web
+/// `--opaque-bar`), so text scrolling beneath never shows through; the glass rim, depth and shadow stay. `tint` is laid
+/// under the white. Reduce Transparency: the solid plate.
 private struct GlassChrome<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let shape: S
@@ -276,17 +301,10 @@ private struct GlassChrome<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         if reduceTransparency {
             content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
-        } else if #available(macOS 26.0, iOS 26.0, *) {
-            content.glassEffect(ceGlass(tint: tint ?? CE.glassTint.opacity(0.4), interactive: interactive), in: shape)
-                .overlay { GlassRim(shape: shape) }
-                .background { CardShadow(shape: shape) }
         } else {
-            // White glass 74% → 52% over the system blur (mockup `.g`: blur 28px, `--g-bg`).
             content
+                .background { CardGlassFill(shape: shape, level: .opaque) }
                 .background { if let tint { shape.fill(tint) } }
-                .background(LinearGradient(stops: [.init(color: .white.opacity(0.74), location: 0), .init(color: .white.opacity(0.52), location: 0.62)],
-                                           startPoint: .top, endPoint: .bottom), in: shape)
-                .background(.ultraThinMaterial, in: shape)
                 .overlay { GlassRim(shape: shape) }
                 .background { CardShadow(shape: shape) }
         }
@@ -348,8 +366,8 @@ extension View {
         #endif
     }
 
-    /// Text input surface used inside forms and composers (mockup --field: min-height 44, padding 10/13, 15px text,
-    /// white .9 well, ink .12 ring; the focus ring is #7A5BFF). A font set on the field itself still wins.
+    /// Text input surface used inside forms and composers (web --field: min-height 44, padding 10/13, 15px text,
+    /// opaque white well, ink .12 ring; the focus ring is #7A5BFF). A font set on the field itself still wins.
     func ceField(focused: Bool = false) -> some View {
         let shape = RoundedRectangle(cornerRadius: CERadius.control, style: .continuous)
         return self.textFieldStyle(.plain)
@@ -361,7 +379,7 @@ extension View {
             .padding(.horizontal, 13).padding(.vertical, 10)
             .frame(minHeight: 44)
             .foregroundStyle(CE.ink)
-            .background(Color.white.opacity(0.9), in: shape)
+            .background(Color.white, in: shape)
             .overlay {
                 shape.strokeBorder(focused ? CE.focus.opacity(0.85) : CE.wash(0.12), lineWidth: focused ? 1.5 : 1)
             }
@@ -419,7 +437,8 @@ struct CEFilledButtonStyle: ButtonStyle {
         var body: some View {
             let metrics = CEButtonMetrics(controlSize, prominent: true)
             // mockup .btn--p: violet gradient, a lit top edge, a soft lilac glow along the bottom, a violet shadow
-            // and a dark text shadow; hover brightens 6%, press shrinks to .97; disabled keeps its colour at 40%.
+            // and a dark text shadow; press shrinks to .97; disabled keeps its colour at 40%. Hover darkens a touch
+            // (web `.gbtn--primary:hover` brightness .94 saturate 1.04): brightening on white costs white-text contrast.
             configuration.label
                 .font(metrics.font)
                 .tracking(-0.15)
@@ -445,7 +464,8 @@ struct CEFilledButtonStyle: ButtonStyle {
                         .shadow(color: CE.violet.opacity(isEnabled ? 0.45 : 0), radius: 8, y: 7)
                         .shadow(color: Color(red: 40 / 255, green: 16 / 255, blue: 120 / 255).opacity(isEnabled ? 0.25 : 0), radius: 2, y: 2)
                 }
-                .brightness(isEnabled && hovering && !configuration.isPressed ? 0.06 : 0)
+                .brightness(isEnabled && hovering && !configuration.isPressed ? -0.06 : 0)
+                .saturation(isEnabled && hovering && !configuration.isPressed ? 1.04 : 1)
                 .opacity(isEnabled ? 1 : 0.4)
                 .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.55), value: configuration.isPressed)
@@ -465,8 +485,8 @@ struct CEQuietButtonStyle: ButtonStyle {
         @State private var hovering = false
         var body: some View {
             let metrics = CEButtonMetrics(controlSize, prominent: false)
-            // mockup .btn--g: a white top-down fill (white → white .8), ink label, a soft violet ring and a soft violet-ink
-            // shadow under it. Hover/press add a faint violet wash.
+            // web .gbtn--glass: an opaque white top-down fill (--btn2: #FFF → #FBFAFF), ink label, a soft violet ring and a
+            // soft violet-ink shadow under it. Hover/press add a faint violet wash.
             configuration.label
                 .font(metrics.font)
                 .tracking(-0.15)
@@ -476,7 +496,7 @@ struct CEQuietButtonStyle: ButtonStyle {
                 .foregroundStyle(isEnabled ? CE.ink : CE.ink3)
                 .background {
                     if isEnabled {
-                        Capsule().fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                        Capsule().fill(LinearGradient(colors: [Color.white, Color(hex: 0xFBFAFF)], startPoint: .top, endPoint: .bottom))
                             .overlay { Capsule().fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0)) }
                     } else {
                         Capsule().fill(Color.white.opacity(0.35))
@@ -516,8 +536,10 @@ struct CEGhostButtonStyle: ButtonStyle {
     }
 }
 
-/// Plain list row with hover, press and selection feedback (mockup .pj: hover a faint violet wash; the selected row
-/// is the light violet gradient, violet .16 → .10, inside a violet .3 ring).
+/// Plain list row with hover, press and selection feedback (web `.pj` / `.hm-row` / `.fl-row`): hovering lifts the
+/// row onto an opaque white plate with a violet .12 ring and a soft shadow (web `--row-hover` / `--row-lift`, 180ms);
+/// the selected row is the light violet gradient, violet .16 → .10, inside a violet .3 ring, and does not lift.
+/// Hover only fires with a pointer, so touch never leaves a row lifted (web `@media (hover:hover)`).
 struct RowButtonStyle: ButtonStyle {
     var selected = false
     var radius: CGFloat = CERadius.control
@@ -537,11 +559,31 @@ struct RowButtonStyle: ButtonStyle {
                     if selected {
                         shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
                             .overlay { shape.strokeBorder(CE.selectedRing) }
+                    } else if configuration.isPressed {
+                        shape.fill(CE.violet.opacity(0.09))
                     } else {
-                        shape.fill(CE.violet.opacity(configuration.isPressed ? 0.09 : hovering ? 0.05 : 0))
+                        RowLift(shape: shape, lifted: hovering)
                     }
                 }
                 .onHover { hovering = $0 }
         }
+    }
+}
+
+/// The hover plate of a pressable row or small card (web `--row-hover: #fff` + `--row-lift: inset 0 0 0 1px
+/// violet .12, 0 6px 14px -10px rgb(70 46 180 / .35)`), fading in over 180ms. Draw it behind the row; `lifted: false`
+/// draws nothing.
+struct RowLift<S: InsettableShape>: View {
+    let shape: S
+    let lifted: Bool
+    var body: some View {
+        shape.fill(Color.white)
+            .overlay { shape.strokeBorder(CE.violet.opacity(0.12)) }
+            .background {
+                shape.inset(by: 10).fill(CE.shadowFar.opacity(0.35)).offset(y: 6).blur(radius: 7)
+            }
+            .opacity(lifted ? 1 : 0)
+            .animation(.easeOut(duration: 0.18), value: lifted)
+            .allowsHitTesting(false)
     }
 }
