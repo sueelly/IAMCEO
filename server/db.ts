@@ -938,6 +938,14 @@ function supportedVersion(db: Database): number {
     throw new Error(`지원하지 않는 미래 DB 스키마입니다 (DB v${current}, 지원 v${MIGRATIONS.length}). 호스트를 업데이트해 주세요.`);
   }
   if (current < 0) throw new Error(`잘못된 DB 스키마 버전입니다 (v${current}).`);
+  // Independently deployed branches can claim the same version. Refuse their
+  // incompatible layout before backup, WAL setup or any writable connection.
+  if (current >= STORAGE_OPTIMIZATION_VERSION) {
+    const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(agent_operation_receipts)").all().map(row => row.name));
+    if (["state", "result_kind", "request_sha256", "updated_at"].some(name => !columns.has(name))) {
+      throw new Error(`DB 스키마 버전과 도구 기록 구조가 다릅니다 (v${current}). 적용한 소스 버전을 확인하세요.`);
+    }
+  }
   return current;
 }
 

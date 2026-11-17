@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
-import { readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { readdirSync, statSync, readFileSync } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { MIGRATIONS, openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
@@ -97,4 +97,16 @@ test("pagination v34 upgrades through offline apply, preserving its indexes and 
   expect(db.query("SELECT count(*) AS n FROM sqlite_schema WHERE name IN ('files_page_project','files_page_task','messages_task_page')").get()).toEqual({ n: 3 });
   expect(store.agentOperation(f.member.id, "post", "op-0", { report_id: "msg_original" }, () => ({ text: "must not execute" }))).toEqual(f.result);
   db.close();
+});
+
+test("a colliding schema version without receipt columns is refused before changing database bytes", () => {
+  const f = fixture(34), old = new Database(f.path);
+  old.exec(`PRAGMA user_version = ${MIGRATIONS.length}`);
+  old.close();
+  const bytes = readFileSync(f.path);
+  const child = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "../scripts/optimize-storage.ts"), "--home", f.runtime.paths.iamceoHome, "--apply", "--vacuum"],
+    { cwd: f.runtime.paths.work, env: f.runtime.childEnv(), stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(1);
+  expect(child.stderr.toString()).toContain("스키마");
+  expect(readFileSync(f.path).equals(bytes)).toBe(true);
 });
