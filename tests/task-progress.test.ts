@@ -45,8 +45,8 @@ describe("단계 계산", () => {
   test("잠든 세션을 기다리는 입력은 막힘이 아니라 진행 중(의존 대기)이다", () => {
     const f = empty();
     f.held.push({ id: "dl_1", who: "영희", reason: "asleep", at: "2026-11-17T10:00:00.000Z" });
-    expect(deriveProgress(f)).toMatchObject({ stage: "working", cause: "dependency" });
-    expect(needsAction(deriveProgress(f))).toBe(false);
+    expect(deriveProgress(f)).toMatchObject({ stage: "confirm", cause: "dependency" });
+    expect(needsAction(deriveProgress(f))).toBe(true);
   });
 
   test("보류 까닭: 자동으로 들어가는 기다림과 다시 보내지 않는 보류를 가른다", () => {
@@ -78,7 +78,9 @@ describe("단계 계산", () => {
     expect(stageSec("done")).toBe("done");
     expect(stageSec("hold")).toBe("hold");
     expect(stageSec("new")).toBe("next");
-    expect(stageSec("confirm")).toBe("doing");
+    expect(stageSec("confirm")).toBe("next");
+    expect(stageSec("working")).toBe("doing");
+    expect(stageSec("approval")).toBe("hold");
   });
 });
 
@@ -135,8 +137,9 @@ describe("팀 목록 한 줄 규칙", () => {
   test("업무를 가리키는 항목은 손으로 정한 칸보다 업무 단계를 따르고, 진행판에 없는 업무도 같은 목록에 오른다", () => {
     const rows = workRows([item("w_1", "done", "tk_a")], [task("tk_a", prog("confirm", "총괄이 확인할 차례")), task("tk_b", prog("fix", "철수가 고칠 차례")), task("tk_old", prog("fix", "x", { rev: "2026-10-01T00:00:00.000Z" })), task("tk_new", prog("new"))], now);
     expect(rows.map((r) => [r.key, r.sec, r.label, r.next])).toEqual([
-      ["w_1", "doing", "확인 대기", "총괄이 확인할 차례"],
-      ["tk_b", "doing", "고칠 것", "철수가 고칠 차례"],
+      ["w_1", "next", "확인 대기", "총괄이 확인할 차례"],
+      ["tk_b", "next", "고칠 것", "철수가 고칠 차례"],
+      ["tk_old", "next", "고칠 것", "x"],
     ]);
   });
 

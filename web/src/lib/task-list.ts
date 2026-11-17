@@ -28,7 +28,7 @@ function taskRow(t: Task, now: number): WorkRow | null {
   const p = t.progress;
   if (!p || p.stage === "new" || t.mergedInto) return null;
   const at = p.rev || t.updatedAt;
-  if (now - Date.parse(at) > TASK_ROW_DAYS * 86_400_000) return null;
+  if (p.stage === "done" && now - Date.parse(at) > TASK_ROW_DAYS * 86_400_000) return null;
   return { key: t.id, title: t.title, who: p.owner ?? t.who ?? "", detail: "", sec: stageSec(p.stage), label: STAGE_LABEL[p.stage], stage: p.stage,
     next: needsAction(p) ? p.next : null, doneAt: p.stage === "done" ? p.since : null, at, order: Number.MAX_SAFE_INTEGER, taskId: t.id };
 }
@@ -36,8 +36,8 @@ function taskRow(t: Task, now: number): WorkRow | null {
 /**
  * 한 목록: 진행판 항목 + 진행판에 없는 대화 업무.
  * - 업무를 가리키는 항목(task_id): 그 업무의 단계로 칸·이름을 정한다. 대화와 같은 값이다.
- * - 가리키지 않는 옛 항목: 총괄이 정한 칸 그대로. 그 항목의 업무(tk_<id>)에 할 차례가 있으면 그 원인만 덧붙인다.
- * - 진행판에 없는 업무: 직원·서버가 만든 업무도 목록에 오른다(최근 14일, 시작 전·합쳐진 업무 제외). 진행판 항목의 업무는 두 번 올리지 않는다.
+ * - 가리키지 않는 옛 항목: 실행 근거 없는 진행 중은 확인 대기. 그 항목의 업무(tk_<id>)에 할 차례가 있으면 그 원인만 덧붙인다.
+ * - 진행판에 없는 업무: 직원·서버가 만든 업무도 목록에 오른다(완료만 14일 정리, 시작 전·합쳐진 업무 제외). 진행판 항목의 업무는 두 번 올리지 않는다.
  */
 export function workRows(work: readonly WorkItem[], tasks: readonly Task[], now: number): WorkRow[] {
   const byId = new Map(tasks.map((t) => [t.id, t]));
@@ -52,7 +52,7 @@ export function workRows(work: readonly WorkItem[], tasks: readonly Task[], now:
         next: needsAction(p) ? p.next : null, doneAt: p.stage === "done" ? p.since : null, at: p.rev || w.updatedAt, order: w.order, taskId: linked.id };
     }
     const board = byId.get(own)?.progress;
-    return { key: w.id, title: w.title, who: w.who, detail: w.detail, sec: w.sec, label: SEC_LABEL[w.sec], stage: null,
+    return { key: w.id, title: w.title, who: w.who, detail: w.detail, sec: w.sec === "doing" ? "next" : w.sec, label: w.sec === "doing" ? STAGE_LABEL.confirm : SEC_LABEL[w.sec], stage: null,
       next: w.sec !== "done" && needsAction(board) ? board!.next : null, doneAt: w.doneAt, at: w.updatedAt, order: w.order, taskId: w.taskId ?? (byId.has(own) ? own : null) };
   });
   for (const t of tasks) {

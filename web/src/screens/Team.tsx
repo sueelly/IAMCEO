@@ -205,7 +205,7 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
     <dl className="tm-facts">
       {extra}
       {/* 턴이 끝나도 now 는 남는다. 쉬는 직원의 글은 지금 하는 일이 아니다. */}
-      {m.status === "idle" || m.status === "asleep" || m.status === "offline" ? (
+      {m.status === "idle" || m.status === "asleep" || m.status === "offline" || m.executionState?.phase !== "running" ? (
         m.now ? <Row label="마지막 일">{m.now}</Row> : <Row label="지금"><span className="ink-3">맡은 일 없음</span></Row>
       ) : (
         <Row label="지금">{m.now || <span className="ink-3">맡은 일 없음</span>}</Row>

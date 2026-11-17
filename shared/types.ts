@@ -314,6 +314,7 @@ export type TaskBlockCause = "technical" | "pending" | "dependency" | "owner" | 
 /** 총괄이 남기는 단계 표시. reopen 은 완료·점검·보류를 푼다. */
 export type TaskStageMark = "review" | "merged" | "applied" | "done" | "hold" | "reopen";
 export interface TaskProgress {
+  execution?: { runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; background: string | null };
   stage: TaskStage;
   cause: TaskBlockCause | null;
   /** 다음 차례 한 줄(누가 무엇을). 아무도 할 일이 없으면 null. */

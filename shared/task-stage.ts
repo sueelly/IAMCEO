@@ -19,14 +19,14 @@ export const STAGE_LABEL: Record<TaskStage, string> = {
   done: "완료",
 };
 
-/** 팀 목록의 칸: 완료·보류·시작 전만 따로 두고 나머지는 진행 중이다. */
+/** 팀 목록에서 실제 실행만 진행 중이다. 검토·납품·적용 대기는 다음 차례로 둔다. */
 export function stageSec(stage: TaskStage): WorkSec {
-  return stage === "done" ? "done" : stage === "hold" ? "hold" : stage === "new" ? "next" : "doing";
+  return stage === "done" ? "done" : stage === "working" ? "doing" : ["hold", "held", "owner", "approval", "check"].includes(stage) ? "hold" : "next";
 }
 
 /** 누군가 다음 행동을 해야 하는 단계. 화면은 이때만 원인과 다음 차례를 보인다(늘 떠 있는 상태 문구를 늘리지 않는다). */
-export function needsAction(p: Pick<TaskProgress, "stage" | "next"> | null | undefined): boolean {
-  return !!p && !!p.next && p.stage !== "working" && p.stage !== "new" && p.stage !== "done";
+export function needsAction(p: Pick<TaskProgress, "stage" | "next"> & Partial<Pick<TaskProgress, "execution">> | null | undefined): boolean {
+  return !!p && !!p.next && (p.stage !== "working" || !!p.execution?.background) && p.stage !== "new" && p.stage !== "done";
 }
 
 /** 늦게 온 낮은 판은 버린다. 판이 같으면 새 값을 쓴다(같은 근거로 계산한 값). */

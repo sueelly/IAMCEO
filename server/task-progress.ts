@@ -14,6 +14,7 @@ export interface ReportFact {
   authorKind: MemberKind | null;
   /** 실패한 검사 이름 */
   failed: string[];
+  failureKeys?: string[];
   /** 실행 안 한 검사 이름(미확인 항목 요약 줄은 빼고) */
   notRun: string[];
   /** 미확인 요약 줄을 뺀 검사 수 */
@@ -22,7 +23,7 @@ export interface ReportFact {
   passed: boolean;
 }
 export interface MarkFact { id: number; stage: TaskStageMark; at: string; who: string; evidence: string; memberId?: string | null }
-export interface AttemptFact { at: string; messageId: string; who: string; fingerprint: string; failed: string[] }
+export interface AttemptFact { at: string; messageId: string; who: string; fingerprint: string; failed: string[]; failureKeys?: string[] }
 export interface WatchFact {
   startedAt: string;
   attempts: number;
@@ -35,7 +36,10 @@ export interface WatchFact {
   history: AttemptFact[];
 }
 export interface HeldFact { id: string; who: string; reason: string | null; at: string }
+export interface ExecutionFact { runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; at: string; who: string; background: string | null }
 export interface ProgressFacts {
+  cycleAt?: string;
+  executions?: ExecutionFact[];
   reports: ReportFact[];
   decisions: { id: string; title: string; at: string }[];
   todos: { id: string; title: string; at: string }[];
@@ -76,7 +80,7 @@ const HOLD_WHY: Partial<Record<TaskBlockCause, string>> = { limit: "한도·수�
 
 /** 막힘의 실패 지문. 같은 지문이 이어지면 진척이 없는 반복이다. */
 export function fingerprint(r: Pick<ReportFact, "failed" | "notRun" | "checks">): string {
-  if (r.failed.length) return `fail:${[...r.failed].sort().join("|")}`;
+  if (r.failed.length) return `fail:${[...((r as ReportFact).failureKeys ?? r.failed)].sort().join("|")}`;
   if (r.notRun.length) return `pending:${[...r.notRun].sort().join("|")}`;
   return r.checks ? "pending:" : "unknown";
 }
@@ -96,16 +100,17 @@ export function isDone(marks: MarkFact[]): MarkFact | null {
 export function deriveProgress(f: ProgressFacts): TaskProgress {
   const rev = maxTime([
     ...f.reports.map((r) => r.at), ...f.marks.map((m) => m.at), ...f.decisions.map((d) => d.at), ...f.todos.map((t) => t.at),
-    ...f.held.map((h) => h.at), ...f.queued.map((q) => q.at), ...f.approvals.map((a) => a.at), f.watch?.updatedAt, f.notice?.at, f.notice?.seenAt, ...f.revTimes,
+    ...(f.executions ?? []).map(e => e.at), ...f.held.map((h) => h.at), ...f.queued.map((q) => q.at), ...f.approvals.map((a) => a.at), f.watch?.updatedAt, f.notice?.at, f.notice?.seenAt, ...f.revTimes,
   ]);
   const loop = f.watch ? { startedAt: f.watch.startedAt, attempts: f.watch.attempts, same: f.watch.same, trippedAt: f.watch.trippedAt, reason: f.watch.reason } : null;
+  const latestExecution = f.executions?.at(-1);
   const make = (stage: TaskStage, cause: TaskBlockCause | null, next: string | null, owner: string | null, since: string | null, basis: string[]): TaskProgress =>
-    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null });
+    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null, ...(latestExecution ? { execution: {runId: latestExecution.runId, phase: latestExecution.phase, sessionGeneration: latestExecution.sessionGeneration, inputReceivedAt: latestExecution.inputReceivedAt, background: latestExecution.background} } : {}) });
 
-  const active = activeMarks(f.marks);
+  const active = activeMarks(f.marks).filter(m => !f.cycleAt || m.at >= f.cycleAt);
   const done = active.findLast((m) => m.stage === "done");
-  // 완료는 끝 단계다. 뒤에 온 글·이벤트는 되돌리지 않는다(총괄이 다시 열 때만).
-  if (done) return make("done", null, null, null, done.at, [`mark:${done.id}`]);
+  // 현재 주기의 완료만 유지한다. 새 계약·대표 차례·정정은 이전 완료를 쓰지 않는다.
+  if (done && !f.decisions.some(d => d.at >= done.at) && !f.todos.some(t => t.at >= done.at)) return make("done", null, null, null, done.at, [`mark:${done.id}`]);
   const last = active.at(-1);
   if (last?.stage === "hold") return make("hold", "hold", `보류: ${last.evidence}`, CONDUCTOR, last.at, [`mark:${last.id}`]);
 
@@ -131,11 +136,14 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     return make("held", cause, `${h.who}에게 갈 입력 ${stuck.length}건 보류(${why}) · 자동으로 다시 보내지 않습니다. 총괄이 확인할 차례`, CONDUCTOR, h.at, stuck.map((x) => x.id));
   }
 
+  const live = f.executions?.findLast(e => e.background || e.phase === "running" && !!e.inputReceivedAt);
+  if (live) return make("working", null, live.background ? `뒤 작업: ${live.background}` : null, live.who, live.at, [live.runId]);
+
   const outcomes = f.reports.filter((r) => r.kind === "완료" || r.kind === "막힘");
   const lastOutcome = outcomes.at(-1);
   const progressMark = active.findLast((m) => m.stage === "review" || m.stage === "merged" || m.stage === "applied");
   // 작성자 납품: 마지막 통과 완료(계약 판정). 계약이 없으면 마지막 완료.
-  const delivery = f.reports.findLast((r) => r.kind === "완료" && r.passed) ?? f.reports.findLast((r) => r.kind === "완료");
+  const delivery = f.reports.findLast((r) => r.kind === "완료" && r.passed);
 
   if (lastOutcome && (!progressMark || lastOutcome.at >= progressMark.at)) {
     if (lastOutcome.kind === "막힘") {
@@ -170,12 +178,13 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
   const waiting = f.held.filter((h) => holdCause(h.reason) === "dependency");
   if (waiting.length) {
     const h = waiting[0]!;
-    return make("working", "dependency", `${h.who} 세션을 기다림(${h.reason}) · 깨면 그대로 들어갑니다`, null, h.at, waiting.map((x) => x.id));
+    return make("confirm", "dependency", `${h.who} 세션을 기다림(${h.reason}) · 깨면 그대로 들어갑니다`, null, h.at, waiting.map((x) => x.id));
   }
   const lastAny = f.reports.at(-1);
+  if (latestExecution) return make("confirm", latestExecution.phase === "interrupted" ? "limit" : "pending", latestExecution.phase === "interrupted" ? "원 실행이 중단됐습니다. 총괄이 기존 결과와 다음 실행을 확인할 차례" : latestExecution.inputReceivedAt && !["ended", "interrupted"].includes(latestExecution.phase) ? "원 입력을 수신했습니다. 실행 시작 확인을 기다립니다" : "실행이 끝났습니다. 총괄이 결과와 다음 차례를 확인합니다", CONDUCTOR, latestExecution.at, [latestExecution.runId]);
   if (lastAny || f.queued.length) {
     const since = maxTime([lastAny?.at, f.queued.at(-1)?.at]);
-    return make("working", null, null, lastAny?.who ?? f.queued[0]!.who, since, lastAny ? [lastAny.id] : f.queued.map((q) => q.id));
+    return make("confirm", "pending", f.queued.length ? "원 입력이 대기 중입니다. 실행 조건을 확인할 차례" : "마지막 보고 뒤 실제 진행 근거가 없습니다. 총괄이 결과를 확인할 차례", lastAny?.who ?? f.queued[0]?.who ?? CONDUCTOR, since, lastAny ? [lastAny.id] : f.queued.map((q) => q.id));
   }
   return make("new", null, null, null, null, []);
 }
@@ -192,13 +201,15 @@ const HISTORY = 10;
  * trip 은 이번에 처음 멈출 때만 까닭을 준다(이미 멈췄으면 null). quiet 는 멈춘 뒤 같은 실패라 총괄을 다시 깨우지 않을 보고다.
  */
 export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: WatchLimits = DEFAULT_WATCH_LIMITS): { next: WatchFact | null; trip: string | null; quiet: boolean } {
-  if (r.kind === "완료") return { next: r.passed || !prev ? null : prev, trip: null, quiet: false };
-  if (r.kind !== "막힘") return { next: prev, trip: null, quiet: false };
+  if (r.kind === "완료") return { next: r.passed && !r.failed.length && !r.notRun.length ? null : prev, trip: null, quiet: false };
+  if (r.kind !== "막힘" || !r.failed.length) return { next: prev, trip: null, quiet: false };
   const fp = fingerprint(r);
-  const attempt: AttemptFact = { at: r.at, messageId: r.id, who: r.who, fingerprint: fp, failed: r.failed };
+  const attempt: AttemptFact = { at: r.at, messageId: r.id, who: r.who, fingerprint: fp, failed: r.failed, failureKeys: r.failureKeys };
   if (!prev) return { next: { startedAt: r.at, attempts: 1, same: 1, fingerprint: fp, lastProgressAt: r.at, trippedAt: null, reason: null, updatedAt: r.at, history: [attempt] }, trip: null, quiet: false };
   const same = fp === prev.fingerprint ? prev.same + 1 : 1;
-  const next: WatchFact = { ...prev, attempts: prev.attempts + 1, same, fingerprint: fp, lastProgressAt: same > 1 ? prev.lastProgressAt : r.at, updatedAt: r.at, history: [...prev.history, attempt].slice(-HISTORY) };
+  const beforeKeys = prev.history.at(-1)?.failureKeys;
+  const actualProgress = !!beforeKeys?.length && !!r.failureKeys?.length && r.failureKeys.length < beforeKeys.length && r.failureKeys.every(key => beforeKeys.includes(key));
+  const next: WatchFact = { ...prev, attempts: prev.attempts + 1, same, fingerprint: fp, lastProgressAt: actualProgress ? r.at : prev.lastProgressAt, updatedAt: r.at, history: [...prev.history, attempt].slice(-HISTORY) };
   if (prev.trippedAt) return { next, trip: null, quiet: same > 1 };
   if (same >= limits.sameLimit) {
     const reason = `같은 실패 ${same}번(${fp === "unknown" ? "검사 근거 없음" : cut(r.failed.length ? r.failed : r.notRun)})`;

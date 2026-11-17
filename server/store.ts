@@ -597,7 +597,7 @@ const TASK_REF_TABLES = { message: "messages", decision: "decisions", file: "fil
 export type TaskRefType = keyof typeof TASK_REF_TABLES;
 
 function emptyFacts(): ProgressFacts {
-  return { reports: [], decisions: [], todos: [], held: [], queued: [], approvals: [], marks: [], watch: null, notice: null, revTimes: [] };
+  return { reports: [], decisions: [], todos: [], held: [], queued: [], approvals: [], marks: [], watch: null, notice: null, revTimes: [], executions: [] };
 }
 
 function toMark(r: Row): MarkFact {
@@ -911,6 +911,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const frame: (() => void)[] = [];
     const messageMs = this.lastMessageMs;
     const backend = this.runtimeBackend;
+    const progressDirty = new Set(this.progressDirty);
+    const blockedSeen = new Map(this.blockedSeen);
     this.commitFrames.push(frame);
     let result: T;
     try {
@@ -923,6 +925,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.commitFrames.pop();
       this.lastMessageMs = messageMs;
       this.runtimeBackend = backend;
+      this.progressDirty = progressDirty;
+      this.blockedSeen = blockedSeen;
       throw error;
     }
     this.commitFrames.pop();
@@ -1964,10 +1968,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const ids = only ? [...only] : [];
     const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failed,
+        (SELECT group_concat(c.kind || ':' || COALESCE(c.exec_command,c.command,'') || ':' || c.evidence, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failure_keys,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'not_run') AS not_run,
         (SELECT COUNT(*) FROM report_checks c WHERE c.message_id = m.id AND NOT (c.kind = 'unverified' AND c.result = 'pass')) AS checks
       FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
-      WHERE m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
+      WHERE NOT EXISTS (SELECT 1 FROM report_references rr WHERE rr.project_id = m.project_id AND rr.corrects_message_id = m.id) AND m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
       ORDER BY m.rowid`, projectId, ...ids);
     // 지금 계약 판의 통과 완료(서버 판정). 계약이 묶이지 않은 업무는 완료 보고가 곧 작성자 납품이다.
     const passed = new Map<string, Set<string> | null>();
@@ -1983,8 +1988,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (!f) continue;
       const split = (v: unknown) => (typeof v === "string" && v ? v.split("\u001f") : []);
       const set = r.kind === "완료" ? passedFor(r.task_id) : null;
+      f.revTimes.push(r.at);
+      if (r.kind === "완료" && set && !set.has(r.id)) continue;
       f.reports.push({ id: r.id, seq: r.seq, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null,
-        failed: split(r.failed), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
+        failed: split(r.failed), failureKeys: split(r.failure_keys), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
     }
     for (const r of this.rows(`SELECT id, title, task_id, created_at FROM decisions WHERE project_id = ? AND status = 'open' AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.decisions.push({ id: r.id, title: r.title, at: r.created_at });
     for (const r of this.rows(`SELECT id, title, task_id, created_at FROM todos WHERE project_id = ? AND done = 0 AND outcome IS NULL AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.todos.push({ id: r.id, title: r.title, at: r.created_at });
@@ -2006,6 +2013,35 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     for (const r of this.rows(`SELECT * FROM task_notices WHERE project_id = ?${filter} ORDER BY created_at, rowid`, projectId, ...ids)) {
       const f = of(r.task_id);
       if (f) f.notice = { id: r.id, at: r.created_at, seenAt: r.seen_at ?? null, lines: json<string[]>(r.lines_json) };
+    }
+    // Each original delivery is associated with its actual journal, never with a status memo.
+    for (const r of this.rows(`SELECT DISTINCT d.task_id, j.run_id, j.phase, j.generation, j.input_received_at, j.updated_at, m.name, m.id AS member_id
+      FROM execution_journal j JOIN json_each(j.delivery_ids_json) i JOIN deliveries d ON d.id = i.value
+      JOIN members m ON m.id = j.member_id
+      WHERE j.project_id = ? AND d.task_id IS NOT NULL AND d.member_id = j.member_id AND d.kind IN ('instruction','user_message') AND j.generation = m.session_generation
+      AND j.rowid = (SELECT MAX(e.rowid) FROM execution_journal e WHERE e.member_id = j.member_id AND e.generation = j.generation)
+      ORDER BY j.created_at, j.rowid`, projectId)) {
+      const f = of(r.task_id); if (!f) continue;
+      const runtime = this.progressRuntime(r.member_id);
+      f.executions!.push({runId:r.run_id,phase:r.phase,sessionGeneration:r.generation,inputReceivedAt:r.input_received_at,at:r.updated_at,who:r.name,background:runtime.background});
+      if (runtime.at) f.revTimes.push(runtime.at);
+    }
+    for (const [taskId, f] of out) {
+      const contract = this.getEffectiveContract(taskId);
+      const done = isDone(f.marks);
+      const reopenedAt = f.marks.findLast(m => m.stage === "reopen")?.at;
+      const taskAt = this.requireTask(taskId).updatedAt;
+      f.revTimes.push(taskAt);
+      if (contract) f.revTimes.push(contract.at);
+      // New contracts and newly created owner actions establish a new cycle, even after those actions close.
+      const ownerCycle = done ? this.row(`SELECT MAX(created_at) AS at FROM (
+        SELECT created_at FROM todos WHERE task_id = ? AND created_at >= ?
+        UNION ALL SELECT created_at FROM decisions WHERE task_id = ? AND created_at >= ?
+        UNION ALL SELECT created_at FROM deliveries WHERE task_id = ? AND created_at > ? AND kind IN ('instruction','user_message'))`, taskId, done.at, taskId, done.at, taskId, done.at)?.at : null;
+      f.cycleAt = [contract?.at, ownerCycle, reopenedAt].filter((v): v is string => !!v).sort().at(-1);
+      if (done && !f.reports.some(r => r.kind === "완료" && r.passed)) f.cycleAt = [f.cycleAt, ...f.revTimes].filter((v):v is string=>!!v).sort().at(-1);
+      const evidenceSince = [contract?.at, ownerCycle].filter((v): v is string => !!v).sort().at(-1);
+      if (f.cycleAt) f.reports = f.reports.filter(r => r.at >= (r.kind === "완료" ? f.cycleAt! : evidenceSince ?? ""));
     }
     return out;
   }
@@ -2034,7 +2070,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 지금 완료 표시(다시 열기 뒤의 마지막 완료). 없으면 null. */
   doneMark(taskId: string): MarkFact | null {
-    return isDone(this.listStageMarks(taskId));
+    const facts = this.taskProgressFacts(this.requireTask(taskId).projectId, new Set([taskId])).get(taskId);
+    return isDone((facts?.marks ?? []).filter(m => !facts?.cycleAt || m.at >= facts.cycleAt));
   }
 
   getTaskWatch(taskId: string): WatchFact | null {
@@ -2097,14 +2134,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
+  private progressRuntime: (memberId: string) => { background: string | null; at: string | null } = () => ({background:null,at:null});
+  setProgressRuntime(read: (memberId: string) => { background: string | null; at: string | null }): void { this.progressRuntime = read; }
+  refreshTaskProgressForMember(memberId: string): void {
+    const ids = this.rows("SELECT DISTINCT task_id FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL", memberId).map(r => r.task_id as string);
+    this.queueProgress(ids);
+  }
+
   private progressDirty = new Set<string>();
   private blockedSeen = new Map<string, string>();
   /** 커밋 뒤 한 번 다시 계산해 task 이벤트로 보낸다(같은 커밋 안의 여러 변화는 한 번). */
   private queueProgress(taskIds: (string | null | undefined)[]): void {
     const ids = taskIds.filter((id): id is string => !!id);
     if (!ids.length) return;
-    for (const id of ids) this.progressDirty.add(id);
-    // 부를 때마다 커밋 뒤 비우기를 건다. 먼저 돈 것이 모두 비우고 뒤의 것은 할 일이 없다. 되돌린 거래가 남긴 id 도 다음 비우기에서 다시 계산할 뿐이다.
+    for (const id of ids) {
+      this.progressDirty.add(id);
+      const old = this.getTask(id);
+      if (!old) continue;
+      const ms = Math.max(Date.now(), this.lastMessageMs + 1, Date.parse(old.updatedAt) + 1);
+      this.run("UPDATE tasks SET updated_at = ? WHERE id = ?", new Date(ms).toISOString(), id);
+    }
+    // 부를 때마다 커밋 뒤 비우기를 건다. 먼저 돈 것이 모두 비우고 뒤의 것은 할 일이 없다. 되돌린 거래의 메모리 집합은 transaction 에서 함께 복원한다.
     this.afterCommit(() => {
       const ids = [...this.progressDirty];
       this.progressDirty.clear();
@@ -2125,11 +2175,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       case "todo": return event.todo.taskId ? [event.todo.taskId] : [];
       case "member": {
         const m = event.member;
-        const key = `${m.status === "blocked"}:${m.heldCount ?? 0}:${m.queuedCount}`;
+        const key = `${m.status}:${m.executionState?.runId}:${m.executionState?.phase}:${m.heldCount ?? 0}:${m.queuedCount}`;
         if (this.blockedSeen.get(m.id) === key) return [];
         const first = !this.blockedSeen.has(m.id);
         this.blockedSeen.set(m.id, key);
-        if (first && m.status !== "blocked" && !m.heldCount) return [];
+        if (first && m.status !== "blocked" && !m.heldCount && !m.executionState) return [];
         const held = this.rows("SELECT DISTINCT task_id FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL AND status IN ('queued','held')", m.id).map((r) => r.task_id as string);
         return [...new Set([...this.openAssignedTasks(m.id), ...held])];
       }
@@ -3533,6 +3583,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (before && (before.phase === "ended" || before.phase === "interrupted") && stableJson(before) !== stableJson(entry)) throw new ApiError(409, "이미 끝난 실행입니다");
       this.run(`INSERT INTO execution_journal (run_id, member_id, project_id, generation, terminal_identity_json, turn, delivery_ids_json, phase, input_received_at, started_at, last_progress_at, ended_at, result, reason, exit_code, interruption_notified_at, report_requested_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id) DO UPDATE SET terminal_identity_json = excluded.terminal_identity_json, turn = excluded.turn, delivery_ids_json = excluded.delivery_ids_json, phase = excluded.phase, input_received_at = excluded.input_received_at, started_at = excluded.started_at, last_progress_at = excluded.last_progress_at, ended_at = excluded.ended_at, result = excluded.result, reason = excluded.reason, exit_code = excluded.exit_code, updated_at = excluded.updated_at`, entry.runId, entry.memberId, entry.projectId, entry.identity.sessionGeneration, JSON.stringify(entry.identity), entry.turn, JSON.stringify(entry.deliveryIds), entry.phase, entry.inputReceivedAt, entry.startedAt, entry.lastProgressAt, entry.endedAt, entry.result, entry.reason, entry.exitCode, entry.interruptionNotifiedAt, entry.reportRequestedAt, entry.createdAt, entry.updatedAt);
+      this.queueProgress(entry.deliveryIds.map(id => this.deliveryTaskId(id)));
     });
   }
 
@@ -3592,6 +3643,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
       this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso());
+      this.queueProgress([taskId]);
       return this.getTaskContract(taskId)!;
     });
   }

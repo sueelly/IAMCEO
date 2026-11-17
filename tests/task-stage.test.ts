@@ -88,6 +88,10 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
     expect((await stage(f, task, "merged", "메인에 합침")).isError).toBe(true);
     expect((await stage(f, task, "merged", "메인에 합침 0123abcd")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("merged");
+    const unapplied = await stage(f, task, "done", "아직 미적용");
+    expect(unapplied.isError).toBe(true);
+    expect(notices(f)).toBe(0);
+    expect((await stage(f, task, "applied", "고정 릴리스 실제 반영 확인")).isError).toBeUndefined();
     const done = await stage(f, task, "done", "통합 뒤 확인 통과");
     expect(done.isError).toBeUndefined();
     const again = await stage(f, task, "done", "응답 유실 재시도");

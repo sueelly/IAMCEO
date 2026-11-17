@@ -861,7 +861,7 @@ struct MarkdownText: View {
     /// Text colours: the page inks, or white / lilac on the violet bubble.
     private var ink: Color { onAccent ? .white : CE.ink }
     private var ink2: Color { onAccent ? CE.onAccentSub : CE.ink2 }
-    private var ink3: Color { onAccent ? Color(hex: 0xDAD2FF) : CE.ink3 }
+    private var ink3: Color { onAccent ? CE.onAccentSub : CE.ink3 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: (size * 0.7).rounded()) {
