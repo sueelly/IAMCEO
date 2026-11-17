@@ -93,6 +93,10 @@ export const CODING = {
   goal: "보고 화면에 검사 줄을 보인다",
   acceptance: ["완료 보고 아래에 검사 결과가 한 줄로 보인다", "검사가 없으면 완료가 거절된다"],
   scope: "server/ 안에서만 고친다",
+  inputs: ["보고 화면의 기존 구현과 검사 기록"],
+  outputs: ["검사 결과를 표시하는 서버 변경"],
+  constraints: ["기존 보고의 계약 판과 증거를 유지한다"],
+  exclusions: ["운영 배포"],
   forbidden: ["깃허브에 올리지 않는다", "임시 폴더를 지우지 않는다"],
   evidence: ["시험 이름과 통과 수"],
 };
