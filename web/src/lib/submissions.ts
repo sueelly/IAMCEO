@@ -12,7 +12,8 @@ export interface MessageAttempt {
   readonly targetName: string | null;
   readonly attachments: Attachment[];
   readonly sourceRevision: string | null;
-  readonly status: "checking" | "retryable";
+  /** sending: 이 화면에서 처음 보내는 중(결과를 알기 전까지 따로 보이지 않는다). 기기에는 늘 checking 으로 남는다. */
+  readonly status: "sending" | "checking" | "retryable";
   readonly error: string | null;
 }
 interface ProjectDraft { readonly draft: Draft; readonly attempts: readonly MessageAttempt[]; readonly revision: string }
@@ -35,6 +36,15 @@ const readableError = (error: unknown): string => error instanceof Error ? error
 const storageError = "이 기기에 전송 내용을 저장할 수 없습니다. 글은 입력칸에 남겨 두었습니다. 저장 공간을 확보한 뒤 다시 보내 주세요";
 const uploadRecovery = "올리지 못한 첨부가 있습니다. 해당 파일을 빼고 다시 선택해 주세요";
 
+/**
+ * 서버가 저장하기 전에 받지 않겠다고 답한 전송(연결 게이트 409). send 가 이 오류를 던지면 서버에 그 id 의 글이 없다.
+ * 처음 보낸 새 id 라면 글을 입력칸에 되돌리고 시도를 지운다. 응답 유실·네트워크 오류는 이 오류가 아니다.
+ */
+export class SubmissionRefused extends Error {
+  readonly refused = true;
+}
+const isRefused = (error: unknown): error is SubmissionRefused => error instanceof SubmissionRefused || (error as { refused?: unknown })?.refused === true;
+
 /** Immutable attempts have individual keys: a stale tab saving its draft can never
  * erase another tab's pending ID or resurrect a settled one. The source revision
  * also covers a crash between persisting an attempt and clearing the disk draft. */
@@ -46,6 +56,8 @@ export class SubmissionManager {
   private readonly listeners = new Set<() => void>();
   private readonly checks = new Map<string, Promise<boolean>>();
   private readonly sends = new Set<string>();
+  /** 이 화면에서 submit 한 뒤 아직 결과를 모르는 첫 전송: 되돌릴 원래 입력칸과 비운 뒤의 입력칸. */
+  private readonly firstSends = new Map<string, { before: Draft; cleared: Draft }>();
   private generation = 0;
 
   constructor(private readonly options: Options) {
@@ -117,6 +129,7 @@ export class SubmissionManager {
     // reload. A different tab's newer disk revision must never be cleared here.
     this.writeDraft(projectId, next, state.revision);
     this.replace(projectId, next);
+    this.firstSends.set(id, { before: state.draft, cleared: kept });
     return this.transmit(attempt);
   }
 
@@ -146,6 +159,14 @@ export class SubmissionManager {
     this.patchDraft(projectId, (d) => ({ ...d, uploads: [...d.uploads, { ...file, attachment: null, failed: false }], error: null }));
     return ticket;
   }
+  /** 연결 때문에 서버가 첨부를 받지 않았다. 칩을 실패로 남기지 않고 어디에 막혔는지만 알린다. */
+  refuseUpload(ticket: UploadTicket, error: string): boolean {
+    if (!this.current(ticket.generation, ticket.session)) return false;
+    const state = this.projects.get(ticket.projectId);
+    if (!state?.draft.uploads.some((u) => u.key === ticket.key)) return false;
+    this.patchDraft(ticket.projectId, (d) => ({ ...d, uploads: d.uploads.filter((u) => u.key !== ticket.key), error }));
+    return true;
+  }
   finishUpload(ticket: UploadTicket, attachment: Attachment | null, error: string | null = null): boolean {
     if (!this.current(ticket.generation, ticket.session)) return false;
     const state = this.projects.get(ticket.projectId);
@@ -159,6 +180,7 @@ export class SubmissionManager {
     this.generation++;
     this.checks.clear();
     this.sends.clear();
+    this.firstSends.clear();
     for (const [projectId, state] of this.projects) {
       const interrupted = state.draft.uploads.some((u) => !u.attachment && !u.failed);
       this.projects.set(projectId, { ...state, draft: interrupted ? { ...state.draft, uploads: state.draft.uploads.map((u) => !u.attachment ? { ...u, failed: true } : u), error: uploadRecovery } : state.draft, attempts: state.attempts.map((a) => freezeAttempt({ ...a, status: "retryable", error: "접속을 확인한 뒤 전송 결과를 다시 확인해 주세요" })) });
@@ -232,7 +254,7 @@ export class SubmissionManager {
       if (Array.isArray(stored?.attempts)) {
         for (const a of stored.attempts) if (validAttempt(a, projectId) && !this.options.storage.getItem(this.attemptKey(projectId, a.id))) this.options.storage.setItem(this.attemptKey(projectId, a.id), JSON.stringify({ ...a, sourceRevision: null }));
       }
-      if (expectedRevision !== undefined && stored?.revision && stored.revision !== expectedRevision) return true;
+      if (expectedRevision !== undefined && stored?.revision && stored.revision !== expectedRevision) return false;
       this.options.storage.setItem(this.key(projectId), JSON.stringify({ version: 2, draft: state.draft, revision: state.revision }));
       return true;
     } catch { return false; }
@@ -298,14 +320,47 @@ export class SubmissionManager {
   private async transmit(attempt: MessageAttempt): Promise<boolean> {
     if (this.sends.has(attempt.id)) return false;
     const generation = this.generation, session = this.options.session();
+    const first = this.firstSends.get(attempt.id);
+    this.firstSends.delete(attempt.id);
     this.sends.add(attempt.id);
-    this.updateAttempt(attempt, { status: "checking", error: null });
+    this.updateAttempt(attempt, { status: first ? "sending" : "checking", error: null });
     let sent: Message | null = null;
+    let refused: SubmissionRefused | null = null;
     try { sent = await this.options.send(attempt); }
-    catch (error) { if (this.current(generation, session)) this.updateAttempt(attempt, { status: "retryable", error: readableError(error) }); }
+    catch (error) {
+      if (isRefused(error)) refused = error;
+      else if (this.current(generation, session)) this.updateAttempt(attempt, { status: "retryable", error: readableError(error) });
+    }
     finally { if (this.current(generation, session)) this.sends.delete(attempt.id); }
     if (!this.current(generation, session) || !this.find(attempt.projectId, attempt.id)) return false;
+    if (refused) return this.refuse(attempt, refused.message, first);
     return sent ? this.settle(attempt, sent) : this.check(attempt);
+  }
+  /**
+   * 서버가 저장 전에 거부했다. 이 화면에서 처음 보낸 새 id 이고 그 뒤 입력칸이 그대로면 원래 글·대상·첨부를 되돌리고 시도를 지운다.
+   * 입력칸이 바뀌었거나 이미 한 번 나간 id 의 재시도(서버에 실패 글로 있을 수 있음)면 되돌리지 않고 같은 내용 재시도로 남긴다.
+   */
+  private refuse(attempt: MessageAttempt, reason: string, first: { before: Draft; cleared: Draft } | undefined): boolean {
+    const state = this.projects.get(attempt.projectId);
+    if (!first || !state || state.draft !== first.cleared) {
+      this.updateAttempt(attempt, { status: "retryable", error: reason });
+      return false;
+    }
+    // 복원이 기기에 저장될 때까지 불변 시도를 유지한다. 다른 탭의 새 초안이나
+    // 저장 실패가 있으면 원문·첨부는 같은 ID의 재시도로 남긴다.
+    // 삭제 직전 중단되더라도 sourceRevision으로 복원 글의 중복 전송을 막는다.
+    const next: ProjectDraft = { draft: { ...first.before, error: `${reason}. 글은 그대로 두었습니다` }, attempts: state.attempts.filter((a) => a.id !== attempt.id), revision: attempt.sourceRevision ?? revision() };
+    if (!this.writeDraft(attempt.projectId, next, state.revision)) {
+      this.updateAttempt(attempt, { status: "retryable", error: reason });
+      return false;
+    }
+    try { this.options.storage.removeItem(this.attemptKey(attempt.projectId, attempt.id)); }
+    catch {
+      this.updateAttempt(attempt, { status: "retryable", error: reason });
+      return false;
+    }
+    this.replace(attempt.projectId, next);
+    return false;
   }
 }
 function validUpload(value: unknown): value is Upload {

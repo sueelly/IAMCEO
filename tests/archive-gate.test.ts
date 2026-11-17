@@ -1,5 +1,5 @@
 // 보관·전달·편입·연결의 경계(spec §3.1·§6). 실행기는 가짜, 저장소·전달 펌프·도구·HTTP 는 진짜다.
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,8 +48,10 @@ class Fake {
   checkErrors = new Map<string, Error>();
   stopped: string[] = [];
   stopDelayMs = 0;
+  duringStop: ((member: RunnerMember) => Promise<void>) | null = null;
   async stop(m: RunnerMember) {
     if (this.stopError) throw this.stopError;
+    await this.duringStop?.(m);
     if (this.stopDelayMs) await Bun.sleep(this.stopDelayMs);
     const e = this.stopErrors.get(m.id);
     if (e) throw e;
@@ -77,8 +79,8 @@ class Fake {
 }
 
 const closers: (() => Promise<void> | void)[] = [];
-afterAll(async () => {
-  for (const close of closers) await close();
+afterEach(async () => {
+  for (const close of closers.splice(0)) await close();
 });
 
 async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabled?: boolean } = {}) {
@@ -236,7 +238,9 @@ describe("보관", () => {
   describe("넘겨받은 칸이 둘일 때", () => {
     const CANNOT = () => new HerdrError("cannot_exit", "칸의 입력칸에 쓰던 글이 있습니다");
     const pair = async () => {
-      const t = await setup();
+      // These cases own the archive interleaving. A background tick before
+      // archive would attempt delivery and correctly preserve delivery_unknown.
+      const t = await setup({ timings: { tickMs: 60_000 } });
       const mk = (handle: string, name: string, paneId: string) =>
         t.store.createMember({ projectId: t.project.id, handle, name, role: "개발", kind: "worker", origin: "adopted", status: "idle", sessionId: `s-${handle}`, paneId });
       const a = mk("aa", "가", "pa");
@@ -278,11 +282,89 @@ describe("보관", () => {
     test("칸을 끝내는 동안 틱이 먼저 끝낸 칸을 다시 열지 않고, 다 끝나면 보관된다", async () => {
       const { t, a, b, d, archive } = await pair();
       t.runner.stopDelayMs = 60;
+      expect(t.store.requireDelivery(d.id).attempts).toBe(0);
+      let interleavings = 0;
+      t.runner.duringStop = async (member) => {
+        if (member.id !== b.id) return;
+        expect(t.store.requireMember(a.id).status).toBe("asleep");
+        await t.orch.pump(a.id);
+        interleavings++;
+      };
       expect((await archive()).status).toBe(200);
+      expect(interleavings).toBe(1);
       expect(t.runner.starts.length).toBe(0);
       expect(t.store.requireMember(a.id).status).toBe("asleep");
       expect(t.store.requireMember(b.id).status).toBe("asleep");
       expect(t.store.listPending(a.id).find((x) => x.id === d.id)).toMatchObject({ status: "held", holdReason: "archived" });
+    });
+
+    // 실제 실행기(herdr·core 의 send)는 입력칸이 차 있으면 쓰기 전에 거절하고 deliveryEffect:"not_written" 을 준다.
+    // 그 결과로 한 번 시도된 전달이 줄에 있을 때도 위 두 시험의 단언이 그대로 서야 한다(2026-11-17 승인 연결 보완).
+    // 횟수는 Fake.send 시도 수다. 실제 CLI 수신·키 입력·가짜 start 호출과는 다른 수다.
+    const NOT_WRITTEN: SendResult = { ok: false, reason: "input_busy", retryable: true, deliveryEffect: "not_written" };
+    const countSends = (t: Awaited<ReturnType<typeof pair>>["t"]) => {
+      let n = 0;
+      const send = t.runner.send.bind(t.runner);
+      t.runner.send = async (m: RunnerMember, text: string) => { n++; return send(m, text); };
+      return () => n;
+    };
+
+    test("입력 전에 거절된 전달을 시도한 뒤 보고 난 뒤 칸이 달라져 거부돼도 먼저 끝낸 칸을 다시 열지도, 다시 넣지도 않는다", async () => {
+      const { t, a, b, d, archive } = await pair();
+      t.runner.sendResult = NOT_WRITTEN;
+      const sends = countSends(t);
+      await t.orch.pump(a.id);
+      expect(sends()).toBeGreaterThanOrEqual(1);
+      expect(t.store.requireDelivery(d.id)).toMatchObject({ status: "queued" });
+      t.runner.stopErrors.set(b.id, CANNOT());
+      const res = await archive();
+      const refusedAt = sends();
+      // 아래는 '보고 난 뒤 칸이 달라져 …' 원 시험의 단언 그대로다.
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toContain("가의 칸은 이미 끝나");
+      expect(t.store.requireProject(t.project.id).archived).toBe(false);
+      await Bun.sleep(80);
+      expect(t.runner.starts.length).toBe(0);
+      expect(t.store.requireMember(a.id)).toMatchObject({ status: "asleep", origin: "adopted", paneId: null });
+      expect(t.store.listPending(a.id).find((x) => x.id === d.id)).toMatchObject({ status: "held", holdReason: "asleep" });
+      expect(t.store.requireMember(b.id)).toMatchObject({ status: "idle", paneId: "pb" });
+      // 거부 뒤에는 틱이 돌아도 다시 넣지 않는다. 받은 글도 없다.
+      expect(sends()).toBe(refusedAt);
+      expect(t.runner.sent).toEqual([]);
+    });
+
+    test("결과를 모르는 전달(실행기 결과에 효과가 없음)은 보관 거부 뒤에도 보호 보류 그대로이고 다시 넣지 않는다", async () => {
+      const { t, a, b, d, archive } = await pair();
+      const sends = countSends(t);
+      await t.orch.pump(a.id);
+      expect(sends()).toBe(1);
+      expect(t.store.requireDelivery(d.id)).toMatchObject({ status: "held", holdReason: "delivery_unknown", attempts: 1 });
+      t.runner.stopErrors.set(b.id, CANNOT());
+      expect((await archive()).status).toBe(409);
+      await Bun.sleep(80);
+      expect(t.runner.starts.length).toBe(0);
+      expect(t.store.requireMember(a.id)).toMatchObject({ status: "asleep", origin: "adopted", paneId: null });
+      expect(t.store.requireDelivery(d.id)).toMatchObject({ status: "held", holdReason: "delivery_unknown", attempts: 1 });
+      expect(t.store.requireMember(b.id)).toMatchObject({ status: "idle", paneId: "pb" });
+      expect(sends()).toBe(1);
+      expect(t.runner.sent).toEqual([]);
+    });
+
+    test("입력 전에 거절된 전달을 시도한 뒤에도 다 끝나면 보관되고, 먼저 끝낸 칸을 다시 열지 않는다", async () => {
+      const { t, a, b, d, archive } = await pair();
+      t.runner.sendResult = NOT_WRITTEN;
+      const sends = countSends(t);
+      await t.orch.pump(a.id);
+      t.runner.stopDelayMs = 60;
+      expect((await archive()).status).toBe(200);
+      const archivedAt = sends();
+      await Bun.sleep(80);
+      expect(t.runner.starts.length).toBe(0);
+      expect(t.store.requireMember(a.id).status).toBe("asleep");
+      expect(t.store.requireMember(b.id).status).toBe("asleep");
+      expect(t.store.listPending(a.id).find((x) => x.id === d.id)).toMatchObject({ status: "held", holdReason: "archived" });
+      expect(sends()).toBe(archivedAt);
+      expect(t.runner.sent).toEqual([]);
     });
 
     test("소켓 문제로 칸을 볼 수 없으면 503 이고 깬 칸을 남긴 채 보관하지 않는다", async () => {

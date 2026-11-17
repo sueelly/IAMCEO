@@ -184,9 +184,9 @@ export class TaskContinuationCoordinator {
     // uncertain instructions. Only accepted, reconciled scope can be continued.
     if (!latest || latest.status !== "delivered" || !["none", "resolved"].includes(latest.phase) || ["duplicate_draft", "not_received"].includes(latest.recovery_reason ?? "") || ctx.boardDone.has(task.id)) return false;
     if (ctx.enrolled.has(task.id) || this.row(task.id)?.source_delivery_id) return true;
-    const f = ctx.facts.get(task.id), last = f?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
+    const f = ctx.facts.get(task.id), last = f?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
     // Adopt proven unfinished legacy work, not every old delivered utterance.
-    return !!(last && (last.kind === "막힘" || last.failed.length || last.notRun.length ||
+    return !!(last && (last.kind === "막힘" || last.continuesWork || last.failed.length || last.notRun.length ||
       (last.kind === "완료" && (task.branch || task.worktree)))) || !!f?.marks.some(m => ["review", "merged", "applied", "reopen"].includes(m.stage));
   }
   private family(id: string, other: string | null, ctx: Context): boolean {
@@ -202,7 +202,7 @@ export class TaskContinuationCoordinator {
   }
   private recipient(task: Task, ctx: Context): Member | null {
     const contract = this.store.getEffectiveContract(task.id), facts = ctx.facts.get(task.id);
-    const latest = facts?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
+    const latest = facts?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
     const reopened = facts?.marks.findLast(m => m.stage === "reopen");
     const blocked = latest?.kind === "막힘" && (!reopened || reopened.at < latest.at || (facts?.watch?.same ?? 0) > 0);
     if (!ctx.criteriaSources.has(task.id) && !ctx.sequenceSources.has(task.id) && bindingContract(contract) && !missingExecutionContractFields(contract).length && !facts?.watch?.trippedAt && !blocked) {
@@ -211,6 +211,19 @@ export class TaskContinuationCoordinator {
       if (worker) return worker;
     }
     return this.store.getConductor(task.projectId);
+  }
+  /** A missing report must not displace the next executable turn of the same assignment. */
+  resumableWorkerTasks(member: Member, taskIds: readonly (string | null)[]): Set<string> {
+    const resumable = new Set<string>();
+    if (member.kind !== "worker" || !taskIds.some(Boolean)) return resumable;
+    const ctx = this.context(member.projectId);
+    for (const id of new Set(taskIds)) {
+      const task = id ? ctx.tasks.get(id) : null;
+      if (task && this.authorized(task, ctx) && this.recipient(task, ctx)?.id === member.id &&
+        !finalOrExternal.has(task.progress?.stage ?? "") && !this.paused(task, ctx) &&
+        !this.familyGated(task, ctx) && !this.store.pendingTaskFailureDecision(task.id)) resumable.add(task.id);
+    }
+    return resumable;
   }
   private contractChanged(task: Task): boolean {
     const recorded = this.row(task.id)?.evidence_key;
@@ -251,7 +264,7 @@ export class TaskContinuationCoordinator {
     try { const parsed = JSON.parse(key); delete parsed.dispatch; return JSON.stringify(parsed); } catch { return key; }
   }
   private key(task: Task, ctx: Context): string {
-    const f = ctx.facts.get(task.id), outcome = f?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
+    const f = ctx.facts.get(task.id), outcome = f?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
     const mark = f?.marks.at(-1), contract = this.store.getEffectiveContract(task.id);
     const sources = ctx.sources.get(task.id) ?? [];
     const owner = sources.findLast(s => s.kind === "user_message");
@@ -262,7 +275,7 @@ export class TaskContinuationCoordinator {
       // A repeated downstream assignment is not progress. A genuinely new
       // owner instruction may explicitly revise scope or authorize a new attempt.
       source: { owner: owner?.id ?? null, assignment: scopeText },
-      outcome: outcome ? [outcome.kind, outcome.memberId, outcome.passed, [...outcome.failed].sort(), [...outcome.notRun].sort()] : null,
+      outcome: outcome ? [outcome.kind, outcome.memberId, outcome.passed, [...outcome.failed].sort(), [...outcome.notRun].sort(), ...(outcome.continuesWork ? [[...new Set(outcome.passingChecks)].sort()] : [])] : null,
       mark: mark ? [mark.stage, mark.evidence] : null });
   }
   private retire(delivery: Delivery, reason: string): void {
@@ -381,11 +394,11 @@ export class TaskContinuationCoordinator {
             : sequenceSource ? `업무 순서에 막힌 지시 확인: #${task.id} '${task.title}'\n직원에게 보낼 지시 #${sequenceSource.source.id}가 선행 업무 #${sequenceSource.blocker.taskId} '${sequenceSource.blocker.title}' 때문에 아직 전달되지 않았습니다.`
             : `업무 계속 진행: #${task.id} '${task.title}'\n한 번의 보고·턴은 끝났지만 완료 조건이 남아 있습니다.`;
           const nextAction = worker
-            ? `기존 수정·보고·검증 근거를 먼저 읽고 남은 조건만 처리하세요. 같은 원 지시 전체나 이미 완료한 작업을 다시 수행하지 마세요. 현재 계약 판에 맞춰 결과와 검증 근거를 보고하세요. 막힘·이상·추가 권한 필요는 총괄에게 구체적으로 보고하세요.`
+            ? `기존 결과와 검증 근거를 읽고, 맡은 범위의 남은 조건만 처리하세요. 실패 원인을 찾아 수정한 뒤 다시 검사하세요. 통과한 검사와 완료한 작업은 재사용하세요. 이어서 고칠 수 있으면 현재 계약 판으로 진행(continue_work: true)을 남기고 실행을 이어 가세요. 다른 담당자의 작업이나 추가 권한이 필요하면 막힘으로 보고하고 필요한 결과와 담당자를 명시하세요.`
             : criteriaSource
             ? `현재 승인 범위의 완료 기준만 먼저 확정하세요. 확정 후 보관된 지시 #${criteriaSource.id}가 일반 입장 검사와 수신 확인을 거쳐 한 번 전달됩니다. 직원은 현재 업무 계약을 확인해야 합니다. 같은 원 지시를 team_assign으로 다시 만들거나 구현을 직접 시작하지 마세요.`
             : sequenceSource ? `총괄은 선행 업무 #${sequenceSource.blocker.taskId}의 남은 조건과 실제 담당자를 확인하고, 기존 납품 검토·필요한 보완·범위에 맞는 보류 중 필요한 조정을 수행하세요. 지시 #${sequenceSource.source.id}는 원문 그대로 대기 중입니다. 같은 지시를 team_assign으로 다시 만들거나 완료 근거 없이 선행 업무를 완료 처리하지 마세요. 순서가 풀리면 보관된 지시가 일반 입장 검사와 수신 확인을 거쳐 전달됩니다. 대표 중단·결재·승인·수신 불확실을 해제하는 요청이 아닙니다.`
-            : `기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인된 범위는 기존 적합한 직원에게 team_assign으로 맡기고, 검토 실패는 원 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.`;
+            : `기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인 범위는 적합한 직원에게 맡기세요. 다른 담당자의 변경·검토·통합·적용은 별도 연결 업무로 만들고, 먼저 받은 결과를 새 업무의 입력에 적으세요. 검토 실패는 고칠 범위를 맡은 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.`;
           const d = this.store.enqueue({ projectId: project.id, memberId: recipient.id, kind: "system", wake: true, urgent: false, taskId: task.id,
             text: `[시스템] ${purpose}\n최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n${criteriaStep}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `${formatContract(contract, { forTaskId: task.id })}\n` : ""}${context}\n${ownerAnswers}\n최신 대표 지시와 결재 답의 제한을 우선합니다. ${worker ? "직원은 승인된 계약 범위와 남은 조건을 기준으로 수행합니다." : "총괄은 제작·구현·제품 설계를 직접 하지 않고 기준 정의·배정·검토 요청·상태 종합을 맡습니다."}\n${nextAction}\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 같은 실패 세 번이나 막힘은 총괄에게 연결합니다. 기존 대표 결재가 있으면 대표 답 전에는 해당 범위를 reopen하거나 재배정하지 마세요.` });
           const stamp = new Date(now).toISOString();

@@ -21,18 +21,23 @@ const OPEN: Gate = { ok: true, kind: null, detail: null };
 // 화면을 옮겨 새로 그려도 유예를 다시 세지 않는다.
 let offlineSince = 0;
 
+/**
+ * 서버와 실제로 이어진(online) 동안만 연다. online 이 아닌 때(connecting·offline)가 유예보다 길면 닫고,
+ * 닫힌 뒤에는 다시 연결을 눌러 connecting 이 되어도 online 이 될 때까지 입력칸·카드를 풀지 않는다(2026-11-17).
+ * 처음 열 때·화면 복귀·서버 재시작처럼 유예 안에 online 으로 돌아오는 잠깐은 닫지 않는다(쓰던 글의 초점을 지킨다).
+ */
 function useServerDown(): boolean {
-  const offline = useStore((s) => s.connection === "offline");
+  const online = useStore((s) => s.connection === "online");
   const [, redraw] = useState(0);
-  if (!offline) offlineSince = 0;
+  if (online) offlineSince = 0;
   else if (!offlineSince) offlineSince = Date.now();
-  const left = offline ? SERVER_GRACE_MS - (Date.now() - offlineSince) : 0;
+  const left = online ? 0 : SERVER_GRACE_MS - (Date.now() - offlineSince);
   useEffect(() => {
-    if (!offline || left <= 0) return;
+    if (online || left <= 0) return;
     const t = setTimeout(() => redraw((n) => n + 1), left + 10);
     return () => clearTimeout(t);
-  }, [offline, left]);
-  return offline && left <= 0;
+  }, [online, left]);
+  return !online && left <= 0;
 }
 
 export function useGate(): Gate {

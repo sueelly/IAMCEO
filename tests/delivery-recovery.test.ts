@@ -781,3 +781,13 @@ describe("거절 한도에 걸린 지시는 대표의 '다시 확인'으로 같�
     expect(f.store.requireDelivery(d.id).status).toBe("queued");
   });
 });
+
+test("archive cannot classify an earlier accepted envelope as never written", () => {
+  const f = setup(), d = f.enqueue();
+  const accepted = f.envelope([d]);
+  f.store.updateDispatch(accepted.dispatchId, "unknown", "accepted");
+  f.store.updateDeliveryRecovery(d.id, f.r(d.id).version, { phase: "resolved", reason: "not_received" });
+  f.store.setDeliveryStatus(d.id, "queued", { attempt: true });
+  f.store.saveDispatch({ ...accepted, dispatchId: "later-refusal", bundleMarker: "later-refusal-marker", transportState: "rejected" });
+  expect(f.service.unwritten(d.id)).toBe(false);
+});

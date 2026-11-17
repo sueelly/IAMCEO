@@ -43,7 +43,17 @@ export interface ProjectWorkflow {
   edges: WorkflowEdge[];
 }
 
-export interface WorkflowAssignmentRequest { operationId: string; memberId: string; revision: string }
+export interface IndependentDeliveryRequest {
+  operationId: string;
+  sourceMessageId: string;
+  expectedSessionGeneration: number;
+  expectedBlockerTaskId: string;
+}
+export interface WorkflowAssignmentRequest {
+  operationId: string; memberId: string; revision: string;
+  kind?: "independent_delivery";
+  independent?: { sourceMessageId: string; sessionGeneration: number; blockerTaskId: string };
+}
 export interface WorkflowAssignmentResult {
   operationId: string; projectId: string; taskId: string; memberId: string; deliveryId: string; createdAt: string;
 }

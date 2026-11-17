@@ -1,0 +1,249 @@
+{
+  "scope": "test-only, fixed baseline 5140c39 and candidate a75c830 plus archive fixture scheduling; no original QA execution",
+  "baselineSha": "5140c3936ad990f90dfcbe8ddc7212ab94370ab2",
+  "candidateParentSha": "a75c830ed4c01137552a2a636a59e231bb53cd59",
+  "rows": [
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin:/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/archive-gate.test.ts -t '칸을 끝내는 동안 틱이'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:02:22.409Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 1,
+        "fail": 0,
+        "filtered out": 21
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin:/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/archive-gate.test.ts -t '칸을 끝내는 동안 틱이'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:02:22.674Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 1,
+        "fail": 0,
+        "filtered out": 21
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/artifact.browser.ts --timeout 30000 -t 'webkit.*주석'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:04:00.405Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 1,
+        "fail": 0,
+        "filtered out": 16
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/artifact.browser.ts --timeout 30000 -t 'webkit.*주석'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:04:09.985Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 1,
+        "fail": 0,
+        "filtered out": 16
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/herdr.test.ts -t '입력칸에 남은 글은 지우는 키를 한 번'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:04:10.727Z",
+      "exitCode": 1,
+      "status": "failed",
+      "counts": {
+        "pass": 0,
+        "fail": 1,
+        "filtered out": 95
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/herdr.test.ts -t '입력칸에 남은 글은 지우는 키를 한 번'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:04:20.060Z",
+      "exitCode": 1,
+      "status": "failed",
+      "counts": {
+        "pass": 0,
+        "fail": 1,
+        "filtered out": 95
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/artifact.browser.ts --timeout 30000 -t '아티팩트 격리: webkit'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:04:52.424Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 7,
+        "fail": 0,
+        "filtered out": 10
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./.pumasi/regression-narrowing-20261118/baseline-archive.test.ts",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:05:00.630Z",
+      "exitCode": 1,
+      "status": "failed",
+      "counts": {
+        "pass": 0,
+        "fail": 1
+      },
+      "observations": [
+        {
+          "mode": "archive",
+          "before": {
+            "attempts": 1,
+            "holdReason": "delivery_unknown"
+          },
+          "after": {
+            "attempts": 1,
+            "holdReason": "delivery_unknown"
+          },
+          "httpStatus": 200,
+          "starts": 0,
+          "states": [
+            "asleep",
+            "asleep"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./.pumasi/regression-narrowing-20261118/candidate-archive.test.ts",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:05:00.943Z",
+      "exitCode": 1,
+      "status": "failed",
+      "counts": {
+        "pass": 0,
+        "fail": 1
+      },
+      "observations": [
+        {
+          "mode": "archive",
+          "before": {
+            "attempts": 1,
+            "holdReason": "delivery_unknown"
+          },
+          "after": {
+            "attempts": 1,
+            "holdReason": "delivery_unknown"
+          },
+          "httpStatus": 200,
+          "starts": 0,
+          "states": [
+            "asleep",
+            "asleep"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/archive-gate.test.ts",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:05:24.236Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 22,
+        "fail": 0
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./tests/artifact.browser.ts --timeout 30000 -t '아티팩트 격리: webkit'",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:05:33.082Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 7,
+        "fail": 0,
+        "filtered out": 10
+      }
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe scripts/probe-fixture-ownership.ts /Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:06:22.125Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {},
+      "observations": [
+        {
+          "root": "/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/execution-workdir-latest-base-20261118",
+          "foreignCwd": "rejected",
+          "foreignMcpConfig": "rejected",
+          "foreignUrl": "rejected",
+          "ownedCwdConfigUrl": "accepted",
+          "providerTurns": 0,
+          "preservedDirectories": true
+        }
+      ]
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe scripts/probe-fixture-ownership.ts /Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:06:22.215Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {},
+      "observations": [
+        {
+          "root": "/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+          "foreignCwd": "rejected",
+          "foreignMcpConfig": "rejected",
+          "foreignUrl": "rejected",
+          "ownedCwdConfigUrl": "accepted",
+          "providerTurns": 0,
+          "preservedDirectories": true
+        }
+      ]
+    },
+    {
+      "command": "env -i HOME=/Users/hyejookim PATH=/usr/bin:/bin LANG=en_US.UTF-8 IAMCEO_TEST=1 /Users/hyejookim/Programming/01_Ing/.runtime/IAMCEO/toolchain/node_modules/bun/bin/bun.exe test ./.pumasi/regression-narrowing-20261118/baseline-archive-owned-schedule.test.ts",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:06:45.142Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {
+        "pass": 22,
+        "fail": 0
+      }
+    },
+    {
+      "command": "bun run typecheck && git diff --check && git diff --stat",
+      "workdirUri": "file:///Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/narrow-execution-regressions-20261118",
+      "startedAt": null,
+      "endedAt": "2026-11-17T18:06:55.755Z",
+      "exitCode": 0,
+      "status": "completed",
+      "counts": {}
+    }
+  ],
+  "aggregation": "Filtered subsets and generated baseline/counterexamples are not added to the full-suite totals. Native output may be split across polling; counts missing in a completion chunk are unknown, not zero.",
+  "unchangedIncompleteFiles": 129,
+  "legacyHerdrUnexecutedCases": 35
+}

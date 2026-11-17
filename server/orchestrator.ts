@@ -80,7 +80,7 @@ import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderRole } from "./roles.ts";
-import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, type MarkFact } from "./task-progress.ts";
+import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
 import { relatedWork } from "./workflow.ts";
@@ -89,8 +89,9 @@ import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
-import type { WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
+import type { IndependentDeliveryRequest, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { commitWorkflowAssignment } from "./workflow-assignment.ts";
+import { authorizeIndependentDelivery as commitIndependentDelivery, independentDeliveryAuthorized } from "./independent-delivery.ts";
 import type { AgentOperationContext, ManualInboxBatch, ManualInboxAckRequest, ManualInboxAckResult, FreshSessionRequest, MemberConfigWriteResult, OperationReceipt, RevisionPrecondition, SettingsWriteResult, TerminalControlRequestV2, TerminalKey, TodoDoneRequest, TodoWriteResult } from "../shared/operations.ts";
 import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBaseline } from "./runner/core-context.ts";
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
@@ -190,9 +191,9 @@ export function formatTaskLine(task: Task | null): string {
 /** 명령은 실행 데이터이므로 원문을 보존한다. 설명만 정리한다. 미확인 목록은 'unverified' 검사 한 줄로 붙인다(없다고 적은 것도 기록이다). */
 function harnessChecks(input: PostInput): ReportCheckInput[] {
   const clean = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
-  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: cleanText(c.evidence).trim(), command: c.command ?? null, criterion: c.criterion ?? null }));
+  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: cleanText(c.evidence).trim(), command: c.command ?? null, workdir: c.workdir ?? null, criterion: c.criterion ?? null }));
   const unverified = (input.unverified ?? []).map(v => cleanText(v).trim()).filter(Boolean);
-  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, criterion: null });
+  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, workdir: null, criterion: null });
   return checks;
 }
 
@@ -470,6 +471,8 @@ export interface PostInput {
   taskId?: string | null;
   /** 실제로 돌린 검사. 계약이 있는 업무의 완료는 이것으로 판정한다. */
   checks?: ReportCheckInput[];
+  /** 현재 담당 업무를 같은 계약으로 이어서 수행한다는 진행 보고. */
+  continueWork?: boolean;
   /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
   unverified?: string[];
   /** 검사가 따른 계약 판 번호. 계약이 있는 업무의 완료는 지금 판과 같아야 받는다. */
@@ -1091,7 +1094,7 @@ export class Orchestrator implements OrchestratorApi {
       return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
         correctsMessageId: this.store.getReportReferences(member.projectId, id)?.correctsMessageId ?? null,
         completionBasis: m?.kind === "완료" ? byMessage.get(id) ?? { messageId: id, eligible: false, status: "not_current", correctedBy: null } : null,
-        checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null })) ?? [],
+        checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null, workdir: c.workdir ?? null })) ?? [],
         claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
     });
     return {
@@ -1103,6 +1106,11 @@ export class Orchestrator implements OrchestratorApi {
       deliveryCoverage: deliveryTrace.coverage,
       recentDeliveries: deliveryTrace.recent.map(deliveryMetadata),
       unsettledDeliveries: deliveryTrace.unsettled.map(deliveryMetadata),
+      inputAdmission: deliveryTrace.unsettled.filter(d => d.wake && this.store.getMember(d.memberId)?.kind === "worker")
+        .map(d => ({ deliveryId: d.id,
+          sequenceBlockerTaskId: this.store.taskSequenceBlocker(d.memberId, task.id)?.taskId ?? null,
+          sessionGeneration: this.store.memberRevisions(d.memberId).sessionGeneration,
+          independentAuthorized: independentDeliveryAuthorized(this.store, this.store.requireDelivery(d.id)) })),
       reports,
       currentCompletion: { eligible: sources.length > 0, sources },
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
@@ -1128,7 +1136,7 @@ export class Orchestrator implements OrchestratorApi {
     const log = target.cli === "antigravity" ? null : this.contextLog(target, selection);
     if (target.cli === "antigravity") selection.code = "unsupported";
     const observed = inspectProviderEvidence(target.cli, log ? { ...log, root: providerLogRoot(target.cli, log.home) } : null,
-      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; }, task.worktree);
+      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; }, task.worktree, check.workdir);
     return { scope: { taskId: task.id, reportId, checkIndex, memberId: target.id,
       contract: { taskId: contract!.taskId, rev: contract!.rev, at: contract!.at } },
       observation: { kind: "current_requery", at: new Date().toISOString(), provider: target.cli,
@@ -1452,11 +1460,15 @@ export class Orchestrator implements OrchestratorApi {
     // cannot discharge other tasks that arrived in the same execution.
     const open = this.openReportDuties(member, run.createdAt, this.reportDuties(deliveries));
     if (!open.length) return;
+    // A supplement retains the whole root run's scope. Keep the existing path
+    // for mixed duties unless every open duty can be handled during repair.
+    const taskIds = open.map(d => this.reportTaskKey(this.store.deliveryTaskId(d.id)));
+    const resuming = this.taskContinuations.resumableWorkerTasks(member, taskIds);
+    if (taskIds.every(id => !!id && resuming.has(id))) return;
     const reports = open.filter(d => d.kind === "report" && d.refType === "message" && d.refId).map(d => d.refId!);
     const reviewHint = reports.length ? ` 직원 보고를 확인만 했으면 kind 알림에 about_report_id(${reports.map(id => `#${id}`).join(", ")})를 넣어 그 보고 확인을 마감하세요.` : "";
     // 보고 보완도 그 실행이 받은 업무를 밝힌다. 하나면 그 업무 줄을 붙이고, 여럿이면 업무마다 따로 보고하라고 적는다(서버가 고르지 않는다).
-    const taskIds = this.turnTasks(open);
-    const tasks = taskIds.map(id => this.store.getTask(id)).filter((t): t is Task => !!t);
+    const tasks = this.turnTasks(open).map(id => this.store.getTask(id)).filter((t): t is Task => !!t);
     const taskNote = tasks.length > 1 ? `\n이 실행은 여러 업무의 글을 받았습니다: ${tasks.map(t => `#${t.id} '${t.title}'`).join(", ")}. 업무마다 그 task_id 로 따로 post 하세요.`
       : tasks.length === 1 ? `\n${formatTaskLine(tasks[0]!)}` : "";
     this.store.claimExecutionNotice(run.runId, "report", () => {
@@ -3702,6 +3714,15 @@ export class Orchestrator implements OrchestratorApi {
     return result;
   }
 
+  /** Owner-confirmed order exception. Reuse the existing input; retries only read the receipt. */
+  async authorizeIndependentDelivery(projectId: string, deliveryId: string, request: IndependentDeliveryRequest): Promise<WorkflowAssignmentResult> {
+    this.requireActive(this.store.requireProject(projectId));
+    const prior = this.store.workflowAssignmentReceipt(request.operationId);
+    const result = commitIndependentDelivery(this.store, projectId, deliveryId, request);
+    if (!prior) await this.pump(result.memberId);
+    return result;
+  }
+
   async assign(projectId: string, memberRef: string, input: AssignInput, assignedBy?: Member): Promise<AssignResult> {
     const target = this.requireInProject(projectId, memberRef);
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
@@ -3941,7 +3962,9 @@ export class Orchestrator implements OrchestratorApi {
         this.interruptCoreCompaction(member);
         this.store.patchMember(memberId, { status: "asleep", subagents: 0, paneId: null });
         for (const d of this.store.listPending(memberId)) {
-          if (opts.holdAs && (d.attempts > 0 || d.status === "held" && d.holdReason !== "archived")) continue;
+          // 시도한 전달은 결과를 모를 수 있어 보관 보류로 바꾸지 않는다. 다만 매번 입력 전에 거절된 전달(not_written)은
+          // 줄에 남기면 보관이 거부된 뒤 틱이 먼저 끝낸 칸을 다시 연다. 잠든 칸의 다른 줄처럼 보류한다.
+          if (opts.holdAs && ((d.attempts > 0 && !this.deliveryRecovery.unwritten(d.id)) || d.status === "held" && d.holdReason !== "archived")) continue;
           this.hold(d, opts.holdAs ?? "asleep");
         }
         this.confirmStop(memberId);
@@ -4322,6 +4345,24 @@ export class Orchestrator implements OrchestratorApi {
     return ids;
   }
 
+  /** Current executable input scopes, including a received core run reattached after restart. */
+  private repairWorkScope(member: Member): string[] {
+    const generation = this.store.memberRevisions(member.id).sessionGeneration;
+    const received = this.store.listPendingExecutions()
+      .filter(run => run.memberId === member.id && run.identity.sessionGeneration === generation && !!run.inputReceivedAt);
+    const ids = new Set([...(this.runtime(member.id).turn?.deliveries ?? []).map(d => d.id),
+      ...received.flatMap(run => run.deliveryIds)]);
+    const inputs = [...ids].flatMap(id => {
+      const delivery = this.store.getDelivery(id);
+      if (!delivery?.wake || delivery.status !== "delivered") return [];
+      const recovery = this.store.getDeliveryRecovery(id);
+      if (recovery && !["none", "resolved"].includes(recovery.phase)) return [];
+      const work = ["instruction", "user_message", "answer", "todo_done"].includes(delivery.kind) || this.taskContinuations.isContinuation(id);
+      return work ? [delivery] : [];
+    });
+    return this.turnTasks(inputs);
+  }
+
   /** 전달 글의 작업 줄. 이 프로젝트에 작업이 하나도 없으면 줄을 붙이지 않는다(작업을 안 쓰는 프로젝트의 글은 그대로). */
   /** 지시 글의 업무 줄. 계약이 있는 업무면 계약 판·원문 참조·최근 검사·열린 결재를 덧붙인다(대화 전량은 넘기지 않는다). */
   private instructionTaskLines(projectId: string, taskId: string | null | undefined): string | null {
@@ -4377,6 +4418,11 @@ export class Orchestrator implements OrchestratorApi {
     }
     const checks = harnessChecks(input);
     const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
+    if (input.continueWork && (member.kind !== "worker" || input.kind !== "진행" || !taskId ||
+      !this.repairWorkScope(member).includes(taskId) || !bindingContract(contract) ||
+      missingExecutionContractFields(contract).length || input.contractRev !== contract?.rev)) {
+      throw new ApiError(409, "계속 수행은 지금 받은 직원 업무의 확정 계약 판을 contract_rev에 넣고 진행으로 보고해 주세요");
+    }
     const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
     const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims) : null;
     // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
@@ -4394,7 +4440,7 @@ export class Orchestrator implements OrchestratorApi {
         gate: gate?.gate ?? null, evidenceStatus: gate?.evidenceStatus ?? null, evidence: gate?.evidence, claims: gate?.claims ?? claims.map(c => ({ ...c, verified: false, via: null })) });
       if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
       // 반복 감시: 멈춘 뒤 같은 실패의 막힘은 총괄을 다시 깨우지 않는다. 처음 멈출 때 총괄에게 한 번 알린다.
-      const watch = this.watchReport(message);
+      const watch = this.watchReport(message, input.continueWork === true);
       if (watch.trip && taskId) noticeTo = this.watchNoticeDelivery(member.projectId, taskId, watch.trip)?.memberId ?? null;
       if (taskId && member.kind === "worker") synchronizeRelatedTaskCompletion(this.store, taskId);
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind) && !watch.quiet, refType: "message", refId: message.id }] : [];
@@ -4448,6 +4494,13 @@ export class Orchestrator implements OrchestratorApi {
     const now = formatContract(contract, { forTaskId: taskId });
     if (declaredRev != null && declaredRev > contract.rev) refuse(`계약 r${declaredRev} 은 아직 확정되지 않았습니다. 현재 확정 판은 r${contract.rev} 입니다. 이 판으로 검사하거나 새 판 확인을 기다리세요`);
     if (declaredRev != null && declaredRev !== contract.rev) refuse(`완료로 올릴 수 없습니다. 업무 #${contract.taskId} 계약이 r${declaredRev} 에서 r${contract.rev} 로 바뀌었습니다. 옛 판의 검사로는 받지 않습니다. 지금 판의 기준으로 다시 검사하세요.\n${now}`, `옛 판 r${declaredRev} 의 검사(지금 r${contract.rev})`);
+    if (member.kind !== "worker" && taskId) {
+      const scope = new Set(this.store.taskCompletionScope(taskId));
+      const facts = this.store.taskProgressFacts(member.projectId, scope);
+      if ([...facts.values()].some(f => latestWorkerOutcome(f)?.continuesWork)) {
+        refuse("원 담당자가 남은 조건을 수정 중입니다. 수정 뒤 현재 계약을 통과한 검사 결과를 받아 주세요");
+      }
+    }
     if (member.kind !== "worker" && !checks.length) {
       if (this.store.hasPassedCompletion(contract.taskId, contract.rev)) return none("contract");
       refuse(`업무 #${contract.taskId} 계약 r${contract.rev} 로 검사를 통과한 직원 완료 보고가 아직 없습니다. 완료로 올리려면 contract_rev 와 checks 를 넣거나, 직원 보고를 기다리세요(진행·알림·막힘은 받습니다)`);
@@ -4483,9 +4536,10 @@ export class Orchestrator implements OrchestratorApi {
 
   /**
    * 보고 글이 마감하는 의무. 완료·막힘·질문은 결과다. 알림은 확인한 원보고(reviewed)나 기다리는 자기 결재(waiting)를 밝힐 때만,
-   * 진행은 어떤 경우에도 마감하지 않는다(중간 소식만으로 끝난 일로 치지 않는다).
+   * 일반 진행은 보고 의무를 마감하지 않는다. 계속 수행을 명시한 진행은 실행 보고만 마감한다.
    */
-  private postClosure(member: Member, input: PostInput): { kind: "result" | "reviewed" | "waiting"; causeId: string | null } | null {
+  private postClosure(member: Member, input: PostInput): { kind: "result" | "reviewed" | "waiting" | "continuing"; causeId: string | null } | null {
+    if (input.continueWork) return { kind: "continuing", causeId: null };
     if (WAKE_POST_KINDS.has(input.kind)) return { kind: "result", causeId: null };
     if (input.kind !== "알림") return null;
     if (input.aboutReportId) return { kind: "reviewed", causeId: input.aboutReportId };
@@ -4719,15 +4773,17 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 보고 하나로 반복 감시를 옮긴다(같은 거래 안). 처음 멈추면 trip 을, 멈춘 뒤 같은 실패면 quiet 를 준다. */
-  private watchReport(message: Message): { quiet: boolean; trip: string | null } {
-    if (!message.taskId || (message.kind !== "막힘" && message.kind !== "완료")) return { quiet: false, trip: null };
+  private watchReport(message: Message, continuing: boolean): { quiet: boolean; trip: string | null } {
+    if (!message.taskId || (!continuing && message.kind !== "막힘" && message.kind !== "완료")) return { quiet: false, trip: null };
     if (this.store.doneMark(message.taskId)) return { quiet: false, trip: null };
     const fact = this.store.reportFact(message.id);
     if (!fact) return { quiet: false, trip: null };
     const saved = this.store.getTaskWatch(message.taskId);
+    const counted = saved?.history.map(attempt => attempt.messageId) ?? [];
+    if (this.store.hasCountedRepairInRun(message, continuing, counted)) return { quiet: false, trip: null };
     let prev = saved;
     const correctsMessageId = this.store.getReportReferences(message.projectId, message.id)?.correctsMessageId ?? null;
-    if (prev?.trippedAt && prev.same >= 3 && fact.kind === "막힘" && fact.authorKind === "worker"
+    if (prev?.trippedAt && prev.same >= 3 && (fact.kind === "막힘" || fact.continuesWork) && fact.authorKind === "worker"
       && !correctsMessageId && !prev.history.some(h => h.messageId === fact.id)) {
       const resolvedAt = this.store.taskFailureRetryAt(message.taskId, prev.trippedAt, fact);
       if (resolvedAt) {
@@ -4889,6 +4945,7 @@ export class Orchestrator implements OrchestratorApi {
       if (this.store.hasUnsettledTaskInput(id)) return `${prefix}미처리 입력이 남았습니다. 전달·보호 상태를 확인한 뒤 완료로 옮깁니다`;
       if (f?.watch?.trippedAt) return `${prefix}반복 감시 점검이 남았습니다. 원인을 확인하고 다시 연 뒤 완료로 옮깁니다`;
       if (f?.marks.at(-1)?.stage === "hold") return `${prefix}보류한 일이 있습니다. 다시 열고 남은 조건을 확인한 뒤 완료로 옮깁니다`;
+      if (latestWorkerOutcome(f)?.continuesWork) return `${prefix}원 담당자의 수정·재검증이 남았습니다. 최신 검사 결과를 받은 뒤 완료로 옮깁니다`;
       const from = f?.marks.findLast(m => m.stage === "reopen")?.at;
       const outcome = f?.reports.findLast(r => (!from || r.at >= from) && (r.kind === "완료" || r.kind === "막힘"));
       if (outcome && (outcome.kind === "막힘" || outcome.failed.length || outcome.notRun.length || !outcome.passed)) return `${prefix}고칠 것 또는 미확인 검사가 남았습니다. 최신 검사·검토 결과를 확인한 뒤 완료로 옮깁니다`;
@@ -5051,8 +5108,10 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
       if (!worker || !taskId) return true;
-      if (!blocked.has(taskId)) blocked.set(taskId, this.store.pendingTaskFailureDecision(taskId) !== null || this.store.pendingTaskIntervention(taskId) !== null || this.store.taskSequenceBlocker(memberId, taskId, sequence) !== null);
-      return !blocked.get(taskId);
+      // Independent order permission never resolves an intervention or owner decision.
+      if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
+      if (!blocked.has(taskId)) blocked.set(taskId, this.store.taskSequenceBlocker(memberId, taskId, sequence) !== null);
+      return !blocked.get(taskId) || independentDeliveryAuthorized(this.store, d);
     });
   }
 
@@ -5472,6 +5531,13 @@ export class Orchestrator implements OrchestratorApi {
     deliveries = this.admittedInputs(member.id, deliveries);
     if (member.kind === "conductor" && this.toolsPending(member)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     if (project.archived || this.archiving.has(project.id) || this.coreCompactFenced(member) || !deliveries.length || this.deliveryRecovery.fenced(member.id)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
+    // Retain which permission admitted this envelope. A later reparenting can
+    // remove the row blocker, but must not discard the review used for this write.
+    const sequence = member.kind === "worker" ? this.store.taskSequenceSnapshot(member.projectId, member.id) : undefined;
+    const independentIds = new Set(member.kind === "worker" ? deliveries.filter(d => {
+      const taskId = this.store.deliveryTaskId(d.id);
+      return taskId && this.store.taskSequenceBlocker(member.id, taskId, sequence);
+    }).map(d => d.id) : []);
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
       const contract = this.store.getEffectiveContract(taskId);
@@ -5485,7 +5551,7 @@ export class Orchestrator implements OrchestratorApi {
       for (const d of deliveries) this.store.setDeliveryStatus(d.id, "delivering", { attempt: true });
     });
     this.invalidateCoreMeasurement(member);
-    return this.executeDispatch(member, dispatch, () => runner.send(this.runnerMember(member, project), dispatch.wireText, { ...this.writeRunFiles(member, project), marker: dispatch.bundleMarker, beforeWrite: () => this.deliveryRecovery.executionContextValid(dispatch) && this.reservedInputAllowed(member, deliveries, urgent) }, urgent));
+    return this.executeDispatch(member, dispatch, () => runner.send(this.runnerMember(member, project), dispatch.wireText, { ...this.writeRunFiles(member, project), marker: dispatch.bundleMarker, beforeWrite: () => this.deliveryRecovery.executionContextValid(dispatch) && this.reservedInputAllowed(member, deliveries, urgent, dispatch.dispatchId, independentIds) }, urgent));
   }
 
   private async executeDispatch(member: Member, dispatch: DeliveryDispatch, send: () => Promise<SendResult>): Promise<SendResult> {
@@ -5764,7 +5830,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** Rechecked by async runners at the physical write boundary, after their terminal preflight. */
-  private reservedInputAllowed(member: Member, deliveries: readonly Delivery[] = [], urgent = false): boolean {
+  private reservedInputAllowed(member: Member, deliveries: readonly Delivery[] = [], urgent = false, inFlightDispatchId?: string, independentIds: ReadonlySet<string> = new Set()): boolean {
     const current = this.store.getMember(member.id);
     if (this.closed || !current || this.executionInputBlocked(current)) return false;
     if (current.kind === "conductor" && this.toolsPending(current)) return false;
@@ -5779,7 +5845,9 @@ export class Orchestrator implements OrchestratorApi {
       // contract may have changed while the runner was inspecting the terminal.
       if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
-      if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId) || this.store.taskSequenceBlocker(member.id, taskId, sequence))) return false;
+      if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
+      if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || this.store.taskSequenceBlocker(member.id, taskId, sequence))
+        && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;
       return this.instructionCriteriaAllow(delivery);
     });
   }

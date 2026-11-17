@@ -14,6 +14,10 @@ export interface ReportFact {
   authorKind: MemberKind | null;
   /** 정정 보고는 기존 시도의 근거를 바로잡으며 새 실행으로 세지 않는다. */
   correctsMessageId?: string | null;
+  /** 직원이 같은 계약에서 할 일이 남았음을 실행 보고로 남겼다. */
+  continuesWork?: boolean;
+  /** Distinct passing checks reported during repair, used only for repeat detection. */
+  passingChecks?: string[];
   /** 실패한 검사 이름 */
   failed: string[];
   /** 실행 안 한 검사 이름(미확인 항목 요약 줄은 빼고) */
@@ -50,6 +54,10 @@ export interface ProgressFacts {
   notice: { id: string; at: string; seenAt: string | null; lines: string[] } | null;
   /** 단계에 직접 쓰지 않지만 판을 올리는 근거 시각(닫힌 결재·할 일, 끝난 전달). */
   revTimes: string[];
+}
+
+export function latestWorkerOutcome(facts: ProgressFacts | undefined): ReportFact | undefined {
+  return facts?.reports.findLast(r => r.authorKind === "worker" && (r.kind === "완료" || r.kind === "막힘" || r.continuesWork));
 }
 
 const CONDUCTOR = "총괄";
@@ -134,13 +142,19 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     return make("held", cause, `${h.who}에게 갈 입력 ${stuck.length}건 보류(${why}) · 자동으로 다시 보내지 않습니다. 총괄이 확인할 차례`, CONDUCTOR, h.at, stuck.map((x) => x.id));
   }
 
-  const outcomes = f.reports.filter((r) => r.kind === "완료" || r.kind === "막힘");
+  const outcomes = f.reports.filter((r) => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
   const lastOutcome = outcomes.at(-1);
   const progressMark = active.findLast((m) => m.stage === "review" || m.stage === "merged" || m.stage === "applied");
   // 작성자 납품: 마지막 통과 완료(계약 판정). 계약이 없으면 마지막 완료.
   const delivery = f.reports.findLast((r) => r.kind === "완료" && r.passed) ?? f.reports.findLast((r) => r.kind === "완료");
 
   if (lastOutcome && (!progressMark || lastOutcome.at >= progressMark.at)) {
+    if (lastOutcome.continuesWork) {
+      const failures = lastOutcome.failed;
+      return make(failures.length ? "fix" : "working", failures.length ? "technical" : null,
+        failures.length ? `${josaI(lastOutcome.who)} 이어서 수정할 검사: ${cut(failures)}` : `${josaI(lastOutcome.who)} 남은 완료 조건을 이어서 처리합니다`,
+        lastOutcome.who, lastOutcome.at, [lastOutcome.id]);
+    }
     if (lastOutcome.kind === "막힘") {
       if (lastOutcome.failed.length) {
         const fixer = delivery && delivery.memberId && delivery.memberId !== lastOutcome.memberId && delivery.seq < lastOutcome.seq ? delivery.who : lastOutcome.who;
@@ -200,7 +214,7 @@ export interface WatchLimits { sameLimit: number; idleMs: number }
 const HISTORY = 10;
 
 /**
- * 보고 하나로 감시를 옮긴다. 통과 완료면 반복이 끝난다(null). 막힘이면 시도를 하나 더하고, 같은 지문이 이어지면 진척이 없다.
+ * 통과 완료면 감시가 끝난다. 막힘 또는 새 실행의 수정 가능한 검사 실패를 집계하고, 같은 검사 실패가 이어지면 진척이 없다고 판단한다.
  * trip 은 이번에 처음 멈출 때만 까닭을 준다(이미 멈췄으면 null). quiet 는 멈춘 뒤 같은 실패라 총괄을 다시 깨우지 않을 보고다.
  */
 export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: WatchLimits = DEFAULT_WATCH_LIMITS): { next: WatchFact | null; trip: string | null; quiet: boolean } {
@@ -208,7 +222,7 @@ export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: Wat
   // new implementation attempts. Do not let them consume the retry allowance.
   if (r.authorKind !== "worker" || r.correctsMessageId || prev?.history.some(h => h.messageId === r.id)) return { next: prev, trip: null, quiet: false };
   if (r.kind === "완료") return { next: r.passed || !prev ? null : prev, trip: null, quiet: false };
-  if (r.kind !== "막힘") return { next: prev, trip: null, quiet: false };
+  if (r.kind !== "막힘" && !(r.continuesWork && r.failed.length)) return { next: prev, trip: null, quiet: false };
   const fp = fingerprint(r);
   const attempt: AttemptFact = { at: r.at, messageId: r.id, who: r.who, fingerprint: fp, failed: r.failed };
   if (!prev) return { next: { startedAt: r.at, attempts: 1, same: 1, fingerprint: fp, lastProgressAt: r.at, trippedAt: null, reason: null, updatedAt: r.at, history: [attempt] }, trip: null, quiet: false };
