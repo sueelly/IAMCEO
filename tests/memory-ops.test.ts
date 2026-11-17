@@ -238,7 +238,10 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   expect(t.store.listMemorySearches(t.project.id)).toHaveLength(searches);
 
   // 총괄의 위임은 직원 쪽에서 찾는다.
-  await t.orch.assign(t.project.id, w.handle, { text: "부분 환불 API 의 금액 검증을 고쳐 주세요" }, t.store.requireMember(leadId));
+  const refund = t.orch.saveTask(t.store.requireMember(leadId), { title: "부분 환불 금액 검증", contract: {
+    kind: "coding", goal: "부분 환불 API 의 금액 검증을 고친다", acceptance: ["0원과 환불 가능 금액 초과 요청을 거절한다"], checks: ["real"],
+  } }).task;
+  await t.orch.assign(t.project.id, w.handle, { taskId: refund.id, text: "부분 환불 API 의 금액 검증을 고쳐 주세요" }, t.store.requireMember(leadId));
   await until(() => t.store.listMemorySearches(t.project.id).some((s) => s.memberId === w.id), "직원 검색");
   expect(t.store.listMemorySearches(t.project.id).find((s) => s.memberId === w.id)).toMatchObject({ trigger: "delivery", status: "ok" });
   await settle(); t.runner.end(w.id); await settle();
@@ -249,7 +252,8 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   const d = t.store.createDecision({ projectId: t.project.id, memberId: w.id, who: w.name, title: "환불 한도를 정해 주세요", options: [{ k: "a", label: "10만 원" }] });
   await t.orch.answerDecision(d.id, { choice: "a" });
   await settle(); t.runner.end(w.id); await settle();
-  const report = await t.call(w, "post", { kind: "완료", title: "환불 금액 검증 고침", body: "시험 통과했습니다" });
+  const report = await t.call(w, "post", { task_id: refund.id, kind: "완료", title: "환불 금액 검증 고침", body: "격리 가짜 실행기의 경계 입력 결과를 확인했습니다", contract_rev: 1,
+    checks: [{ name: "환불 금액 경계 입력", kind: "real", result: "pass", evidence: "격리 실행기 픽스처에서 0원·환불 가능 금액 초과 요청의 거절 결과를 확인", criterion: 1 }] });
   expect(report.isError).toBeFalsy();
   await until(() => t.store.listDeliveries(t.project.id).some((d) => d.memberId === leadId && d.kind === "report"), "보고 전달");
   await settle(); t.runner.end(leadId); await settle();

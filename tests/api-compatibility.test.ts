@@ -392,3 +392,19 @@ test("v1 Message.delivery 5값·이전 목록/state의 exact JSON과 사용자/a
   await json(await f.request("/ws?v=2&t=legacy"), 400);
   await json(await f.request("/ws?v=2", "GET", undefined, { Authorization: "" }), 401);
 });
+
+
+test("project concurrency PATCH validates the cap and returns it in project and bootstrap reads", async () => {
+  const f = await fixture();
+  const path = `/api/projects/${f.project.id}`;
+  const saved = await json(await f.request(path, "PATCH", { maxConcurrentTurns: 3 }));
+  expect(saved).toMatchObject({ maxConcurrentTurns: 3 });
+  expect(await json(await f.request(`${path}/state`))).toMatchObject({ project: { maxConcurrentTurns: 3 } });
+  const bootstrap = await json<{ projects: Array<{ id: string; maxConcurrentTurns: number | null }> }>(await f.request("/api/bootstrap"));
+  expect(bootstrap.projects.find(project => project.id === f.project.id)?.maxConcurrentTurns).toBe(3);
+  for (const value of [0, 65, 1.5, "2", true]) await json(await f.request(path, "PATCH", { maxConcurrentTurns: value }), 400);
+  expect(f.store.requireProject(f.project.id).maxConcurrentTurns).toBe(3);
+  expect(await json(await f.request(path, "PATCH", { maxConcurrentTurns: null }))).toMatchObject({ maxConcurrentTurns: null });
+  expect(f.runner.stops).toEqual([]);
+  expect(f.runner.starts).toBe(0);
+});

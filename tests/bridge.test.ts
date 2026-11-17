@@ -19,7 +19,7 @@ import { ApiError, Store } from "../server/store.ts";
 import type { AgentToolResult } from "../server/orchestrator-api.ts";
 import type { AgentOperationService } from "../server/service-contracts.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
-import { withDefaultTask } from "./fixtures/default-task.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 const runtime = createIsolatedRuntime();
 const FAKE = resolve(import.meta.dir, "fixtures", "fake-claude.ts");
@@ -152,6 +152,7 @@ describe("브리지 왕복", () => {
     await waitFor("답 전달", () => existsSync(logPath) && readFileSync(logPath, "utf8").includes(`[대표 답(원문) '고르세요'] \\"가\\" #${decision.id}`));
     await waitFor("총괄 쉼", () => store.requireMember(lead.id).status === "idle");
 
+    store.saveTaskContract(defaultTaskId(store, projectId), { kind: "other", goal: "브리지로 전달된 요청을 처리한다", acceptance: ["요청의 처리 결과를 확인한다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
     const added = await callText(client, "team_add", { name: "철수", role: "개발", handle: "chulsu", first_instruction: "로그인 고치기 @fake:delay=500" });
     expect(added).toMatchObject({ isError: false });
     expect(added.text).toContain("철수(chulsu)");
@@ -159,7 +160,7 @@ describe("브리지 왕복", () => {
     expect(worker.sessionId).not.toBeNull();
     await waitFor("첫 지시 시작", () => store.requireMember(worker.id).status === "working");
 
-    const queued = await callText(client, "team_assign", { member: "철수", text: "둘째 일 @fake:post=끝났습니다", user_quote: "대표가 안 한 말" });
+    const queued = await callText(client, "team_assign", { member: "철수", text: "둘째 일 @fake:post=끝났습니다 @fake:postkind=알림", user_quote: "대표가 안 한 말" });
     expect(queued.text).toContain("대기열 1번째");
     expect(queued.text).toContain("미확인");
 

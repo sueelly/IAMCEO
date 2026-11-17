@@ -36,6 +36,8 @@ export interface Project {
   cwd: string;
   /** false 면 메시지를 저장만 하고 어떤 세션도 띄우거나 깨우지 않는다(가져온 프로젝트 기본값). */
   runnerEnabled: boolean;
+  /** null이면 전체 동시 실행 상한을 따른다. 별도 상한은 1~64. */
+  maxConcurrentTurns: number | null;
   now: string; // '지금 상황' 한 줄~짧은 글
   /** 생성 때 대표가 쓴 목표 원문. 이후 수정하지 않으며 이전 프로젝트는 null. */
   readonly creationGoal: string | null;
@@ -60,7 +62,7 @@ export interface ProjectMemory { mode: "on" | "off" | "legacy"; on: boolean; ena
 /** 서버의 개발 기억 연결 상태. not_configured: 연결 설정 없음 · key_unreadable: 키 파일을 못 읽음 · unreachable: 서버가 응답 안 함 · ok: 마지막 확인에서 닿음 · unknown: 아직 확인 전 */
 export interface MemoryServiceInfo { state: "not_configured" | "key_unreadable" | "unreachable" | "ok" | "unknown"; detail: string | null; checkedAt: string | null }
 
-export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "cwd" | "now" | "runnerEnabled" | "connection"> {
+export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "cwd" | "now" | "runnerEnabled" | "maxConcurrentTurns" | "connection"> {
   decisionCount: number; // 열린 결재
   todoCount: number; // 안 한 내 할 일
   /** decisionCount + todoCount. 호환용으로 남겨 두었다. 새 화면은 위 둘을 쓴다. */
@@ -649,12 +651,9 @@ export interface Settings {
   notifyMac: boolean;
   /** 총괄에게 판 정리(결재·내 할 일·진행판·지금 상황)를 맡기는 간격(시간). 0 이면 끈다. 기본 6. */
   boardTidyHours: number;
-  /**
-   * 공통 하네스 적용. label(기본): 계약 없는 완료도 받되 '계약 없는 완료'로 표시·기록한다.
-   * required: harnessRequiredSince 뒤에 만든 업무는 총괄·대표가 정했거나 확인한 계약이 있어야 직원 완료를 받는다(그 전 업무는 표시만).
-   */
+  /** 모든 실행 업무는 확정 계약을 요구한다. 옛 label 입력은 호환용으로 받고 required 로 정규화한다. */
   harnessMode: HarnessMode;
-  /** required 로 바꾼 시각. 이 뒤에 만든 업무부터 계약이 필요하다. 처음 required 로 바꿀 때 서버가 채운다. */
+  /** 옛 클라이언트 호환 필드. 생성 시점 면제가 없으므로 서버는 항상 null 을 반환한다. */
   harnessRequiredSince: string | null;
 }
 export type HarnessMode = "label" | "required";
@@ -759,7 +758,7 @@ export type RealtimeEvent =
 // ---- REST 요청 ----
 export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider; /** 개발 기억 운영. 생략하면 켠다. */ memory?: boolean }
 export interface CreateMemberReq { name: string; role?: string; cli?: CliProvider; modelOverride?: string | null }
-export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
+export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; maxConcurrentTurns?: number | null; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
 /** PUT /api/settings. ranks·codexRanks 는 고친 칸만 보내도 된다(나머지 유지). */
 export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "resetEfforts">> & {
   ranks?: Partial<Record<Rank, Partial<RankConfig>>>;

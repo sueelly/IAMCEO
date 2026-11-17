@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Decision, Member, Message, ProjectState, WsEvent } from "../shared/types";
-import { WS_STALE_MS, applyToProject, hasMessageGap, isSocketStale, mergeMessages, parseHash, routeHash, upsertMessage } from "../web/src/lib/store";
+import type { Bootstrap, Decision, Member, Message, Project, ProjectState, ProjectSummary, WsEvent } from "../shared/types";
+import { WS_STALE_MS, getState, reduce, applyToProject, hasMessageGap, isSocketStale, mergeMessages, parseHash, routeHash, upsertMessage } from "../web/src/lib/store";
 import { formatRelative, formatTime } from "../web/src/lib/time";
 import { isNumericColumn, parseDelimited, TABLE_COLUMN_LIMIT } from "../web/src/components/viewers/delimited";
 
@@ -159,4 +159,17 @@ describe("표 해석 상한", () => {
   test("상한 안이면 그대로다", () => {
     expect(parseDelimited("a,b\n1\n1,2,3")).toEqual({ header: ["a", "b", ""], rows: [["1"], ["1", "2", "3"]] });
   });
+});
+
+
+test("project save events update the settings list cap before the next snapshot", () => {
+  const project: Project = { id: "capacity", name: "Capacity", isHq: false, cwd: "/fixture", runnerEnabled: true,
+    maxConcurrentTurns: null, now: "", creationGoal: null, nowAt: null, herdrTabId: null, archived: false,
+    createdAt: "2026-11-18T00:00:00Z", updatedAt: "2026-11-18T00:00:00Z", tidiedAt: null,
+    connection: { ok: true, reason: null, detail: null } };
+  const summary: ProjectSummary = { ...project, decisionCount: 0, todoCount: 0, inboxCount: 0, workingCount: 0, blockedCount: 0, errorCount: 0, memberCount: 0 };
+  const state = { ...getState(), bootstrap: { projects: [summary] } as Bootstrap };
+  const saved = reduce(state, { type: "project", project: { ...project, maxConcurrentTurns: 3 } });
+  expect(saved.bootstrap?.projects[0].maxConcurrentTurns).toBe(3);
+  expect(reduce(saved, { type: "project", project }).bootstrap?.projects[0].maxConcurrentTurns).toBeNull();
 });

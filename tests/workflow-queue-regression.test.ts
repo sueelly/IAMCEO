@@ -3,6 +3,10 @@ import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
 import { fixture as createReportFixture, until } from "./fixtures/harness-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof createQueueStatusFixture>>;
+const checked = { kind: "other" as const, name: "업무 응답 확인", result: "pass" as const, evidence: "받은 업무의 처리 결과를 확인했다", criterion: 1 };
+function confirm(f: Pick<Fixture, "store">, taskId: string) {
+  f.store.saveTaskContract(taskId, { kind: "other", goal: "받은 업무에 응답한다", acceptance: ["받은 업무의 처리 결과가 확인된다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+}
 
 function stopRecovery(f: Fixture, deliveryId: string) {
   const recovery = f.store.getDeliveryRecovery(deliveryId)!;
@@ -109,7 +113,10 @@ test.each(["막힘", "완료", "질문"] as const)("a %s on another task leaves 
     await f.orch.pump(f.member.id);
     const member = f.store.requireMember(f.member.id);
     if (kind === "질문") await f.orch.registerAsk(member, { taskId: a.id, title: "Question about A" });
-    else await f.orch.recordPost(member, { kind, title: "Only A answered", taskId: a.id });
+    else {
+      if (kind === "완료") confirm(f, a.id);
+      await f.orch.recordPost(member, { kind, title: "Only A answered", taskId: a.id, contractRev: 1, checks: kind === "완료" ? [checked] : [] });
+    }
     await finishTurn(f);
     const followups = f.store.listDeliveries().filter(d => d.text.includes("보고 보완:"));
     expect(followups).toHaveLength(1);
@@ -124,7 +131,8 @@ test("a completion on the received task closes its report duty", async () => {
     const task = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "probe:same", title: "Task", origin: "owner" }).task;
     f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "Answer task", wake: true, taskId: task.id });
     await f.orch.pump(f.member.id);
-    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Answered", taskId: task.id });
+    confirm(f, task.id);
+    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Answered", taskId: task.id, contractRev: 1, checks: [checked] });
     await finishTurn(f);
     expect(f.store.listDeliveries().filter(d => d.text.includes("보고 보완:"))).toHaveLength(0);
   } finally { await f.stop(); }
@@ -138,7 +146,8 @@ test("an unrelated completion does not turn an interrupted task into a successfu
     f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "Unfinished task", wake: true, taskId: b.id });
     await f.orch.pump(f.member.id);
     const run = f.store.listPendingExecutions().find(r => r.memberId === f.member.id)!;
-    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Other task answered", taskId: a.id });
+    confirm(f, a.id);
+    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Other task answered", taskId: a.id, contractRev: 1, checks: [checked] });
     const terminal = f.terminals.get(f.member.paneId!)!;
     terminal.state = "finished";
     terminal.reason = "isolated unexpected exit";
@@ -157,7 +166,8 @@ test("a matching completion also settles a report-followup run after terminal ex
     await finishTurn(f);
     const followup = f.store.listPendingExecutions().find(r => r.memberId === f.member.id && r.runId !== first.runId)!;
     expect(followup).toBeDefined();
-    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Task completed", taskId: task.id });
+    confirm(f, task.id);
+    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", title: "Task completed", taskId: task.id, contractRev: 1, checks: [checked] });
     const terminal = f.terminals.get(f.member.paneId!)!;
     terminal.state = "finished";
     terminal.reason = "isolated exit after completion";
@@ -170,6 +180,7 @@ test.each([false, true])("delegation closes only its own task's report duty (sam
   const f = createReportFixture();
   const a = f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "Delegated task" }).task;
   const b = sameTask ? a : f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "Unanswered task" }).task;
+  confirm(f, a.id);
   await f.orch.sendUserMessage(f.project.id, { text: "Please handle the received task", taskId: b.id });
   await until("received instruction", () => f.store.listPendingExecutions().some(r => r.memberId === f.lead.id));
   expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, text: "Handle delegated task", task_id: a.id })).isError).toBeUndefined();

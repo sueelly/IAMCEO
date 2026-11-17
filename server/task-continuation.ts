@@ -4,6 +4,7 @@ import type { Store } from "./store.ts";
 import type { ProgressFacts } from "./task-progress.ts";
 import { relatedWork } from "./workflow.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
+import { bindingContract } from "./harness.ts";
 
 interface Followthrough {
   task_id: string; project_id: string; source_delivery_id: string | null; evidence_key: string;
@@ -16,6 +17,7 @@ interface Context {
   tasks: Map<string, Task>; facts: Map<string, ProgressFacts>; sources: Map<string, Source[]>;
   enrolled: Set<string>; pending: Delivery[]; running: Set<string>; own: Set<string>; boardDone: Set<string>; paused: Set<string>;
   markSources: Map<number, number | null>;
+  criteriaSources: Map<string, Source>;
 }
 const waiting = new Set(["queued", "held", "delivering"]);
 const finalOrExternal = new Set(["done", "hold", "owner", "approval", "held"]);
@@ -80,6 +82,16 @@ export class TaskContinuationCoordinator {
     return !!this.store.db.query("SELECT 1 FROM task_continuation_deliveries WHERE delivery_id=?").get(deliveryId);
   }
 
+  private awaitingCriteria(delivery: Delivery, taskId: string): boolean {
+    if (!["queued", "held"].includes(delivery.status) || this.store.unconfirmedDelegatedTask(delivery.id) !== taskId ||
+      !ordinaryInputAdmitted(this.store, delivery.id)) return false;
+    const recovery = this.store.getDeliveryRecovery(delivery.id), dispatch = this.store.listDeliveryDispatches(delivery.id).at(-1);
+    // A missing contract cannot turn an uncertain or stopped write into fresh
+    // authority. Only the untouched queue or a proven pre-write refusal qualifies.
+    return delivery.attempts === 0 && !dispatch && (!recovery || recovery.phase === "none") ||
+      dispatch?.transportState === "rejected" && (recovery?.phase === "none" || recovery?.phase === "resolved" && recovery.reason === "not_received");
+  }
+
   private context(projectId: string): Context {
     const tasks = new Map(this.store.listTasks(projectId).filter(t => !t.mergedInto).map(t => [t.id, t]));
     const facts = this.store.taskProgressFacts(projectId);
@@ -121,12 +133,21 @@ export class TaskContinuationCoordinator {
       const last = facts.get(id)?.reports.at(-1);
       if (!last || last.at <= w.updatedAt) boardDone.add(id);
     }
+    const criteriaSources = new Map<string, Source>();
+    for (const [taskId, list] of sources) {
+      const latest = list.at(-1)!, delivery = this.store.getDelivery(latest.id);
+      if (delivery && this.awaitingCriteria(delivery, taskId)) criteriaSources.set(taskId, latest);
+    }
     return { tasks, facts, sources, enrolled, pending: this.store.listUndelivered(projectId), running, own, boardDone,
-      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources };
+      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources };
   }
 
   private authorized(task: Task, ctx: Context): boolean {
     const latest = ctx.sources.get(task.id)?.at(-1);
+    if (ctx.boardDone.has(task.id)) return false;
+    // Proven queued delegation authorizes defining its missing criteria only.
+    // The original input stays queued until a binding contract exists.
+    if (ctx.criteriaSources.has(task.id)) return true;
     // Sequence membership says order, not permission to replace cancelled or
     // uncertain instructions. Only accepted, reconciled scope can be continued.
     if (!latest || latest.status !== "delivered" || !["none", "resolved"].includes(latest.phase) || ["duplicate_draft", "not_received"].includes(latest.recovery_reason ?? "") || ctx.boardDone.has(task.id)) return false;
@@ -141,7 +162,8 @@ export class TaskContinuationCoordinator {
   }
   private occupied(task: Task, ctx: Context, except?: string): boolean {
     if ([...ctx.running].some(id => this.family(task.id, id, ctx))) return true;
-    return ctx.pending.some(d => d.id !== except && d.wake && this.family(task.id, d.taskId ?? null, ctx));
+    return ctx.pending.some(d => d.id !== except && d.wake && this.family(task.id, d.taskId ?? null, ctx) &&
+      !(ctx.criteriaSources.has(task.id) && this.awaitingCriteria(d, task.id)));
   }
   private familyGated(task: Task, ctx: Context): boolean {
     const ancestors = new Set<string>();
@@ -198,6 +220,7 @@ export class TaskContinuationCoordinator {
     const ctx = this.context(delivery.projectId), task = ctx.tasks.get(delivery.taskId ?? "");
     let reason: string | null = null;
     if (!task || !this.authorized(task, ctx)) reason = "현재 실행 대상으로 확인되지 않습니다";
+    else if (this.store.pendingTaskFailureDecision(task.id)) reason = "같은 실패 세 번의 대표 결재를 기다립니다";
     else if (this.paused(task, ctx)) reason = "대표가 중단한 업무입니다";
     else if (finalOrExternal.has(task.progress?.stage ?? "")) reason = task.progress?.next ?? "완료되었거나 외부 확인을 기다립니다";
     else if (this.familyGated(task, ctx)) reason = "연결된 업무의 완료·보류·대표 확인 범위를 먼저 확인합니다";
@@ -214,14 +237,17 @@ export class TaskContinuationCoordinator {
       if (!lead || !eligible(lead)) continue;
       const ctx = this.context(project.id);
       // Ordinary instructions to the coordinator always take precedence.
-      if (ctx.pending.some(d => d.memberId === lead.id && d.wake && !ctx.own.has(d.id) && ordinaryInputAdmitted(this.store, d.id))) continue;
+      if (ctx.pending.some(d => d.memberId === lead.id && d.wake && !ctx.own.has(d.id) && ordinaryInputAdmitted(this.store, d.id) &&
+        !(d.taskId && ctx.criteriaSources.has(d.taskId) && this.awaitingCriteria(d, d.taskId)))) continue;
       const candidates = [...ctx.tasks.values()].filter(t => this.authorized(t, ctx))
         .sort((a, b) => (this.row(a.id)?.next_attempt_at ?? a.createdAt).localeCompare(this.row(b.id)?.next_attempt_at ?? b.createdAt));
       for (const task of candidates) {
+        if (this.store.pendingTaskFailureDecision(task.id)) continue;
         if (finalOrExternal.has(task.progress?.stage ?? "") || this.paused(task, ctx) || this.familyGated(task, ctx) || this.occupied(task, ctx)) continue;
         const f = ctx.facts.get(task.id), lastAt = Math.max(Date.parse(f?.reports.at(-1)?.at ?? "") || 0, Date.parse(f?.marks.at(-1)?.at ?? "") || 0);
         if (now < lastAt + this.options.intervalMs) continue;
         const sources = ctx.sources.get(task.id) ?? [];
+        const criteriaSource = ctx.criteriaSources.get(task.id);
         const effectiveSource = sources.findLast(s => s.kind === "user_message") ?? sources.at(-1);
         const state = this.ensure(task, effectiveSource, now);
         if (state.next_attempt_at && now < Date.parse(state.next_attempt_at)) continue;
@@ -257,9 +283,22 @@ export class TaskContinuationCoordinator {
           if (current.delivery_id !== state.delivery_id || current.round !== state.round) return null;
           const source = this.store.getDelivery(state.source_delivery_id ?? "");
           const contract = this.store.getEffectiveContract(task.id);
+          const criteriaStep = bindingContract(contract)
+            ? `완료 기준은 현재 확정 계약 r${contract!.rev}입니다. 남은 기준을 확인하고 담당 직원에게 보완·검토를 맡기세요.`
+            : `완료 기준을 먼저 확정하세요. 원 지시의 범위를 유지해 task(task_id "${task.id}", contract {goal, acceptance, kind})로 판정 가능한 기준을 정하거나, 직원 제안이 맞으면 confirm_contract_rev로 확인하세요. 기준 확정 전에는 구현을 재배정하지 마세요.`;
+          const decisions = this.store.listAllDoneDecisions(project.id).filter(d => d.taskId === task.id &&
+            (["answered", "delivered"].includes(d.status) || d.closeKind === "decided" && d.closeQuote))
+            .sort((a, b) => (a.answeredAt ?? a.closedAt ?? a.updatedAt).localeCompare(b.answeredAt ?? b.closedAt ?? b.updatedAt)).slice(-3);
+          const ownerAnswers = decisions.map(d => `최근 대표 결재 답 #${d.id}: ${[d.options.find(o => o.k === d.choice)?.label, d.note, d.closeQuote].filter(Boolean).join(" / ")}`).join("\n");
           const reports = (f?.reports ?? []).slice(-4).map(r => `- #${r.id} ${r.who}: ${r.kind}${r.failed.length ? ` / 실패 ${r.failed.join(", ")}` : ""}${r.notRun.length ? ` / 미확인 ${r.notRun.join(", ")}` : ""}`);
+          const purpose = criteriaSource
+            ? `대기 중인 위임의 완료 기준 확정: #${task.id} '${task.title}'\n위임 지시 #${criteriaSource.id}는 확정 기준이 없어 아직 전송하지 않고 원문 그대로 보관 중입니다.`
+            : `업무 계속 진행: #${task.id} '${task.title}'\n한 번의 보고·턴은 끝났지만 완료 조건이 남아 있습니다.`;
+          const nextAction = criteriaSource
+            ? `현재 승인 범위의 완료 기준만 먼저 확정하세요. 확정 후 보관된 지시 #${criteriaSource.id}가 일반 입장 검사와 수신 확인을 거쳐 한 번 전달됩니다. 직원은 현재 업무 계약을 확인해야 합니다. 같은 원 지시를 team_assign으로 다시 만들거나 구현을 직접 시작하지 마세요.`
+            : `기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인된 범위는 기존 적합한 직원에게 team_assign으로 맡기고, 검토 실패는 원 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.`;
           const d = this.store.enqueue({ projectId: project.id, memberId: lead.id, kind: "system", wake: true, urgent: false, taskId: task.id,
-            text: `[시스템] 업무 계속 진행: #${task.id} '${task.title}'\n한 번의 보고·턴은 끝났지만 완료 조건이 남아 있습니다. 최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `기록된 완료 조건(최신 지시와 대조): ${contract.acceptance.join(" / ")}\n` : ""}${reports.join("\n")}\n${source?.kind === "user_message" ? "최신 대표 지시" : "최근 승인 범위의 배정 지시"} #${source?.id ?? state.source_delivery_id}:\n${source?.text ?? "업무 대화에서 최신 지시를 확인하세요"}\n기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인된 범위는 기존 적합한 직원에게 team_assign으로 맡기고, 검토 실패는 원 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 반복 감시가 걸렸으면 원인과 접근을 바꾼 근거로 reopen 하거나, 실제 대표 판단이 필요한 이유와 선택지를 ask로 올리세요.` });
+            text: `[시스템] ${purpose}\n최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n${criteriaStep}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `기록된 완료 조건(최신 지시와 대조): ${contract.acceptance.join(" / ")}\n` : ""}${reports.join("\n")}\n${source?.kind === "user_message" ? "최신 대표 지시" : "최근 승인 범위의 배정 지시"} #${source?.id ?? state.source_delivery_id}:\n${source?.text ?? "업무 대화에서 최신 지시를 확인하세요"}\n${ownerAnswers}\n최신 대표 지시와 결재 답의 제한을 우선합니다. 총괄은 제작·구현·제품 설계를 직접 하지 않고 기준 정의·배정·검토 요청·상태 종합을 맡습니다.\n${nextAction}\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 같은 실패 세 번의 결재가 있으면 대표 답 전에는 reopen하거나 재배정하지 마세요. 대표가 정한 범위 안에서만 다시 열고 직원에게 맡기세요.` });
           const stamp = new Date(now).toISOString();
           this.store.db.query("INSERT INTO task_continuation_deliveries(delivery_id,task_id,round,created_at) VALUES(?,?,?,?)").run(d.id, task.id, state.round + 1, stamp);
           this.store.db.query(`UPDATE task_continuations SET evidence_key=?,delivery_id=?,round=round+1,no_progress_count=?,next_attempt_at=?,attention_decision_id=NULL,updated_at=? WHERE task_id=?`)

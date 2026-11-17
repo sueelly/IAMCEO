@@ -12,6 +12,8 @@ export interface ReportFact {
   memberId: string | null;
   who: string;
   authorKind: MemberKind | null;
+  /** 정정 보고는 기존 시도의 근거를 바로잡으며 새 실행으로 세지 않는다. */
+  correctsMessageId?: string | null;
   /** 실패한 검사 이름 */
   failed: string[];
   /** 실행 안 한 검사 이름(미확인 항목 요약 줄은 빼고) */
@@ -191,7 +193,7 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
 
 // ---- 반복 감시 ----
 
-/** 구현 기본값(대표 정책 아님). 같은 실패 3번은 기존 재시도 상한(설정 오류·전달 3번)과 같다. 2시간은 한 차례 보완(수정·시험·올리기)의 관찰 길이에서 골랐다. */
+/** 같은 실패 3번은 2026-11-18 대표 정책이다. 2시간은 별도의 진척 확인 간격이다. */
 export const DEFAULT_WATCH_LIMITS = { sameLimit: 3, idleMs: 2 * 60 * 60_000 } as const;
 export interface WatchLimits { sameLimit: number; idleMs: number }
 const HISTORY = 10;
@@ -201,6 +203,9 @@ const HISTORY = 10;
  * trip 은 이번에 처음 멈출 때만 까닭을 준다(이미 멈췄으면 null). quiet 는 멈춘 뒤 같은 실패라 총괄을 다시 깨우지 않을 보고다.
  */
 export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: WatchLimits = DEFAULT_WATCH_LIMITS): { next: WatchFact | null; trip: string | null; quiet: boolean } {
+  // Coordination summaries and repeated processing of the same report are not
+  // new implementation attempts. Do not let them consume the retry allowance.
+  if (r.authorKind !== "worker" || r.correctsMessageId || prev?.history.some(h => h.messageId === r.id)) return { next: prev, trip: null, quiet: false };
   if (r.kind === "완료") return { next: r.passed || !prev ? null : prev, trip: null, quiet: false };
   if (r.kind !== "막힘") return { next: prev, trip: null, quiet: false };
   const fp = fingerprint(r);
@@ -237,6 +242,8 @@ export function watchNotice(task: { id: string; title: string }, w: WatchFact, r
     "지금까지:",
     ...lines,
     `남은 조건: ${remaining.length ? remaining.join(", ") : "보고에 적힌 남은 조건 없음"}`,
-    "점검한 뒤 같은 접근으로 다시 맡기지 말고 원인·접근을 바꿔 맡기세요. 다시 열 때는 task_stage(reopen), 멈출 때는 task_stage(hold)를 남깁니다. 대표 판단이 필요하면 ask 로 올립니다.",
+    w.same >= 3
+      ? "같은 실패 세 번은 결재함에 올립니다. 대표 답 전에는 다시 열거나 재배정하지 마세요. 대표가 정한 접근과 범위에 따라 기준을 확인하고 직원에게 맡깁니다."
+      : "점검한 뒤 같은 접근으로 다시 맡기지 말고 원인·접근을 바꿔 맡기세요. 다시 열 때는 task_stage(reopen), 멈출 때는 task_stage(hold)를 남깁니다. 대표 판단이 필요하면 ask 로 올립니다.",
   ].join("\n");
 }

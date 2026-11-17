@@ -12,7 +12,7 @@ import { Orchestrator, type OrchestratorTimings } from "../server/orchestrator.t
 import { HerdrError } from "../server/runner/herdr-client.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/runner/types.ts";
 import { IMPORT_HOLD_NOTE, Store } from "../server/store.ts";
-import { withDefaultTask } from "./fixtures/default-task.ts";
+import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 class Fake {
   readonly kind = "herdr" as const;
@@ -123,6 +123,7 @@ describe("보관", () => {
     const t = await setup();
     const lead = await t.orch.ensureConductor(t.project.id);
     const m = await t.manual();
+    t.store.saveTaskContract(defaultTaskId(t.store, t.project.id), { kind: "other", goal: "수동 업무 결과를 보고한다", acceptance: ["처리한 업무의 결과를 확인한다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
     await until(() => t.store.requireMember(lead.id).status === "idle" || t.store.requireMember(lead.id).status === "working", "총괄");
     t.runner.cb({ type: "turn_end", memberId: lead.id, finalText: "", isError: false });
     await until(() => t.store.requireMember(lead.id).status === "idle", "총괄 대기");
@@ -130,7 +131,7 @@ describe("보관", () => {
     expect(t.store.requireMember(lead.id).status).toBe("asleep");
     const starts = t.runner.starts.length;
     const sends = t.runner.sent.length;
-    expect((await t.tool(m.token, "post", { kind: "완료", title: "끝" })).isError).toBeFalsy();
+    expect((await t.tool(m.token, "post", { kind: "완료", title: "끝", contract_rev: 1, checks: [{ kind: "other", name: "처리 결과", result: "pass", evidence: "보관 전에 처리한 업무 결과를 확인했다", criterion: 1 }] })).isError).toBeFalsy();
     await Bun.sleep(80);
     expect(t.store.requireMember(lead.id).status).toBe("asleep");
     expect(t.runner.starts.length).toBe(starts);

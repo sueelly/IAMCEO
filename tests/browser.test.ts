@@ -24,6 +24,7 @@ async function runFile(file: string): Promise<void> {
 }
 
 describe("화면 시험", () => {
+  test("프로젝트와 전체 동시 실행 상한(PC+좁은 화면)", () => runFile("project-capacity.browser.ts"), 120_000);
   test("백그라운드 회귀 작업의 직원 상태(PC+좁은 화면)", () => runFile("queue-status.browser.ts"), 120_000);
   test("전 과정(가짜 claude, 데스크톱+폰)", () => runFile("e2e-fake.browser.ts"), 300_000);
   test("전체 통합(요청 10건을 한 흐름으로)", () => runFile("integrated.browser.ts"), 300_000);
