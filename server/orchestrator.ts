@@ -5310,12 +5310,21 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.unconfirmedDelegatedTask(delivery.id) === null;
   }
 
+  /** Each admission pass reads the worker's order only if a scoped input reaches that check. */
+  private sequenceCheck(member: Member): (taskId: string) => boolean {
+    let snapshot: ReturnType<Store["taskSequenceSnapshot"]> | undefined;
+    return taskId => {
+      snapshot ??= this.store.taskSequenceSnapshot(member.projectId, member.id);
+      return this.store.taskSequenceBlocker(member.id, taskId, snapshot) !== null;
+    };
+  }
+
   private admittedInputs(memberId: string, deliveries: Delivery[]): Delivery[] {
     const member = this.store.requireMember(memberId), worker = member.kind === "worker";
     for (const taskId of new Set(deliveries.map(d => this.store.deliveryTaskId(d.id)))) {
       if (taskId) holdStaleIntegration(this.store, taskId);
     }
-    const sequence = worker && deliveries.length ? this.store.taskSequenceSnapshot(member.projectId, memberId) : undefined;
+    const blockedBySequence = this.sequenceCheck(member);
     const blocked = new Map<string, boolean>();
     return deliveries.filter(d => {
       if (!ordinaryInputAdmitted(this.store, d.id)) return false;
@@ -5328,7 +5337,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!worker || !taskId) return true;
       // Independent order permission never resolves an intervention or owner decision.
       if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
-      if (!blocked.has(taskId)) blocked.set(taskId, this.store.taskSequenceBlocker(memberId, taskId, sequence) !== null);
+      if (!blocked.has(taskId)) blocked.set(taskId, blockedBySequence(taskId));
       return !blocked.get(taskId) || independentDeliveryAuthorized(this.store, d);
     });
   }
@@ -5758,10 +5767,10 @@ export class Orchestrator implements OrchestratorApi {
     if (project.archived || this.archiving.has(project.id) || this.coreCompactFenced(member) || !deliveries.length || this.deliveryRecovery.fenced(member.id)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     // Retain which permission admitted this envelope. A later reparenting can
     // remove the row blocker, but must not discard the review used for this write.
-    const sequence = member.kind === "worker" ? this.store.taskSequenceSnapshot(member.projectId, member.id) : undefined;
+    const blockedBySequence = this.sequenceCheck(member);
     const independentIds = new Set(member.kind === "worker" ? deliveries.filter(d => {
       const taskId = this.store.deliveryTaskId(d.id);
-      return taskId && this.store.taskSequenceBlocker(member.id, taskId, sequence);
+      return taskId && blockedBySequence(taskId);
     }).map(d => d.id) : []);
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
@@ -6064,7 +6073,7 @@ export class Orchestrator implements OrchestratorApi {
       this.waiting.add(member.id);
       return false;
     }
-    const sequence = member.kind === "worker" && deliveries.length ? this.store.taskSequenceSnapshot(member.projectId, member.id) : undefined;
+    const blockedBySequence = this.sequenceCheck(member);
     return deliveries.every(delivery => {
       // The current reservation is the occupied run, but its authorization and
       // contract may have changed while the runner was inspecting the terminal.
@@ -6072,7 +6081,7 @@ export class Orchestrator implements OrchestratorApi {
       const taskId = this.store.deliveryTaskId(delivery.id);
       if (!integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
-      if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || this.store.taskSequenceBlocker(member.id, taskId, sequence))
+      if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || blockedBySequence(taskId))
         && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;
       return this.instructionCriteriaAllow(delivery);
     });

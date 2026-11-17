@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { checkCompletionReviews, completionReviewAllowsDelivery, synchronizeTaskCompletion } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
+import type { Runner } from "../server/runner/types.ts";
 import { Bus } from "../server/bus.ts";
 import { fixture, until } from "./fixtures/harness-fixture.ts";
 
@@ -287,4 +288,21 @@ test("주기 점검은 수신 직원을 찾기 위해 전체 대기열의 본문
     expect(pump.mock.calls.some(([id]) => id === f.worker.id)).toBe(true);
     expect(read.mock.calls.filter(([project]) => project === undefined)).toHaveLength(0);
   } finally { read.mockRestore(); pump.mockRestore(); }
+});
+
+test("업무 없는 직원 알림은 실제 쓰기 직전까지 업무 순서를 조회하지 않는다", async () => {
+  const f = fixture(), send = f.runner.send.bind(f.runner);
+  const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "system", text: "실행기 알림" });
+  expect(delivery.taskId).toBeNull();
+  const sequence = spyOn(f.store, "taskSequenceSnapshot");
+  const transport = spyOn(f.runner as Runner, "send").mockImplementation(async (member, text, options) => {
+    expect(options.beforeWrite?.()).toBe(true);
+    return send(member, text);
+  });
+  try {
+    await f.orch.pump(f.worker.id);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(f.store.requireDelivery(delivery.id).status).toBe("delivered");
+    expect(sequence).toHaveBeenCalledTimes(0);
+  } finally { sequence.mockRestore(); transport.mockRestore(); }
 });
