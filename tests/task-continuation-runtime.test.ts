@@ -63,8 +63,8 @@ function fixture(timings: Partial<OrchestratorTimings> = {}) {
     await until("execution ended", () => !!store.getExecutionJournal(run!.runId)?.endedAt && !runner.busy.has(member.id));
     await orch.pump(member.id);
   };
-  const task = () => store.saveTask({ projectId: project.id, memberId: worker.id, who: worker.name,
-    title: "Finish approved implementation", branch: "fixture/approved-work" }).task;
+  const task = (title = "Finish approved implementation") => store.saveTask({ projectId: project.id, memberId: worker.id, who: worker.name,
+    title, branch: "fixture/" + title.toLowerCase().replaceAll(" ", "-") }).task;
   const unfinished = async () => {
     const t = task();
     await orch.assign(project.id, worker.handle, { taskId: t.id, text: "Implement and verify the approved work" });
@@ -88,8 +88,8 @@ function fixture(timings: Partial<OrchestratorTimings> = {}) {
   return { isolated, config, store, runner, project, lead, worker, other, get orch() { return orch; }, pendingRun, end, task, unfinished, check, restart };
 }
 
-function approvedUnfinished(f: ReturnType<typeof fixture>) {
-  const task = f.task();
+function approvedUnfinished(f: ReturnType<typeof fixture>, title?: string) {
+  const task = f.task(title);
   const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
   f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "승인된 결과를 완성한다", acceptance: ["남은 검증을 통과한다"], checks: [] },
     { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
@@ -111,6 +111,192 @@ test("confirmed unfinished work reaches its worker through the real pump while t
   expect(f.pendingRun(f.worker)?.deliveryIds).toContain(scheduled[0]!.id);
   expect(f.pendingRun(f.lead)).toBeDefined();
   expect(f.check(Date.now() + 180_000)).toHaveLength(0);
+});
+
+async function startApprovedWork(f: ReturnType<typeof fixture>) {
+  const task = approvedUnfinished(f);
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: task.id, text: "Finish the remaining checks" });
+  await until("worker received the assignment", () => !!f.pendingRun(f.worker));
+  return task;
+}
+
+test("a worker records repair progress without a report-only turn and resumes the same task", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const interruptedRun = f.pendingRun(f.worker)!;
+  await f.orch.recordPost(f.store.requireMember(f.worker.id), {
+    taskId: task.id, kind: "진행", title: "Regression failure needs a local fix",
+    body: "The owner of this assignment can repair the failing branch and rerun the check.",
+    contractRev: 1, continueWork: true,
+    checks: [{ name: "regression", kind: "regression", result: "fail", evidence: "Observed the regression failure" }],
+  });
+  expect(f.pendingRun(f.worker)?.runId).toBe(interruptedRun.runId);
+  await f.end(f.worker);
+  expect(f.store.getReportFollowup(interruptedRun.runId)).toBeNull();
+  expect(f.store.doneMark(task.id)).toBeNull();
+  const [followup] = f.check(Date.now() + 120_000);
+  expect(followup).toMatchObject({ memberId: f.worker.id, taskId: task.id });
+  expect(followup!.text).toContain("regression");
+  await f.orch.pump(f.worker.id);
+  expect(f.pendingRun(f.worker)?.deliveryIds).toContain(followup!.id);
+});
+
+test("a worker who returned without a result resumes authorized work before a report-only request", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const ended = f.pendingRun(f.worker)!;
+  await f.end(f.worker);
+  expect(f.store.getReportFollowup(ended.runId)).toBeNull();
+  expect(f.check(Date.now() + 120_000)[0]).toMatchObject({ memberId: f.worker.id, taskId: task.id });
+});
+
+test("repair progress cannot claim a stale contract or another task from the same worker", async () => {
+  const f = fixture(), active = await startApprovedWork(f);
+  const outside = approvedUnfinished(f, "Different assigned work");
+  expect(outside.id).not.toBe(active.id);
+  const post = { kind: "진행" as const, title: "More work remains", contractRev: 1, continueWork: true };
+  const worker = f.store.requireMember(f.worker.id);
+  await expect(f.orch.recordPost(worker, { ...post, taskId: active.id, contractRev: 2 })).rejects.toThrow("확정 계약 판");
+  await expect(f.orch.recordPost(worker, { ...post, taskId: outside.id })).rejects.toThrow("지금 받은 직원 업무");
+  expect(f.store.listReportClosures(worker.id, "").filter(r => r.kind === "continuing")).toHaveLength(0);
+});
+
+test("a received execution can keep working, but its quiet context cannot authorize work", async () => {
+  const f = fixture(), active = await startApprovedWork(f);
+  const quiet = f.orch.saveTask(f.lead, { title: "Quiet context belongs to another task", contract: f.store.getEffectiveContract(active.id)! }).task;
+  const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "system",
+    taskId: quiet.id, text: "Context only", wake: false });
+  f.store.markDelivered(delivery.id);
+  const run = f.pendingRun(f.worker)!;
+  const at = new Date().toISOString();
+  f.store.saveExecutionJournal({ ...run, phase: "running", inputReceivedAt: at, updatedAt: at, deliveryIds: [...run.deliveryIds, delivery.id] });
+  const worker = f.store.requireMember(f.worker.id);
+  await expect(f.orch.recordPost(worker, {
+    taskId: quiet.id, kind: "진행", title: "Continue quiet context", contractRev: 1, continueWork: true,
+  })).rejects.toThrow("지금 받은 직원 업무");
+  await f.orch.recordPost(worker, {
+    taskId: active.id, kind: "진행", title: "Continue the accepted assignment", contractRev: 1, continueWork: true,
+  });
+  expect(f.store.listReportClosures(worker.id, "").filter(closure => closure.kind === "continuing")).toHaveLength(1);
+});
+
+test("an input still awaiting receipt cannot authorize a repair report", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const [deliveryId] = f.pendingRun(f.worker)!.deliveryIds;
+  f.store.db.query("UPDATE deliveries SET status='delivering', delivered_at=NULL WHERE id=?").run(deliveryId!);
+  await expect(f.orch.recordPost(f.store.requireMember(f.worker.id), {
+    taskId: task.id, kind: "진행", title: "Continue an unconfirmed assignment", contractRev: 1, continueWork: true,
+  })).rejects.toThrow("지금 받은 직원 업무");
+});
+
+test("an external blocker after progress does not count the same execution twice", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const worker = f.store.requireMember(f.worker.id);
+  const post = { taskId: task.id, title: "Regression failed", contractRev: 1,
+    checks: [{ name: "regression", kind: "regression" as const, result: "fail" as const, evidence: "Assertion failed" }] };
+  const early = await f.orch.recordPost(worker, { ...post, kind: "진행" });
+  await f.orch.recordPost(worker, { ...post, kind: "진행", continueWork: true, correctsMessageId: early.id });
+  expect(f.store.getTaskWatch(task.id)).toBeNull();
+  await f.orch.recordPost(worker, { ...post, kind: "진행", continueWork: true });
+  expect(f.store.getTaskWatch(task.id)?.same).toBe(1);
+  await f.orch.recordPost(worker, { ...post, kind: "막힘", body: "Another owner must change the service." });
+  expect(f.store.getTaskWatch(task.id)?.same).toBe(1);
+  await until("conductor receives the blocker", () => !!f.pendingRun(f.lead));
+});
+
+test("progress following an authorized legacy retry resets the previous intervention", async () => {
+  const f = fixture(), task = approvedUnfinished(f);
+  const stoppedAt = "2026-01-01T00:00:00.000Z";
+  const reason = "같은 실패 3번";
+  f.store.saveTaskWatch(task.projectId, task.id, { startedAt: stoppedAt, lastProgressAt: stoppedAt, updatedAt: stoppedAt, trippedAt: stoppedAt,
+    attempts: 3, same: 3, reason, fingerprint: "regression", history: [] });
+  const decision = f.store.createDecision({ projectId: f.project.id, taskId: task.id, memberId: f.lead.id, who: f.lead.name, title: "Approve a different approach" });
+  f.store.db.query("INSERT INTO task_failure_escalations(task_id, decision_id, tripped_at, created_at) VALUES(?,?,?,?)")
+    .run(task.id, decision.id, stoppedAt, stoppedAt);
+  f.store.answerDecision(decision.id, { note: "Retry within the same approved scope." });
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: task.id, text: "Use the newly approved approach" });
+  await until("worker received the agreed retry", () => !!f.pendingRun(f.worker));
+  await f.orch.recordPost(f.store.requireMember(f.worker.id), {
+    taskId: task.id, kind: "진행", title: "New approach in progress", contractRev: 1, continueWork: true,
+  });
+  expect(f.store.getTaskWatch(task.id)?.trippedAt).toBeNull();
+  await f.end(f.worker);
+  expect(f.check(Date.now() + 120_000)[0]).toMatchObject({ taskId: task.id, memberId: f.worker.id });
+});
+
+test("a newly reopened worker task cannot be manually closed using the previous pass", async () => {
+  const f = fixture();
+  const task = f.orch.saveTask(f.lead, { title: "Validate the current handoff", contract: {
+    kind: "other", goal: "Verify the handoff", scope: "This handoff", inputs: ["Request"], outputs: ["Verified handoff"],
+    constraints: [], exclusions: [], acceptance: ["The recipient is present"], checks: [],
+  } }).task;
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: task.id, text: "Verify the agreed handoff" });
+  await until("worker received the handoff", () => !!f.pendingRun(f.worker));
+  const witness = [{ name: "recipient", kind: "other" as const, result: "pass" as const, criterion: 1, evidence: "Verified recipient" }];
+  const worker = f.store.requireMember(f.worker.id);
+  const passed = { taskId: task.id, kind: "완료" as const, title: "Verified the handoff", contractRev: 1, checks: witness };
+  await f.orch.recordPost(worker, passed);
+  expect(f.store.taskProgress(task.id).finalReview?.status).toBe("pending");
+  await f.orch.recordPost(worker, { taskId: task.id, kind: "진행", title: "Repair the recipient entry", contractRev: 1, continueWork: true });
+  expect(f.store.doneMark(task.id)).toBeNull();
+  await expect(f.orch.recordPost(f.lead, { taskId: task.id, kind: "완료", title: "Use previous evidence" })).rejects.toThrow("원 담당자");
+  expect(() => f.orch.markTaskStage(f.lead, { taskId: task.id, stage: "done", evidence: "Previous pass" })).toThrow("원 담당자");
+  await f.orch.recordPost(worker, { ...passed, title: "Verified the corrected handoff" });
+  expect(f.store.taskProgress(task.id).finalReview?.status).toBe("pending");
+});
+
+test("one repairable failure per execution counts and the third execution escalates to the conductor", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const postFailure = (title: string) => f.orch.recordPost(f.store.requireMember(f.worker.id), {
+    taskId: task.id, kind: "진행", title, body: "The assigned regression failed and remains within scope.",
+    contractRev: 1, continueWork: true,
+    checks: [{ name: "regression", kind: "regression", result: "fail", evidence: "The assigned assertion still fails" }],
+  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await postFailure("The repair still has a failing regression");
+    if (attempt === 1) await postFailure("Updated evidence for the same execution");
+    expect(f.store.getTaskWatch(task.id)?.same).toBe(attempt);
+    await f.end(f.worker);
+    if (attempt === 3) break;
+    const [followup] = f.check(Date.now() + attempt * 120_000);
+    expect(followup).toMatchObject({ memberId: f.worker.id, taskId: task.id });
+    await f.orch.pump(f.worker.id);
+  }
+  expect(f.store.getTaskWatch(task.id)?.reason).toContain("같은 실패 3번");
+  expect(f.store.listDeliveries().filter(d => d.memberId === f.lead.id && d.text.includes("반복 감시:"))).toHaveLength(1);
+  expect(f.check(Date.now() + 600_000)).toHaveLength(0);
+});
+
+test("newly passed criteria are progress across multiple worker executions", async () => {
+  const f = fixture(), task = approvedUnfinished(f);
+  const first = f.store.getEffectiveContract(task.id)!;
+  const acceptance = ["Check input", "Check edges", "Check UI", "Check history", "Verify the handoff"];
+  f.store.saveTaskContract(task.id, { ...first, acceptance }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  await f.orch.assign(f.project.id, f.worker.handle, { taskId: task.id, text: "Verify each agreed criterion" });
+  await until("worker received the assignment", () => !!f.pendingRun(f.worker));
+  for (let count = 1; count <= 4; count++) {
+    await f.orch.recordPost(f.store.requireMember(f.worker.id), { kind: "진행", taskId: task.id, title: "New criterion passed",
+      continueWork: true, contractRev: 2, checks: acceptance.slice(0, count).map((name, i) => ({
+        name, kind: "other", result: "pass", criterion: i + 1, evidence: "Checked in this worktree",
+      })),
+    });
+    await f.end(f.worker);
+    const [followup] = f.check(Date.now() + count * 120_000);
+    expect(followup).toMatchObject({ taskId: task.id, memberId: f.worker.id });
+    await f.orch.pump(f.worker.id);
+  }
+  expect(f.store.getTaskWatch(task.id)).toBeNull();
+});
+
+test("an external blocker with failed checks still wakes the conductor immediately", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  await f.orch.recordPost(f.store.requireMember(f.worker.id), {
+    taskId: task.id, kind: "막힘", title: "An external owner must change the service",
+    body: "Handoff to the contract owner is required.", contractRev: 1,
+    checks: [{ name: "regression", kind: "regression", result: "fail", evidence: "The required service contract is unavailable" }],
+  });
+  await f.end(f.worker);
+  await until("conductor receives the blocker", () => !!f.pendingRun(f.lead));
+  expect(f.check(Date.now() + 120_000)).toHaveLength(0);
+  expect(f.runner.to(f.worker)).toHaveLength(1);
 });
 
 test.each(["approval", "manual-control", "unknown-write", "usage-limit"] as const)("worker continuation respects its recipient's %s fence", async fence => {

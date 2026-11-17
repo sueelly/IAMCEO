@@ -2,7 +2,7 @@ import type { Delivery, Member } from "../shared/types.ts";
 import { bindingContract, missingExecutionContractFields } from "./harness.ts";
 import { ApiError, type Store } from "./store.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
-import type { MarkFact } from "./task-progress.ts";
+import { latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 
 interface CompletionReviewRow {
   report_id: string; task_id: string; contract_task_id: string; contract_rev: number;
@@ -43,8 +43,8 @@ export function synchronizeTaskCompletion(store: Store, taskId: string, visiting
       const f = facts.get(id);
       if (paused.has(id) || f?.decisions.length || f?.todos.length || f?.approvals.length || f?.watch?.trippedAt || store.hasUnsettledTaskInput(id)
         || f?.marks.at(-1)?.stage === "hold" || id !== taskId && !store.doneMark(id)) valid = false;
-      const last = f?.reports.findLast(r => r.authorKind === "worker" && (r.kind === "완료" || r.kind === "막힘"));
-      if (last && (last.kind === "막힘" || !last.passed || last.failed.length || last.notRun.length)) valid = false;
+      const last = latestWorkerOutcome(f);
+      if (last && (last.kind === "막힘" || last.continuesWork || !last.passed || last.failed.length || last.notRun.length)) valid = false;
     }
     const previous = latestCompletionReview(store, taskId);
     if (previous && store.doneMark(taskId)?.id === previous.mark_id &&

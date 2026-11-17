@@ -827,9 +827,9 @@ export interface ExecutionJournal {
 
 /**
  * 보고 의무를 마감한 근거(v29). 글 종류만으로 마감하지 않는다: '알림'은 확인한 원보고(reviewed)나
- * 기다리는 자기 결재(waiting)를 밝혀야 하고, '진행'은 마감하지 않는다.
+ * 기다리는 자기 결재(waiting)를 밝혀야 하고, 계속 수행을 명시한 진행(continuing)은 실행 보고만 마감한다.
  */
-export type ReportClosureKind = "result" | "question" | "delegated" | "waiting" | "reviewed";
+export type ReportClosureKind = "result" | "question" | "delegated" | "waiting" | "reviewed" | "continuing";
 export interface ReportClosure {
   memberId: string;
   projectId: string;
@@ -2223,8 +2223,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const filter = only ? ` AND task_id IN (${[...only].map(() => "?").join(",")})` : "";
     const ids = only ? [...only] : [];
     const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind,
+        CASE WHEN m.kind = '진행' THEN EXISTS(SELECT 1 FROM report_closures rc WHERE rc.member_id = m.member_id
+          AND rc.at >= m.at AND rc.ref_id = m.id AND rc.ref_type = 'message' AND rc.kind = 'continuing') ELSE 0 END AS continues_work,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failed,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'not_run') AS not_run,
+        CASE WHEN m.kind = '진행' THEN (SELECT group_concat(COALESCE(CAST(c.criterion AS TEXT), c.kind || ':' || c.name), char(31))
+          FROM report_checks c WHERE c.message_id = m.id AND c.result = 'pass' AND c.kind <> 'unverified') END AS passing_checks,
         (SELECT COUNT(*) FROM report_checks c WHERE c.message_id = m.id AND NOT (c.kind = 'unverified' AND c.result = 'pass')) AS checks
       FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
       WHERE m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
@@ -2292,6 +2296,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const split = (v: unknown) => (typeof v === "string" && v ? v.split("\u001f") : []);
       const set = r.kind === "완료" ? passedFor(r.task_id) : null;
       f.reports.push({ id: r.id, seq: r.seq, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null,
+        ...(r.continues_work ? { continuesWork: true, passingChecks: split(r.passing_checks) } : {}),
         failed: split(r.failed), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
     }
     for (const r of this.rows(`SELECT id, title, task_id, created_at FROM decisions WHERE project_id = ? AND status = 'open' AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.decisions.push({ id: r.id, title: r.title, at: r.created_at });
@@ -4269,6 +4274,15 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   listReportClosures(memberId: string, since: string): ReportClosure[] {
     return this.rows("SELECT * FROM report_closures WHERE member_id = ? AND at >= ? ORDER BY at, id", memberId, since)
       .map((r) => ({ memberId: r.member_id, projectId: r.project_id, runId: r.run_id, kind: r.kind, refType: r.ref_type, refId: r.ref_id, causeId: r.cause_id, at: r.at }));
+  }
+
+  hasCountedRepairInRun(message: Message, continuing: boolean, counted: string[]): boolean {
+    if (!counted.length || (!continuing && message.kind !== "막힘")) return false;
+    return !!this.row(`SELECT 1 FROM report_closures current
+      JOIN report_closures earlier ON earlier.member_id = current.member_id AND earlier.run_id = current.run_id AND earlier.id < current.id
+      WHERE current.member_id = ? AND current.at >= ? AND current.ref_id = ?
+        AND current.ref_type = 'message' AND earlier.ref_type = 'message' AND (? OR earlier.kind = 'continuing')
+        AND earlier.ref_id IN (${counted.map(() => "?").join(",")}) LIMIT 1`, message.memberId, message.at, message.id, continuing ? 1 : 0, ...counted);
   }
 
   recordReportFollowup(rootRunId: string, memberId: string, projectId: string, deliveryId: string): void {

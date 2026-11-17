@@ -447,6 +447,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
+      continue_work: z.boolean().optional().describe("직원이 지금 맡은 업무를 같은 계약 안에서 이어서 수정·검증할 때 진행 보고에 true로 적는다. contract_rev와 남은 조건, 다음 행동을 함께 남긴다."),
       contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),
       claims: z.array(claimSchema).max(40).optional().describe("조사 결과의 주장. 조사 계약의 완료에 필요하다. 사실은 출처·원문 인용, 해석은 기댄 출처"),
       unverified: z.array(z.string().trim().min(1)).max(20).optional().describe("확인하지 못한 대상과 조건. 필요한 설명은 길어도 남긴다. 없으면 빈 배열"),
@@ -455,7 +456,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
       if (a.report_id !== undefined) {
-        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id, a.checks, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
+        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id, a.checks, a.continue_work, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
     }),
     async (orch, member, a) => {
@@ -477,7 +478,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         return reply(JSON.stringify(publicHarness({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) })));
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
-      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
+      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, continueWork: a.continue_work, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),
@@ -644,7 +645,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "직원에게 일을 맡긴다. 일하는 중이면 대기열에 들어가 끝난 뒤 전달되니 직접 기다리지 않는다.",
     z.strictObject({
       member: memberRef,
-      text: text.describe("할 일. 끝났다고 볼 기준, 참고 파일, 주의점 포함"),
+      text: text.describe("이 직원이 맡을 일과 직접 확인할 완료 기준, 참고 자료를 적는다. 다른 담당자가 맡을 검토·통합·적용은 별도 업무로 연결한다."),
       user_quote: userQuote,
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),

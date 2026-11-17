@@ -20,7 +20,7 @@ export function describeTaskContext(store: Store, task: Task, options: { sourceD
     ["user_message", "instruction"].includes(foundSource.kind) ? foundSource : null;
   const contract = store.getEffectiveContract(task.id);
   const facts = options.facts ?? store.taskProgressFacts(task.projectId, new Set([task.id])).get(task.id);
-  const outcome = facts?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
+  const outcome = facts?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
   const latest = facts?.reports.at(-1);
   const reports = [...new Map([outcome, latest].filter(r => !!r).map(r => [r.id, r])).values()];
   const lines = [`프로젝트: ${project?.name ?? "이름을 확인하지 못했습니다"}`, `업무: ${task.title}`];
