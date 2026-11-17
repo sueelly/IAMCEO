@@ -19,6 +19,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   const targetTrust = { fresh: observation?.freshness === "fresh" && Number.isFinite(age) && age >= -5_000 && age < WORKFLOW_OBSERVATION_MAX_AGE_MS,
     ownership: observation?.ownership ?? "unknown", error: observation?.error?.code ?? null };
   const blockers: string[] = [];
+  if (member.finalReviewer) blockers.push("최종 검수 직원은 수행 완료 보고의 검수만 받습니다");
   const failureDecision = store.pendingTaskFailureDecision(taskId);
   const intervention = store.pendingTaskIntervention(taskId);
   if (intervention) blockers.push(`업무 #${intervention.taskId}의 총괄 점검이 필요합니다: ${intervention.reason}. 바뀐 접근을 기록해 다시 연 뒤 배정하세요`);

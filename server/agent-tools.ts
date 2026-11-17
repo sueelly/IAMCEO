@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { STAGE_LABEL } from "../shared/task-stage.ts";
-import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
+import { CLI_PROVIDERS, CONDUCTOR_TOOLS, FINAL_REVIEW_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { CHECK_KINDS, formatContract } from "./harness.ts";
@@ -27,7 +27,7 @@ import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SE
 export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
 /** 대화 속 대표 결정을 고르는 일은 총괄만 한다. */
 export const MEMORY_CONDUCTOR_TOOLS = ["memory_capture"] as const;
-type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS | typeof MEMORY_CONDUCTOR_TOOLS)[number];
+type ToolName = (typeof WORKER_TOOLS | typeof CONDUCTOR_TOOLS | typeof FINAL_REVIEW_TOOLS | typeof ROOT_TOOLS | typeof MANUAL_TOOLS | typeof MEMORY_TOOLS | typeof MEMORY_CONDUCTOR_TOOLS)[number];
 type ToolHost = Orchestrator & Partial<AgentWorkflowService> & Pick<OrchestratorApi, "manualInbox" | "acknowledgeManualInbox">;
 
 const WAIT_DEFAULT_SEC = 50;
@@ -479,6 +479,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         const contract = harness?.contractRev && harness.contractTaskId ? orch.store.getTaskContract(harness.contractTaskId) : null;
         return reply(JSON.stringify(publicHarness({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) })));
       }
+      if (member.finalReviewer) throw new ApiError(403, "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다");
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
       const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, artifactCommit: a.artifact_commit, continueWork: a.continue_work, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
@@ -819,7 +820,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_stage: tool(
-    "업무 단계를 남긴다(총괄만). 업무 단계는 보고·결재·전달에서 서버가 계산하고, 납품 뒤 단계만 네가 남긴다: review 독립 검토를 맡김 · merged 메인에 합침(evidence 에 커밋 id) · applied 대표 화면에 반영(merged 뒤) · done 수행 완료의 최종 확인(하네스의 현재 판 통과 근거 필요, main에 합칠 브랜치는 reviewed_commit에 전체 SHA를 넣으면 통합 일감 생성) · hold 접거나 미룸(까닭) · reopen 완료·보류·반복 감시 멈춤을 다시 연다(바꾼 원인·접근). done 은 대표 결재함에 읽기용 완료 알림을 한 번 만든다(새 결재가 아니다). 같은 done 을 다시 불러도 알림은 하나다.",
+    "업무 단계를 남긴다(총괄만). 업무 단계는 보고·결재·전달에서 서버가 계산하고, 납품 뒤 단계만 네가 남긴다: review 독립 검토를 맡김 · merged 메인에 합침(evidence 에 커밋 id) · applied 대표 화면에 반영(merged 뒤) · done 수행 완료 기록 확인(하네스의 현재 판 통과 근거 필요, 독립 최종 검수와 검수 커밋은 전담 직원이 task_review로 기록) · hold 접거나 미룸(까닭) · reopen 완료·보류·반복 감시 멈춤을 다시 연다(바꾼 원인·접근). done 은 대표 결재함에 읽기용 완료 알림을 한 번 만든다(새 결재가 아니다). 같은 done 을 다시 불러도 알림은 하나다.",
     z.strictObject({ task_id: text, stage: z.enum(["review", "merged", "applied", "done", "hold", "reopen"]), evidence: text.describe("근거 한 줄: 보고 id·커밋 id·확인한 화면·까닭"), reviewed_commit: z.string().regex(fullCommit).optional().describe("작업 브랜치의 최종 검수를 확인할 때 이 커밋의 전체 SHA"),
       integration_report: text.optional().describe("merged를 기록할 때 검수 커밋과 원격 main을 확인한 통합 업무의 완료 보고 ID"),
       main_commit: z.string().regex(fullCommit).optional().describe("통합 담당자가 확인한 원격 main의 전체 SHA") }),
@@ -829,6 +830,26 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       const p = r.progress;
       const followup = r.followup?.taskId ? ` · 예정 업무 #${r.followup.taskId} '${r.followup.title}'` : "";
       return reply(`${r.repeated ? "이미 완료로 남아 있습니다" : "남겼습니다"} · 업무 #${a.task_id} 단계 ${STAGE_LABEL[p.stage]}${p.next ? ` · 다음: ${p.next}` : ""}${r.noticeId ? ` · 완료 알림 #${r.noticeId}` : ""}${followup}`);
+    },
+  ),
+
+  task_review_evidence: tool(
+    "현재 검수 대상의 확정 계약, 직원 완료 보고, 검사와 정확한 Git 커밋의 변경분을 읽습니다. 필요한 경우 변경 파일 하나와 nextOffset을 지정합니다.",
+    z.strictObject({ task_id: text, report_id: text, path: z.string().max(1024).optional(), offset: z.number().int().min(0).max(2_097_152).optional() }),
+    async (orch, member, a) => reply(JSON.stringify(await orch.finalReviewEvidence(member, a.task_id, a.report_id, a.path, a.offset ?? 0))),
+  ),
+
+  task_review: tool(
+    "최종 검수 전담 직원이 받은 통과 보고의 독립 검수 결과를 기록한다. 문제를 확인하면 해당 부분의 수정 업무를 총괄에게 연결한다.",
+    z.strictObject({
+      task_id: text, report_id: text, result: z.enum(["confirmed", "changes_requested"]), evidence: text,
+      reviewed_commit: z.string().regex(fullCommit).optional(), repair_title: oneLine(120).optional(),
+    }),
+    (orch, member, a) => {
+      const result = orch.finishFinalReview(member, { taskId: a.task_id, reportId: a.report_id, result: a.result,
+        evidence: a.evidence, reviewedCommit: a.reviewed_commit, repairTitle: a.repair_title });
+      const status = result.status === "confirmed" ? "최종 검수를 확인했습니다" : "보완 필요를 기록했습니다";
+      return reply(status + (result.followupId ? ` · 예정 업무 #${result.followupId}` : ""));
     },
   ),
 
@@ -907,6 +928,7 @@ async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
 }
 
 function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
+  if (member.finalReviewer) return ["status", "task_trace", "post", ...FINAL_REVIEW_TOOLS];
   return [
     ...(member.kind === "conductor" ? CONDUCTOR_ALLOWED_TOOLS : WORKER_TOOLS),
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),

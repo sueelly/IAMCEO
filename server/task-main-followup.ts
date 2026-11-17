@@ -1,8 +1,7 @@
 import type { Task, WorkItem } from "../shared/types.ts";
 import { bindingContract } from "./harness.ts";
 import { ApiError, type Store } from "./store.ts";
-import { latestCompletionReview, requestCompletionChanges, synchronizeRelatedTaskCompletion } from "./task-completion.ts";
-import { activeTaskContinuationPauses } from "./task-continuation.ts";
+import { completionReviewPaused, latestCompletionReview, requestCompletionChanges, synchronizeRelatedTaskCompletion } from "./task-completion.ts";
 import { latestWorkerOutcome } from "./task-progress.ts";
 
 export const fullCommit = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
@@ -28,7 +27,7 @@ export function currentReviewedCommit(store: Store, source: Task, reportId?: str
   const commit = review.reviewed_branch === source.branch ? review.reviewed_commit : null;
   if (!commit || !fullCommit.test(commit)) return null;
   const scope = new Set(store.taskCompletionScope(source.id));
-  if (activeTaskContinuationPauses(store, source.projectId).some(p => scope.has(p.taskId))) return null;
+  if (completionReviewPaused(store, source.projectId, source.id)) return null;
   const facts = store.taskProgressFacts(source.projectId, scope);
   for (const id of scope) {
     const f = facts.get(id);

@@ -1,5 +1,6 @@
 import { providerIssueKind } from "../shared/execution-issues.ts";
-import { redactHarnessText } from "./harness-redaction.ts";
+import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
+import { readFinalReviewPatch } from "./final-review-evidence.ts";
 import { UNKNOWN_AGENT_RESULT } from "./agent-receipts.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { readCodeSource, type CodeReadScope } from "./harness-source-read.ts";
@@ -21,8 +22,8 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { currentReviewedCommit, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
-import { checkCompletionReviews, completionReviewAllowsDelivery, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
+import { currentReviewedCommit, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -80,7 +81,7 @@ import { listBackups, type BackupManager } from "./backup.ts";
 import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
-import { josa, renderRole } from "./roles.ts";
+import { josa, renderFinalReviewer, renderRole } from "./roles.ts";
 import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
@@ -1127,7 +1128,8 @@ export class Orchestrator implements OrchestratorApi {
     const task = this.store.resolveTask(this.requireTaskInProject(caller, taskId));
     const report = this.store.getMessage(reportId), harness = this.store.getReportHarness(reportId);
     if (!report || report.projectId !== caller.projectId || report.mine || report.taskId !== task.id || !harness || harness.memberId !== report.memberId) throw new ApiError(404, "그 업무의 검사 보고를 찾을 수 없습니다");
-    if (caller.kind !== "conductor" && caller.id !== harness.memberId) throw new ApiError(403, "직원은 자신의 실패 검사만 진단할 수 있습니다");
+    const reviewer = caller.finalReviewer && latestCompletionReview(this.store, task.id)?.report_id === reportId;
+    if (caller.kind !== "conductor" && !reviewer && caller.id !== harness.memberId) throw new ApiError(403, "배정된 검수 또는 자신의 실패 검사만 진단할 수 있습니다");
     const check = harness.checks[checkIndex];
     if (!check || check.result !== "fail" || !EXEC_CHECKS.has(check.kind) || !check.command) throw new ApiError(400, "명령이 있는 실패 실행 검사 번호를 고르세요(0부터 시작)");
     const contract = harness.contractTaskId && harness.contractRev ? this.store.listTaskContracts(harness.contractTaskId).find(c => c.rev === harness.contractRev) : null;
@@ -1484,7 +1486,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 실행을 깨운 입력 중 보고가 필요한 것. 보고 보완(원인 실행에 이어진 전달·옛 글 머리)과 판 정리는 뺀다. */
   private reportDuties(deliveries: Delivery[]): Delivery[] {
-    return deliveries.filter(d => d.wake && !isTidy(d) && (!this.taskContinuations.isContinuation(d.id) || this.store.requireMember(d.memberId).kind === "worker") && !this.store.getReportFollowupByDelivery(d.id) && !d.text.startsWith(formatSystem("보고 보완")));
+    return deliveries.filter(d => d.wake && !isTidy(d) && !isCompletionReviewDelivery(d) && (!this.taskContinuations.isContinuation(d.id) || this.store.requireMember(d.memberId).kind === "worker") && !this.store.getReportFollowupByDelivery(d.id) && !d.text.startsWith(formatSystem("보고 보완")));
   }
 
   /**
@@ -1682,6 +1684,7 @@ export class Orchestrator implements OrchestratorApi {
       for (const d of this.store.listDelivering()) this.deliveryRecovery.beginRecovery(d.id);
       this.store.releaseHeldBeforeConnection();
       await this.refreshConnection();
+      for (const project of this.store.listProjects()) this.store.ensureFinalReviewer(project.id);
       const herdrMembers: Member[] = [];
       for (const member of this.store.listAllMembers()) {
         if (member.subagents !== 0 || !member.subagentState) this.store.patchMember(member.id, { subagents: 0, subagentState: { quality: "unknown", count: null, observedAt: null, sessionGeneration: this.store.memberRevisions(member.id).sessionGeneration } });
@@ -2023,6 +2026,7 @@ export class Orchestrator implements OrchestratorApi {
   async createProject(req: CreateProjectReq): Promise<Project> {
     const goal = req.goal?.trim();
     const project = this.store.createProject({ name: req.name, cwd: req.cwd, now: goal, creationGoal: req.goal ?? null, chiefCli: req.chiefCli, ...(req.memory !== undefined ? { memory: req.memory } : {}) });
+    this.store.ensureFinalReviewer(project.id);
     if (req.startConductor) {
       const conductor = await this.ensureConductor(project.id);
       if (goal) await this.deliver({ projectId: project.id, memberId: conductor.id, kind: "system", text: formatSystem(`프로젝트 목표: ${guardLines(goal)}`) });
@@ -2374,6 +2378,7 @@ export class Orchestrator implements OrchestratorApi {
 
   private async patchMemberConfigOnce(memberId: string, patch: PatchMemberReq): Promise<Member> {
     const member = this.store.requireMember(memberId);
+    if (member.finalReviewer && patch.cli === "antigravity") throw new ApiError(400, "최종 검수 직원은 Claude 또는 Codex를 사용합니다");
     this.requireActive(this.store.requireProject(member.projectId));
     if (this.runtime(memberId).closing || this.runtime(memberId).starting || this.runtime(memberId).reopening || this.pendingLifecycle(memberId)) throw new ApiError(409, "세션을 처리하는 중입니다");
     if (member.origin === "manual") throw new ApiError(400, "직접 띄운 세션은 설정을 바꿀 수 없습니다");
@@ -2416,6 +2421,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async onProjectPatched(project: Project, patch: PatchProjectReq): Promise<void> {
+    if (patch.runnerEnabled === true || patch.archived === false) this.store.ensureFinalReviewer(project.id);
     try {
       if (patch.archived === true) {
         // 사전 hook에서 전원 종료했다. commit 뒤 새 입력은 없다.
@@ -2452,6 +2458,7 @@ export class Orchestrator implements OrchestratorApi {
 
   private async enableProject(projectId: string): Promise<void> {
     this.requireActive(this.store.requireProject(projectId));
+    this.store.ensureFinalReviewer(projectId);
     await this.adoptOrphans(projectId);
     await Promise.all(this.store.listMembers(projectId).map((m) => this.pump(m.id)));
   }
@@ -2554,6 +2561,7 @@ export class Orchestrator implements OrchestratorApi {
     const attachments = (req.attachmentIds ?? []).map(id => this.store.getAttachment(id)).filter((a): a is Attachment => a !== null);
     const target = req.targetMemberId ? this.store.requireMember(req.targetMemberId) : null;
     if (target && target.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 직원이 아닙니다");
+    if (target?.finalReviewer) throw new ApiError(409, "최종 검수 직원은 수행 완료 보고의 검수만 받습니다. 요청은 총괄에게 보내세요");
     const chosen = req.taskId ? this.store.requireTask(req.taskId) : null;
     if (chosen && chosen.projectId !== projectId) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
     const named = req.newTaskTitle?.trim() || null;
@@ -3092,6 +3100,7 @@ export class Orchestrator implements OrchestratorApi {
       throw new ApiError(502, `칸을 넘겨받지 못했습니다: ${(e as Error).message}`);
     } finally { if (member) this.terminalMutations.delete(member.id); }
     this.store.setAdoptedInfo(member.id, { turnedOnRunner });
+    this.store.ensureFinalReviewer(projectId);
     const conductorName = this.store.getConductor(projectId)?.name ?? "총괄";
     await this.deliver({
       projectId,
@@ -3729,6 +3738,7 @@ export class Orchestrator implements OrchestratorApi {
 
   async assign(projectId: string, memberRef: string, input: AssignInput, assignedBy?: Member): Promise<AssignResult> {
     const target = this.requireInProject(projectId, memberRef);
+    if (target.finalReviewer) throw new ApiError(409, "최종 검수 직원은 수행 완료 보고의 검수만 받습니다");
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
     const quote = input.userQuote?.trim() ? { text: input.userQuote, verified: source !== null, source } : null;
     this.refuseOwnerDirectRepeat(target, quote);
@@ -4108,6 +4118,7 @@ export class Orchestrator implements OrchestratorApi {
   /** 세션을 끝내고 명부에서 뺀다. 대화·결재 기록은 남는다. 나가지 않고 사라진 입력의 요약을 돌려준다. */
   async closeMember(memberId: string, opts: { paneDone?: boolean } = {}): Promise<string[]> {
     const member = this.store.requireMember(memberId);
+    if (member.finalReviewer) throw new ApiError(409, "프로젝트의 최종 검수 담당자는 명부에서 제거할 수 없습니다");
     if (this.archiving.has(member.projectId)) throw new ApiError(409, "프로젝트 보관을 처리하는 중입니다");
     if (member.kind !== "worker") throw new ApiError(400, "총괄은 닫을 수 없습니다");
     const rt = this.runtime(memberId);
@@ -4880,6 +4891,83 @@ export class Orchestrator implements OrchestratorApi {
     ];
   }
 
+  async finalReviewEvidence(member: Member, taskId: string, reportId: string, path: string | undefined, offset: number) {
+    const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
+    const project = this.store.requireProject(task.projectId);
+    this.requireActive(project);
+    const review = latestCompletionReview(this.store, task.id);
+    const report = this.store.getMessage(reportId), artifact = this.store.getReportHarness(reportId);
+    const contract = this.store.getEffectiveContract(task.id);
+    if (!member.finalReviewer || review?.status !== "pending" || review.report_id !== reportId || !report || !artifact ||
+      contract?.taskId !== review.contract_task_id || contract.rev !== review.contract_rev ||
+      this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
+      throw new ApiError(409, "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요");
+    }
+    const patch = artifact.artifactCommit ? await readFinalReviewPatch(project.cwd, artifact.artifactCommit, path, offset) : null;
+    if (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0)) {
+      this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
+        .run(member.id, task.id, report.id);
+    }
+    return publicHarness({ task: { id: task.id, title: task.title, branch: task.branch }, contract,
+      report: { id: report.id, title: report.title, body: report.body, who: report.who, taskId: report.taskId,
+        checks: artifact.checks, claims: artifact.claims, artifactBranch: artifact.artifactBranch, artifactCommit: artifact.artifactCommit },
+      patch });
+  }
+
+  finishFinalReview(member: Member, input: { taskId: string; reportId: string; result: "confirmed" | "changes_requested";
+    evidence: string; reviewedCommit?: string; repairTitle?: string }): { status: string; followupId?: string } {
+    const task = this.store.resolveTask(this.requireTaskInProject(member, input.taskId));
+    this.requireActive(this.store.requireProject(task.projectId));
+    if (!member.finalReviewer || this.store.getFinalReviewer(task.projectId)?.id !== member.id) {
+      throw new ApiError(403, "지정된 독립 최종 검수 직원만 이 결과를 남길 수 있습니다");
+    }
+    const evidence = normalizeSpace(cleanText(input.evidence));
+    if (!evidence) throw new ApiError(400, "확인한 근거를 적어 주세요");
+    synchronizeRelatedTaskCompletion(this.store, task.id);
+    const { status, followup, notification } = this.store.transaction(() => {
+      const review = latestCompletionReview(this.store, task.id), report = this.store.getMessage(input.reportId);
+      if (!review || review.report_id !== input.reportId || !report || report.memberId === member.id) {
+        throw new ApiError(409, "현재 검수할 다른 직원의 완료 보고를 확인해 주세요");
+      }
+      if (review.status !== "pending") {
+        if (review.status === input.result && review.reviewer_id === member.id &&
+          (input.reviewedCommit?.toLowerCase() ?? null) === review.reviewed_commit) return { status: review.status };
+        throw new ApiError(409, "검수 대상 또는 상태가 바뀌었습니다. 최신 기록을 확인해 주세요");
+      }
+      if (this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
+        throw new ApiError(409, "현재 수행 완료 기록 또는 중단 상태를 확인해 주세요");
+      }
+      let followup: WorkItem | undefined;
+      let text: string;
+      if (input.result === "confirmed") {
+        const artifact = this.store.getReportHarness(report.id);
+        if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 현재 계약과 검사, 해당 커밋의 변경분을 먼저 확인해 주세요");
+        if (task.branch && artifact?.artifactBranch === task.branch && artifact.artifactCommit && !input.reviewedCommit) {
+          throw new ApiError(409, "작업 브랜치의 검증 커밋을 대조한 뒤 전체 SHA를 적어 주세요");
+        }
+        followup = this.markTaskStage(member, { taskId: task.id, stage: "done", evidence, reviewedCommit: input.reviewedCommit }).followup;
+        text = `${member.name}가 '${task.title}'의 최신 완료 보고 #${review.report_id}를 독립 검수했습니다.`;
+      } else {
+        const title = input.repairTitle?.trim();
+        if (!title || input.reviewedCommit) throw new ApiError(400, "확인된 문제를 고칠 업무 이름을 적어 주세요");
+        const issue = this.store.createMessage({ projectId: task.projectId, taskId: task.id, memberId: member.id,
+          who: member.name, kind: "알림", title, body: evidence, aboutMessageId: report.id });
+        followup = queueIntegrationRepair(this.store, task, issue.id, title, evidence);
+        requestCompletionChanges(this.store, task.id, evidence, member);
+        this.store.db.query("UPDATE task_completion_reviews SET reviewer_id=? WHERE task_id=? AND report_id=?")
+          .run(member.id, task.id, review.report_id);
+        text = `${member.name}가 '${task.title}'에서 수정할 부분을 확인했습니다. 문제 보고 #${issue.id}를 확인해 주세요.`;
+      }
+      if (followup) text += ` 예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`;
+      const lead = this.store.getConductor(task.projectId);
+      const notification = lead ? this.store.enqueue({ projectId: task.projectId, memberId: lead.id, kind: "system",
+        taskId: followup?.taskId ?? task.id, wake: !!followup, text: formatSystem(text) }) : null;
+      return { status: input.result, followup, notification };
+    });
+    if (notification?.wake) void this.pump(notification.memberId);
+    return { status, followupId: followup?.taskId ?? undefined };
+  }
+
   /**
    * 총괄의 단계 표시. 단계는 근거에서 계산하므로 여기서는 기록만 남긴다(지우지 않는다).
    * - merged 는 커밋 id(7~40자 16진)를 근거에 적어야 받는다. applied 는 merged 뒤에만 받는다.
@@ -4907,6 +4995,11 @@ export class Orchestrator implements OrchestratorApi {
         !!done && !!currentReviewedCommit(this.store, task);
       if (input.stage !== "reopen" && done && !afterReviewedMerge) {
         if (input.stage === "done") {
+          const review = latestCompletionReview(this.store, task.id);
+          const reviewer = this.store.getFinalReviewer(task.projectId);
+          if (reviewer && member.id !== reviewer.id && (review?.status === "pending" || input.reviewedCommit)) {
+            throw new ApiError(409, "프로젝트의 최종 검수 직원이 최신 완료 보고를 확인합니다");
+          }
           if (input.reviewedCommit && latestCompletionReview(this.store, task.id)?.reviewed_commit &&
             currentReviewedCommit(this.store, task) !== input.reviewedCommit.toLowerCase()) {
             throw new ApiError(409, "현재 최종 검수가 이 커밋을 가리키지 않습니다. 최신 작업 브랜치의 검사와 검수를 다시 확인해 주세요");
@@ -5140,7 +5233,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!ordinaryInputAdmitted(this.store, d.id)) return false;
       // Recheck at envelope preparation too: a human instruction, completion,
       // or user stop may have superseded this reminder while it waited.
-      if (!this.taskContinuations.canDispatch(d) || !completionReviewAllowsDelivery(this.store, d)) return false;
+      if (!this.taskContinuations.canDispatch(d) || !completionReviewAllowsDelivery(this.store, d, member)) return false;
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
       if (!integrationTaskAllowsInput(this.store, taskId)) return false;
@@ -5880,7 +5973,7 @@ export class Orchestrator implements OrchestratorApi {
     return deliveries.every(delivery => {
       // The current reservation is the occupied run, but its authorization and
       // contract may have changed while the runner was inspecting the terminal.
-      if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery)) return false;
+      if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery, member)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
       if (!integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
@@ -6240,7 +6333,7 @@ export class Orchestrator implements OrchestratorApi {
       const tidied = member.kind !== "worker" && !!turn?.deliveries?.some(isTidy);
       // 판 정리만 받은 턴은 바뀐 게 없으면 아무것도 올리지 않기로 했다. 마지막 글은 활동에만 남긴다.
       const tidyOnly = tidied && !!turn?.deliveries?.every((d) => d.kind === "system");
-      if (!posted && e.finalText.trim()) {
+      if (!member.finalReviewer && !posted && e.finalText.trim()) {
         if (tidyOnly) this.store.appendActivity(member.id, "system", `판 정리: ${normalizeSpace(e.finalText).slice(0, 300)}`);
         else await this.fallbackReport(member, e.finalText, direct, turn?.deliveries);
       }
@@ -6253,7 +6346,7 @@ export class Orchestrator implements OrchestratorApi {
     const kind = providerIssueKind(errorText);
     this.store.patchMember(member.id, { status: "error", lastError: errorText, ...(kind ? { executionIssue: { kind, detail: errorText, at: new Date().toISOString(), sessionGeneration: this.store.memberRevisions(member.id).sessionGeneration, terminalId: member.paneId, exitCode: null } } : {}) });
     this.memberNotice(member, `${member.name} 오류: ${errorText}`, deliveries);
-    if (member.kind === "worker") await this.reportToConductor(member, "막힘", "(자동) 턴 오류", errorText, true);
+    if (member.kind === "worker" && !member.finalReviewer) await this.reportToConductor(member, "막힘", "(자동) 턴 오류", errorText, true);
   }
 
   /** noOutput diagnoses execution, never whether an input was received. */
@@ -6526,13 +6619,14 @@ export class Orchestrator implements OrchestratorApi {
       ...this.models.memberLaunchConfig(member, settings),
       subagentModel: staffSubagent(member.cli, settings.ranks, settings.codexRanks).subagentModel,
       permissionMode: settings.permissionMode,
-      kind: member.kind,
+      kind: member.finalReviewer ? "conductor" : member.kind,
       origin: member.origin,
       sessionGeneration: this.store.getMember(member.id) ? this.store.memberRevisions(member.id).sessionGeneration : undefined,
     };
   }
 
   private rulesFor(member: Member, project: Project): string {
+    if (member.finalReviewer) return renderFinalReviewer(project.name);
     const conductor = this.store.getConductor(project.id);
     const staffEffort = member.cli === "codex" || member.cli === "antigravity" ? null : this.store.getSettings().ranks.staff.effort;
     return renderRole(member.kind, { PROJECT: project.name, NAME: member.name, ROLE: member.role, CONDUCTOR: conductor?.name ?? "총괄", SUBAGENT_EFFORT: staffEffort ? `- 서브에이전트·워크플로를 부를 때 effort=${staffEffort} 을 넘긴다.` : "", MEMORY: this.memoryEnabledFor(member) ? memoryGuide(member.kind) : "" }, this.config.rolesDir);

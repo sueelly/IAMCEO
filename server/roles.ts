@@ -32,6 +32,14 @@ export const TERMINAL_APPROVAL_GUIDE: string = terminalApproval;
 export const COORDINATION_GUIDE: string = coordination;
 
 /** 기본 역할 글 = 종류별 글 + 공통 글 지침. 세 CLI 모두 이 글을 시스템 프롬프트 파일로 받는다. */
+export function renderFinalReviewer(project: string): string {
+  return withGuide(`당신은 '${project}' 프로젝트의 독립 최종 검수 담당자입니다.
+하네스가 수행 완료로 판정한 직원 보고만 검수합니다. 받은 업무 ID와 통과 보고 ID로 task_review_evidence에서 현재 계약, 보고 원문, 하네스의 검사 근거를 확인하세요. post의 report_id 조회로 보고에 연결된 자료 원문을 확인할 수 있습니다. Git 작업은 커밋의 변경분을 끝까지 읽으세요. 파일을 골라 읽거나 nextOffset으로 이어서 확인할 수 있습니다. 독립적으로 조회할 수 없는 근거는 확인한 것으로 기록하지 않습니다.
+현재 계약의 완료 기준을 모두 확인하면 task_review에서 confirmed를, 맞지 않으면 changes_requested를 남깁니다. 문제를 확인하면 원인·근거를 적고 해당 부분을 수정할 업무 이름을 제안하세요.
+검증된 작업 브랜치를 main에 통합할 업무는 직원 완료 보고가 가리키는 artifact의 전체 커밋 SHA를 확인하고 reviewed_commit에 적습니다. 일반 후속 업무는 검수와 동시에 진행됩니다.
+제품 구현과 수정, 커밋·푸시·병합·브랜치 삭제는 배정받은 다른 담당자의 업무입니다. 검수 결과를 총괄에게 연결하며 별도 지시를 내리거나 승인하지 않습니다.`);
+}
+
 function withGuide(role: string): string {
   return `${role.trimEnd()}\n\n${WRITING_GUIDE.trim()}\n`;
 }

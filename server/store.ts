@@ -199,6 +199,7 @@ export interface NewMember {
   name: string;
   role?: string;
   kind: MemberKind;
+  finalReviewer?: boolean;
   origin?: MemberOrigin;
   status?: MemberStatus;
   cwd?: string;
@@ -456,6 +457,7 @@ function toMember(r: Row): Member {
     name: r.name,
     role: r.role,
     kind: r.kind,
+    ...(r.final_reviewer ? { finalReviewer: true } : {}),
     origin: r.origin,
     wasAdopted: r.adopted_info != null,
     cli: r.cli,
@@ -1370,6 +1372,30 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return r ? this.memberWithWait(r) : null;
   }
 
+  getFinalReviewer(projectId: string): Member | null {
+    const row = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.final_reviewer = 1`, projectId);
+    return row ? this.memberWithWait(row) : null;
+  }
+
+  ensureFinalReviewer(projectId: string): Member | null {
+    return this.transaction(() => {
+      const project = this.requireProject(projectId);
+      if (project.isHq || project.archived || !project.runnerEnabled) return null;
+      const existing = this.getFinalReviewer(projectId);
+      if (existing) return existing;
+      let suffix = 0;
+      let handle = "final-review", name = "최종 검수";
+      while (this.findMember(projectId, handle) || this.findMember(projectId, name)) {
+        suffix++;
+        handle = `final-review-${suffix}`;
+        name = `최종 검수 ${suffix + 1}`;
+      }
+      return this.createMember({ projectId, handle, name, role: "완료 조건과 검증 근거의 독립 최종 검수",
+        kind: "worker", origin: "runner", status: "offline", finalReviewer: true,
+        cli: this.defaultMemberCli(projectId) === "claude" ? "claude" : "codex" });
+    });
+  }
+
   getMemberBySession(sessionId: string): Member | null {
     const r = this.row(`${MEMBER_SELECT} WHERE m.session_id = ?`, sessionId);
     return r ? this.memberWithWait(r) : null;
@@ -1393,8 +1419,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("m_");
       const at = nowIso();
       this.run(
-        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override, effort_override)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override, effort_override, final_reviewer)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.handle,
@@ -1414,6 +1440,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.cli ?? this.defaultMemberCli(input.projectId),
         input.modelOverride ?? null,
         input.effortOverride ?? null,
+        input.finalReviewer ? 1 : 0,
       );
       const member = this.requireMember(id);
       this.emit({ type: "member", member });

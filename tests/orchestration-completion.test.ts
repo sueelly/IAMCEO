@@ -126,21 +126,24 @@ test("미지원 실행 근거는 자동 완료하지 않는다", async () => {
 
 test("미확인 최종 검수는 재시작 뒤에도 한 건으로 다시 연결하고 검수가 끝나면 보내지 않는다", async () => {
   const f = fixture(), task = f.orch.saveTask(f.lead, { title: "최종 검수 복원", contract }).task;
+  const reviewer = f.store.ensureFinalReviewer(f.project.id)!;
   await f.tool(f.worker, "post", { task_id: task.id, kind: "완료", title: "검사", contract_rev: 1, checks });
-  // A prior conductor acknowledged receipt but did not perform the final audit.
-  f.runner.end(f.lead);
-  f.orch.checkTaskContinuations(Date.now() + 60_000);
-  const pending = f.store.listPending(f.lead.id).filter(d => d.text.includes("비동기 최종 확인"));
+  const pending = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
   expect(pending).toHaveLength(1);
+  expect(pending[0]?.memberId).toBe(reviewer.id);
   expect(checkCompletionReviews(new Store(f.store.db, new Bus()), Date.now() + 120_000, 30_000)).toHaveLength(0);
-  expect(f.store.listPending(f.lead.id).filter(d => d.text.includes("비동기 최종 확인"))).toHaveLength(1);
-  const audit = f.orch.markTaskStage(f.lead, { taskId: task.id, stage: "done", evidence: "계약과 결과를 대조했습니다" });
-  expect(audit.progress.finalReview?.status).toBe("confirmed");
+  expect(f.store.listPending(reviewer.id).filter(d => d.text.includes("비동기 최종 확인"))).toHaveLength(1);
+  const reportId = f.store.taskProgress(task.id).finalReview!.reportId;
+  expect((await f.tool(reviewer, "task_review_evidence", { task_id: task.id, report_id: reportId })).isError).toBeUndefined();
+  const audit = await f.tool(reviewer, "task_review", { task_id: task.id, report_id: reportId, result: "confirmed", evidence: "계약과 결과를 대조했습니다" });
+  expect(audit.isError, audit.text).toBeUndefined();
+  expect(f.store.taskProgress(task.id).finalReview?.status).toBe("confirmed");
   expect(f.store.requireDelivery(pending[0]!.id).status).toBe("failed");
 });
 
 test("refused final audit must persist revocation and retire its queued reminder atomically",async()=>{
  const f=fixture(),task=f.orch.saveTask(f.lead,{title:"인계",contract}).task;
+ const reviewer=f.store.ensureFinalReviewer(f.project.id)!;
  await f.tool(f.worker,"post",{task_id:task.id,kind:"완료",title:"검사",contract_rev:1,checks});
  // Keep the conductor busy so reminder generation cannot physically write it.
  f.runner.busy.add(f.lead.id);
@@ -149,7 +152,8 @@ test("refused final audit must persist revocation and retire its queued reminder
  const reminders=checkCompletionReviews(f.store,Date.now()+60_000,30_000);
  expect(reminders).toHaveLength(1);
  f.store.createDecision({projectId:f.project.id,taskId:task.id,memberId:f.worker.id,who:f.worker.name,title:"새 차단 결재"});
- const refused=await f.tool(f.lead,"task_stage",{task_id:task.id,stage:"done",evidence:"최종 검수"});
+ const review=f.store.taskProgress(task.id).finalReview!;
+ const refused=await f.tool(reviewer,"task_review",{task_id:task.id,report_id:review.reportId,result:"confirmed",evidence:"최종 검수"});
  expect(refused.isError).toBe(true);
  expect(f.store.doneMark(task.id)).toBeNull();
  expect(completionReviewAllowsDelivery(f.store,reminders[0]!)).toBe(false);

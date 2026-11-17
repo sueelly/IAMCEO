@@ -189,6 +189,8 @@ export interface Member {
   name: string; // 화면 이름(한국어)
   role: string;
   kind: MemberKind;
+  /** 프로젝트의 독립 최종 검수를 맡는 관리 직원. */
+  finalReviewer?: boolean;
   origin: MemberOrigin;
   /** 편입으로 들어온 세션. 다시 열어 origin 이 runner 가 되어도 남는다. 편입 해제의 근거다. */
   wasAdopted: boolean;
@@ -899,6 +901,7 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
+export const FINAL_REVIEW_TOOLS = ["task_review", "task_review_evidence"] as const;
 export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close", "server_check", "server_backup", "task_trace", "exec_diagnose", "code_read"] as const;
 export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage", "task_followup"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;

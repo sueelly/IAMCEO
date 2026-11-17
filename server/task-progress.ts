@@ -116,7 +116,7 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
   const active = activeMarks(f.marks);
   const done = active.findLast((m) => m.stage === "done");
   // 완료는 끝 단계다. 뒤에 온 글·이벤트는 되돌리지 않는다(총괄이 다시 열 때만).
-  if (done) return make("done", null, f.finalReview?.status === "pending" ? "총괄 최종 확인 대기 · 후속 업무 진행" : null, null, done.at, [`mark:${done.id}`]);
+  if (done) return make("done", null, f.finalReview?.status === "pending" ? "독립 최종 검수 대기 · 후속 업무 진행" : null, null, done.at, [`mark:${done.id}`]);
   const last = active.at(-1);
   if (last?.stage === "hold") return make("hold", "hold", `보류: ${last.evidence}`, CONDUCTOR, last.at, [`mark:${last.id}`]);
 
