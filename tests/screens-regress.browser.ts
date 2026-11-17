@@ -1488,20 +1488,38 @@ describe("연결 게이트", () => {
   async function openDisconnected(ctx: BrowserContext, projectId: string): Promise<Page> {
     const page = await ctx.newPage();
     await page.addInitScript((code) => localStorage.setItem("iamceo.accessCode", code), CODE);
+    const off = (body: { projects?: { id: string; connection: unknown }[]; project?: { connection: unknown } } | null | undefined) => {
+      for (const x of body?.projects ?? []) if (x.id === projectId) x.connection = OFF;
+      if (body?.project) body.project.connection = OFF;
+    };
     await page.route("**/api/bootstrap", async (route) => {
       const res = await route.fetch();
       const body = (await res.json()) as { projects: { id: string; connection: unknown }[] };
-      for (const x of body.projects) if (x.id === projectId) x.connection = OFF;
+      off(body);
       await route.fulfill({ response: res, json: body });
     });
     await page.route(`**/api/projects/${projectId}/state`, async (route) => {
       const res = await route.fetch();
       const body = (await res.json()) as { project: { connection: unknown } };
-      body.project.connection = OFF;
+      off(body);
       await route.fulfill({ response: res, json: body });
     });
-    // 진짜 소켓 이벤트가 고친 값을 되돌리지 않게 이어 주지 않는다.
-    await page.routeWebSocket(/\/ws/, () => {});
+    // 지금 화면은 /api/sync 한 번으로 요약(bootstrap)과 프로젝트(state)를 함께 읽는다. 같은 값을 고친다.
+    await page.route("**/api/sync?*", async (route) => {
+      const res = await route.fetch();
+      const body = (await res.json()) as { bootstrap?: Parameters<typeof off>[0]; state?: Parameters<typeof off>[0] };
+      off(body.bootstrap);
+      off(body.state);
+      await route.fulfill({ response: res, json: body });
+    });
+    // 진짜 소켓 이벤트가 고친 값을 되돌리지 않게 hello 만 잇는다(서버 연결은 있고 프로젝트만 연결 없음).
+    // 소켓을 아예 잇지 않으면 화면은 서버가 끊긴 것으로 보고 서버 끊김 안내를 낸다.
+    await page.routeWebSocket(/\/ws/, (socket) => {
+      const up = socket.connectToServer();
+      up.onMessage((m) => {
+        if (String(m).includes('"hello"')) socket.send(m);
+      });
+    });
     await page.goto(`${base}/#/p/${projectId}/inbox`);
     return page;
   }
@@ -1516,6 +1534,8 @@ describe("연결 게이트", () => {
     expect(await page.getByRole("textbox", { name: /철수에게 직접 지시/ }).count()).toBe(0);
     await page.keyboard.press("Escape");
     await page.locator(".tm-start").waitFor();
+    // 시작 안내 글은 실행 상태 확인(/api/runtime, 동기화 묶음에 없음)이 끝난 뒤에 정해진다. 확인 중의 글을 읽지 않는다.
+    await until("실행 상태 확인", async () => !(await page.locator(".tm-start").innerText()).includes("실행 상태를 확인해야"), 20_000);
     // 시작 카드가 같은 안내를 하므로 입력칸 자리의 게이트는 숨긴다.
     expect(await page.locator(".shell__bottom .gate").isVisible()).toBe(false);
     const text = await page.locator(".tm-start").innerText();
@@ -1624,4 +1644,78 @@ describe("연결 게이트", () => {
     expect(await input(page).inputValue()).toBe("끊겨도 남을 글");
     await page.close();
   }, 40_000);
+
+  // 2026-11-17 승인 연결 보완: 끊겨 잠긴 뒤에는 '지금 다시 연결'을 눌러 연결 중(connecting)이 되어도 입력칸·카드를 풀지 않는다.
+  // 화면에 입력칸이 보이면 서버와 실제로 이어진 것(online)이어야 한다. PC·390 둘 다 본다.
+  test("끊긴 채 다시 연결을 누르면 연결 중에도 입력칸과 카드가 잠긴 채이고, 실제로 이어진 뒤에만 풀린다(PC·390)", async () => {
+    const shots = process.env.IAMCEO_E2E_SHOTS;
+    for (const [ctx, tag] of [[desktop, "pc"], [phone, "390"]] as const) {
+      const p = await newProject();
+      const w = await joinWorker(p.id, "철수");
+      await ask(w.token, "연결 중 카드", [{ k: "a", label: "가" }]);
+      const page = await inbox(ctx, p.id);
+      await input(page).fill(`연결 중에도 남을 글 ${tag}`);
+      let down = true;
+      await page.routeWebSocket(/\/ws/, (socket) => {
+        if (down) return void socket.close();
+        socket.connectToServer();
+      });
+      await page.reload();
+      await page.locator(".gate[data-gate='server']").first().waitFor({ timeout: 8000 });
+      expect(await input(page).count()).toBe(0);
+      // 이 뒤로 입력칸이나 누를 수 있는 카드가 online 이 아닌 동안 나타나면 그 순간의 연결 상태를 적는다. 거친 연결 상태도 적는다.
+      await page.evaluate(() => {
+        const w = window as unknown as { __early: string[]; __states: string[] };
+        w.__early = [];
+        w.__states = [];
+        const look = () => {
+          const state = document.querySelector(".conn")?.getAttribute("data-state") ?? "none";
+          if (w.__states.at(-1) !== state) w.__states.push(state);
+          const open = document.querySelector("textarea[aria-label='입력칸']") || document.querySelector(".ibx-card .ibx-opt:not([disabled])");
+          if (state !== "online" && open) w.__early.push(state);
+        };
+        look();
+        new MutationObserver(look).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+      });
+      // 서버는 아직 끊긴 채로 누른다. 연결 중을 지나 다시 끊김이 될 때까지 본다.
+      await page.getByRole("button", { name: "지금 다시 연결" }).first().click();
+      await page.waitForFunction(() => {
+        const s = (window as unknown as { __states: string[] }).__states;
+        const i = s.indexOf("connecting");
+        return i >= 0 && s.slice(i + 1).includes("offline");
+      }, null, { timeout: 15_000 });
+      if (shots) await page.screenshot({ path: `${shots}/gate-retry-down-${tag}.png` });
+      expect(await input(page).count()).toBe(0);
+      expect(await page.evaluate(() => (window as unknown as { __early: string[] }).__early)).toEqual([]);
+      // 서버가 돌아오면 실제 연결 뒤에 쓰던 글과 카드가 함께 풀린다.
+      down = false;
+      const retry = page.getByRole("button", { name: "지금 다시 연결" }).first();
+      if (await retry.isVisible()) await retry.click();
+      await page.locator(".conn[data-state='online']").first().waitFor({ timeout: 30_000 });
+      await input(page).waitFor({ timeout: 20_000 });
+      expect(await input(page).inputValue()).toBe(`연결 중에도 남을 글 ${tag}`);
+      expect(await page.locator(".ibx-card", { hasText: "연결 중 카드" }).locator(".ibx-opt").first().isDisabled()).toBe(false);
+      expect(await page.evaluate(() => (window as unknown as { __early: string[] }).__early)).toEqual([]);
+      if (shots) await page.screenshot({ path: `${shots}/gate-online-${tag}.png` });
+      await page.close();
+    }
+  }, 90_000);
+
+  test("폰 폭에서도 서버가 409 로 거부하면 같은 문구를 보이고 글을 되돌린다", async () => {
+    const p = await newProject();
+    const page = await inbox(phone, p.id);
+    await page.route(`**/api/projects/${p.id}/messages`, (route) =>
+      route.request().method() === "POST" ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: OFF.detail }) }) : route.fallback(),
+    );
+    await input(page).fill("폰에서 거부될 말");
+    // 폰에서는 Enter 가 줄바꿈이다. 보내기 단추로 보낸다.
+    await page.getByRole("button", { name: "보내기", exact: true }).click();
+    const error = page.locator(".cmp__error");
+    await error.waitFor();
+    expect(await error.innerText()).toContain(OFF.detail);
+    expect(await input(page).inputValue()).toBe("폰에서 거부될 말");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+    if (process.env.IAMCEO_E2E_SHOTS) await page.screenshot({ path: `${process.env.IAMCEO_E2E_SHOTS}/composer-409-390.png` });
+    await page.close();
+  }, 30_000);
 });

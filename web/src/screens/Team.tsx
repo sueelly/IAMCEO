@@ -911,7 +911,9 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
 function DirectInput({ m }: { m: Member }) {
   const gate = useGate();
   const manager = memberSubmissions(m);
-  const { draft, attempts } = useSubmissionDraft(m.projectId, manager);
+  const { draft, attempts: all } = useSubmissionDraft(m.projectId, manager);
+  // 처음 보내는 중인 글은 결과를 알기 전까지 따로 보이지 않는다(보낸 지시 줄이 대신 보인다).
+  const attempts = all.filter((attempt) => attempt.status !== "sending");
   const [sentId, setSentId] = useState<string | null>(null);
   const sent = useProject()?.messages.find((message) => message.id === sentId) ?? null;
   const asleep = m.status === "asleep" || m.status === "offline";

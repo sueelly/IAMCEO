@@ -35,9 +35,14 @@ function attachFiles(projectId: string, files: File[]): void {
     api.upload(file, name, { project: projectId, target: ticket.targetId }).then(
       (attachment) => submissions.finishUpload(ticket, attachment),
       (e) => {
+        // 연결 때문에 막힌 첨부는 칩을 실패로 남기지 않고 어디에 막혔는지만 알린다.
+        if (isGateRejection(e)) {
+          if (submissions.refuseUpload(ticket, e.message)) void refresh();
+          return;
+        }
         // A failed upload remains visible. Selecting the file again is required
         // because browsers cannot restore a File after a page reload.
-        if (submissions.finishUpload(ticket, null, errorText(e)) && isGateRejection(e)) void refresh();
+        submissions.finishUpload(ticket, null, errorText(e));
       },
     );
   }
@@ -605,7 +610,7 @@ export default function Composer() {
             {draft.error}
           </p>
         ) : null}
-        {attempts.map((attempt) => (
+        {attempts.filter((attempt) => attempt.status !== "sending").map((attempt) => (
           <div key={attempt.id} className="cmp__error" role="status">
             <span>{attempt.targetName ?? "원래 대상"}에게{attempt.payload.taskId ? ` · 작업 '${allTasks.find((t) => t.id === attempt.payload.taskId)?.title ?? attempt.payload.taskId}'` : ""} · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
             <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
