@@ -31,8 +31,9 @@ let server: ReturnType<typeof Bun.spawn> | null = null;
 let base = "";
 let browser: Browser;
 let project: Project;
-/** 홈 12·결재함 11: 두 자리 건수 */
-let busy: Project;
+/** 건수 경우: 홈(할 일)·결재함(결재)이 모두 n 건인 프로젝트. 한·두·세 자리(세 자리는 '99+'로 보인다) */
+const COUNT_CASES = [7, 12, 100, 999] as const;
+const counted: Record<number, Project> = {};
 
 const api = async <T,>(method: string, path: string, body?: unknown, token = CODE): Promise<T> => {
   const res = await fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -75,14 +76,22 @@ beforeAll(async () => {
   // 홈·결재함 탭에 건수가 붙도록 할 일과 결재를 하나씩 둔다
   await tool(w.token, "todo", { title: "아이폰에서 홈 화면에 추가해 보기" });
   await tool(w.token, "ask", { title: "탭 글자 크기를 이대로 둘까요?", detail: "확인했습니다.", options: [{ k: "keep", label: "이대로 두기" }, { k: "big", label: "키우기" }], rec: "keep", rec_reason: "겹침이 없습니다" });
-  const busyDir = join(WORK, "busy");
-  mkdirSync(busyDir);
-  busy = await api<Project>("POST", "/api/projects", { name: "두 자리", cwd: busyDir });
-  const b = await api<{ token: string }>("POST", "/agent/join", { project: busy.id, name: "영희", handle: "younghee" });
-  for (let i = 1; i <= 12; i++) await tool(b.token, "todo", { title: `할 일 ${i}` });
-  for (let i = 1; i <= 11; i++) await tool(b.token, "ask", { title: `결재 ${i}번을 정해 주세요`, detail: "확인", options: [{ k: "a", label: "가" }, { k: "b", label: "나" }] });
+  for (const n of COUNT_CASES) {
+    const dir = join(WORK, `count-${n}`);
+    mkdirSync(dir);
+    counted[n] = await api<Project>("POST", "/api/projects", { name: `건수 ${n}`, cwd: dir });
+    const b = await api<{ token: string }>("POST", "/agent/join", { project: counted[n]!.id, name: "영희", handle: `younghee${n}` });
+    // 스물다섯씩 함께 보낸다(999건을 한 줄로 보내면 오래 걸린다)
+    for (let i = 1; i <= n; i += 25) {
+      const batch = Array.from({ length: Math.min(25, n - i + 1) }, (_, k) => i + k);
+      await Promise.all(batch.flatMap((j) => [
+        tool(b.token, "todo", { title: `할 일 ${j}` }),
+        tool(b.token, "ask", { title: `결재 ${j}번을 정해 주세요`, detail: "확인", options: [{ k: "a", label: "가" }, { k: "b", label: "나" }] }),
+      ]));
+    }
+  }
   browser = await chromium.launch();
-}, 40_000);
+}, 300_000);
 
 afterAll(async () => {
   await browser?.close();
@@ -165,10 +174,10 @@ describe("라이트 테마 남은 일", () => {
   afterAll(() => { if (process.env.LIGHT_TAB_MEASURE) Bun.write(process.env.LIGHT_TAB_MEASURE, JSON.stringify(measured, null, 2)); });
 
   for (const width of [390, 375, 320]) {
-    for (const [kind, digits] of [["project", "1"], ["busy", "2"]] as const) {
+    for (const n of COUNT_CASES) {
       for (const tab of ["home", "inbox", "team", "thread", "files"]) {
-        test(`폰 ${width}px 건수 ${digits}자리 '${tab}' 고름: 건수가 자기 칸·고른 칸 테두리 안에 있고 글자와 겹치지 않으며 가로로 밀리지 않는다`, async () => {
-          const p = kind === "project" ? project : busy;
+        test(`폰 ${width}px 건수 ${n} '${tab}' 고름: 건수가 자기 칸·고른 칸 테두리 안에 있고 글자와 겹치지 않으며 가로로 밀리지 않는다`, async () => {
+          const p = counted[n]!;
           const page = await open(width, `#/p/${p.id}/${tab}`);
           await page.locator(".gtabs__count").nth(1).waitFor();
           await page.waitForTimeout(700); // 물방울이 제자리에 온 뒤
@@ -183,22 +192,26 @@ describe("라이트 테마 남은 일", () => {
             }));
             return { links, drop: box(document.querySelector(".gtabs__drop")!), scrollW: document.documentElement.scrollWidth, winW: innerWidth };
           });
-          if (process.env.LIGHT_TAB_SHOTS) await page.locator(".gtabs").screenshot({ path: join(process.env.LIGHT_TAB_SHOTS, `${width}-${digits}-${tab}.png`) });
+          if (process.env.LIGHT_TAB_SHOTS) await page.locator(".gtabs").screenshot({ path: join(process.env.LIGHT_TAB_SHOTS, `${width}-${n}-${tab}.png`) });
           expect(m.scrollW).toBeLessThanOrEqual(m.winW);
-          const counted = m.links.filter((l) => l.count);
-          expect(counted.map((l) => [l.text, l.count!.n!.length])).toEqual([["홈", Number(digits)], ["결재함", Number(digits)]]);
-          for (const l of counted) {
+          const withCount = m.links.filter((l) => l.count);
+          for (const l of withCount) {
             const ownCell = overflow(l.count!, l.link);
             const selected = l.current ? overflow(l.count!, m.drop) : null;
             const gapToLabel = l.count!.l - l.label.r;
-            measured.push({ width, digits, selected: tab, tab: l.text, count: l.count!.n, ownCellOverflow: +ownCell.toFixed(2), dropOverflow: selected === null ? null : +selected.toFixed(2), gapToLabel: +gapToLabel.toFixed(2), dropTopGap: l.current ? +(l.count!.t - m.drop.t).toFixed(2) : null });
+            measured.push({ width, n, selected: tab, tab: l.text, count: l.count!.n, ownCellOverflow: +ownCell.toFixed(2), dropOverflow: selected === null ? null : +selected.toFixed(2), gapToLabel: +gapToLabel.toFixed(2), dropTopGap: l.current ? +(l.count!.t - m.drop.t).toFixed(2) : null });
             for (const other of m.links) expect({ tab: l.text, over: other.text, hit: hit(l.count!, other.label) }).toEqual({ tab: l.text, over: other.text, hit: false });
+            expect(gapToLabel).toBeGreaterThanOrEqual(1 - 1e-6); // 글자와 1px 이상 떨어진다
             expect({ tab: l.text, ownCell }).toEqual({ tab: l.text, ownCell: 0 });
             if (l.current) {
               expect({ tab: l.text, selected }).toEqual({ tab: l.text, selected: 0 });
               expect(l.count!.t).toBeGreaterThanOrEqual(m.drop.t + 2); // 물방울 윗선에서 떨어져 있다
             }
           }
+          const shown = n > 99 ? "99+" : String(n);
+          expect(withCount.map((l) => [l.text, l.count!.n])).toEqual([["홈", shown], ["결재함", shown]]);
+          // 줄였으면 정확한 수는 탭 이름(읽어 주는 글)에 남는다
+          if (n > 99) for (const name of ["홈", "결재함"]) await page.getByRole("link", { name: new RegExp(`^${name}\\s*${n}건$`) }).waitFor({ timeout: 2000 });
           await page.context().close();
         }, 20_000);
       }

@@ -97,7 +97,12 @@
    글자와 1px 띄워 겹치지 않게 하고, 위로 올려도 고른 칸의 물방울 윗선 안에 있다 */
 .shell--phone .gtabs__label { display:inline-flex; align-items:center; gap:1px; }
 .shell--phone .gtabs__count { position:relative; top:-7px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
-@media (max-width:359.98px) { .shell--phone .gtabs__link { font-size:13.5px; } .shell--phone .gtabs__count { padding:0 3px; } }
+@media (max-width:359.98px) {
+  .shell--phone .gtabs__link { font-size:13.5px; }
+  .shell--phone .gtabs__count { padding:0 3px; }
+  /* 100 이상('99+')은 세 글자라 320px '결재함' 칸에서 넘친다: 글자를 한 단계 작게, 여백·자간을 좁힌다 */
+  .shell--phone .gtabs__count[data-capped] { padding:0 2px; font-size:9px; letter-spacing:-.05em; }
+}
 .shell--phone .shell__column { padding:6px calc(var(--safe-r) + 14px) 44px calc(var(--safe-l) + 14px); }
 /* 상단 바는 불투명(아래로 지나가는 글이 비치지 않게) */
 .glass.ph-head { --g-tint:transparent; --g-glint:0; --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); }
