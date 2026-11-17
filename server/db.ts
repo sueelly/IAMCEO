@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { migrateStoredContent } from "./agent-receipts.ts";
+import { MEMORY_ARCHIVE_SCHEMA } from "./integrations/memory-archive.ts";
+import { MEMORY_FEEDBACK_SCHEMA } from "./integrations/memory-feedback.ts";
 
 export const STORAGE_OPTIMIZATION_VERSION = 35;
 
@@ -1001,6 +1003,8 @@ export const MIGRATIONS: string[] = [
    );`,
   // v41: persistent CLI failure prevents automatic restart loops.
   `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
+  // v42: archive provenance and explicit memory-use assessments survive restart.
+  `${MEMORY_ARCHIVE_SCHEMA}\n${MEMORY_FEEDBACK_SCHEMA}`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
