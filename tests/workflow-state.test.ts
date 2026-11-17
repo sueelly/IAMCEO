@@ -8,6 +8,21 @@ const task = (f: F, title: string, parentTaskId?: string) => f.store.ensureSourc
 const assign = (f: F, taskId: string, memberId = f.worker.id) => f.store.enqueue({ projectId: f.project.id, memberId, taskId, kind: "instruction", text: "지시 원문", wake: true });
 const mark = (f: F, taskId: string, stage: "done" | "hold" | "reopen") => f.store.addStageMark({ projectId: f.project.id, taskId, stage, evidence: "격리 시험 근거", memberId: f.lead.id, who: f.lead.name });
 
+test("unfinished historical work keeps its real blocker without enrolling or redelivering it", async () => {
+  const f = fixture(), a = task(f, "과거 보완 업무");
+  f.store.markDelivered(assign(f, a.id).id);
+  f.store.db.query("DELETE FROM task_sequence WHERE task_id = ?").run(a.id);
+  await f.orch.recordPost(f.worker, { kind: "막힘", title: "검토 반례가 남았습니다", body: "보완 후 재검증해야 합니다", taskId: a.id,
+    checks: [{ kind: "behavior", name: "중단 보호", result: "fail", evidence: "중단 후 입력이 남았습니다" }] });
+  const before = f.store.listDeliveries();
+  const state = f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === a.id)!;
+  expect(state.historical).toBe(true);
+  expect(state.state).toBe("blocked");
+  expect(state.label).not.toBe("이전 업무");
+  expect(f.store.db.query("SELECT * FROM task_sequence WHERE task_id = ?").all(a.id)).toHaveLength(0);
+  expect(f.store.listDeliveries()).toEqual(before);
+});
+
 test("flow uses delivery recipients, keeps unassigned work and distinguishes derived edges from row order", () => {
   const f = fixture(), a = task(f, "대표 지시"), b = task(f, "다음 지시"), child = task(f, "파생 확인", a.id), unassigned = task(f, "아직 배정 전");
   assign(f, a.id); assign(f, b.id); assign(f, child.id, f.worker2.id);

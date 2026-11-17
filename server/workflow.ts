@@ -102,13 +102,13 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
         reason: realPrompt ? "직원의 승인·선택 창에서 응답이 필요합니다" : "실행 상태를 확인하지 못했습니다. 직원의 연결 상태를 확인해 주세요", action: memberAction };
     }
     if (inRun && (!verified || e?.phase === "unknown")) return { ...n, state: "unknown", label: "실행 확인 필요", reason: "마지막 관측으로 현재 실행을 확정할 수 없습니다", action: memberAction };
-    if (a.protected || a.held) return { ...n, state: "blocked", label: a.protected ? "입력 보호" : "전달 보류",
+    if (a.protected || a.held) return { ...n, state: "blocked", label: a.protected ? "입력 확인 필요" : "전달 보류",
       reason: a.protected ? "이전 입력의 처리 결과를 확인해야 합니다. 자동으로 다시 보내지 않습니다" : p?.next ?? "입력 전달이 보류되었습니다. 직원 화면에서 이유와 가능한 조치를 확인해 주세요", action: memberAction };
-    if (!a.enrolled) return { ...n, state: "review", label: "이전 업무", reason: p?.next ?? "완료 단계가 도입되기 전 기록입니다. 업무 대화에서 결과를 확인할 수 있습니다" };
-    if (m.kind === "worker" && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
+    if (a.enrolled && m.kind === "worker" && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
     if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
+    if (!a.enrolled) return { ...n, state: "review", label: "결과 확인 필요", reason: p?.next ?? "옛 기록의 완료 근거를 아직 확인하지 못했습니다. 업무 대화에서 결과를 확인해 주세요" };
     if (m.status === "asleep" || m.status === "offline" || m.status === "error") return { ...n, state: "blocked", label: m.status === "asleep" ? "직원 잠듦" : "연결 확인", reason: "직원 화면에서 연결 상태와 실행 가능 여부를 확인해 주세요", action: memberAction };
     if (a.queued) return { ...n, state: "queued", label: a.retryAt ? "재시도 대기" : "전달 대기", reason: a.retryAt ? `다음 전달 시각: ${a.retryAt}` : null };
     return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };
