@@ -122,12 +122,12 @@ try {
   await until("명령 실행", () => events().some((e) => e.event === "ran" && e.command.startsWith("touch probe-claude.txt")), 15_000);
   const ran = events().filter((e) => e.event === "ran");
   check("A 터미널 접수 1회·명령 실제 실행", chosen().length - before === 1 && chosen().at(-1)?.n === 1 && existsSync(join(P.work!, "probe-claude.txt")) && ran.at(-1)?.status === 0, JSON.stringify(ran.at(-1)));
-  await page.waitForFunction(() => /턴이 끝났습니다|다음 창이 떴습니다|실행 중/.test(document.querySelector(".npc-stages")?.textContent ?? ""), null, { timeout: 15_000 }).catch(() => {});
+  await page.waitForFunction(() => /턴이 끝났습니다|다음 창이 떴습니다|일하는 중/.test(document.querySelector(".npc-stages")?.textContent ?? ""), null, { timeout: 15_000 }).catch(() => {});
   await sleep(1500);
   await shot(page, "A3-after");
   const stagesText = await card(page).innerText();
   raw("A-card-after", { text: stagesText });
-  check("A 단계 표시(창 확인·응답 기록·터미널 접수·명령 결과)", ["창 확인", "응답 기록", "터미널 접수", "받음 · 창이 닫혔습니다", "명령 결과"].every((p) => stagesText.includes(p)), stagesText.split("\n").slice(-6).join(" / "));
+  check("A 단계 표시(창 확인·응답 기록·터미널 접수·CLI 상태)", ["창 확인", "응답 기록", "터미널 접수", "받음 · 창이 닫혔습니다", "CLI 상태", "명령 결과는 직원 보고에서 보세요"].every((p) => stagesText.includes(p)), stagesText.split("\n").slice(-6).join(" / "));
   // 같은 operationId 재요청(응답 유실 뒤 다시 받기): 같은 영수증, 새 입력 없음
   const again = await page.evaluate(async ([id, c, body]) => { const r = await fetch(`/api/members/${id}/prompt/answer`, { method: "POST", headers: { Authorization: `Bearer ${c}`, "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; }, [pay.id, config.accessCode, a.request] as const);
   raw("A-retry-same-operation", again);

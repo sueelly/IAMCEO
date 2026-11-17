@@ -63,13 +63,13 @@ const TERMINAL_TEXT: Record<NativeAnswerReceipt["terminal"], string> = {
   not_sent: "넣지 않음",
   unknown: "모름 · 다시 넣지 않습니다",
 };
-/** 명령 결과 쪽: 화면에서 아는 것만. 명령 출력은 직원 보고와 팀 화면 터미널에 있다. */
-function commandText(r: NativeAnswerReceipt, status: Member["status"]): string {
+/** 넣은 뒤 직원 CLI 의 상태만 보인다. 명령의 종료·출력은 이 화면이 보지 못한다(직원 보고와 팀 화면 터미널에 있다). */
+function cliText(r: NativeAnswerReceipt, status: Member["status"]): string {
   if (r.terminal === "not_sent") return "없음";
   if (r.terminal !== "accepted") return "팀 화면 터미널에서 확인하세요";
-  if (r.reject) return "거절해 실행하지 않았습니다";
   const now = status === "working" || status === "blocked" ? status : r.after === "gone" || status === "offline" ? "gone" : status === "error" ? "error" : "idle";
-  return now === "working" ? "실행 중 · 결과는 직원 보고로 옵니다" : now === "blocked" ? "다음 창이 떴습니다" : now === "gone" ? "세션이 끝났습니다" : now === "error" ? "직원 CLI에 오류가 났습니다" : "턴이 끝났습니다 · 결과는 직원 보고에 있습니다";
+  const text = now === "working" ? "일하는 중" : now === "blocked" ? "다음 창이 떴습니다" : now === "gone" ? "세션이 끝났습니다" : now === "error" ? "오류가 났습니다" : "턴이 끝났습니다";
+  return r.reject ? `거절을 넣음 · ${text}` : `${text} · 명령 결과는 직원 보고에서 보세요`;
 }
 
 function Stages({ r, status }: { r: NativeAnswerReceipt; status: Member["status"] }) {
@@ -78,7 +78,7 @@ function Stages({ r, status }: { r: NativeAnswerReceipt; status: Member["status"
       <li><span>창 확인</span><span className="t-tabular">{clock(r.observedAt)}</span></li>
       <li><span>응답 기록</span><span className="t-tabular">{clock(r.at)}</span></li>
       <li><span>터미널 접수</span><span>{TERMINAL_TEXT[r.terminal]}</span></li>
-      <li><span>명령 결과</span><span>{commandText(r, status)}</span></li>
+      <li><span>CLI 상태</span><span>{cliText(r, status)}</span></li>
     </ol>
   );
 }

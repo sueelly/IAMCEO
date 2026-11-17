@@ -179,11 +179,12 @@ describe("결재함에서 직원 CLI 승인 창에 답하기", () => {
     expect(stages).toContain("응답 기록");
     expect(stages).toContain("터미널 접수");
     expect(stages).toContain("받음 · 창이 닫혔습니다");
-    expect(stages).toContain("명령 결과");
+    // 넷째 칸은 넣은 뒤 CLI 상태만 보인다. 명령의 종료·출력을 안다고 쓰지 않는다
+    expect(await c.locator(".npc-stages li > span:first-child").allInnerTexts()).toEqual(["창 확인", "응답 기록", "터미널 접수", "CLI 상태"]);
     expect(await c.locator(".npc-result").innerText()).toContain("답했습니다 · 'Yes' 을 골랐습니다");
     await page.screenshot({ path: join(SHOTS, "3-inbox-answered.png") });
-    // 턴이 끝나면 명령 결과 칸이 그 상태로 바뀐다(명령 출력은 직원 보고·팀 화면에 있다)
-    await page.waitForFunction(() => document.querySelector(".npc-stages")?.textContent?.includes("턴이 끝났습니다"), null, { timeout: 10_000 });
+    // 턴이 끝나면 CLI 상태 칸이 그 상태로 바뀐다(명령 출력은 직원 보고·팀 화면에 있다)
+    await page.waitForFunction(() => document.querySelector(".npc-stages")?.textContent?.includes("턴이 끝났습니다 · 명령 결과는 직원 보고에서 보세요"), null, { timeout: 10_000 });
     await page.screenshot({ path: join(SHOTS, "4-inbox-after.png") });
     // 대화에 시스템 한 줄: 결재함에서 답했다
     expect(store.listMessages(project.id).some((m) => m.kind === "시스템" && m.body.includes("결제 연동의 권한 창에 대표가 결재함에서 답함 — 1번 'Yes'"))).toBe(true);
@@ -204,7 +205,7 @@ describe("결재함에서 직원 CLI 승인 창에 답하기", () => {
     await c.locator(".apv-confirm__go").click();
     await c.locator(".npc-stages").waitFor({ timeout: 10_000 });
     expect(keys().slice(before).map((k) => k.params.keys)).toEqual([["down", "down", "down", "enter"]]);
-    await expect(c.locator(".npc-stages").innerText()).resolves.toContain("거절해 실행하지 않았습니다");
+    await expect(c.locator(".npc-stages").innerText()).resolves.toContain("거절을 넣음 · 턴이 끝났습니다");
     await page.screenshot({ path: join(SHOTS, "5-inbox-rejected.png") });
     await page.close();
   });
