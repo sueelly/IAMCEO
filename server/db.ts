@@ -1,6 +1,9 @@
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, statSync } from "node:fs";
+import { migrateStoredContent } from "./agent-receipts.ts";
+
+export const STORAGE_OPTIMIZATION_VERSION = 35;
 
 export const MIGRATIONS: string[] = [
   `
@@ -860,9 +863,14 @@ export const MIGRATIONS: string[] = [
     (project_id, task_id, sort_order DESC, id DESC, title, who, member_id, summary, path, attachments, created_at, kind);
    CREATE INDEX messages_task_page ON messages(project_id, task_id, at COLLATE BINARY DESC, id COLLATE BINARY DESC)
     WHERE task_id IS NOT NULL;`,
+  // v35: a durable reservation becomes its result; large originals have one compressed owner.
+  `ALTER TABLE agent_operation_receipts ADD COLUMN state TEXT NOT NULL DEFAULT 'completed' CHECK(state IN ('reserved','completed'));
+   ALTER TABLE agent_operation_receipts ADD COLUMN result_kind TEXT NOT NULL DEFAULT 'json';
+   ALTER TABLE agent_operation_receipts ADD COLUMN request_sha256 TEXT NOT NULL DEFAULT '';
+   ALTER TABLE agent_operation_receipts ADD COLUMN updated_at TEXT;`,
 ];
 
-export function openDb(path: string): Database {
+export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
   // 읽기/쓰기 연결은 close만으로도 남아 있던 WAL을 checkpoint할 수 있다.
   // 기존 DB의 버전 검사와 이주 전 백업은 읽기 전용 연결에서 끝내야 실패 시 원본이 그대로다.
   if (path !== ":memory:" && path !== "" && existsSync(path)) {
@@ -880,7 +888,7 @@ export function openDb(path: string): Database {
         current = supportedVersion(probe);
       }
       probe.exec("PRAGMA busy_timeout = 5000");
-      if (current < MIGRATIONS.length &&
+      if (options.migrationBackup !== false && current < MIGRATIONS.length &&
           (current > 0 || probe.query("SELECT 1 FROM sqlite_schema LIMIT 1").get())) {
         const backup = `${path}.pre-v${current}-${Date.now()}-${randomBytes(4).toString("hex")}.bak`;
         try {
@@ -930,6 +938,14 @@ function supportedVersion(db: Database): number {
     throw new Error(`지원하지 않는 미래 DB 스키마입니다 (DB v${current}, 지원 v${MIGRATIONS.length}). 호스트를 업데이트해 주세요.`);
   }
   if (current < 0) throw new Error(`잘못된 DB 스키마 버전입니다 (v${current}).`);
+  // Independently deployed branches can claim the same version. Refuse their
+  // incompatible layout before backup, WAL setup or any writable connection.
+  if (current >= STORAGE_OPTIMIZATION_VERSION) {
+    const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(agent_operation_receipts)").all().map(row => row.name));
+    if (["state", "result_kind", "request_sha256", "updated_at"].some(name => !columns.has(name))) {
+      throw new Error(`DB 스키마 버전과 도구 기록 구조가 다릅니다 (v${current}). 적용한 소스 버전을 확인하세요.`);
+    }
+  }
   return current;
 }
 
@@ -938,6 +954,7 @@ function migrate(db: Database): void {
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[v]!);
+      if (v + 1 === STORAGE_OPTIMIZATION_VERSION) migrateStoredContent(db);
       db.exec(`PRAGMA user_version = ${v + 1}`);
     })();
   }
