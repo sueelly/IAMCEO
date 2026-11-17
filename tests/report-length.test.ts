@@ -1,4 +1,4 @@
-// 실제 post 도구와 격리 DB로 길이 권고·원문 보존을 확인한다. 실행 증거는 격리 제공자 기록만 쓴다.
+// 실제 post 도구와 격리 DB로 길이와 무관한 원문 보존을 확인한다. 실행 증거는 격리 제공자 기록만 쓴다.
 import { expect, test } from "bun:test";
 import { fixture, writeExec, writeToolResult } from "./fixtures/harness-fixture.ts";
 
@@ -6,7 +6,7 @@ const taskId = (text: string) => text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
 const messageId = (text: string) => text.match(/#(msg_[A-Za-z0-9_-]+)/)![1]!;
 const longCommand = `bun test tests/${"report-length-".repeat(55)}original.test.ts`;
 
-test("긴 완료 보고는 권고를 돌려주고 명령·근거·검토 요청과 본문 전체를 보존한다", async () => {
+test("긴 완료 보고는 불필요한 축약 경고 없이 명령·근거·검토 요청과 본문 전체를 보존한다", async () => {
   const f = fixture();
   const task = taskId((await f.tool(f.lead, "task", { title: "긴 완료 근거", contract: {
     kind: "coding", goal: "긴 검사 결과를 보관한다", acceptance: ["검사 원문을 조회할 수 있다"], checks: ["behavior"],
@@ -25,10 +25,7 @@ test("긴 완료 보고는 권고를 돌려주고 명령·근거·검토 요청�
     review_needed: review, unverified: [unverified],
   });
   expect(posted.isError).toBeUndefined();
-  expect(posted.text).toContain("권고");
-  expect(posted.text).toContain("명령");
-  expect(posted.text).toContain("근거");
-  expect(posted.text.split("\n").length).toBeLessThanOrEqual(6);
+  expect(posted.text).not.toContain("글 검사 경고");
   const id = messageId(posted.text);
   const saved = f.store.getReportHarness(id)!;
   expect(saved.checks[0]).toMatchObject({ name, evidence, command: longCommand, execCommand: longCommand, execStatus: "matched", execExit: 0 });
@@ -81,15 +78,14 @@ test("긴 조사 주장·출처·인용을 보존하고 인용 끝부분이 출�
 
   const posted = await f.tool(f.worker, "post", { ...report, claims: [{ text: claimText, basis: "fact", source, quote, criterion: 1 }] });
   expect(posted.isError).toBeUndefined();
-  expect(posted.text).toContain("권고");
-  expect(posted.text).toContain("인용");
+  expect(posted.text).not.toContain("글 검사 경고");
   const id = messageId(posted.text);
   expect(f.store.getReportHarness(id)!.claims[0]).toMatchObject({ text: claimText, source, quote, quoteMatched: true, sourceRead: true, semanticReview: "required" });
   const lookup = JSON.parse((await f.tool(f.lead, "post", { report_id: id })).text);
   expect(lookup.harness.claims[0]).toMatchObject({ text: claimText, source, quote });
 });
 
-test("길이 권고 전환 뒤에도 보고 식별자·배열 개수·한 줄 형식·필수 값 검증은 유지한다", async () => {
+test("긴 원문 허용 뒤에도 보고 식별자·배열 개수·한 줄 형식·필수 값 검증은 유지한다", async () => {
   const f = fixture();
   const task = taskId((await f.tool(f.lead, "task", { title: "보고 구조" })).text);
   const check = { name: "검사", kind: "other", result: "pass", evidence: "확인" };

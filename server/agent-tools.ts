@@ -18,7 +18,7 @@ import { josa } from "./roles.ts";
 import { ApiError, Store } from "./store.ts";
 import { MemoryError, stableEventId, clip, findSensitive, memoryKindLabel } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
-import { formatLintWarnings, lintAsk, lintFile, lintPost, REPORT_LENGTH_GUIDANCE, withLint } from "./writing-lint.ts";
+import { formatLintWarnings, lintAsk, lintFile, lintPost, lintStatus, lintTask, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
 /** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
@@ -68,19 +68,19 @@ const contractSchema = z.strictObject({
 }).describe("업무 시작 계약. 계약이 있는 업무의 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
 
 const claimSchema = z.strictObject({
-  text: z.string().trim().min(1).describe(`주장 한 문장(${REPORT_LENGTH_GUIDANCE.claim}자 안팎 권장). 필요한 설명은 길어도 그대로 남긴다`),
+  text: z.string().trim().min(1).describe("주장과 그 조건을 적는다. 필요한 설명은 길어도 그대로 남긴다"),
   basis: z.enum(["fact", "interpretation"]).describe("fact 출처에 그대로 있는 사실 · interpretation 출처를 읽고 낸 해석"),
-  source: z.string().trim().optional().describe(`출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요. ${REPORT_LENGTH_GUIDANCE.source}자 안팎 권장이나 긴 출처도 생략하지 않는다`),
-  quote: z.string().trim().optional().describe(`사실 주장의 근거 원문(본 그대로, 8자 이상). ${REPORT_LENGTH_GUIDANCE.quote}자 안팎 권장이나 필요한 인용은 자르지 않는다. 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다`),
+  source: z.string().trim().optional().describe("출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요. 긴 출처도 생략하지 않는다"),
+  quote: z.string().trim().optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 필요한 인용은 자르지 않는다. 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 주장이 뒷받침하는 합격 기준 번호"),
 });
 
 const checkSchema = z.strictObject({
-  name: z.string().trim().min(1).describe(`검사 이름(${REPORT_LENGTH_GUIDANCE.checkName}자 안팎 권장)`),
+  name: z.string().trim().min(1).describe("무엇을 확인한 검사인지 식별할 이름"),
   kind: z.enum(CHECK_KINDS).describe("behavior 관련 동작 · typecheck 코드 검사 · regression 회귀 · real 실제 화면·실행 · source 주장별 출처 · fact 사실과 해석 구분 · unverified 미확인 · other"),
   result: z.enum(["pass", "fail", "not_run"]).describe("실제 결과. 돌리지 않았으면 not_run"),
-  evidence: z.string().trim().min(1).describe(`근거: 통과·실패 수, 출처, 확인한 화면. ${REPORT_LENGTH_GUIDANCE.evidence}자 안팎 권장이나 필요한 근거는 그대로 남긴다. 명령이 끝났다는 사실만으로 통과라 하지 않는다`),
-  command: z.string().optional().describe(`실행한 명령 원문(${REPORT_LENGTH_GUIDANCE.command}자 안팎 권장, 길어도 자르지 않는다). behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)`),
+  evidence: z.string().trim().min(1).describe("근거: 통과·실패 수, 출처, 확인한 화면. 필요한 근거는 그대로 남긴다. 명령이 끝났다는 사실만으로 통과라 하지 않는다"),
+  command: z.string().optional().describe("실행한 명령 원문(길어도 자르지 않는다). behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 검사가 확인한 합격 기준 번호"),
 });
 
@@ -216,7 +216,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "업무(작업)를 만들거나 고친다. 모든 글·카드·자료·할 일은 업무에 붙는다. 받은 글의 '작업 #' 줄이 없는 새 일이면 먼저 이것으로 새 업무를 만든다(제목만 넣어도 된다). 새 일을 위해 브랜치·워크트리를 팔 때도 한 번 부른다(id 는 그때 정해지고, 브랜치 이름을 바꿔도 같은 task_id 로 고치면 그대로다). 대표는 대화 화면에서 업무별로 글을 보고 보낸다. 만든 뒤로는 post·ask·file·todo 에 task_id 를 넣는다(서버는 업무를 짐작하지 않는다). 같은 브랜치, 또는 브랜치 없이 같은 제목으로 이미 만들었으면 그 업무를 돌려준다. 이름에 비밀값·내부 번호·경로를 쓰지 않는다.",
     z.strictObject({
       task_id: oneLine(64).optional().describe("고칠 업무 id(tk_...). 새로 만들 때는 비운다"),
-      title: oneLine(120).optional().describe("대표가 알아볼 업무 이름(한 줄). 새로 만들 때 필요"),
+      title: oneLine(120).optional().describe("목록에서 다시 찾을 대상과 목표를 담은 안정된 업무 이름. 새로 만들 때 필요. 진행 중·완료 같은 상태나 결재 질문은 별도 상태·결재에 둔다"),
       branch: oneLineOpt(200).optional().describe("git 브랜치 이름"),
       worktree: oneLineOpt(500).optional().describe("워크트리 경로(절대 경로)"),
       parent_task_id: oneLine(64).optional().describe("새로 만들 때만: 이 업무가 갈라져 나온 업무 id(받은 글의 '작업 #' 줄). 갈라진 관계가 남는다"),
@@ -228,7 +228,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (a.task_id && a.parent_task_id) throw new ApiError(400, "parent_task_id 는 새로 만들 때만 넣습니다");
       const { task, created, contract } = orch.saveTask(member, { taskId: a.task_id, title: a.title, branch: a.branch, worktree: a.worktree, parentTaskId: a.parent_task_id, contract: a.contract, confirmContractRev: a.confirm_contract_rev });
       const proposed = a.contract && member.kind === "worker" && contract?.authorKind === "worker" && !contract.confirmedAt ? "\n직원이 단 계약은 총괄 확인 전까지 완료 판정에 묶이지 않습니다. 총괄에게 확인 요청을 보냈습니다" : "";
-      return reply(`${a.confirm_contract_rev ? `계약 r${contract?.rev} 을 확인했습니다` : created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다${contract ? `\n${formatContract(contract)}` : ""}${proposed}`);
+      return reply(withLint(`${a.confirm_contract_rev ? `계약 r${contract?.rev} 을 확인했습니다` : created ? "작업을 등록했습니다" : "작업을 이었습니다"} #${task.id} '${task.title}'${task.branch ? ` · ${task.branch}` : ""}. 이 작업의 post·ask·file·todo 에 task_id "${task.id}" 를 넣습니다${contract ? `\n${formatContract(contract)}` : ""}${proposed}`, a.title !== undefined ? lintTask(a.title) : []));
     },
   ),
 
@@ -381,25 +381,25 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   status: tool(
-    "지금 하는 일을 일상어 한 줄로 적는다. 일을 시작하거나 바뀔 때마다 부른다. 대표 팀 화면에 보인다.",
-    z.strictObject({ now: oneLine(500).describe("지금 하는 일(한 줄)"), next: oneLineOpt(500).optional().describe("다음에 할 일(한 줄)") }),
+    "팀 진행 상황에 업무명과 현재 행동 대상을 적는다. 며칠 뒤에도 무엇을 왜 하는지 이해할 수 있게 쓰고, 일이 바뀌면 갱신한다. 진행 중·확인 대기만 쓰지 않는다.",
+    z.strictObject({ now: oneLine(500).describe("어떤 업무의 무엇을 현재 확인·수정하는지 완전한 문장으로 쓴다"), next: oneLineOpt(500).optional().describe("남은 대상과 다음 행동의 주체·조건을 적는다") }),
     (orch, member, a) => {
       orch.setMemberStatus(member, a.now, a.next);
-      return reply("적었습니다");
+      return reply(withLint("적었습니다", lintStatus({ now: a.now, next: a.next })));
     },
   ),
 
   ask: tool(
     "대표가 정하거나 승인할 일을 결재함에 카드로 올린다. AskUserQuestion 대신 쓴다. 같은 안건의 카드가 열려 있으면 새 카드는 거절된다. 결과 글이 턴을 끝내라고 하면 바로 끝낸다. 답은 다음 입력으로 온다.",
     z.strictObject({
-      title: oneLine(200).describe("질문 한 문장(40자까지). 권장을 알면 제목에 넣는다. 예: 'Gemini 직원은 유료 API 키로 붙일까요?'"),
-      detail: text.describe("카드만 읽고 고를 수 있게 쓴다(마크다운). 확정 사실 → 비교표(3열·5행) → 미정 → 지금 단계 → 배경 차례. 권장 줄은 서버가 맨 위에 쓰므로 다시 쓰지 않는다. 굵은 글씨는 쓰지 않는다"),
+      title: oneLine(200).describe("목록에서 무엇을 정할지 알 수 있는 결정할 질문. 업무 대상과 선택 범위를 쓴다. 예: 로그인 오류 진단용 세션 기록을 제공할까요?"),
+      detail: text.describe("카드만 읽어도 어떤 업무에서 무엇을 왜 정해야 하는지 이해할 수 있게 쓴다(마크다운). 요청 내용·현재 결과·선택지별 영향·근거·미확인을 연결한다. 결론을 바꾸는 조건은 본문에 남긴다. 권장 줄은 중복 작성하지 않는다"),
       options: z
         .array(z.strictObject({ k: oneLine(64).describe("선택지 키"), label: oneLine(120).describe("버튼 글(한 줄, 20자 안팎). 대표 말투의 동작. 그대로 대표 원문이 된다"), desc: oneLineOpt(300).optional().describe("고르면 생기는 일과 감수할 조건(한 줄)") }))
         .optional()
         .describe("비우면 자유 답"),
       rec: z.string().optional().describe("권장 선택지의 k"),
-      rec_reason: oneLineOpt(300).optional().describe("권장 이유 한 줄(60자까지). 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
+      rec_reason: oneLineOpt(300).optional().describe("권장 이유를 구체적인 대상과 함께 쓴다. 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
       group: oneLineOpt(80).optional().describe("묶음 이름"),
       file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
@@ -434,17 +434,17 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       report_id: text.optional().describe("조회할 보고 원본 메시지 id. 조회할 때는 이 필드만 준다"),
       kind: z.enum(["완료", "진행", "막힘", "알림"]).optional(),
-      title: oneLine().optional().describe("결과 한 문장(45자 안팎 권장). 일을 했으면 지금 단계(커밋·시험·합치기·대표 화면)를 제목이나 본문 첫 줄에"),
-      body: z.string().optional().describe("결과와 근거(마크다운). 진행 2줄, 완료·막힘 6줄을 권장하지만 필요한 조건·근거는 길어도 그대로 남긴다. 파일 목록·해시·경로는 자료에 둘 수 있고, '자료에 둔 것: …'에는 실제로 넣은 것만 적는다"),
-      owner_action: oneLineOpt().optional().describe("대표가 할 일 한 줄(40자 안팎 권장). 무엇을, 어디서. 예: '커밋할지 정해 주세요 · 결재함 1건'. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
+      title: oneLine().optional().describe("보고를 훑어볼 때 알 수 있는 업무 대상과 이번에 달라진 결과. 진행은 변화, 막힘은 장애와 필요한 조건, 완료는 실제 끝낸 범위·확인 단계를 쓴다"),
+      body: z.string().optional().describe("이 글만 읽어도 이해할 업무·요청 맥락, 핵심 결과, 가까운 근거, 남은 확인 대상과 다음 행동(마크다운). 줄 수 때문에 대상·조건·불확실성을 빼지 않는다. 상세 근거는 실제 자료에 연결한다"),
+      owner_action: oneLineOpt().optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
       contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),
       claims: z.array(claimSchema).max(40).optional().describe("조사 결과의 주장. 조사 계약의 완료에 필요하다. 사실은 출처·원문 인용, 해석은 기댄 출처"),
-      unverified: z.array(z.string().trim().min(1)).max(20).optional().describe(`확인하지 못한 것(항목마다 ${REPORT_LENGTH_GUIDANCE.unverified}자 안팎 권장). 필요한 설명은 길어도 남긴다. 없으면 빈 배열`),
-      review_needed: z.string().trim().min(1).optional().describe(`독립 검토가 필요하면 확인할 변경과 수용 기준(${REPORT_LENGTH_GUIDANCE.review}자 안팎 권장). 필요한 조건은 길어도 남긴다. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다`),
+      unverified: z.array(z.string().trim().min(1)).max(20).optional().describe("확인하지 못한 대상과 조건. 필요한 설명은 길어도 남긴다. 없으면 빈 배열"),
+      review_needed: z.string().trim().min(1).optional().describe("독립 검토가 필요하면 확인할 변경과 수용 기준. 필요한 조건은 길어도 남긴다. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다"),
       about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
@@ -472,18 +472,17 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       }
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
       const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
-      return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action,
-        checks: a.checks, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed })));
+      return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),
 
   file: tool(
-    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 결과의 id 는 post 의 file_ids 로 잇는다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 3열·5행 안의 표는 post 에 마크다운 표로 쓰고, 넘으면 html 로 올린다. 대표용 자료는 기본 한 개다. 같은 본문을 html 과 md 로 두 번 올리지 않는다(그림·차트·조작 요소가 있어도). 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
+    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 결과의 id 는 post 의 file_ids 로 잇는다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 표는 내용과 독자의 목적에 따라 post 또는 content에도 쓸 수 있다. 상호작용 자료는 독립 실행 HTML과 같은 핵심 내용을 읽을 텍스트 대체 파일을 제공한다. 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
     z.strictObject({
-      title: text.describe("결론 한 문장(45자까지). 주제어가 아니라 결론."),
-      summary: z.string().optional().describe("세 줄 요약. 첫 줄은 대표 차례나 결론. 자료의 '찾는 말' 낱말도 넣는다"),
+      title: text.describe("목록에서 찾아 쓸 대상과 결과물 종류. 예: 로그인 재개 오류 진단서. 작성했습니다 같은 활동 보고를 이름으로 쓰지 않는다"),
+      summary: z.string().optional().describe("목록에서 열어 볼지 판단할 용도·핵심 내용·중요한 사용 제한. 제목을 그대로 반복하지 않고 본문에 없는 내용을 만들지 않는다"),
       path: z.string().optional().describe("파일 경로. 작업 폴더 안의 파일만. 상대 경로는 작업 폴더 기준"),
-      content: z.string().optional().describe("마크다운 전문"),
+      content: z.string().optional().describe("바로 읽거나 사용할 마크다운 전문. 이해·비교·결정·검토·사용 목적에 맞는 순서로 완성된 본문을 쓴다. 작업 과정 설명으로 대신하지 않는다"),
       html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
@@ -784,17 +783,17 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   roster: tool("팀 명부를 본다: 역할·상태·지금 일·다음·대기열·열린 결재·문맥 %·서브에이전트·병렬·모델·effort(대표가 설정에서 정한다. null 은 CLI 기본). status 가 idle·asleep 이면 now 는 마지막에 하던 일이다.", z.strictObject({}), (orch, member) => reply(JSON.stringify(orch.roster(member.projectId)))),
 
   project_now: tool(
-    "팀 화면 맨 위 '지금 상황'을 고친다. 전체 상태와 대표에게 필요한 것을 늘 최신으로.",
-    z.strictObject({ text }),
+    "홈·팀의 지금 상황을 갱신한다. 대표가 프로젝트에 다시 들어와 우선 확인할 일과 다음 행동을 파악하는 현재 요약이다. 직원별 실행 로그나 과거 보고 전체를 옮기지 않는다.",
+    z.strictObject({ text: text.describe("중요한 변화·병목·대표의 판단 대상을 먼저 쓰고 주요 업무의 현재 결과와 다음 행동을 잇는다. 미해결 조건·관측 시점을 보존하고 상세 근거는 해당 업무 보고에 둔다") }),
     (orch, member, a) => {
       orch.setProjectNow(member.projectId, a.text);
-      return reply("고쳤습니다");
+      return reply(withLint("고쳤습니다", lintStatus({ now: a.text })));
     },
   ),
 
   work_set: tool(
     "일 항목을 만들거나(id 없음) 고친다(id 있음). sec: doing 진행 중 · next 예정 · hold 보류 · done 완료. 이미 있는 업무의 일이면 task_id 로 그 업무를 가리킨다: 새 작업 칩을 만들지 않고, 팀 목록이 그 업무의 단계(보고·결재·검토·합치기·완료)를 그대로 보인다. task_id 가 없으면 완료가 아닌 항목은 대표 대화 화면에 작업 칩으로 바로 생기고, 제목·담당을 고치면 따라 바뀌며, 완료하거나 지우면 칩이 사라진다.",
-    z.strictObject({ id: z.string().optional(), sec: z.enum(["doing", "next", "hold", "done"]), title: text, detail: z.string().optional(), who: z.string().optional(),
+    z.strictObject({ id: z.string().optional(), sec: z.enum(["doing", "next", "hold", "done"]), title: text.describe("업무 목록에서 다시 찾을 대상과 목표. 상태는 sec와 실제 업무 단계에 둔다"), detail: z.string().optional().describe("업무 범위·현재 결과·남은 조건과 다음 행동. 제목과 같은 문장을 반복하지 않는다"), who: z.string().optional(),
       task_id: z.string().nullable().optional().describe("이 항목이 가리킬 기존 업무(tk_...). null 이면 연결을 푼다") }),
     (orch, member, a) => {
       const { task_id, ...rest } = a;
@@ -802,10 +801,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (item.taskId) {
         const progress = orch.store.taskProgress(item.taskId);
         const warn = item.sec === "done" && progress.stage !== "done" ? ` 업무 단계는 아직 '${STAGE_LABEL[progress.stage]}'입니다. 팀 목록은 업무 단계를 보입니다. 끝났으면 task_stage(done)로 근거를 남기세요` : "";
-        return reply(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`);
+        return reply(withLint(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`, lintTask(a.title)));
       }
       const task = orch.store.getTask(Store.workTaskId(item.id));
-      return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`);
+      return reply(withLint(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`, lintTask(a.title)));
     },
   ),
 

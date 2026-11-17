@@ -52,7 +52,6 @@ struct InboxView: View {
     @State private var contextID = UUID()
     @State private var visitID = UUID()
     @State private var memoRevisions: [String: Int] = [:]
-    @State private var expandedDetail: Set<String> = []
     @State private var batchArmed: [String: [String]] = [:]
     @State private var batchBusy: Set<String> = []
     @State private var batchErrors: [String: String] = [:]
@@ -440,12 +439,10 @@ struct InboxView: View {
                 busy: inFlight.contains(id),
                 error: cardErrors[id],
                 flash: flashID == id,
-                detailExpanded: expandedDetail.contains(id),
                 canReopen: store.canWrite,
                 reopenBusy: reopening.contains(id),
                 reopenError: reopenErrors[id],
                 shiftedAt: shiftedAt,
-                onToggleDetail: { if expandedDetail.contains(id) { expandedDetail.remove(id) } else { expandedDetail.insert(id) } },
                 onSubmit: { Task { await submit(id) } },
                 onReviewLatest: { reviewLatest(id) },
                 onReopen: { if let current { Task { await reopen(current, inPlace: true) } } },
@@ -630,7 +627,7 @@ struct InboxView: View {
         answeredHere = []; engaged = []; cardErrors = [:]
         batchArmed = [:]; batchErrors = [:]; reopenErrors = [:]; reopenedNotice = nil
         if full {
-            reviews = [:]; memoOnly = []; expandedDetail = []; expandedDone = []
+            reviews = [:]; memoOnly = []; expandedDone = []
             linkMissing = false
         }
     }
@@ -869,12 +866,10 @@ private struct DecisionCard: View {
     let busy: Bool
     let error: String?
     let flash: Bool
-    let detailExpanded: Bool
     let canReopen: Bool
     let reopenBusy: Bool
     let reopenError: String?
     let shiftedAt: Date
-    var onToggleDetail: () -> Void
     var onSubmit: () -> Void
     var onReviewLatest: () -> Void
     var onReopen: () -> Void
@@ -914,16 +909,18 @@ private struct DecisionCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .accessibilityAddTraits(.isHeader)
-                    // B안 order (web DecisionCard): title → 권장 band → options → background (tables and the rest) → memo.
+                    // Read the question, recommendation, evidence and limits before choosing, as on the web.
                     let split = recommendation
                     if let split { RecommendationBand(line: split) }
-                    if !free { options(disabled: locked || busy || stale) }
                     let detail = split?.rest ?? decision.detail
                     if !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        ClampedDetail(text: detail, expanded: detailExpanded, onToggle: onToggleDetail)
+                        MarkdownText(text: detail, size: 14.5, lineHeight: 1.6)
+                            .foregroundStyle(CE.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if !decision.images.isEmpty { ImageStrip(images: decision.images) }
                     if let fileID = decision.fileId { FileChip(title: fileTitle) { onOpenFile(fileID) } }
+                    if !free { options(disabled: locked || busy || stale) }
                     answerArea
                 } else {
                     // The person reviewed the latest version and it is no longer open.
@@ -1472,43 +1469,6 @@ private struct GroupFrame<Header: View, Content: View>: View {
         .padding(single ? 0 : (wide ? 10 : 8))
         .background(CE.violet.opacity(single ? 0 : 0.07), in: shape)
         .overlay { shape.strokeBorder(CE.violet.opacity(single ? 0 : 0.22)) }
-    }
-}
-
-/// The decision's background as the web draws it (.md.ibx-detail: full markdown at 14.5 / 1.6, tables and headings
-/// included). Only a really long text is cut, at about twelve lines with a soft fade, and the line height is the same
-/// open or closed so nothing jumps when it opens.
-private struct ClampedDetail: View {
-    let text: String
-    let expanded: Bool
-    let onToggle: () -> Void
-    @State private var fullHeight: CGFloat = 0
-
-    /// About twelve lines at 14.5 / 1.6.
-    private let limit: CGFloat = 280
-    /// A text only a few lines over the limit is shown whole: cutting it would save almost nothing.
-    private var clamps: Bool { fullHeight > limit + 70 }
-    private var cut: Bool { clamps && !expanded }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            MarkdownText(text: text, size: 14.5, lineHeight: 1.6).foregroundStyle(CE.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
-                .frame(maxHeight: cut ? limit : nil, alignment: .top)
-                .clipped()
-                .mask {
-                    if cut {
-                        LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 1 - 28 / limit),
-                                               .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom)
-                    } else {
-                        Rectangle()
-                    }
-                }
-            if clamps {
-                DisclosureLink(title: expanded ? "접기" : "더 보기", expanded: expanded, action: onToggle)
-            }
-        }
     }
 }
 

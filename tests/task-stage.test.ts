@@ -125,7 +125,9 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
     expect(p).toMatchObject({ stage: "done", cause: null, next: null });
     expect(p.notice!.lines[0]).toBe("단계 업무 완료");
     expect(p.notice!.lines.join("\n")).toContain("메인 합침: 메인에 합침");
-    expect(p.notice!.lines.join("\n")).not.toContain("0123abcd");
+    expect(p.notice!.lines.join("\n")).toContain("0123abcd");
+    expect(p.notice!.lines.join("\n")).toContain("단계가 이어진다");
+    expect(p.notice!.lines.join("\n")).toContain("대화와 목록이 같은 단계");
     // 늦게 온 막힘·중복 보고는 완료를 되돌리지 않는다.
     await blocked(f, task, [check("behavior", "fail", "늦은 반례")], f.worker2, "늦은 검토");
     expect(progressOf(f, task)!.stage).toBe("done");
@@ -159,6 +161,20 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
 });
 
 describe("반복 감시", () => {
+  test.each(["unknown", "not_run"] as const)("%s 보고의 반복을 실제 검사 실패로 단정하지 않는다", async kind => {
+    const f = fixture(), task = await newTask(f);
+    const checks = kind === "unknown" ? [] : [check("behavior", "not_run", "로그인 확인")];
+    for (let i = 0; i < 3; i++) await blocked(f, task, checks);
+    const decision = f.store.pendingTaskFailureDecision(task)!;
+    expect(decision).toBeTruthy();
+    expect(decision.detail).toContain("막힘 보고");
+    expect(decision.detail).not.toMatch(/같은 (?:검사 )?실패/);
+    expect(decision.title).not.toContain("같은 실패");
+    expect(decision.detail).toContain(kind === "unknown" ? "구조화된 검사 기록은 없습니다" : "로그인 확인: 미실행");
+    expect(progressOf(f, task)!.stage).toBe("owner");
+    expect((await stage(f, task, "reopen", "임의 재시도")).isError).toBe(true);
+  });
+
   test("같은 실패 3번이면 결재함에 올리고 대표 답 뒤에 다시 연다", async () => {
     const f = fixture(), task = await newTask(f);
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);
@@ -183,6 +199,9 @@ describe("반복 감시", () => {
     expect(store.getTaskWatch(task)).toMatchObject({ attempts: 4, trippedAt: p.loop!.trippedAt });
     expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBe(true);
     const decision = f.store.pendingTaskFailureDecision(task)!;
+    expect(decision.detail).toContain(f.project.name);
+    expect(decision.detail).toContain("업무: 단계 업무");
+    expect(decision.detail).toContain("저장 시험 fail");
     f.store.answerDecision(decision.id, { note: "저장 경로를 확인한 뒤 다시 진행하세요" });
     expect((await stage(f, task, "reopen", "대표 답에 따라 저장 경로부터 재확인")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("fix");

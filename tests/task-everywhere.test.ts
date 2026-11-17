@@ -28,7 +28,7 @@ function setup() {
 }
 
 describe("새 업무 이름", () => {
-  test("부탁이 든 첫 문장을 목적으로 보고, 주소·내부 번호·해시·경로·비밀값을 지우고 40자로 자른다", () => {
+  test("부탁이 든 첫 문장을 목적으로 보고, 주소·내부 번호·해시·경로·비밀값을 가리고 도구 범위에서 목적 문장을 보존한다", () => {
     const fb = datedTitle("대표 글", "2026-11-13T11:15:00Z");
     expect(fb).toBe("대표 글 11월 13일 20:15");
     expect(taskTitleFrom("아니 접속코드는 언제나 1118로 통일해", fb)).toBe("접속코드는 언제나 …로 통일");
@@ -50,8 +50,8 @@ describe("새 업무 이름", () => {
     // 부탁 문장이 없으면 첫 문장. 부탁 말을 떼고 남는 게 없으면 그 문장 그대로
     expect(taskTitleFrom("어떻게 돼가?", fb)).toBe("어떻게 돼가?");
     const long = taskTitleFrom("배포 전에 결제 화면과 정산 화면과 알림 화면과 설정 화면의 글자 크기를 모두 같은 기준으로 맞춰 줘", fb);
-    expect([...long].length).toBeLessThanOrEqual(40);
-    expect(long.endsWith("…")).toBe(true);
+    expect([...long].length).toBeLessThanOrEqual(120);
+    expect(long).toContain("글자 크기를 모두 같은 기준으로 맞춰 줘");
     expect(scrubTaskText("비밀번호: hunter22 바꿔")).toBe("비밀번호: … 바꿔");
   });
 });

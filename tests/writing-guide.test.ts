@@ -25,51 +25,32 @@ describe("글 지침", () => {
     }
   });
 
-  test("지침은 B 화면 약속(대표 차례 띠, 권장 줄)과 맞고, 자료 뼈대에서 권장이 지금 단계보다 위다", () => {
-    expect(WRITING_GUIDE).toContain("서버가 본문 맨 위에 \"● 대표 차례\" 줄을 만든다");
-    expect(WRITING_GUIDE).toContain("서버가 `detail` 맨 위에 \"★ 권장: 안 — 이유\" 줄을 만든다");
-    const order = /첫 화면 차례: (.*)\./.exec(WRITING_GUIDE)![1]!.split(", ");
-    expect(order.indexOf("권장과 이유")).toBeLessThan(order.indexOf("지금 단계"));
-    expect(order.slice(0, 3)).toEqual(["결론 제목", "대표 차례", "권장과 이유"]);
-    expect(WRITING_GUIDE).toContain("'자료에 둔 것'에는 그 자료에 실제로 넣은 것만 적는다");
-    for (const cls of ["page", "owner", "toc", "find", "hero", "delta", "bars", "cols", "ba", "rec", "gantt", "status", "dg"]) expect(WRITING_GUIDE).toContain(`\`${cls}\``);
-  });
-
-  test("역할 글이 지침과 부딪히지 않는다: 탭 권장, 보고 본문의 파일 목록, 작은 표도 html", () => {
+  test("사용자 정의 역할도 최신 공통 작성 지침을 받고 작성자의 역할 내용은 보존된다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-custom-guide-"));
     for (const kind of KINDS) {
-      const text = renderRole(kind, vars);
-      expect(text).not.toContain("tabs, tag, compare");
-      expect(text).not.toContain("바뀐 파일·커밋, 대표가");
-      expect(text).not.toContain("csv 나 마크다운 표가 아니라");
-      expect(text).toContain("3열·5행 안의 표는 `post`에 마크다운 표로 쓴다");
-      expect(text).toContain("`tabs`");
-      expect(text).not.toContain("\"확인했습니다\" 한 줄로 끝낸다");
+      writeFileSync(join(dir, `${kind}.md`), "승인 규칙과 {{PROJECT}}의 고유 역할을 보존한다.");
+      const custom = renderRole(kind, vars, dir);
+      expect(custom).toContain("승인 규칙과 P의 고유 역할을 보존한다.");
+      expect(count(custom, WRITING_GUIDE.trim())).toBe(1);
     }
-    expect(renderRole("worker", vars)).toContain("바뀐 파일 목록·해시·경로는 본문에 쓰지 않는다");
   });
 
-  test("대표용 자료는 기본 한 개다: 같은 본문의 html·md 짝을 요구하지 않고, 서로 다른 자료는 막지 않는다", () => {
-    for (const kind of KINDS) {
-      const text = renderRole(kind, vars);
-      for (const old of ["`md` 짝", "md 짝", "(글로 읽기)", "짝을 함께 올린다"]) expect(text).not.toContain(old);
-      expect(text).toContain("대표용 자료는 기본 한 개다. 같은 본문을 `html`과 `md`로 두 번 올리지 않는다.");
-      expect(text).toContain("그림·차트·조작 요소가 있어도 글 판을 따로 만들지 않는다.");
-      expect(text).toContain("내용이 서로 다른 것(원기록·이미지·따로 쓰는 납품물)은 각각 올려도 된다.");
+  test("내보낸 역할을 다시 사용해도 최신 지침이 중복되지 않는다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-export-guide-"));
+    for (const path of exportRoles(dir)) {
+      const kind = path.split("/").at(-1)!.replace(".example.md", "") as MemberKind;
+      writeFileSync(join(dir, `${kind}.md`), readFileSync(path, "utf8"));
+      expect(count(renderRole(kind, vars, dir), WRITING_GUIDE.trim())).toBe(1);
     }
-    const checklist = WRITING_GUIDE.split("### 끝 확인 12줄")[1]!.split("\n").filter((line) => line.startsWith("- "));
-    expect(checklist).toHaveLength(12);
-    expect(checklist).toContain("- 같은 본문을 자료 두 개로 나눠 올리지 않았는가");
   });
 
-  test("고쳐 쓴 템플릿은 그대로 쓰고, 꺼낸 예시에는 지침이 들어 있다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-guide-"));
-    const paths = exportRoles(dir);
-    for (const path of paths) expect(count(readFileSync(path, "utf8"), HEAD)).toBe(1);
-    writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 템플릿");
-    // 글 지침은 붙이지 않는다. 터미널 승인 안내만 빠지지 않게 끝에 붙는다(tests/terminal-approval-guide.test.ts).
-    const custom = renderRole("worker", vars, dir);
-    expect(custom.startsWith("승인 규칙만 있는 템플릿\n\n## 터미널 승인 창")).toBe(true);
-    expect(count(custom, HEAD)).toBe(0);
+  test("이전 글 지침이 들어 있는 사용자 역할에도 최신 기준이 추가된다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-old-guide-"));
+    writeFileSync(join(dir, "worker.md"), "승인 규칙\n" + HEAD + "\n설명은 60자까지 쓴다.");
+    const result = renderRole("worker", vars, dir);
+    expect(result).toContain("승인 규칙");
+    expect(result.trimEnd().endsWith(WRITING_GUIDE.trim())).toBe(true);
+    expect(count(result, WRITING_GUIDE.trim())).toBe(1);
   });
 
   test("Claude·Codex·Antigravity 세 CLI 모두 지침이 든 역할 글을 받는다", () => {

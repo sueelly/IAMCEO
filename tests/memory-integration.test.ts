@@ -56,6 +56,24 @@ test("웹 종료 뒤 도착한 검색 응답은 원본 DB와 피드백에 새 �
   expect(f.store.db.query("SELECT id FROM memory_feedback_exposures").all()).toHaveLength(0);
 });
 
+test("입력 전달 준비 중 웹이 종료되면 검색 뒤 후속 DB 접근과 실행도 중단한다", async () => {
+  const f = fixture();
+  f.store.patchMember(f.member.id, { paneId: "fixture-pane", sessionId: "fixture-session" });
+  let release!: () => void;
+  f.holdContext(new Promise<void>(resolve => { release = resolve; }));
+  f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId: f.task.id, kind: "user_message", text: "대표 원문과 피드백을 안전하게 자동 보관해 주세요" });
+  const waiting = f.orch.pump(f.member.id);
+  for (let i = 0; i < 100 && !f.calls.some(call => call.path === "/v1/context"); i++) await Bun.sleep(1);
+  expect(f.calls.some(call => call.path === "/v1/context")).toBe(true);
+  await f.orch.shutdown();
+  const original = f.store.db.query.bind(f.store.db);
+  let lateQueries = 0;
+  f.store.db.query = ((...args: unknown[]) => { lateQueries++; return (original as Function)(...args); }) as typeof f.store.db.query;
+  try { release(); await waiting; }
+  finally { f.store.db.query = original; }
+  expect(lateQueries).toBe(0);
+});
+
 test("허용되는 짧은 접속 코드도 원문 보관과 피드백에서 유출하지 않는다", async () => {
   const f = fixture("827531");
   const message = f.store.createMessage({ projectId: f.project.id, mine: true, who: "대표", kind: "나", body: "임시 접속값은 827531 입니다" });
