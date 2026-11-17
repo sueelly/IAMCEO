@@ -604,6 +604,24 @@ class OrchestratorDeliveryRecovery extends DeliveryRecovery {
       canRepair: (member, deliveries) => deliveries.every(d => sourceStore.taskSequenceBlocker(member.id, sourceStore.deliveryTaskId(d.id)) === null),
     });
   }
+  override executionContextValid(dispatch: DeliveryDispatch): boolean {
+    if (this.sourceStore.getMember(dispatch.memberId)?.kind !== "worker") return true;
+    const snapshots = dispatch.baseline.executionContracts ?? [];
+    if (!Array.isArray(snapshots)) return false;
+    const taskIds = new Set(dispatch.items.flatMap(item => {
+      const delivery = this.sourceStore.getDelivery(item.deliveryId);
+      return delivery?.wake && delivery.taskId ? [delivery.taskId] : [];
+    }));
+    if (snapshots.some(snapshot => !taskIds.has(snapshot.taskId))) return false;
+    for (const taskId of taskIds) {
+      const contract = this.sourceStore.getEffectiveContract(taskId);
+      const snapshot = snapshots.find(snapshot => snapshot.taskId === taskId);
+      // Old envelopes cannot prove which contract they carried. Inspect their
+      // receipt, but do not replay them under newly discovered execution scope.
+      if (contract ? snapshot?.contractTaskId !== contract.taskId || snapshot.rev !== contract.rev : !!snapshot) return false;
+    }
+    return true;
+  }
   override sourceRevision(delivery: Delivery): string | null {
     const revision = super.sourceRevision(delivery);
     if (revision !== null) return revision;
@@ -5354,15 +5372,19 @@ export class Orchestrator implements OrchestratorApi {
     if (member.kind === "conductor" && this.toolsPending(member)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     if (project.archived || this.archiving.has(project.id) || this.coreCompactFenced(member) || !deliveries.length || this.deliveryRecovery.fenced(member.id)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
+    const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
+      const contract = this.store.getEffectiveContract(taskId);
+      return contract ? [{ taskId, contractTaskId: contract.taskId, rev: contract.rev, context: this.instructionTaskLines(project.id, taskId)! }] : [];
+    }) : [];
     const dispatch = this.deliveryRecovery.prepareDispatch(deliveries.map(d => d.id), observed?.identity ?? {
       terminalId: member.paneId, sessionId: member.sessionId, sessionGeneration: this.store.memberRevisions(member.id).sessionGeneration, process: null,
-    }, { serverEpoch: this.deliveryEpoch, turn: observed?.turn ?? null, inputEpoch: observed?.inputEpoch ?? null, logs: [], capturedAt: new Date().toISOString() });
+    }, { serverEpoch: this.deliveryEpoch, turn: observed?.turn ?? null, inputEpoch: observed?.inputEpoch ?? null, logs: [], capturedAt: new Date().toISOString(), executionContracts });
     this.store.transaction(() => {
       this.store.updateDispatch(dispatch.dispatchId, "prepared", "write_started");
       for (const d of deliveries) this.store.setDeliveryStatus(d.id, "delivering", { attempt: true });
     });
     this.invalidateCoreMeasurement(member);
-    return this.executeDispatch(member, dispatch, () => runner.send(this.runnerMember(member, project), dispatch.wireText, { ...this.writeRunFiles(member, project), marker: dispatch.bundleMarker, beforeWrite: () => this.reservedInputAllowed(member, deliveries, urgent) }, urgent));
+    return this.executeDispatch(member, dispatch, () => runner.send(this.runnerMember(member, project), dispatch.wireText, { ...this.writeRunFiles(member, project), marker: dispatch.bundleMarker, beforeWrite: () => this.deliveryRecovery.executionContextValid(dispatch) && this.reservedInputAllowed(member, deliveries, urgent) }, urgent));
   }
 
   private async executeDispatch(member: Member, dispatch: DeliveryDispatch, send: () => Promise<SendResult>): Promise<SendResult> {
@@ -5399,6 +5421,7 @@ export class Orchestrator implements OrchestratorApi {
         this.reconcileRejectedExecutions();
         const rt = this.runtime(member.id);
         const dispatch = this.store.getDispatch(request.dispatchId);
+        if (dispatch && !this.deliveryRecovery.executionContextValid(dispatch)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written", detail: "준비한 업무 계약이 변경되어 이전 입력을 다시 보내지 않습니다" };
         if (dispatch && member.kind === "worker" && dispatch.items.some(item => {
           const taskId = this.store.deliveryTaskId(item.deliveryId);
           return taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId));
@@ -5410,7 +5433,13 @@ export class Orchestrator implements OrchestratorApi {
         const turn: Turn = { kind: "work", admitted: runner.kind === "core" || runner.kind === "headless", text: dispatch.wireText, interrupted: false, deliveries: dispatch.items.map(item => this.store.requireDelivery(item.deliveryId)) };
         rt.turn = turn; rt.posted = false; rt.delegated = false;
         try {
-          const result = await this.executeDispatch(member, dispatch, () => runner.repairDelivery!(m, request, { beforeWrite: () => this.reservedInputAllowed(member, dispatch.items.map(item => this.store.requireDelivery(item.deliveryId))) }));
+          const result = await this.executeDispatch(member, dispatch, async () => {
+            const attempt = await runner.repairDelivery!(m, request, { beforeWrite: () => this.deliveryRecovery.executionContextValid(dispatch) && this.reservedInputAllowed(member, dispatch.items.map(item => this.store.requireDelivery(item.deliveryId))) });
+            // Refusing this repair does not prove that the original physical
+            // write was absent. Keep its receipt fence until inspection settles it.
+            return !attempt.ok && ["unknown", "write_started"].includes(dispatch.transportState) && ["not_written", "rejected"].includes(attempt.deliveryEffect ?? "unknown")
+              ? { ...attempt, deliveryEffect: "unknown" as const, detail: attempt.detail ?? "추가 입력은 중단했으며 원래 입력의 수신 여부는 아직 확인 중입니다" } : attempt;
+          });
           if (!result.ok && rt.turn === turn) rt.turn = null;
           return result;
         } finally {

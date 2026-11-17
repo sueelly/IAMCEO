@@ -5,7 +5,7 @@ import { openDb } from "../server/db.ts";
 import { DeliveryRecovery } from "../server/delivery-recovery.ts";
 import { ApiError, Store } from "../server/store.ts";
 import type { DeliveryDispatch } from "../server/service-contracts.ts";
-import type { DeliveryInspection, DeliveryProbe, DeliveryRepair, RunnerMember, SendResult } from "../server/runner/types.ts";
+import type { DeliveryBaseline, DeliveryInspection, DeliveryProbe, DeliveryRepair, RunnerMember, SendResult } from "../server/runner/types.ts";
 import type { Delivery, WsEvent } from "../shared/types.ts";
 
 // Memory SQLite + fake adapter: no config/provider homes, sockets, processes or live HTTP.
@@ -59,9 +59,9 @@ function setup() {
   function enqueue(target = member, text = "지시"): Delivery {
     return store.enqueue({ projectId: project.id, memberId: target.id, kind: "instruction", text });
   }
-  function envelope(ds: Delivery[], effect: "unknown" | "not_written" = "unknown"): DeliveryDispatch {
+  function envelope(ds: Delivery[], effect: "unknown" | "not_written" = "unknown", executionContracts?: DeliveryBaseline["executionContracts"]): DeliveryDispatch {
     const target = store.requireMember(ds[0].memberId);
-    const dispatch = service.prepareDispatch(ds.map(d => d.id), { terminalId: target.paneId, sessionId: target.sessionId, sessionGeneration: store.memberRevisions(target.id).sessionGeneration, process: null }, { serverEpoch: "test-epoch", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date(time).toISOString() });
+    const dispatch = service.prepareDispatch(ds.map(d => d.id), { terminalId: target.paneId, sessionId: target.sessionId, sessionGeneration: store.memberRevisions(target.id).sessionGeneration, process: null }, { serverEpoch: "test-epoch", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date(time).toISOString(), executionContracts });
     service.recordResult(dispatch.dispatchId, { ok: false, reason: "error", retryable: false, deliveryEffect: effect });
     return dispatch;
   }
@@ -383,6 +383,31 @@ describe("자동 재전송과 제출 복구", () => {
     expect(retry.markers[0]).toEqual(original.markers[1]);
     expect(retry.wireText).not.toContain(original.markers[0].marker);
     expect(f.store.requireDelivery(b.id).status).toBe("delivered");
+  });
+
+  test("부분 묶음 재전송은 미수신 업무의 저장된 계약 문맥만 보존한다", async () => {
+    const f = setup();
+    const taskA = f.store.saveTask({ projectId: f.project.id, memberId: null, who: "대표", title: "첫 업무" }).task;
+    const taskB = f.store.saveTask({ projectId: f.project.id, memberId: null, who: "대표", title: "둘째 업무" }).task;
+    const a = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "첫 원문", taskId: taskA.id });
+    const b = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "둘째 원문", taskId: taskB.id });
+    const contexts = [
+      { taskId: taskA.id, contractTaskId: taskA.id, rev: 1, context: "첫 업무 계약의 독립 문맥" },
+      { taskId: taskB.id, contractTaskId: taskB.id, rev: 2, context: "둘째 업무 계약의 독립 문맥" },
+    ];
+    const original = f.envelope([a, b], "unknown", contexts);
+    let first = true;
+    f.inspect = async (_m, q) => { if (first) { first = false; return f.observation(q, { finding: "received", receivedDeliveryIds: [a.id] }); } return f.absent(q); };
+    await f.service.tick();
+    f.result = { ok: true, started: false };
+    await f.due(b.id); await f.due(b.id);
+    const retry = f.store.getDispatch(f.writes[0]!.dispatchId)!;
+    expect(retry.items.map(item => item.deliveryId)).toEqual([b.id]);
+    expect(retry.baseline.executionContracts).toEqual([contexts[1]!]);
+    expect(retry.wireText).toContain("둘째 업무 계약의 독립 문맥");
+    expect(retry.wireText).not.toContain("첫 업무 계약의 독립 문맥");
+    expect(f.store.getDispatch(original.dispatchId)?.baseline.executionContracts).toEqual(contexts);
+    expect(retry.items[0]!.sourceRevision).toBe(original.items[1]!.sourceRevision);
   });
 
   test("원본 취소가 최종 prepare 직전에 발생해도 쓰기는 0회다", async () => {
