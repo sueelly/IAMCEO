@@ -30,6 +30,6 @@ Codex의 설정 테이블은 병합되므로 빈 `mcp_servers` 값만으로 외�
 IAMCEO_CODEX_POLICY_BIN=/opt/homebrew/bin/codex bun test tests/conductor-codex-native.test.ts
 ```
 
-이 검사는 임시 설정과 로컬 가짜 모델 서버를 사용한다. 실제 계정 인증이나 모델 호출을 사용하지 않는다. 2026-11-18의 Codex 0.167.0에서 수정 전에는 `exec_command`와 `multi_agent_v1`이 노출되어 실패했고, 수정 후에는 노출되지 않고 외부 MCP가 시작되지 않아 통과했다. 새 CLI 판으로 변경할 때 이 검사를 다시 실행한다. Claude는 도구 노출 옵션과 core·headless·herdr 실행 구성 회귀 검사로 확인하며 실제 유료 모델 실행은 하지 않았다.
+이 검사는 임시 설정과 로컬 가짜 모델 서버를 사용한다. 실제 계정 인증이나 모델 호출을 사용하지 않는다. 2026-11-18의 Codex 0.167.0에서 수정 전에는 `exec_command`와 `multi_agent_v1`이 노출되어 실패했고, 수정 후에는 노출되지 않고 외부 MCP가 시작되지 않아 통과했다. 새 CLI 판으로 변경할 때 이 검사를 다시 실행한다. Claude core·headless 실행 구성 회귀 검사는 통과했다. herdr에도 같은 도구 제한 함수를 연결했지만 이 환경에는 herdr 실행 파일이 없어 실제 어댑터 통합 시험을 완료하지 못했다. 실제 유료 Claude 모델 실행은 하지 않았다.
 
 옵션 근거는 [Codex 설정 참조](https://developers.openai.com/codex/config-reference)와 [Claude CLI 참조](https://code.claude.com/docs/en/cli-reference)의 도구 가용성·MCP 제한 설명이다. 프롬프트의 역할 설명을 실행 권한 검증으로 대신하지 않는다.
