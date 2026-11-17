@@ -122,24 +122,21 @@ async function join_(body: Record<string, unknown>): Promise<{ member: Member; t
 }
 
 describe("브리지 왕복", () => {
-  test("총괄: 목록과 도구 전 종류를 실제 프로세스로 왕복한다", async () => {
+  test("총괄 조정 도구와 직원 자료 도구를 각 권한에 맞게 실제 프로세스로 왕복한다", async () => {
     const client = await connect(store.getMemberToken(lead.id));
     expect(client.getServerVersion()?.name).toBe("iamceo");
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["status", "ask", "post", "file", "todo", "team_add", "team_assign", "roster", "project_now", "work_set"]));
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["status", "ask", "post", "todo", "team_add", "team_assign", "roster", "project_now", "work_set"]));
+    for (const name of ["file", "terminal_input", "server_backup", "team_close"]) {
+      expect(tools.map((t) => t.name)).not.toContain(name);
+    }
     expect(tools.map((t) => t.name)).not.toContain("project_create");
     expect(tools.find((t) => t.name === "team_add")!.inputSchema.required).toEqual(["name", "role"]);
 
     expect(await callText(client, "status", { now: "일 나누는 중", next: "보고 받기" })).toMatchObject({ isError: false });
     expect(store.requireMember(lead.id)).toMatchObject({ now: "일 나누는 중", next: "보고 받기" });
 
-    const file = await callText(client, "file", { title: "자료", content: "전문" });
-    expect(file.isError).toBe(false);
-    const fileId = /#(f_\S+?)\./.exec(file.text)![1]!;
-    expect(store.getFile(fileId)).toMatchObject({ title: "자료", body: "전문" });
-
-    expect(await callText(client, "post", { kind: "알림", title: "알립니다", file_ids: [fileId] })).toMatchObject({ isError: false });
-    expect(store.listMessages(projectId).at(-1)).toMatchObject({ kind: "알림", title: "알립니다", fileId, who: expect.stringMatching(/총괄$/) });
+    expect(await callText(client, "file", { title: "자료", content: "전문" })).toMatchObject({ isError: true });
 
     const asked = await callText(client, "ask", { title: "고르세요", detail: "배경", options: [{ k: "a", label: "가" }] });
     expect(asked.isError).toBe(false);
@@ -152,13 +149,29 @@ describe("브리지 왕복", () => {
     await waitFor("답 전달", () => existsSync(logPath) && readFileSync(logPath, "utf8").includes(`[대표 답(원문) '고르세요'] \\"가\\" #${decision.id}`));
     await waitFor("총괄 쉼", () => store.requireMember(lead.id).status === "idle");
 
-    store.saveTaskContract(defaultTaskId(store, projectId), { kind: "other", goal: "브리지로 전달된 요청을 처리한다", acceptance: ["요청의 처리 결과를 확인한다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
+    store.saveTaskContract(defaultTaskId(store, projectId), {
+      kind: "other", goal: "브리지로 전달된 요청을 처리한다",
+      inputs: ["브리지로 전달한 첫 지시와 후속 지시"],
+      outputs: ["직원이 등록한 자료와 지시 처리 결과 알림"],
+      scope: "격리 fake-claude 실행기에 지시를 전달하고 자료·알림이 같은 업무에 연결되는지 확인한다",
+      constraints: [], exclusions: [], acceptance: ["요청의 처리 결과를 확인한다"], checks: [],
+    }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
     const added = await callText(client, "team_add", { name: "철수", role: "개발", handle: "chulsu", first_instruction: "로그인 고치기 @fake:delay=500" });
     expect(added).toMatchObject({ isError: false });
     expect(added.text).toContain("철수(chulsu)");
     const worker = store.findMember(projectId, "chulsu")!;
     expect(worker.sessionId).not.toBeNull();
     await waitFor("첫 지시 시작", () => store.requireMember(worker.id).status === "working");
+
+    const workerClient = await connect(store.getMemberToken(worker.id));
+    expect((await workerClient.listTools()).tools.map((t) => t.name)).toContain("file");
+    const file = await callText(workerClient, "file", { title: "자료", content: "전문" });
+    expect(file.isError).toBe(false);
+    const fileId = /#(f_\S+?)\./.exec(file.text)![1]!;
+    expect(store.getFile(fileId)).toMatchObject({ title: "자료", body: "전문" });
+
+    expect(await callText(client, "post", { kind: "알림", title: "알립니다", file_ids: [fileId] })).toMatchObject({ isError: false });
+    expect(store.listMessages(projectId).at(-1)).toMatchObject({ kind: "알림", title: "알립니다", fileId, who: expect.stringMatching(/총괄$/) });
 
     const queued = await callText(client, "team_assign", { member: "철수", text: "둘째 일 @fake:post=끝났습니다 @fake:postkind=알림", user_quote: "대표가 안 한 말" });
     expect(queued.text).toContain("대기열 1번째");
