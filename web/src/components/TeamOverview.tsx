@@ -124,9 +124,6 @@ export default function TeamOverview({
   ]
     .map((m) => ({
       ...m,
-      all: nodes
-        .filter((n) => n.memberId === m.id)
-        .sort((a, b) => a.order - b.order),
       nodes: nodes
         .filter((n) => n.memberId === m.id && matches(n))
         .sort((a, b) => a.order - b.order),
@@ -145,7 +142,6 @@ export default function TeamOverview({
       id: "no-assignee",
       name: "담당 기록 없음",
       member: null,
-      all: unowned,
       nodes: unowned.filter(matches),
     });
   const free = nodes.filter((n) => workflowBucket(n) === "unassigned");
@@ -301,6 +297,7 @@ export default function TeamOverview({
       }}
       title={title(n)}
     >
+      <strong>{title(n)}</strong>
       <span className="to-state" data-state={n.state}>
         <span className="to-state-label" title={n.label}>
           {n.label}
@@ -312,14 +309,13 @@ export default function TeamOverview({
           </b>
         ) : null}
       </span>
-      <strong>{title(n)}</strong>
     </button>
   );
   return (
     <div className="to-overview">
       <header className="to-head">
         <h2>
-          업무 흐름 <small>직원 {state.members.length}</small>
+          업무 흐름 <small>{state.members.length}명</small>
         </h2>
         <div className="to-head-actions">
           <Glass className="team-segments to-modes" level="regular">
@@ -351,6 +347,7 @@ export default function TeamOverview({
           {filters.map(([key, label]) => (
             <GlassButton
               key={key}
+              className={key === "action" && counts.action > 0 ? "to-attention-filter" : undefined}
               size="s"
               variant="ghost"
               ariaPressed={
@@ -376,280 +373,26 @@ export default function TeamOverview({
             </GlassButton>
           ))}
         </nav>
-        <input
-          className="input to-search"
-          aria-label="직원·업무 검색"
-          placeholder="직원·업무 검색"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setUnassignedDismissed(false);
-            clearFocus();
-          }}
-        />
+        <div className="to-search-field">
+          <input
+            className="input to-search"
+            type="search"
+            aria-label="직원·업무 검색"
+            placeholder="직원·업무 검색"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setUnassignedDismissed(false);
+              clearFocus();
+            }}
+          />
+        </div>
       </div>
       {!state.workflow ? (
         <p className="wf-empty" role="status">
           업무 흐름을 확인할 수 없습니다.
         </p>
       ) : null}
-      {mode === "compact" ? (
-        <>
-          <div className="to-columns" aria-hidden="true">
-            <span>직원</span>
-            <span>지금</span>
-            <span>다음·대기</span>
-            <span>확인 필요</span>
-            <span>최근 완료</span>
-          </div>
-          <div className="to-table">
-            {rows.map((row) => {
-              const now = row.nodes.filter((n) => workflowBucket(n) === "now"),
-                next = row.nodes.filter((n) => workflowBucket(n) === "next"),
-                checks = row.nodes.filter(
-                  (n) => workflowCategory(n) === "action",
-                ),
-                blocked = checks.filter(
-                  (n) => n.state === "blocked" || n.state === "unknown",
-                ),
-                reviews = checks.filter((n) => !blocked.includes(n)),
-                done = row.nodes
-                  .filter((n) => n.state === "done")
-                  .sort(
-                    (a, b) =>
-                      (Date.parse(
-                        tasks.get(b.taskId)?.progress?.since ?? b.assignedAt,
-                      ) || 0) -
-                      (Date.parse(
-                        tasks.get(a.taskId)?.progress?.since ?? a.assignedAt,
-                      ) || 0),
-                  );
-              const head =
-                now.find(
-                  (n) => n.state === "running" || n.state === "starting",
-                ) ??
-                workflowTaskNodes(
-                  now,
-                  now.map((n) => n.taskId),
-                )[0];
-              const issue = row.member ? memberIssueLabel(row.member) : null;
-              return (
-                <article
-                  className="to-row"
-                  key={row.id}
-                  data-member-id={row.id}
-                >
-                  <button
-                    type="button"
-                    className="to-person"
-                    onClick={() =>
-                      row.member
-                        ? onMember(row.id)
-                        : showScope({
-                            kind: "staff",
-                            memberId: row.id,
-                            tab: "all",
-                            title: row.name + "의 업무",
-                          })
-                    }
-                  >
-                    <span>
-                      {row.member ? (
-                        <StatusDot
-                          status={issue ? "error" : row.member.status}
-                        />
-                      ) : null}
-                      <b>
-                        {row.name === state.project.name + " 총괄"
-                          ? "총괄"
-                          : row.name}
-                      </b>
-                    </span>
-                    <small>
-                      {issue ??
-                        (state.workflow
-                          ? `업무 ${row.all.length}`
-                          : "업무 흐름 확인 불가")}
-                    </small>
-                  </button>
-                  <div className="to-now">
-                    {head ? (
-                      summaryTask(
-                        head,
-                        "now",
-                        now.filter((n) => n.label === head.label).length - 1,
-                      )
-                    ) : (
-                      <span className="to-empty">
-                        {state.workflow ? "현재 실행 없음" : "—"}
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className="to-next"
-                    data-drop-member={row.member ? row.id : undefined}
-                    data-drop-active={drop === row.id || undefined}
-                    onDragOver={(e) => {
-                      if (canAssign && drag.current && row.member) {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                        setDrop(row.id);
-                      }
-                    }}
-                    onDragLeave={() => setDrop(null)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const n = nodes.find((n) => n.id === drag.current);
-                      drag.current = null;
-                      setDrop(null);
-                      if (
-                        canAssign &&
-                        row.member &&
-                        n &&
-                        workflowBucket(n) === "unassigned"
-                      )
-                        onAssign(n.taskId, row.id, e.currentTarget);
-                    }}
-                  >
-                    {next[0] ? (
-                      summaryTask(next[0], "next", next.length - 1)
-                    ) : (
-                      <span className="to-empty">—</span>
-                    )}
-                  </div>
-                  <div className="to-checks">
-                    {blocked.length ? (
-                      <button
-                        type="button"
-                        className="to-blocked"
-                        onClick={() =>
-                          row.member
-                            ? onMember(row.id, "blocked")
-                            : showScope({
-                                kind: "staff",
-                                memberId: row.id,
-                                tab: "blocked",
-                                title: "막힘",
-                              })
-                        }
-                      >
-                        막힘 <b>{blocked.length}</b>
-                      </button>
-                    ) : null}
-                    {reviews.length ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          row.member
-                            ? onMember(row.id, "reviews")
-                            : showScope({
-                                kind: "staff",
-                                memberId: row.id,
-                                tab: "reviews",
-                                title: "확인 필요",
-                              })
-                        }
-                      >
-                        확인 필요 <b>{reviews.length}</b>
-                      </button>
-                    ) : null}
-                    {!checks.length ? (
-                      <span className="to-empty">—</span>
-                    ) : null}
-                  </div>
-                  <div className="to-done">
-                    {done[0] ? (
-                      <button
-                        type="button"
-                        className="to-task"
-                        data-task-id={done[0].taskId}
-                        data-node-id={done[0].id}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          concentrate(
-                            done[0].taskId,
-                            undefined,
-                            e.currentTarget,
-                          );
-                        }}
-                        onClick={() =>
-                          row.member
-                            ? onMember(row.id, "done", done[0].id)
-                            : onSelect(done[0].id)
-                        }
-                      >
-                        <span className="to-state">
-                          <Time
-                            iso={
-                              tasks.get(done[0].taskId)?.progress?.since ??
-                              done[0].assignedAt
-                            }
-                          />
-                          {done.length > 1 ? <b>+{done.length - 1}</b> : null}
-                        </span>
-                        <strong>{title(done[0])}</strong>
-                      </button>
-                    ) : (
-                      <span className="to-empty">—</span>
-                    )}
-                  </div>
-                  {row.member && state.workflow ? (
-                    <div className="to-mobile-counts">
-                      <button
-                        type="button"
-                        onClick={() => onMember(row.id, "next")}
-                      >
-                        다음·대기 {next.length}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onMember(row.id, "checks")}
-                      >
-                        확인 필요 {checks.length}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onMember(row.id, "done")}
-                      >
-                        완료 {done.length}
-                      </button>
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
-          {!rows.length && !(query && matchingFree.length) ? (
-            <p className="wf-empty">해당하는 직원·업무가 없습니다.</p>
-          ) : null}
-        </>
-      ) : (
-        <>
-          {focus ? (
-            <div className="to-return">
-              <GlassButton size="s" variant="ghost" onClick={restore}>
-                {previous.current?.onReturn ? "← 직원 상세" : "← 이전 보기"}
-              </GlassButton>
-            </div>
-          ) : null}
-          <WorkflowMap
-            data={{
-              tasks: state.tasks ?? [],
-              members: state.members,
-              workflow: { nodes, edges },
-            }}
-            visible={visible}
-            focusTask={focus}
-            onFocus={(id) => (id ? concentrate(id) : clearFocus())}
-            onMember={(id) =>
-              state.members.some((m) => m.id === id) && onMember(id)
-            }
-            onTask={selectTask}
-            onScope={showScope}
-            onRecords={() => onRecords?.()}
-          />
-        </>
-      )}
       {unassignedShown && mode === "compact" ? (
         <aside className="to-unassigned" aria-label="미배정 업무">
           <header>
@@ -712,6 +455,253 @@ export default function TeamOverview({
           ) : null}
         </aside>
       ) : null}
+      {mode === "compact" ? (
+        <div className="to-table" data-filter={filter} data-search={!!query || undefined}>
+          <div className="to-columns" aria-hidden="true">
+            <span>직원</span>
+            <span>현재 업무</span>
+            <span>다음·대기</span>
+            <span>확인 필요</span>
+            <span>최근 완료</span>
+          </div>
+          <div>
+            {rows.map((row) => {
+              const now = row.nodes.filter((n) => workflowBucket(n) === "now"),
+                next = row.nodes.filter((n) => workflowBucket(n) === "next"),
+                checks = row.nodes.filter(
+                  (n) => workflowCategory(n) === "action",
+                ),
+                blocked = checks.filter(
+                  (n) => n.state === "blocked" || n.state === "unknown",
+                ),
+                reviews = checks.filter((n) => !blocked.includes(n)),
+                done = row.nodes
+                  .filter((n) => n.state === "done")
+                  .sort(
+                    (a, b) =>
+                      (Date.parse(
+                        tasks.get(b.taskId)?.progress?.since ?? b.assignedAt,
+                      ) || 0) -
+                      (Date.parse(
+                        tasks.get(a.taskId)?.progress?.since ?? a.assignedAt,
+                      ) || 0),
+                  );
+              const head =
+                now.find(
+                  (n) => n.state === "running" || n.state === "starting",
+                ) ??
+                workflowTaskNodes(
+                  now,
+                  now.map((n) => n.taskId),
+                )[0];
+              const issue = row.member ? memberIssueLabel(row.member) : null;
+              const displayName = row.name === state.project.name + " 총괄" ? "총괄" : row.name;
+              const lead = !!row.member && row.member.kind !== "worker";
+              const role = row.member?.role || (row.member?.kind === "conductor" ? "총괄" : "");
+              return (
+                <article
+                  className="to-row"
+                  key={row.id}
+                  data-member-id={row.id}
+                  data-former={!row.member || undefined}
+                >
+                  <button
+                    type="button"
+                    className="to-person"
+                    onClick={() =>
+                      row.member
+                        ? onMember(row.id)
+                        : showScope({
+                            kind: "staff",
+                            memberId: row.id,
+                            tab: "all",
+                            title: row.name + "의 업무",
+                          })
+                    }
+                  >
+                    <span className="to-avatar" data-lead={lead || undefined}>
+                      <span aria-hidden="true">{row.member ? Array.from(displayName.trim())[0]?.toUpperCase() : "–"}</span>
+                      {row.member ? (
+                        <StatusDot
+                          status={issue ? "error" : row.member.status}
+                        />
+                      ) : null}
+                    </span>
+                    <span className="to-person-text">
+                      <b title={displayName}>{displayName}</b>
+                      {role && role !== displayName ? <small title={role}>{role}</small> : null}
+                      {issue ? <small title={issue} data-issue="">{issue}</small> : null}
+                    </span>
+                  </button>
+                  <div className="to-now" data-has-task={!!head || undefined}>
+                    {head ? (
+                      summaryTask(
+                        head,
+                        "now",
+                        now.filter((n) => n.label === head.label).length - 1,
+                      )
+                    ) : null}
+                  </div>
+                  <div
+                    className="to-next"
+                    data-has-task={!!next[0] || undefined}
+                    data-drop-member={row.member ? row.id : undefined}
+                    data-drop-active={drop === row.id || undefined}
+                    onDragOver={(e) => {
+                      if (canAssign && drag.current && row.member) {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        setDrop(row.id);
+                      }
+                    }}
+                    onDragLeave={() => setDrop(null)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const n = nodes.find((n) => n.id === drag.current);
+                      drag.current = null;
+                      setDrop(null);
+                      if (
+                        canAssign &&
+                        row.member &&
+                        n &&
+                        workflowBucket(n) === "unassigned"
+                      )
+                        onAssign(n.taskId, row.id, e.currentTarget);
+                    }}
+                  >
+                    {next[0] ? (
+                      summaryTask(next[0], "next", next.length - 1)
+                    ) : null}
+                  </div>
+                  <div className="to-checks" data-has-checks={!!checks.length || undefined}>
+                    {blocked.length ? (
+                      <button
+                        type="button"
+                        className="to-blocked"
+                        onClick={() =>
+                          row.member
+                            ? onMember(row.id, "blocked")
+                            : showScope({
+                                kind: "staff",
+                                memberId: row.id,
+                                tab: "blocked",
+                                title: "막힘",
+                              })
+                        }
+                      >
+                        막힘 <b>{blocked.length}</b>
+                      </button>
+                    ) : null}
+                    {reviews.length ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          row.member
+                            ? onMember(row.id, "reviews")
+                            : showScope({
+                                kind: "staff",
+                                memberId: row.id,
+                                tab: "reviews",
+                                title: "확인 필요",
+                              })
+                        }
+                      >
+                        확인 필요 <b>{reviews.length}</b>
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="to-done" data-has-task={!!done[0] || undefined}>
+                    {done[0] ? (
+                      <button
+                        type="button"
+                        className="to-task"
+                        data-task-id={done[0].taskId}
+                        data-node-id={done[0].id}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          concentrate(
+                            done[0].taskId,
+                            undefined,
+                            e.currentTarget,
+                          );
+                        }}
+                        onClick={() =>
+                          row.member
+                            ? onMember(row.id, "done", done[0].id)
+                            : onSelect(done[0].id)
+                        }
+                      >
+                        <strong>{title(done[0])}</strong>
+                        <span className="to-state" data-state="done">
+                          <Time
+                            iso={
+                              tasks.get(done[0].taskId)?.progress?.since ??
+                              done[0].assignedAt
+                            }
+                          />
+                          {done.length > 1 ? <b>+{done.length - 1}</b> : null}
+                        </span>
+                      </button>
+                    ) : null}
+                  </div>
+                  {row.member && (next.length > 0 || checks.length > 0 || done.length > 0) ? (
+                    <div className="to-mobile-counts">
+                      {next.length > 0 ? <button
+                        type="button"
+                        onClick={() => onMember(row.id, "next")}
+                      >
+                        다음·대기 {next.length}
+                      </button> : null}
+                      {checks.length > 0 ? <button
+                        type="button"
+                        data-tone={blocked.length > 0 ? "blocked" : "review"}
+                        onClick={() => onMember(row.id, "checks")}
+                      >
+                        확인 필요 {checks.length}
+                      </button> : null}
+                      {done.length > 0 ? <button
+                        type="button"
+                        onClick={() => onMember(row.id, "done")}
+                      >
+                        완료 {done.length}
+                      </button> : null}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+          {!rows.length && !(query && matchingFree.length) ? (
+            <p className="wf-empty">해당하는 직원·업무가 없습니다.</p>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          {focus ? (
+            <div className="to-return">
+              <GlassButton size="s" variant="ghost" onClick={restore}>
+                {previous.current?.onReturn ? "← 직원 상세" : "← 이전 보기"}
+              </GlassButton>
+            </div>
+          ) : null}
+          <WorkflowMap
+            data={{
+              tasks: state.tasks ?? [],
+              members: state.members,
+              workflow: { nodes, edges },
+            }}
+            visible={visible}
+            focusTask={focus}
+            onFocus={(id) => (id ? concentrate(id) : clearFocus())}
+            onMember={(id) =>
+              state.members.some((m) => m.id === id) && onMember(id)
+            }
+            onTask={selectTask}
+            onScope={showScope}
+            onRecords={() => onRecords?.()}
+          />
+        </>
+      )}
       <Overlay open={!!scope} title={scopeView?.title} onClose={closeScope}>
         {scopeView?.kind === "tasks" ? (
           <>
