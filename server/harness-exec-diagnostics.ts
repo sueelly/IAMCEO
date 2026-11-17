@@ -1,8 +1,8 @@
-import { executionPath, executionExpectedCwd, executionCwdAllowed } from "./harness-worktree.ts";
+import { executionPath } from "./harness-worktree.ts";
+import { observeCheckCommand } from "./harness-workdir.ts";
 // 보호된 기록 읽기 안에서 만드는 진단 메타데이터. 원시 값·본문·출력은 반환하지 않는다.
 import { createHash } from "node:crypto";
 import { jsonObject } from "./runner/delivery-evidence.ts";
-import { commandObservation } from "./harness-command.ts";
 import type { ExecRecord } from "./harness-evidence.ts";
 
 export interface LogSelectionObservation {
@@ -53,7 +53,7 @@ function codexCommand(v: unknown): string | null {
 
 /** 알 수 없는 이름/상태/식별자는 고정 범주나 지문으로 바꾼다. 증거 채택은 기존 파서·matchExecChecks 결과만 쓴다. */
 export function observeExecWindow(input: { cli: "codex" | "claude"; text: string; range: EvidenceReadRange; all: ExecRecord[]; current: ExecRecord[];
-  command: string; cwd: string; taskWorktree?: string | null; since: string; commandRedacted: boolean; matched: boolean }) {
+  command: string; cwd: string; taskWorktree?: string | null; declaredWorkdir?: string | null; since: string; commandRedacted: boolean; matched: boolean }) {
   const candidates = new Map<string, Candidate>(), resultKeys = new Set<string>(), kinds: Record<string, number> = {};
   let invalidLines = 0;
   const originKey = (origin: ExecRecord["origin"]) => origin ? `${origin.line}:${origin.item}` : "";
@@ -66,7 +66,7 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
   };
   const count = (kind: string) => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
   const isRelated = (command: string, cwd: string | null) => {
-    const proof = commandObservation(command, input.command, executionPath(cwd), executionExpectedCwd(cwd, input.cwd, input.taskWorktree), actual => executionCwdAllowed(actual, input.cwd, input.taskWorktree));
+    const proof = observeCheckCommand(command, input.command, cwd, input.declaredWorkdir, input.cwd, input.taskWorktree);
     return proof.commandMatch === true || proof.sameExecutable;
   };
   let lineIndex = -1;
@@ -175,7 +175,7 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
   }
   const since = Date.parse(input.since), related: Record<string, unknown>[] = [];
   if (!input.commandRedacted) for (const c of candidates.values()) {
-    const proof = commandObservation(c.command, input.command, executionPath(c.cwd), executionExpectedCwd(c.cwd, input.cwd, input.taskWorktree), actual => executionCwdAllowed(actual, input.cwd, input.taskWorktree));
+    const proof = observeCheckCommand(c.command, input.command, c.cwd, input.declaredWorkdir, input.cwd, input.taskWorktree);
     if (!c.relatedToTarget) continue;
     const times = [c.callAt, c.resultAt].filter((t): t is string => t !== null).map(t => Date.parse(t));
     const missingTime = (c.startObserved && !c.callAt) || (c.resultObserved && !c.resultAt);
@@ -192,7 +192,7 @@ export function observeExecWindow(input: { cli: "codex" | "claude"; text: string
       callAt: pairAmbiguous ? null : c.callAt, resultAt: c.resultAt, contractTime, commandMatch: proof.commandMatch, cwdMatch: proof.cwdMatch, proof: proof.proof,
       completion: pairAmbiguous ? "unknown" : c.completion, numericExit: c.numericExit, numericObservation: c.numericObservation, parsedExit: sameParsed ? numeric(e?.exitCode) : null, inCurrentParser: sameCurrent });
   }
-  const runs = input.current.map(e => ({ e, ...commandObservation(e.command, input.command, executionPath(e.cwd), executionExpectedCwd(e.cwd, input.cwd, input.taskWorktree), actual => executionCwdAllowed(actual, input.cwd, input.taskWorktree)) })).filter(e => e.proof !== "absent");
+  const runs = input.current.map(e => ({ e, ...observeCheckCommand(e.command, input.command, e.cwd, input.declaredWorkdir, input.cwd, input.taskWorktree) })).filter(e => e.proof !== "absent");
   const last = runs.at(-1);
   const status = input.commandRedacted ? "unavailable" : input.matched ? "matched" : !last ? "not_found" : last.proof === "masked" ? "masked" : last.e.exitCode !== 0 ? "not_passed" : "not_available_for_task";
   const lastLine = input.text.slice(input.text.lastIndexOf("\n") + 1);

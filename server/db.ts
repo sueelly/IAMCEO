@@ -1026,6 +1026,8 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX task_completion_reviews_task ON task_completion_reviews(task_id);`,
   `ALTER TABLE members ADD COLUMN codex_speed TEXT NOT NULL DEFAULT 'standard' CHECK (codex_speed IN ('standard', 'fast'));`,
+  // v46: retain an optional per-check location without changing command bytes.
+  `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

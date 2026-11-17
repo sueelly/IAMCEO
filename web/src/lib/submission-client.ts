@@ -3,7 +3,7 @@ import type { Member, Task } from "@shared/types";
 import { withTask } from "./tasks";
 import { api, getCredentialGeneration } from "./api";
 import { applyLocal, getState, newId, onLogout, onSessionInvalidated, sendMessage, useProject, useStore } from "./store";
-import { SubmissionManager } from "./submissions";
+import { SubmissionManager, SubmissionRefused } from "./submissions";
 
 // Reading window.localStorage itself can throw under browser privacy settings.
 const storage: Storage = {
@@ -24,13 +24,22 @@ function createManager(member?: Pick<Member, "id" | "kind" | "name">): Submissio
     session: getCredentialGeneration,
     newId,
     lookup: (id) => api.message(id),
-    send: (attempt) => {
+    send: async (attempt) => {
       const current = getState();
-      if (current.auth !== "ok" || current.project?.project.id !== attempt.projectId) return Promise.reject(new Error("원래 프로젝트를 연 뒤 다시 시도해 주세요"));
-      return sendMessage(
+      if (current.auth !== "ok" || current.project?.project.id !== attempt.projectId) throw new Error("원래 프로젝트를 연 뒤 다시 시도해 주세요");
+      // 연결 때문에 서버가 저장 전에 거부한 409 만 '거부'로 넘긴다. 이미 답한 결재 같은 다른 409·응답 유실은 그대로 결과 확인으로 간다.
+      let refused: string | null = null;
+      const saved = await sendMessage(
         { ...attempt.payload, attachmentIds: [...attempt.payload.attachmentIds] },
-        { targetName: attempt.targetName, attachments: [...attempt.attachments], onRejected: (error) => error.status === 409 && /연결|실행기/.test(error.message) },
+        { targetName: attempt.targetName, attachments: [...attempt.attachments], onRejected: (error) => {
+          // ConnectGate 의 isGateRejection 과 같은 기준(연결 때문에 거부한 409).
+          if (!(error.status === 409 && /연결|실행기/.test(error.message))) return false;
+          refused = error.message;
+          return true;
+        } },
       );
+      if (!saved && refused !== null) throw new SubmissionRefused(refused);
+      return saved;
     },
     accepted: (message) => {
       const project = getState().project;

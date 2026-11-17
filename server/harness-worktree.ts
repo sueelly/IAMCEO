@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 export function executionPath(value: unknown): string | null {
   if (typeof value !== "string" || !value.isWellFormed() || value.includes("\0")) return null;
   if (isAbsolute(value)) return resolve(value);
-  if (!/^file:\/\//i.test(value) || /[\x00-\x20\\?#]/.test(value)) return null;
+  if (!/^file:(?:\/\/[^/]*\/|\/(?!\/))/i.test(value) || /[\x00-\x20\\?#]/.test(value)) return null;
   try {
     const url = new URL(value);
     if (url.protocol !== "file:" || url.hostname || url.search || url.hash || /%2f|%5c/i.test(url.pathname)) return null;

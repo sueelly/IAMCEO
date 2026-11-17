@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Attachment, Message } from "../shared/types";
-import { SubmissionManager, type MessageAttempt } from "../web/src/lib/submissions";
+import { SubmissionManager, SubmissionRefused, type MessageAttempt } from "../web/src/lib/submissions";
 
 class MemoryStorage implements Storage {
   values = new Map<string, string>();
@@ -361,4 +361,107 @@ test("version-one embedded attempts remain recoverable until schema cleanup is d
   storage.blockedDraftWrites = false;
   await f.manager.reconcile("p1");
   expect(fixture({ storage }).manager.snapshot("p1").attempts).toEqual([]);
+});
+
+// 연결 게이트(2026-11-17 승인 연결 보완): 서버가 연결 때문에 처음 받은 새 id 를 저장 전에 409 로 거부하면 글을 입력칸에 되돌린다.
+// 이미 한 번 나간 id 의 재시도(서버에 실패 글로 있을 수 있음)와 바뀐 입력칸은 되돌리지 않는다.
+describe("definite connection refusal", () => {
+  const OFF = "AI가 아직 연결되지 않았습니다. 총괄을 시작하거나 기존 세션을 편입하세요";
+
+  test("a refused first send restores the submitted draft with the server text, leaves no pending ID, and neither looks up nor resends", async () => {
+    let lookups = 0, sends = 0;
+    const f = fixture({ send: async () => { sends++; throw new SubmissionRefused(OFF); }, lookup: async () => { lookups++; return missing(); } });
+    const before = draft(f.manager);
+    await f.manager.submit("p1", before, body, { targetName: "직원1", attachments: [attachment] });
+    const after = f.manager.snapshot("p1");
+    expect(after.draft).toMatchObject({ text: "original", targetId: "worker1", uploads: [{ key: "u1", attachment: { id: "a1" }, failed: false }] });
+    expect(after.draft.error).toContain(OFF);
+    expect(after.attempts).toEqual([]);
+    expect([...f.storage.values.keys()].some((k) => k.includes(".attempt:"))).toBe(false);
+    expect(fixture({ storage: f.storage }).manager.snapshot("p1").draft.text).toBe("original");
+    expect(sends).toBe(1);
+    expect(lookups).toBe(0);
+  });
+
+  test("a refusal preserves the original attempt across a newer draft in another tab and reload", async () => {
+    const response = deferred<Message | null>();
+    const storage = new MemoryStorage();
+    const first = fixture({ storage, send: async () => response.promise });
+    const send = first.manager.submit("p1", draft(first.manager), body, { attachments: [attachment] });
+    const other = fixture({ storage });
+    other.manager.patchDraft("p1", (d) => ({ ...d, text: "another tab", targetId: "worker2" }));
+    response.reject(new SubmissionRefused(OFF));
+    await send;
+    expect(first.manager.snapshot("p1").attempts[0]?.status).toBe("retryable");
+    const reload = fixture({ storage }).manager.snapshot("p1");
+    expect(reload.draft).toMatchObject({ text: "another tab", targetId: "worker2" });
+    expect(reload.attempts).toMatchObject([{ id: "m1", payload: body, attachments: [attachment] }]);
+  });
+
+  test("a refusal retains its durable attempt when restoring the draft cannot be saved", async () => {
+    const response = deferred<Message | null>();
+    const f = fixture({ send: async () => response.promise });
+    const send = f.manager.submit("p1", draft(f.manager), body, { attachments: [attachment] });
+    f.storage.blockedDraftWrites = true;
+    response.reject(new SubmissionRefused(OFF));
+    await send;
+    expect(f.manager.snapshot("p1").attempts[0]?.status).toBe("retryable");
+    f.storage.blockedDraftWrites = false;
+    expect(fixture({ storage: f.storage }).manager.snapshot("p1").attempts).toMatchObject([{ id: "m1", payload: body, attachments: [attachment] }]);
+  });
+
+  test("a refusal does not expose a second sendable draft when attempt removal fails", async () => {
+    const response = deferred<Message | null>();
+    const f = fixture({ send: async () => response.promise });
+    const send = f.manager.submit("p1", draft(f.manager), body, { attachments: [attachment] });
+    const remove = f.storage.removeItem.bind(f.storage);
+    f.storage.removeItem = () => { throw new Error("remove denied"); };
+    response.reject(new SubmissionRefused(OFF));
+    await send;
+    f.storage.removeItem = remove;
+    const reload = fixture({ storage: f.storage }).manager.snapshot("p1");
+    expect(reload.draft.text).toBe("");
+    expect(reload.attempts).toMatchObject([{ id: "m1", payload: body, attachments: [attachment] }]);
+  });
+
+  test("the first send is hidden as 'sending' until its result is known", async () => {
+    const response = deferred<Message | null>();
+    const f = fixture({ send: async () => response.promise });
+    const submit = f.manager.submit("p1", draft(f.manager), body, {});
+    expect(f.manager.snapshot("p1").attempts.map((a) => a.status)).toEqual(["sending"]);
+    response.reject(new SubmissionRefused(OFF));
+    await submit;
+    expect(f.manager.snapshot("p1").attempts).toEqual([]);
+  });
+
+  test("a refusal after the input changed keeps the newer draft and the attempt retryable with the server text", async () => {
+    const response = deferred<Message | null>();
+    const f = fixture({ send: async () => response.promise });
+    const submit = f.manager.submit("p1", draft(f.manager), body, {});
+    f.manager.patchDraft("p1", (d) => ({ ...d, text: "later" }));
+    response.reject(new SubmissionRefused(OFF));
+    await submit;
+    const after = f.manager.snapshot("p1");
+    expect(after.draft.text).toBe("later");
+    expect(after.attempts).toMatchObject([{ id: "m1", status: "retryable", error: expect.stringContaining(OFF) }]);
+  });
+
+  test("a refused retry of an ID that already went out is not turned back into a new draft", async () => {
+    let refuse = false;
+    const f = fixture({ send: async () => { if (refuse) throw new SubmissionRefused(OFF); return null; } });
+    await f.manager.submit("p1", draft(f.manager), body, {});
+    expect(f.manager.snapshot("p1").attempts[0]?.status).toBe("retryable");
+    refuse = true;
+    await f.manager.retry("p1", "m1");
+    const after = f.manager.snapshot("p1");
+    expect(after.draft.text).toBe("");
+    expect(after.attempts).toMatchObject([{ id: "m1", status: "retryable", error: expect.stringContaining(OFF) }]);
+  });
+
+  test("a refused upload is dropped instead of staying as a failed chip, with the server text", () => {
+    const f = fixture();
+    const ticket = f.manager.beginUpload("p1", { key: "k1", name: "a.txt" });
+    expect(f.manager.refuseUpload(ticket, OFF)).toBe(true);
+    expect(f.manager.snapshot("p1").draft).toMatchObject({ uploads: [], error: OFF });
+  });
 });
