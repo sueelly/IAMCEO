@@ -14,6 +14,7 @@ import { renderRole } from "../server/roles.ts";
 import type { RunnerEvent } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
 import { importArtifact, normalizeCollection, parseWhen } from "../scripts/import-artifact.ts";
+import { createTestServerScope } from "./fixtures/test-server-scope";
 
 const CLI = resolve(import.meta.dir, "..", "bin", "iamceo.ts");
 
@@ -40,8 +41,10 @@ async function cli(home: string, args: string[], opts: { stdin?: string; env?: R
 
 const newHome = () => mkdtempSync(join(tmpdir(), "iamceo-cli-"));
 const stops: (() => void | Promise<void>)[] = [];
+const servers = createTestServerScope();
 afterAll(async () => {
-  for (const stop of stops) await stop();
+  try { for (const stop of stops) await stop(); }
+  finally { await servers.stop(); }
 });
 
 async function freePort(): Promise<number> {
@@ -53,11 +56,7 @@ async function freePort(): Promise<number> {
 
 async function serve(home: string, port: number) {
   updateConfigFile({ hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
-  const p = Bun.spawn([process.execPath, CLI, "serve"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: cliEnv(home, { IAMCEO_PORT: String(port) }) });
-  stops.push(() => {
-    if (p.exitCode === null) p.kill("SIGTERM");
-    return p.exited.then(() => {});
-  });
+  const p = servers.spawn([process.execPath, CLI, "serve"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: cliEnv(home, { IAMCEO_PORT: String(port) }) });
   const base = `http://127.0.0.1:${port}`;
   const end = Date.now() + 15_000;
   for (;;) {
