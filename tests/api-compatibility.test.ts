@@ -259,12 +259,15 @@ test("보관 장벽은 HTTP 경합을 거부하고 보관 읽기/꺼내기는 �
 
 test("실제 v2 포트가 모두 연결될 때만 operations/delivery/push를 광고한다", async () => {
   const f = await fixture();
-  const expected = { contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: true, push: false, operations: true } };
+  const expected = { contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: true, push: false, operations: true, workflowAssignment: true } };
   const seq = f.bus.seq;
   const diagnostics = spyOn(f.orch, "runtimeInfo");
   try {
     expect(await json(await f.request("/api/capabilities"))).toEqual(expected);
     const api: OrchestratorApi = f.orch;
+    Object.defineProperty(api, "assignWorkflow", { value: undefined, configurable: true });
+    try { expect(await json(await f.request("/api/capabilities"))).toEqual({ ...expected, capabilities: { ...expected.capabilities, workflowAssignment: false } }); }
+    finally { delete api.assignWorkflow; }
     for (const port of ["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const) {
       Object.defineProperty(api, port, { value: undefined, configurable: true });
       try { expect(await json(await f.request("/api/capabilities"))).toEqual({ ...expected, capabilities: { ...expected.capabilities, operations: false } }); }
@@ -391,4 +394,20 @@ test("v1 Message.delivery 5값·이전 목록/state의 exact JSON과 사용자/a
   await json(await f.request(`/api/projects/${f.project.id}`, "PATCH", { name: "거부" }, { Origin: "http://evil.example" }), 403);
   await json(await f.request("/ws?v=2&t=legacy"), 400);
   await json(await f.request("/ws?v=2", "GET", undefined, { Authorization: "" }), 401);
+});
+
+
+test("project concurrency PATCH validates the cap and returns it in project and bootstrap reads", async () => {
+  const f = await fixture();
+  const path = `/api/projects/${f.project.id}`;
+  const saved = await json(await f.request(path, "PATCH", { maxConcurrentTurns: 3 }));
+  expect(saved).toMatchObject({ maxConcurrentTurns: 3 });
+  expect(await json(await f.request(`${path}/state`))).toMatchObject({ project: { maxConcurrentTurns: 3 } });
+  const bootstrap = await json<{ projects: Array<{ id: string; maxConcurrentTurns: number | null }> }>(await f.request("/api/bootstrap"));
+  expect(bootstrap.projects.find(project => project.id === f.project.id)?.maxConcurrentTurns).toBe(3);
+  for (const value of [0, 65, 1.5, "2", true]) await json(await f.request(path, "PATCH", { maxConcurrentTurns: value }), 400);
+  expect(f.store.requireProject(f.project.id).maxConcurrentTurns).toBe(3);
+  expect(await json(await f.request(path, "PATCH", { maxConcurrentTurns: null }))).toMatchObject({ maxConcurrentTurns: null });
+  expect(f.runner.stops).toEqual([]);
+  expect(f.runner.starts).toBe(0);
 });

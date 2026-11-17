@@ -977,7 +977,29 @@ export const MIGRATIONS: string[] = [
      retired_reason TEXT
    );
    CREATE INDEX task_continuation_deliveries_task ON task_continuation_deliveries(task_id, round);`,
-  // v39: 실행 원문과 실제 도구 workdir를 별도로 보존한다. 과거 검사는 NULL(등록 위치 기준)이다.
+  // v39: A workflow assignment is committed with its queue input. No pending external action is replayed.
+  `CREATE TABLE workflow_assignment_receipts (
+     operation_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     task_id TEXT NOT NULL,
+     member_id TEXT NOT NULL,
+     delivery_id TEXT NOT NULL,
+     request_json TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX workflow_assignment_receipts_project ON workflow_assignment_receipts(project_id, created_at);`,
+  // v40: independent project admission caps and durable owner escalation after
+  // repeated task failures. No running execution or existing answer is changed.
+  `ALTER TABLE projects ADD COLUMN max_concurrent_turns INTEGER DEFAULT NULL
+     CHECK (max_concurrent_turns IS NULL OR (typeof(max_concurrent_turns) = 'integer' AND max_concurrent_turns BETWEEN 1 AND 64));
+   CREATE TABLE task_failure_escalations (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+     decision_id TEXT NOT NULL REFERENCES decisions(id),
+     tripped_at TEXT NOT NULL,
+     trigger_message_id TEXT,
+     created_at TEXT NOT NULL
+   );`,
+  // v41: Preserve the command independently from an optional explicit execution workdir.
   `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
 ];
 

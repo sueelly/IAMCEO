@@ -48,6 +48,7 @@ import type {
 } from "../shared/operations.ts";
 
 import type { TerminalControlAction, TerminalControlResult } from "./runner/types.ts";
+import type { WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 
 export { ApiError } from "./store.ts";
 
@@ -71,6 +72,7 @@ export interface AgentToolResult {
 export type AskWaitResult = { done: false } | { done: true; text: string; decision: Decision };
 
 export interface OrchestratorApi {
+  assignWorkflow?(projectId: string, taskId: string, request: WorkflowAssignmentRequest): Promise<WorkflowAssignmentResult>;
   terminalStreamInfo?(memberId: string): Promise<{ cols: number; rows: number }>;
   terminalStreamLease?(memberId: string): import("./service-contracts.ts").TerminalLease | null;
   renewTerminalStreamLease?(memberId: string, leaseId: string): number;

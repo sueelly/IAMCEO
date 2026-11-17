@@ -180,6 +180,27 @@ test("a long latest instruction keeps scope restrictions at the end in the conti
   expect(reminder.text).toContain(restriction);
 });
 
+test("missing criteria are assigned to the coordinator before delegating more implementation", () => {
+  const f = fixture(), t = f.task(); f.blocked(t);
+  expect(f.store.getEffectiveContract(t.id)).toBeNull();
+  const reminder = f.next.check(f.start, () => true)[0]!;
+  expect(reminder).toBeDefined();
+  expect(reminder.text).toContain("완료 기준을 먼저 확정");
+  expect(reminder.text).toContain("contract");
+  expect(f.store.getEffectiveContract(t.id)).toBeNull(); // No invented criteria.
+  expect(f.store.listPending(f.worker.id)).toHaveLength(0); // No replay.
+});
+
+test("a later owner decision narrowing scope is included with the original request", () => {
+  const f = fixture(), t = f.task(); f.blocked(t);
+  const decision = f.store.createDecision({ projectId: f.project.id, taskId: t.id, memberId: f.lead.id, who: "총괄", title: "남은 범위" });
+  f.store.answerDecision(decision.id, { note: "지금은 조사 결과만 정리하고 구현과 배포는 하지 마세요." });
+  const reminder = f.next.check(f.start, () => true)[0]!;
+  expect(reminder).toBeDefined();
+  expect(reminder.text).toContain(decision.id);
+  expect(reminder.text).toContain("지금은 조사 결과만 정리하고 구현과 배포는 하지 마세요.");
+});
+
 test("a previously queued reminder with an uncertain physical send is never cancelled as if unsent", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   const own = f.next.check(f.start, () => true)[0]!; expect(own).toBeDefined();

@@ -27,18 +27,24 @@ function seed(db: Database, version: number) {
     db.query("INSERT INTO task_continuations(task_id,project_id,source_delivery_id,evidence_key,round,no_progress_count,pause_reason,updated_at) VALUES('t','p','d','synthetic-progress',3,1,'synthetic hold',?)").run(at);
     db.query("INSERT INTO task_continuation_deliveries(delivery_id,task_id,round,created_at) VALUES('d','t',3,?)").run(at);
   }
+  if (version >= 39) db.query("INSERT INTO workflow_assignment_receipts(operation_id,project_id,task_id,member_id,delivery_id,request_json,created_at) VALUES('synthetic-operation','p','t','m','d','{\"synthetic\":true}',?)").run(at);
+  if (version >= 40) {
+    db.query("UPDATE projects SET max_concurrent_turns=3 WHERE id='p'").run();
+    db.query("INSERT INTO decisions(id,project_id,member_id,who,title,status,created_at) VALUES('synthetic-decision','p','m','합성 직원','합성 보류','open',?)").run(at);
+    db.query("INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES('t','synthetic-decision',?,'synthetic-trigger',?)").run(at,at);
+  }
 }
 
 function snapshot(db: Database) {
-  const names = new Set(["projects", "members", "tasks", "deliveries", "report_checks",
-    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'task_%'").all().map(r => r.name)]);
+  const names = new Set(["projects", "members", "tasks", "deliveries", "decisions", "report_checks",
+    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'task_%' OR name='workflow_assignment_receipts')").all().map(r => r.name)]);
   return [...names].sort().map(table => {
     const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(r => r.name);
     return { table, columns, rows: db.query(`SELECT ${columns.join(",")} FROM ${table} ORDER BY rowid`).all() };
   });
 }
 
-for (const version of [35, 37, 38]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
+for (const version of [35, 37, 38, 39, 40]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
   const path = join(mkdtempSync(join(tmpdir(), `workdir-v${version}-`)), "synthetic.db");
   const old = new Database(path, { create: true });
   old.exec("PRAGMA foreign_keys=ON");
@@ -62,8 +68,8 @@ for (const version of [35, 37, 38]) test(`v${version}→연결판 이주·재열
     expect(again.query("SELECT command,workdir FROM report_checks ORDER BY message_id").all()).toEqual([{ command, workdir }, { command, workdir: null }]);
     const reopened = before.map(s => ({ ...s, rows: again.query(`SELECT ${s.columns.join(",")} FROM ${s.table} ${s.table === "report_checks" ? "WHERE message_id='old'" : ""} ORDER BY rowid`).all() }));
     expect(digest(reopened)).toBe(digest(before));
-    expect(again.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(39);
-    console.info(JSON.stringify({ historicalVersion: version, connectedVersion: 39, existingTables: before.length,
+    expect(again.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(MIGRATIONS.length);
+    console.info(JSON.stringify({ historicalVersion: version, connectedVersion: MIGRATIONS.length, existingTables: before.length,
       beforeSha256: digest(before), reopenedSha256: digest(reopened), commandSha256: digest(command),
       legacyWorkdir: null, explicitWorkdirPreserved: true }));
   } finally { again.close(); }

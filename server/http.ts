@@ -29,6 +29,7 @@ import { Folders } from "./folders.ts";
 import { checkLocalImportPath, readLocalFile } from "./local-files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { GitHub } from "./github.ts";
+import { previewWorkflowAssignment } from "./workflow-assignment.ts";
 
 export interface ServerContext {
   config: Config;
@@ -201,6 +202,7 @@ const PatchProjectSchema = z.strictObject({
   name: nonEmpty.optional(),
   cwd: nonEmpty.optional(),
   runnerEnabled: z.boolean().optional(),
+  maxConcurrentTurns: z.number().int().min(1).max(64).nullable().optional(),
   now: z.string().optional(),
   archived: z.boolean().optional(),
   memory: z.boolean().optional(),
@@ -287,6 +289,7 @@ const AgentToolSchema = z.object({ name: nonEmpty, args: z.record(z.string(), z.
 const AskWaitSchema = z.object({ decisionId: nonEmpty, timeoutMs: z.number().int().positive().optional() });
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const operationIdSchema = z.uuid();
+const WorkflowAssignmentSchema = z.strictObject({ operationId: operationIdSchema, memberId: z.string().min(1).max(256), revision: z.string().regex(/^[a-f0-9]{64}$/) });
 const FreshSessionSchema = z.strictObject({ operationId: operationIdSchema, expectedSessionGeneration: revision });
 const terminalIdentity = { operationId: operationIdSchema, expectedSessionGeneration: revision, claimId: z.string().min(1).max(256) };
 const terminalKey = z.enum(["enter", "up", "down", "esc", "tab", "ctrl+c", "backspace"]);
@@ -636,10 +639,30 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (!result) throw new ApiError(501, "전달 복구를 지원하지 않습니다");
       return Response.json(result, { status: result.outcome === "stopped" ? 200 : 202 });
     }),
+    route("GET", "/api/projects/:id/workflow/tasks/:task/assignment", (_req, url, [id, taskId]) => {
+      strictQuery(url, ["memberId"]);
+      const memberId = url.searchParams.get("memberId");
+      if (!memberId || memberId.length > 256) throw new ApiError(400, "담당 직원을 선택해 주세요");
+      return Response.json(previewWorkflowAssignment(store, id!, taskId!, memberId));
+    }),
+    route("POST", "/api/projects/:id/workflow/tasks/:task/assignment", async (req, url, [id, taskId]) => {
+      activeProject(id!); strictQuery(url, []);
+      const body = await parseBody(req, WorkflowAssignmentSchema);
+      if (!orch.assignWorkflow) throw new ApiError(501, "업무 배정을 지원하지 않습니다");
+      return Response.json(await orch.assignWorkflow(id!, taskId!, body));
+    }),
+    route("GET", "/api/projects/:id/workflow/assignments/:operation", (_req, url, [id, operationId]) => {
+      strictQuery(url, []); store.requireProject(id!);
+      if (!operationIdSchema.safeParse(operationId).success) throw new ApiError(400, "배정 요청 ID가 올바르지 않습니다");
+      const receipt = store.workflowAssignmentReceipt(operationId!);
+      if (!receipt || receipt.result.projectId !== id) throw new ApiError(404, "배정 결과를 아직 확인할 수 없습니다");
+      return Response.json(receipt.result);
+    }),
     route("GET", "/api/capabilities", (_req, url) => {
       strictQuery(url, []);
       const body: ServerCapabilities = { contractVersion: 2, capabilities: {
         paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
+        workflowAssignment: !!orch.assignWorkflow && !ctx.readOnly,
         // 네이티브는 이 값으로 엄격 쓰기를 켠다. 결과 조회와 모든 쓰기 포트가 있어야 한다.
         operations: (["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const)
           .every(port => port in orch && !!orch[port]),

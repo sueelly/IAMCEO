@@ -24,35 +24,26 @@ test("DB v32: 계약 확인·실행 증거·조사 주장·개선 후보 표가 
   for (const t of ["harness_exec_refs", "report_claims", "harness_findings"]) expect(cols(t).length).toBeGreaterThan(0);
 });
 
-test("기본(label): 계약 없는 완료는 받되 '계약 없는 완료'로 남긴다. required 로 바꾸면 그 뒤 업무만 계약이 있어야 하고, 그 전 업무는 표시만 한다", async () => {
+test("하네스 표시 설정을 바꾸어도 기존·새 업무 모두 확정 계약이 있어야 완료한다", async () => {
   const f = fixture();
-  expect(f.store.getSettings()).toMatchObject({ harnessMode: "label", harnessRequiredSince: null });
+  expect(f.store.getSettings()).toMatchObject({ harnessMode: "required", harnessRequiredSince: null });
   const before = id((await f.tool(f.lead, "task", { title: "전환 전 업무" })).text);
-  const labelled = await f.tool(f.worker, "post", { task_id: before, kind: "완료", title: "끝" });
-  expect(labelled.isError).toBeUndefined();
-  expect(f.store.getReportHarness(id(labelled.text, "msg"))).toMatchObject({ gate: "no_contract" });
-  const report = f.store.listDeliveries().find(d => d.memberId === f.lead.id && d.kind === "report" && d.text.includes(id(labelled.text, "msg")))!.text;
-  expect(report).toContain("하네스: 계약 없는 완료(완료 판정 밖, 작성자 보고만)");
-  // 대표가 설정을 required 로 바꾸면 그 시각이 남는다(HTTP 검사기도 받는다)
-  await Bun.sleep(2);
+  expect((await f.tool(f.worker, "post", { task_id: before, kind: "완료", title: "끝" })).isError).toBe(true);
+  // 옛 설정 필드는 호환용으로 받으며, 특정 시점 이후만 적용하는 면제를 만들지 않는다.
   const settings = f.store.patchSettings({ harnessMode: "required" });
-  expect(settings.harnessRequiredSince).toEqual(expect.any(String));
-  await Bun.sleep(2);
+  expect(settings.harnessRequiredSince).toBeNull();
   const after = id((await f.tool(f.lead, "task", { title: "전환 뒤 업무" })).text);
   const refused = await f.tool(f.worker, "post", { task_id: after, kind: "완료", title: "끝" });
   expect(refused.isError).toBe(true);
-  expect(refused.text).toContain("하네스 필수 적용");
+  expect(refused.text).toContain("확정된 완료 기준이 없습니다");
   expect(refused.text).toContain("task 도구의 contract 로 계약을 제안하면 총괄이 확인합니다");
   // 총괄도 필수 적용 뒤 업무를 계약 없이 완료하지 못한다. 총괄이 정한 계약은 바로 묶인다
   expect((await f.tool(f.lead, "post", { task_id: after, kind: "완료", title: "끝" })).text).toContain("task 도구의 contract 로 계약을 정하세요");
-  // 전환 전 업무는 계속 표시만 한다(진행 중인 일을 갑자기 막지 않는다)
-  expect((await f.tool(f.worker, "post", { task_id: before, kind: "완료", title: "다시 끝" })).isError).toBeUndefined();
+  // 전환 전 업무의 완료 주장에도 같은 확정 기준이 필요하다.
+  expect((await f.tool(f.worker, "post", { task_id: before, kind: "완료", title: "다시 끝" })).isError).toBe(true);
   // 진행·막힘은 그대로 받는다
   expect((await f.tool(f.worker, "post", { task_id: after, kind: "막힘", title: "계약 기다림" })).isError).toBeUndefined();
-  // label 로 돌렸다가 다시 required 로 켜면 그 시각부터 다시 센다
-  f.store.patchSettings({ harnessMode: "label" });
-  await Bun.sleep(2);
-  expect(f.store.patchSettings({ harnessMode: "required" }).harnessRequiredSince! > settings.harnessRequiredSince!).toBe(true);
+  expect(f.store.patchSettings({ harnessMode: "label" })).toMatchObject({ harnessMode: "required", harnessRequiredSince: null });
 });
 
 test("받은 계약 업무의 갈래로 올린 통과 완료도 그 업무를 마감한다(다음 일의 완료를 계속 묶지 않는다)", async () => {
@@ -69,7 +60,11 @@ test("받은 계약 업무의 갈래로 올린 통과 완료도 그 업무를 �
   expect(f.store.getReportFollowup(run.runId)).toBeNull();
   const own = id((await f.tool(f.worker, "task", { title: "다음 내 일" })).text);
   const next = await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" });
-  expect(next.isError, next.text).toBeUndefined();
+  expect(next.isError).toBe(true);
+  expect(next.text).not.toContain("받은 업무(");
+  await f.tool(f.lead, "task", { task_id: own, contract: ONE });
+  f.ran(f.worker, "bun test behavior");
+  expect((await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "다음 업무 확인", contract_rev: 1, checks: [pass("behavior", 1)] })).isError).toBeUndefined();
 });
 
 test("직원이 제안한 계약은 총괄 확인 전까지 판정에 묶이지 않고, 총괄이 확인하면 묶인다. 직원이 고친 새 판은 다시 확인받는다", async () => {
@@ -180,7 +175,8 @@ test("다음 턴 비켜 가기: 이미 다음 업무까지 받은 옛 실행에�
   f.runner.end(f.worker, 1);
   await until("보고 보완 턴 종료", () => !f.store.listPendingExecutions().some(r => r.memberId === f.worker.id));
   const free = id((await f.tool(f.lead, "task", { title: "다른 일" })).text);
-  await f.tool(f.lead, "team_assign", { member: "w1", text: "이것도", task_id: free });
+  // 필수 기준을 적용하기 전에 이미 대기열에 있던 지시를 복원한다.
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "이것도", taskId: free });
   expect(f.runner.to(f.worker).some(t => t.includes("이것도"))).toBe(false);
   // 새 전달은 앞 업무가 끝날 때까지 기다린다. 순서 제한 전에 다음 업무까지
   // 이미 받은 옛 실행의 영수증과 종료 기록을 복원해 계약 우회 방지를 검사한다.
@@ -195,17 +191,20 @@ test("다음 턴 비켜 가기: 이미 다음 업무까지 받은 옛 실행에�
   const bypass = await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" });
   expect(bypass.isError).toBe(true);
   expect(bypass.text).toContain(`받은 업무(#${gated} 계약 r1)는 계약이 있고 아직 완료·막힘으로 마감하지 않았습니다`);
-  // 이미 받은 계약 없는 업무의 완료는 그대로 받는다
-  expect((await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "다른 일 끝" })).isError).toBeUndefined();
+  // 이미 받은 옛 업무도 확정 기준 없는 완료로 통과하지 않는다.
+  expect((await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "다른 일 끝" })).isError).toBe(true);
   // 계약 업무를 막힘으로 마감하면 묶임이 풀린다
   await f.tool(f.worker, "post", { task_id: gated, kind: "막힘", title: "막힘", unverified: ["동작"] });
-  expect((await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" })).isError).toBeUndefined();
+  const missing = await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" });
+  expect(missing.isError).toBe(true);
+  expect(missing.text).not.toContain("받은 업무(");
+  expect(missing.text).toContain("확정된 완료 기준이 없습니다");
 });
 
 test("server_check·server_backup: 직원은 데이터 폴더를 직접 읽지 않고 서버가 만든 백업과 상태를 본다. 경로는 싣지 않는다", async () => {
   const f = fixture();
   const none = JSON.parse((await f.tool(f.worker, "server_check", {})).text);
-  expect(none).toMatchObject({ schema: { version: MIGRATIONS.length, supportedVersion: MIGRATIONS.length, ok: true }, harness: { mode: "label" }, backups: { recent: [] } });
+  expect(none).toMatchObject({ schema: { version: MIGRATIONS.length, supportedVersion: MIGRATIONS.length, ok: true }, harness: { mode: "required" }, backups: { recent: [] } });
   expect((await f.tool(f.worker, "server_backup", {})).text).toContain("백업 관리자가 없습니다");
   const manager = new BackupManager({ home: f.config.home, backupDir: join(f.config.home, "backups") });
   f.orch.setBackups(manager);

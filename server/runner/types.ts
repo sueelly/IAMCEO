@@ -38,7 +38,12 @@ export interface RunnerMember {
   sessionGeneration?: number;
 }
 
-export interface StartOpts {
+export interface RunnerWriteOptions {
+  /** Synchronous final admission check. Async adapters run it immediately before physical input. */
+  beforeWrite?: () => boolean;
+}
+
+export interface StartOpts extends RunnerWriteOptions {
   systemPromptFile: string;
   mcpConfigFile: string;
   resume: boolean;
@@ -199,7 +204,7 @@ export interface Runner {
   send(m: RunnerMember, text: string, o: StartOpts, urgent?: boolean): Promise<SendResult>;
   /** 미지원 hook은 unknown이다. 성공으로 대체하거나 자동 본문 재전송하지 않는다. */
   inspectDelivery?(m: RunnerMember, query: DeliveryProbe): Promise<DeliveryInspection>;
-  repairDelivery?(m: RunnerMember, request: DeliveryRepair): Promise<SendResult>;
+  repairDelivery?(m: RunnerMember, request: DeliveryRepair, options?: RunnerWriteOptions): Promise<SendResult>;
   isBusy(memberId: string): boolean;
   /**
    * Whether this member is actually running (or may be running) a CLI turn and so holds one of maxConcurrentTurns.

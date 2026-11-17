@@ -190,6 +190,8 @@ if (process.argv[2] === "--crash-write") {
 
   test("release: HTTP agent workflow keeps operation receipts, answer and all report references", async () => {
     const f = await fixture(); const lead = await f.orch.ensureConductor(f.project.id);
+    const taskId = defaultTaskId(f.store, f.project.id);
+    f.store.saveTaskContract(taskId, { kind: "other", goal: "자료를 확인하고 보고한다", acceptance: ["확인한 자료의 내용과 참조를 보고에 남긴다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
     const tool = (memberId: string, name: string, args: Record<string, unknown>, operationId = randomUUID()) => f.request("/agent/tool", "POST", { name, args: withDefaultTask(f.store, f.store.requireMember(memberId), name, args), operationId },
       { ...v2, Authorization: `Bearer ${f.store.getMemberToken(memberId)}` });
     await json(await tool(f.member.id, "status", { now: "verifying release", next: "report" }));
@@ -206,8 +208,9 @@ if (process.argv[2] === "--crash-write") {
     const answer = f.store.requireDecision(decision.id); expect(answer.choice).toBe("yes");
     await f.orch.pump(f.member.id);
     expect(f.store.requireDecision(decision.id).status).toBe("delivered");
-    const reportId = randomUUID(); const reportArgs = { kind: "완료", title: "release verified", body: "both sources checked", file_ids: fileIds, decision_id: decision.id };
+    const reportId = randomUUID(); const reportArgs = { kind: "완료", title: "release verified", body: "both sources checked", file_ids: fileIds, decision_id: decision.id, contract_rev: 1, checks: [{ kind: "other", name: "자료 확인", result: "pass", evidence: "두 자료의 내용과 참조를 확인했다", criterion: 1 }] };
     const report = await json(await tool(f.member.id, "post", reportArgs, reportId));
+    expect(report.isError, report.text).toBeUndefined();
     expect(await json(await tool(f.member.id, "post", reportArgs, reportId))).toEqual(report);
     const message = f.store.listMessages(f.project.id).find(m => m.title === "release verified")!;
     expect(message.fileId).toBe(fileIds[0]!);
@@ -230,9 +233,11 @@ if (process.argv[2] === "--crash-write") {
   // Their message references must not make them look like owner messages.
   test("release regression: a runner-disabled report intent survives restart with its source and references", async () => {
     const f = await fixture(); const lead = await f.orch.ensureConductor(f.project.id);
+    const taskId = defaultTaskId(f.store, f.project.id);
+    f.store.saveTaskContract(taskId, { kind: "other", goal: "자료를 확인하고 보고한다", acceptance: ["확인한 자료의 내용과 참조를 보고에 남긴다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
     f.store.patchProject(f.project.id, { runnerEnabled: false });
     const file = f.store.createFile({ projectId: f.project.id, who: f.member.name, title: "late report evidence", body: "retained" });
-    const message = await f.orch.recordPost(f.member, { kind: "완료", title: "late completion", body: "completed while the runner was disabled", fileIds: [file.id], taskId: defaultTaskId(f.store, f.project.id) });
+    const message = await f.orch.recordPost(f.member, { kind: "완료", title: "late completion", body: "completed while the runner was disabled", fileIds: [file.id], taskId, contractRev: 1, checks: [{ kind: "other", name: "자료 확인", result: "pass", evidence: "보관할 자료의 내용과 참조를 확인했다", criterion: 1 }] });
     const pending = f.store.listDeliveries().filter(d => d.kind === "report" && d.refId === message.id);
     expect(pending).toHaveLength(1); expect(pending[0]!.memberId).toBe(lead.id);
     expect(pending[0]!.holdReason).toBe("runner_disabled");

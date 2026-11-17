@@ -647,7 +647,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
-      const taskId = orch.instructionTask(member, a.task_id, a.user_quote);
+      const taskId = orch.instructionTask(member, a.task_id, a.user_quote, a.contract);
       return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId, contract: a.contract }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
     },
   ),

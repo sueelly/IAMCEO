@@ -277,10 +277,12 @@ describe("실제 Orchestrator MCP receipt", () => {
   test("인증된 HTTP bridge operation을 실제 Orchestrator receipt로 전달한다", async () => {
     const f = fixture();
     const member = f.store.createMember({ projectId: f.project.id, handle: "manual", name: "직접", kind: "worker", origin: "manual" });
+    const taskId = defaultTaskId(f.store, f.project.id);
+    f.store.saveTaskContract(taskId, { kind: "other", goal: "처리 결과를 보고한다", acceptance: ["요청한 결과를 확인한다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
     const server = await startServer({ config: f.config, store: f.store, bus: new Bus(), orch: f.orch });
     cleanups.push(() => server.stop());
     expect(server.port).not.toBe(7878);
-    const body = { operationId: crypto.randomUUID(), name: "post", args: { kind: "완료", title: "HTTP 보고", task_id: defaultTaskId(f.store, f.project.id) } };
+    const body = { operationId: crypto.randomUUID(), name: "post", args: { kind: "완료", title: "HTTP 보고", task_id: taskId, contract_rev: 1, checks: [{ kind: "other", name: "처리 확인", result: "pass", evidence: "요청한 결과를 확인했다", criterion: 1 }] } };
     const call = () => fetch(`${server.urls[0]}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${f.store.getMemberToken(member.id)}`, "Content-Type": "application/json", "X-IAMCEO-Contract": "2" }, body: JSON.stringify(body) });
     const first = await call(), second = await call();
     expect(first.status).toBe(200); expect(second.status).toBe(200);
@@ -291,7 +293,9 @@ describe("실제 Orchestrator MCP receipt", () => {
   test("동일 ID 동시 호출/재시작은 효과 1회, 새 ID 같은 본문은 독립, 다른 요청은 409", async () => {
     const f = fixture();
     const member = f.store.createMember({ projectId: f.project.id, handle: "manual", name: "직접", kind: "worker", origin: "manual" });
-    const args = { kind: "완료", title: "보고", task_id: defaultTaskId(f.store, f.project.id) }, context = { operationId: crypto.randomUUID() };
+    const taskId = defaultTaskId(f.store, f.project.id);
+    f.store.saveTaskContract(taskId, { kind: "other", goal: "처리 결과를 보고한다", acceptance: ["요청한 결과를 확인한다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+    const args = { kind: "완료", title: "보고", task_id: taskId, contract_rev: 1, checks: [{ kind: "other", name: "처리 확인", result: "pass", evidence: "요청한 결과를 확인했다", criterion: 1 }] }, context = { operationId: crypto.randomUUID() };
     const [first, second] = await Promise.all([f.orch.handleAgentOperation(member, "post", args, context), f.orch.handleAgentOperation(member, "post", args, context)]);
     expect(first).toEqual(second); expect(f.store.listMessages(f.project.id)).toHaveLength(1);
     await f.orch.shutdown(); const orch = f.makeOrch(); cleanups.push(() => orch.shutdown());
