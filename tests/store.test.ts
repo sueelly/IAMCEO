@@ -11,13 +11,15 @@ test("project sync lists public file fields without loading artifact HTML", () =
   const { store, project } = fixture();
   const html = "<article>large artifact</article>";
   const file = store.createFile({ projectId: project.id, title: "artifact", body: "문서 본문", html });
-  store.db.exec("ALTER TABLE files RENAME TO files_data");
-  // SQLite evaluates this deliberately unreadable source only when HTML is selected.
-  const columns = store.db.query<{ name: string }, []>("PRAGMA table_info(files_data)").all().map(c => c.name === "html" ? "json_extract(html, '$') AS html" : c.name);
-  store.db.exec(`CREATE VIEW files AS SELECT rowid, ${columns.join(", ")} FROM files_data`);
+  // Keep the real covering index. Replacing files with a VIEW invalidates INDEXED BY.
+  const query = store.db.query.bind(store.db);
+  store.db.query = ((sql: string, ...args: unknown[]) => {
+    if (/\bFROM files\b/i.test(sql) && /\bhtml\b|SELECT \*/i.test(sql)) throw new Error("list read artifact HTML");
+    return query(sql, ...args as []);
+  }) as typeof store.db.query;
   expect(() => store.listFiles(project.id)).not.toThrow();
   expect(store.listFiles(project.id)).toEqual([file]);
-  store.db.exec("DROP VIEW files; ALTER TABLE files_data RENAME TO files");
+  store.db.query = query;
   expect(store.getFileHtml(file.id)).toBe(html);
 });
 

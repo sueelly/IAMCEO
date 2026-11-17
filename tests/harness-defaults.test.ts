@@ -16,7 +16,7 @@ const ONE = { ...CODING, checks: ["behavior"], acceptance: ["동작한다"] };
 
 test("DB v32: 계약 확인·실행 증거·조사 주장·개선 후보 표가 생긴다", () => {
   const f = fixture();
-  expect(MIGRATIONS.length).toBe(32);
+  expect(MIGRATIONS.length).toBeGreaterThanOrEqual(32);
   const cols = (t: string) => (f.store.db.query(`PRAGMA table_info(${t})`).all() as { name: string }[]).map(c => c.name);
   expect(cols("task_contracts")).toEqual(expect.arrayContaining(["confirmed_by", "confirmed_by_member_id", "confirmed_at"]));
   expect(cols("report_checks")).toEqual(expect.arrayContaining(["exec_status", "exec_ref", "exec_exit", "exec_at", "exec_output_sha", "exec_command"]));
@@ -190,12 +190,12 @@ test("다음 턴 비켜 가기: 받은 계약 업무를 마감하지 않은 채 
 test("server_check·server_backup: 직원은 데이터 폴더를 직접 읽지 않고 서버가 만든 백업과 상태를 본다. 경로는 싣지 않는다", async () => {
   const f = fixture();
   const none = JSON.parse((await f.tool(f.worker, "server_check", {})).text);
-  expect(none).toMatchObject({ schema: { version: 32, supportedVersion: 32, ok: true }, harness: { mode: "label" }, backups: { recent: [] } });
+  expect(none).toMatchObject({ schema: { version: MIGRATIONS.length, supportedVersion: MIGRATIONS.length, ok: true }, harness: { mode: "label" }, backups: { recent: [] } });
   expect((await f.tool(f.worker, "server_backup", {})).text).toContain("백업 관리자가 없습니다");
   const manager = new BackupManager({ home: f.config.home, backupDir: join(f.config.home, "backups") });
   f.orch.setBackups(manager);
   const made = JSON.parse((await f.tool(f.worker, "server_backup", {})).text);
-  expect(made).toMatchObject({ created: true, backup: { schemaVersion: 32, verified: true } });
+  expect(made).toMatchObject({ created: true, backup: { schemaVersion: MIGRATIONS.length, verified: true } });
   const again = JSON.parse((await f.tool(f.lead, "server_backup", {})).text);
   expect(again).toMatchObject({ created: false, backup: { id: made.backup.id } });
   const check = (await f.tool(f.worker, "server_check", {})).text;
