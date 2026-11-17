@@ -868,6 +868,8 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE agent_operation_receipts ADD COLUMN result_kind TEXT NOT NULL DEFAULT 'json';
    ALTER TABLE agent_operation_receipts ADD COLUMN request_sha256 TEXT NOT NULL DEFAULT '';
    ALTER TABLE agent_operation_receipts ADD COLUMN updated_at TEXT;`,
+  // v36: 실행 원문과 실제 도구 workdir를 별도로 보존한다. 과거 검사는 NULL(등록 위치 기준)이다.
+  `ALTER TABLE report_checks ADD COLUMN workdir TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

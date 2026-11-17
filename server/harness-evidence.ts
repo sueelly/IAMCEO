@@ -10,6 +10,7 @@ import { jsonObject, providerLogPath } from "./runner/delivery-evidence.ts";
 import { CHECK_LABEL, type CheckKind, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import { observeExecWindow } from "./harness-exec-diagnostics.ts";
 import type { CodeReadObservation } from "./harness-source-read.ts";
+import { codexWorkdir, isExecutionWorkdir } from "./harness-workdir.ts";
 
 /** 실행으로 증명해야 하는 검사. real(화면·캡처)·조사 검사는 명령이 아니라 자료·출처로 본다. */
 export const EXEC_CHECKS: ReadonlySet<CheckKind> = new Set<CheckKind>(["behavior", "typecheck", "regression"]);
@@ -175,7 +176,7 @@ export function parseCodexLog(text: string, since: string | null): Pick<Provider
       const code = Number.isSafeInteger(item.exit_code) && (item.exit_code as number) >= 0 ? item.exit_code as number : null;
       const exitCode = item.status === "completed" || (item.status === "failed" && code !== 0) ? code : null;
       texts.push({ tool: "CommandExecution", input: command, text: output, at });
-      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: typeof item.cwd === "string" ? item.cwd : null, exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: 0 } });
+      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: codexWorkdir(item.cwd), exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: 0 } });
     } else if (item.type === "McpToolCall") {
       const result = jsonObject(item.result);
       texts.push({ tool: `${String(item.server ?? "")}/${String(item.tool ?? "")}`, input: JSON.stringify(item.arguments ?? {}), text: contentText(result?.content), at, successful: result?.isError !== true });
@@ -240,8 +241,10 @@ export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEv
     const label = `'${c.name}'(${CHECK_LABEL[c.kind]})`;
     const want = c.command ? normalizeCommand(c.command) : "";
     if (want.length < 3) { reasons.push(`${label}에 실제로 돌린 명령(command)이 없습니다. 실행 기록과 대조할 명령을 적으세요`); return; }
+    if (c.workdir != null && !isExecutionWorkdir(c.workdir)) { reasons.push(`${label}의 workdir는 실제 도구가 사용한 절대 경로여야 합니다`); return; }
     if (evidence.status === "missing") { reasons.push(`${label}을 대조할 세션 실행 기록을 찾지 못했습니다(${evidence.code}). 증거 없는 통과는 받지 않습니다. 막힘으로 올리고 unverified 에 적으세요`); return; }
-    const runs = evidence.execs.map(e => ({ e, proof: e.cwd === null && expectedCwd !== null ? "absent" as const : execProves(e.command, want, e.cwd ?? null, expectedCwd) })).filter(r => r.proof !== "absent");
+    const cwd = c.workdir ?? expectedCwd;
+    const runs = evidence.execs.map(e => ({ e, proof: e.cwd === null ? "absent" as const : execProves(e.command, want, e.cwd, cwd) })).filter(r => r.proof !== "absent");
     const last = runs[runs.length - 1];
     if (!last) { reasons.push(`${label}의 명령 '${redactHarnessText(want).slice(0, 80)}'을 계약 뒤 실행 기록에서 찾지 못했습니다(명령 자리에서 찾습니다. echo 안의 글은 치지 않습니다). 지금 판 기준으로 실제로 돌린 뒤 올리세요`); return; }
     if (last.proof === "masked") { reasons.push(`${label}의 마지막 실행은 뒤에 붙은 파이프·;·& 명령의 종료 코드라 검사 결과가 아닙니다. 그 명령만(또는 &&로, 파이프면 명시적인 set -o pipefail 로) 다시 돌리세요`); return; }

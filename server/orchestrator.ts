@@ -177,9 +177,9 @@ export function formatTaskLine(task: Task | null): string {
 /** 명령은 실행 데이터이므로 원문을 보존한다. 설명만 정리한다. 미확인 목록은 'unverified' 검사 한 줄로 붙인다(없다고 적은 것도 기록이다). */
 function harnessChecks(input: PostInput): ReportCheckInput[] {
   const clean = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
-  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: clean(c.evidence), command: c.command ?? null, criterion: c.criterion ?? null }));
+  const checks = (input.checks ?? []).map(c => ({ name: clean(c.name), kind: c.kind, result: c.result, evidence: clean(c.evidence), command: c.command ?? null, workdir: c.workdir ?? null, criterion: c.criterion ?? null }));
   const unverified = (input.unverified ?? []).map(clean).filter(Boolean);
-  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, criterion: null });
+  if (input.unverified !== undefined) checks.push({ name: "미확인 항목", kind: "unverified", result: "pass", evidence: unverified.length ? unverified.join("; ") : "없음", command: null, workdir: null, criterion: null });
   return checks;
 }
 
@@ -1023,7 +1023,7 @@ export class Orchestrator implements OrchestratorApi {
       return { id, kind: m?.kind, title: m?.title, who: m?.who, at: m?.at, gate: h?.gate ?? null, contract: h?.contractTaskId ? `#${h.contractTaskId} r${h.contractRev}` : null, evidence: h?.evidenceStatus ?? null,
         correctsMessageId: this.store.getReportReferences(member.projectId, id)?.correctsMessageId ?? null,
         completionBasis: m?.kind === "완료" ? byMessage.get(id) ?? { messageId: id, eligible: false, status: "not_current", correctedBy: null } : null,
-        checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null })) ?? [],
+        checks: h?.checks.map(c => ({ name: c.name, kind: c.kind, result: c.result, exec: c.execStatus ?? null, exit: c.execExit ?? null, command: c.execCommand ?? c.command ?? null, workdir: c.workdir ?? null })) ?? [],
         claims: h?.claims.map(c => ({ basis: c.basis, verified: c.verified, quoteMatched: c.quoteMatched, sourceRead: c.sourceRead, semanticReview: c.semanticReview, via: c.via })) ?? [] };
     });
     return {
@@ -1060,7 +1060,7 @@ export class Orchestrator implements OrchestratorApi {
     const log = target.cli === "antigravity" ? null : this.contextLog(target, selection);
     if (target.cli === "antigravity") selection.code = "unsupported";
     const observed = inspectProviderEvidence(target.cli, log ? { ...log, root: providerLogRoot(target.cli, log.home) } : null,
-      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; });
+      contract!.at, check.command, check.workdir ?? target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; });
     return { scope: { taskId: task.id, reportId, checkIndex, memberId: target.id,
       contract: { taskId: contract!.taskId, rev: contract!.rev, at: contract!.at } },
       observation: { kind: "current_requery", at: new Date().toISOString(), provider: target.cli,
