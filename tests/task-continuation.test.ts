@@ -424,3 +424,15 @@ test("a queued sequence reminder is retired when a different predecessor becomes
   expect(f.store.requireDelivery(request.id).status).toBe("failed");
   expect(f.store.requireDelivery(d.id).attempts).toBe(0);
 });
+
+test("an owner-resumed child continues its remaining work without resuming the stopped parent", () => {
+  const f = fixture(), parent = f.task("stopped parent", false), child = f.task("resumed child", false, parent.id);
+  f.next.pause([parent.id], "stop-parent", "Stop parent scope");
+  const resume = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "user_message", taskId: child.id, text: "Continue only the child task" });
+  f.store.markDelivered(resume.id); f.blocked(child);
+  const request = f.next.check(f.start, () => true);
+  expect(request).toHaveLength(1);
+  expect(request[0]!.taskId).toBe(child.id);
+  expect(f.next.canDispatch(request[0]!)).toBe(true);
+  expect(f.store.taskContinuationPauses(f.project.id).map(p => p.taskId)).toContain(parent.id);
+});

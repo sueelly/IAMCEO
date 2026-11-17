@@ -199,7 +199,10 @@ export class TaskContinuationCoordinator {
     while (id && !ancestors.has(id)) { ancestors.add(id); id = ctx.tasks.get(id)?.parentTaskId; }
     for (const other of ctx.tasks.values()) {
       if (other.id === task.id || !this.family(task.id, other.id, ctx)) continue;
-      if (["hold", "owner", "approval", "held"].includes(other.progress?.stage ?? "") || ctx.paused.has(other.id)) return true;
+      if (["hold", "owner", "approval", "held"].includes(other.progress?.stage ?? "")) return true;
+      // Ancestor stop inheritance and explicit child resumption are already
+      // resolved in ctx.paused. A separately stopped descendant still gates its parent.
+      if (ctx.paused.has(other.id) && !ancestors.has(other.id)) return true;
       if (!ancestors.has(other.id) || other.progress?.stage !== "done") continue;
       const done = ctx.facts.get(other.id)?.marks.findLast(m => m.stage === "done");
       if (!done) continue;
