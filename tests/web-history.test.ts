@@ -11,6 +11,17 @@ const page = (items: Message[], nextCursor: string | null = null): MessagePage =
 function initial(h: CursorHistory, items: Message[], cursor: string | null = null) { const r = h.begin("initial")!; expect(h.apply(page(items, cursor), r)).toBe(true); }
 
 describe("cursor history", () => {
+  test("a 50-row browser window requests only the latest 50 and continues in 50-row pages", () => {
+    const history = new CursorHistory("p", 50);
+    const first = history.begin("initial")!;
+    expect(first.limit).toBe(50);
+    expect(history.apply(page(rows(100, 150), "older"), first)).toBe(true);
+    const older = history.begin("older")!;
+    expect(older.limit).toBe(50);
+    history.apply(page(rows(50, 100), "oldest"), older);
+    expect(history.items.map(m => m.id)).toEqual(rows(50, 150).map(m => m.id));
+    expect(history.begin("latest")!.limit).toBe(50);
+  });
   test("first 200 and earlier 100 use opaque cursors with binary timestamp/id ordering", () => {
     const h = new CursorHistory("p"); const first = h.begin("initial")!; expect(first.limit).toBe(200);
     expect(h.apply(page([msg("z"), msg("a"), msg("é"), msg("é"), msg("😀"), msg("\uE000")], "opaque-1"), first)).toBe(true);

@@ -41,6 +41,8 @@ test("restored fenced data is readable with normal authentication", async () => 
   const bootstrap = await (await request("/api/bootstrap")).json();
   expect(bootstrap.projects.map((p: { id: string }) => p.id)).toContain("p_view");
   expect((await request("/api/projects/p_view/state")).status).toBe(200);
+  expect((await request("/api/projects/p_view/files/page")).status).toBe(200);
+  expect((await request("/api/files/missing")).status).toBe(404);
   expect(JSON.stringify(await (await request("/api/projects/p_view/messages")).json())).toContain("보존한 대화");
   const ready = await (await request("/api/readiness")).json();
   expect(ready.daemon.readOnly).toBe(true); expect(ready.daemon.buildId).toBe("readonly-test-build");

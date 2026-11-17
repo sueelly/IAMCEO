@@ -37,7 +37,7 @@ export class CursorHistory {
   private changed = false;
   private olderCursors = new Set<string>();
 
-  constructor(readonly projectId: string) {}
+  constructor(readonly projectId: string, private readonly pageSize = 200) {}
   get items(): Message[] { return mergeHistoryMessages([...this.optimistic.values()], [...this.confirmed.values()]); }
   get isBridging(): boolean { return this.bridge !== null; }
   get isLoading(): boolean { return this.loading !== null; }
@@ -72,7 +72,7 @@ export class CursorHistory {
       || kind === "older" && (!this.initialized || this.bridge || !this.hasOlder || !this.nextCursor)
       || kind === "bridge" && !this.bridge?.cursor) return null;
     const cursor = kind === "older" ? this.nextCursor : kind === "bridge" ? this.bridge?.cursor : undefined;
-    const request = { generation: this.generation, id: ++this.requestID, kind, cursor: cursor ?? undefined, limit: kind === "initial" || kind === "latest" ? 200 : 100 };
+    const request = { generation: this.generation, id: ++this.requestID, kind, cursor: cursor ?? undefined, limit: kind === "initial" || kind === "latest" ? this.pageSize : Math.min(this.pageSize, 100) };
     this.loading = request; this.journal = []; this.error = null;
     return request;
   }

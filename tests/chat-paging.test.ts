@@ -34,6 +34,24 @@ function status(fn: () => unknown, expected: number, code?: string) {
 const cursor = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
 describe("Store message keyset paging", () => {
+  test("task pages use timestamp/id seek without sorting tied timestamps", () => {
+    const { store, db, projectId } = fixture();
+    const member = store.createMember({ projectId, name: "업무 담당", handle: "task-worker", kind: "worker" });
+    const task = store.saveTask({ projectId, memberId: member.id, who: "담당", title: "과거 업무" }).task;
+    const insert = db.query("INSERT INTO messages (id, project_id, at, kind, task_id) VALUES (?, ?, 'same', '진행', ?)");
+    db.transaction(() => { for (let i = 0; i < 5000; i++) insert.run(`task-page-${String(i).padStart(5, "0")}`, projectId, task.id); })();
+    const spy = spyOn(db, "query");
+    const first = store.listMessagePage(projectId, { scope: { kind: "task", taskId: task.id }, limit: 50 });
+    const next = store.listMessagePage(projectId, { scope: { kind: "task", taskId: task.id }, limit: 50, cursor: first.nextCursor! });
+    const statements = spy.mock.calls.map(args => args[0]).filter(s => s.includes("task_id = $task")); spy.mockRestore();
+    for (const sql of statements) {
+      const params = { $project: projectId, $task: task.id, $limit: 51, ...(sql.includes("$at") ? { $at: "same", $id: "task-page-04950" } : {}) };
+      const plan = db.query<{ detail: string }, typeof params>(`EXPLAIN QUERY PLAN ${sql}`).all(params).map(r => r.detail).join("\n");
+      expect(plan).toContain("messages_task_page"); expect(plan).not.toContain("USE TEMP B-TREE");
+    }
+    expect(first.items).toHaveLength(50); expect(next.items).toHaveLength(50);
+    expect(new Set([...first.items, ...next.items].map(m => m.id)).size).toBe(100);
+  });
   for (const count of [0, 1, 199, 200, 201, 500, 501, 1205]) {
     test(`${count}개: SQL 전체 순서와 순회가 같고 마지막 커서가 없다`, () => {
       const { store, db, projectId, events } = fixture();

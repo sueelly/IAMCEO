@@ -321,7 +321,7 @@ function withHistory(next: AppState): AppState {
 function historyFor(projectId: string): CursorHistory {
   if (historyRange?.projectId !== projectId) {
     historyRange?.cancel();
-    historyRange = new CursorHistory(projectId);
+    historyRange = new CursorHistory(projectId, 50);
     for (const message of state.project?.project.id === projectId ? state.project.messages : []) {
       if (message.mine && (message.delivery === "queued" || message.delivery === "failed")) historyRange.receive(message, true);
     }
@@ -441,7 +441,7 @@ const coordinator = new BrowserSyncCoordinator({
   capabilities: (signal) => api.capabilities(signal),
   realtimeSession: (signal) => api.realtimeSession(signal),
   socket: (protocol) => new WebSocket(wsUrl(protocol)) as unknown as SyncSocket,
-  readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal); },
+  readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal, state.capabilities?.capabilities.compactState === true); },
   readLegacy,
   onSnapshot: acceptSnapshot,
   onEvent: receiveRemote,

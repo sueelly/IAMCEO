@@ -17,6 +17,9 @@ import type {
   Message,
   MessagePage,
   MessagePageOptions,
+  FileDoc,
+  FilePage,
+  FilePageOptions,
   PatchMemberReq,
   PatchProjectReq,
   Project,
@@ -160,7 +163,15 @@ export const api = {
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
   realtimeSession: (signal?: AbortSignal) => request<void>("POST", "/api/realtime-session", undefined, WRITE_TIMEOUT_MS, { signal }),
-  sync: (projectId: string, signal?: AbortSignal) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}`, signal),
+  sync: (projectId: string, signal?: AbortSignal, compact = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}`, signal),
+  filePage: (id: string, opts: FilePageOptions = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(opts.limit ?? 20) });
+    if (opts.taskId) query.set("taskId", opts.taskId);
+    if (opts.kind) query.set("kind", opts.kind);
+    if (opts.cursor) query.set("cursor", opts.cursor);
+    return get<FilePage>(`/api/projects/${seg(id)}/files/page?${query}`, signal);
+  },
+  file: (id: string, signal?: AbortSignal) => get<FileDoc>(`/api/files/${seg(id)}`, signal),
   /** <img>·<video> 가 쓸 첨부 쿠키를 받는다. 화면을 그리기 전에 부른다. */
   filesSession: () => post<void>("/api/files-session"),
 

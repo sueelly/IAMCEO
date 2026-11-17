@@ -8,7 +8,8 @@ import { MIGRATIONS } from "./db.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { z } from "zod";
-import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
+import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type FileKind, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
+import { compressJsonRead } from "./http-compression.ts";
 import type { OperationReceipt, ServerCapabilities } from "../shared/operations.ts";
 import type { DeliveryRecoveryService } from "./service-contracts.ts";
 import { ARTIFACT_CSP } from "../shared/artifact-kit.ts";
@@ -632,7 +633,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("GET", "/api/capabilities", (_req, url) => {
       strictQuery(url, []);
       const body: ServerCapabilities = { contractVersion: 2, capabilities: {
-        paging: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
+        paging: true, compactState: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
         // 네이티브는 이 값으로 엄격 쓰기를 켠다. 결과 조회와 모든 쓰기 포트가 있어야 한다.
         operations: (["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const)
           .every(port => port in orch && !!orch[port]),
@@ -644,7 +645,9 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(models.read());
     }),
     route("GET", "/api/sync", async (_req, url) => {
-      strictQuery(url, ["projectId"]);
+      strictQuery(url, ["projectId", "view"]);
+      const compact = url.searchParams.get("view") === "compact";
+      if (url.searchParams.has("view") && !compact) throw new ApiError(400, "조회 조건이 잘못되었습니다");
       const requestedProjectId = url.searchParams.get("projectId");
       if (requestedProjectId !== null && (!requestedProjectId.trim() || Buffer.byteLength(requestedProjectId) > 256)) throw new ApiError(400, "프로젝트 ID가 잘못되었습니다");
       await readHerdr();
@@ -658,7 +661,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
         protocol: 2, requestedProjectId, projectStatus,
         bootstrap: { version: VERSION, settings: store.getSettings(), projects: store.projectSummaries(), herdr,
           home: config.home, urls: urls(), cli: orch.cliCommand?.() ?? "iamceo", rankOverrides },
-        state: projectStatus === "ok" ? { ...store.projectState(requestedProjectId!), ...(ctx.delivery ? { deliveryNotices: ctx.delivery.notices(requestedProjectId!) } : {}) } : null,
+        state: projectStatus === "ok" ? { ...store.projectState(requestedProjectId!, { compact }), ...(ctx.delivery ? { deliveryNotices: ctx.delivery.notices(requestedProjectId!) } : {}) } : null,
         revisions: projectStatus === "ok" ? store.syncRevisions(requestedProjectId!) : { settings: store.settingsRevision(), members: {}, todos: {} },
         cursor: bus.cursor,
       };
@@ -847,6 +850,20 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const { done } = await parseBody(req, TodoDoneSchema);
       if (todo.done === done) return Response.json(todo);
       return Response.json(await orch.setTodoDone(id!, done));
+    }),
+    route("GET", "/api/projects/:id/files/page", (_req, url, [id]) => {
+      strictQuery(url, ["taskId", "kind", "cursor", "limit"], "INVALID_FILE_PAGE_QUERY");
+      const limit = url.searchParams.get("limit");
+      if (limit !== null && !/^[0-9]+$/.test(limit)) throw new ApiError(400, "자료 조회 조건이 잘못되었습니다", "INVALID_FILE_PAGE_QUERY");
+      return Response.json(store.listFilePage(id!, { taskId: url.searchParams.get("taskId") ?? undefined,
+        kind: (url.searchParams.get("kind") ?? undefined) as FileKind | undefined,
+        cursor: url.searchParams.get("cursor") ?? undefined, limit: limit === null ? undefined : Number(limit) }));
+    }),
+    route("GET", "/api/files/:id", (_req, url, [id]) => {
+      strictQuery(url, []);
+      const file = store.getFile(id!);
+      if (!file) throw new ApiError(404, "자료를 찾을 수 없습니다");
+      return Response.json(file);
     }),
     route("GET", "/api/files/:id/artifact", async (_req, _url, [id]) => {
       // JSON 으로만 준다. 이 출처의 문서로 열리면 스크립트가 접속 코드에 닿는다. 화면은 /artifact-frame 격리 칸에 넣는다.
@@ -1397,7 +1414,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     if (!isHostAllowed(req.headers.get("host"), config.hosts)) return noStore(fail(403, "허용되지 않은 주소입니다"));
     if (!originMatchesHost(req)) return noStore(fail(403, "허용되지 않은 출처입니다"));
     try {
-      return noStore(await route(req, url, server));
+      return await compressJsonRead(req, noStore(await route(req, url, server)));
     } catch (e) {
       if (e instanceof ApiError) return noStore(fail(e.status, e.message, e.code));
       // 오류 객체도 요청 URL/헤더를 품을 수 있다. 경로와 오류 종류만 남긴다.

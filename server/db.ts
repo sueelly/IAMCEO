@@ -853,6 +853,13 @@ export const MIGRATIONS: string[] = [
   // v33: serve list metadata without walking large body/artifact overflow chains.
   `CREATE INDEX files_list_metadata ON files
     (project_id, sort_order DESC, id, title, who, member_id, summary, path, attachments, created_at, kind, task_id);`,
+  // Stable keyset order and task-scoped metadata reads never fetch body/html overflow pages.
+  `CREATE INDEX files_page_project ON files
+    (project_id, sort_order DESC, id DESC, title, who, member_id, summary, path, attachments, created_at, kind, task_id);
+   CREATE INDEX files_page_task ON files
+    (project_id, task_id, sort_order DESC, id DESC, title, who, member_id, summary, path, attachments, created_at, kind);
+   CREATE INDEX messages_task_page ON messages(project_id, task_id, at COLLATE BINARY DESC, id COLLATE BINARY DESC)
+    WHERE task_id IS NOT NULL;`,
 ];
 
 export function openDb(path: string): Database {

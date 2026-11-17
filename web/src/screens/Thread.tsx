@@ -45,7 +45,7 @@ async function resend(m: Message): Promise<void> {
   await sendMessage({ id: m.id, text: m.body, targetMemberId: m.targetMemberId, attachmentIds: m.attachments.map((a) => a.id), taskId: m.taskId ?? null }, { targetName: m.targetName, attachments: m.attachments });
 }
 
-const TASK_PAGE = 200;
+const TASK_PAGE = 50;
 
 /**
  * 고른 작업의 글. 서버의 작업별 페이지로 받고, 그 뒤에 온 글(실시간·내가 보낸 글)은 프로젝트 글에서 같은 작업 것만 더한다.
