@@ -840,6 +840,22 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private lastConnections = new Map<string, string>();
   private readonly fileBodies = new Map<string, { body: string; bytes: number }>();
   private fileBodyBytes = 0;
+  private deliveryRead: { projectId: string; rows: Row[]; byId: Map<string, Row>; recoveries: Map<string, Row> } | null = null;
+
+  /** A synchronous read scope only: never reused by a later request or a mutation/admission path. */
+  withDeliveryRead<T>(projectId: string, read: () => T): T {
+    const previous = this.deliveryRead;
+    if (previous?.projectId !== projectId) {
+      const rows = this.rows("SELECT * FROM deliveries WHERE project_id = ? ORDER BY rowid", projectId);
+      const recoveries = this.rows("SELECT r.* FROM delivery_recovery r JOIN deliveries d ON d.id = r.delivery_id WHERE d.project_id = ?", projectId);
+      this.deliveryRead = { projectId, rows, byId: new Map(rows.map(row => [row.id, row])), recoveries: new Map(recoveries.map(row => [row.delivery_id, row])) };
+    }
+    try {
+      const result = read();
+      if (result instanceof Promise) throw new Error("withDeliveryRead requires a synchronous callback");
+      return result;
+    } finally { this.deliveryRead = previous; }
+  }
   /** 이전 프로젝트(memory_mode NULL) 가운데 서버 환경 목록(IAMCEO_MEMORY_PROJECTS)으로 켠 것. */
   private legacyMemory: ReadonlySet<string> = new Set();
 
@@ -2590,7 +2606,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   // ---- 전달 큐 ----
   getDelivery(id: string): Delivery | null {
-    const r = this.row("SELECT * FROM deliveries WHERE id = ?", id);
+    const r = this.deliveryRead?.byId.get(id) ?? this.row("SELECT * FROM deliveries WHERE id = ?", id);
     return r ? toDelivery(r) : null;
   }
 
@@ -2900,7 +2916,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   listDeliveries(projectId?: string): Delivery[] {
+    if (projectId !== undefined && this.deliveryRead?.projectId === projectId) return this.deliveryRead.rows.map(toDelivery);
     return this.rows(`SELECT * FROM deliveries ${projectId === undefined ? "" : "WHERE project_id = ?"} ORDER BY rowid`, ...(projectId === undefined ? [] : [projectId])).map(toDelivery);
+  }
+
+  /** Load only referenced display text, avoiding message-history scans and attachment hydration. */
+  deliveryNoticePreviews(projectId: string): Map<string, string> {
+    const previews = new Map<string, string>();
+    for (const [kind, table, column] of [["message", "messages", "body"], ["decision", "decisions", "title"], ["todo", "todos", "title"]] as const) {
+      const rows = this.rows(`SELECT DISTINCT s.id, s.${column} AS preview FROM deliveries d JOIN ${table} s ON s.id = d.ref_id
+        WHERE d.project_id = ? AND d.ref_type = ? AND
+          (d.status != 'delivered' OR EXISTS (SELECT 1 FROM delivery_recovery r WHERE r.delivery_id = d.id AND r.reason = 'duplicate_draft'))
+      `, projectId, kind);
+      for (const row of rows) previews.set(`${kind}:${row.id}`, row.preview);
+    }
+    return previews;
+  }
+
+  listUnlinkedFailedMessages(projectId: string): Message[] {
+    return this.rows(`SELECT m.* FROM messages m WHERE m.project_id = ? AND m.mine = 1 AND m.delivery = 'failed'
+      AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.project_id = m.project_id AND d.ref_type = 'message' AND d.ref_id = m.id)
+      ORDER BY m.at COLLATE BINARY DESC, m.id COLLATE BINARY DESC`, projectId).map(toMessage);
   }
 
   // ---- revision / CAS ----
@@ -3053,7 +3089,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   // ---- 전달 복구 CAS / 봉투 ----
   getDeliveryRecovery(deliveryId: string): DeliveryRecoveryRecord | null {
-    const r = this.row("SELECT * FROM delivery_recovery WHERE delivery_id = ?", deliveryId);
+    const r = this.deliveryRead?.byId.has(deliveryId) ? this.deliveryRead.recoveries.get(deliveryId) : this.row("SELECT * FROM delivery_recovery WHERE delivery_id = ?", deliveryId);
     return r ? { deliveryId, marker: r.marker, phase: r.phase, reason: r.reason, version: r.version, autoAttempts: r.auto_attempts, checkCount: r.check_count, activeCheckMs: r.active_check_ms, nextCheckAt: r.next_check_at, lastCheckedAt: r.last_checked_at, evidence: json(r.evidence_json), updatedAt: r.updated_at } : null;
   }
 
@@ -3145,7 +3181,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   getDeliveryRetry(id: string): DeliveryRetryState {
     this.requireDelivery(id);
-    const r = this.row("SELECT * FROM deliveries WHERE id = ?", id)!;
+    const r = this.deliveryRead?.byId.get(id) ?? this.row("SELECT * FROM deliveries WHERE id = ?", id)!;
     return { nextAttemptAt: r.next_attempt_at, sourceRevision: r.source_revision, retryScope: r.retry_scope, retryReason: r.retry_reason, correctionRevision: r.correction_revision };
   }
 
