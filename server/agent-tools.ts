@@ -293,6 +293,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       try { result = await memoryCall(() => memory.context(member.projectId, orch.memoryScope(member, a.task_id), a.query, a.limit ?? 5)); }
       catch (e) { orch.noteToolMemorySearch(member, a.task_id ?? null, a.query, { ids: [], error: (e as Error).message }); throw e; }
       orch.noteToolMemorySearch(member, a.task_id ?? null, a.query, { ids: result.experiences.map((e) => e.id) });
+      orch.noteMemoryExperiences(member, a.task_id ?? null, result.experiences);
       if (!result.experiences.length) return reply(JSON.stringify({ note: "관련 기억 없음(검색은 됐고 맞는 것이 없었다). 지금 근거로 진행한다.", semantic_index: result.semantic_index, experiences: [] }));
       const experiences = result.experiences.map((e) => ({ id: e.id, origin: memoryKindLabel(e), kind: e.kind, summary: e.summary, content: e.content, excerpted: e.excerpted, source: e.source, status: e.status, is_rule: e.is_rule, feedback: e.feedback, created_at: e.created_at }));
       return reply(JSON.stringify({ note: "과거 기록이다. 지금 대표 지시·승인·규칙보다 앞서지 않는다. origin 이 '대표 결재 답'·'대표 원문'인 것만 대표의 말이고, 그 안의 '총괄 해석'·'배경'은 대표의 말이 아니다.", semantic_index: result.semantic_index, truncated: result.truncated, experiences }));
@@ -365,17 +366,19 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   memory_feedback: tool(
-    "다른 작업에서 남긴 개발 기억을 이번 일에 실제로 적용해 본 결과를 남긴다. 결과를 확인하지 않았으면 부르지 않는다. 자기 작업의 기록에는 남길 수 없다.",
+    "이번 업무에서 받은 타 업무 기억의 활용 결과와 이유를 남긴다. 완료·막힘 보고 전에 평가한다. 적용하지 않았다면 not_used로 사실대로 남기고, 성공했다는 이유로 helped를 고르지 않는다. 자기 업무 기록은 평가하지 않는다.",
     z.strictObject({
       id: oneLine(200).describe("exp-... id"),
-      outcome: z.enum(["helped", "did_not_help", "contradicted"]).describe("helped 도움됨 · did_not_help 도움 안 됨 · contradicted 사실과 달랐음"),
+      outcome: z.enum(["helped", "did_not_help", "contradicted", "not_used"]).describe("helped 도움됨 · did_not_help 도움 안 됨 · contradicted 반박됨 · not_used 사용하지 않음"),
+      reason: z.string().trim().min(1).max(2000).describe("어떤 판단·수정에 쓰였는지, 쓰지 않았다면 그 이유"),
       task_id: oneLine(64).nullable().optional().describe("지금 하는 작업 id. 없으면 비운다"),
     }),
     async (orch, member, a) => {
-      const memory = orch.requireMemory(member);
-      const scope = orch.memoryScope(member, a.task_id);
-      await memoryCall(() => memory.feedback(member.projectId, a.id, scope, `iamceo-${member.id}`, a.outcome));
-      return reply("적용 결과를 남겼습니다(같은 기록·작업에는 처음 값만 남습니다)");
+      const saved = orch.assessMemoryFeedback(member, a.task_id ?? null, a.id, a.outcome, a.reason);
+      if (saved.status === "sent") return reply("활용 결과와 이유를 저장했고 원격 전송 영수증을 확인했습니다.");
+      if (saved.status === "rejected") return reply(`평가와 이유는 보관했지만 원격에서 거절되어 자동 재시도가 중단되었습니다: ${saved.lastError ?? "영수증 확인 필요"}`);
+      return reply(saved.status === "not_used" ? "사용하지 않은 이유를 남겼습니다. 원격 활용 평가를 만들지 않았습니다."
+        : "활용 결과와 이유를 저장했습니다. 서버가 전송 영수증을 확인하고 연결 실패 시 다시 보냅니다.");
     },
   ),
 

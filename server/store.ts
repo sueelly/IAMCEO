@@ -2500,6 +2500,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 기억 운영: 프로젝트 기본값 ----
+  /** Observers run after committed domain changes; they never control the original write. */
+  subscribeCommitted(listener: (event: WsEvent) => void): () => void {
+    return this.bus.subscribe(listener);
+  }
+
   /** 서버 환경 목록으로 켠 이전 프로젝트. 프로젝트가 따로 정한 값(on·off)이 있으면 그쪽이 앞선다. */
   setLegacyMemoryProjects(ids: readonly string[]): void {
     this.legacyMemory = new Set(ids);
@@ -2594,8 +2599,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT * FROM memory_searches WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemorySearch);
   }
 
-  dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {
-    return this.rows("SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ? ORDER BY created_at LIMIT ?", now, limit).map(toMemoryUpload);
+  dueMemoryUploads(now: string, limit = 20, projectIds?: readonly string[]): MemoryUpload[] {
+    if (projectIds?.length === 0) return [];
+    const projectFilter = projectIds ? ` AND project_id IN (${projectIds.map(() => "?").join(",")})` : "";
+    return this.rows(`SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ?${projectFilter} ORDER BY created_at, rowid LIMIT ?`, now, ...(projectIds ?? []), limit).map(toMemoryUpload);
   }
 
   listMemoryUploads(projectId?: string): MemoryUpload[] {

@@ -43,6 +43,7 @@ function fakeGateway() {
   const tokens = new Map<string, string>(); // token → project/task
   const seen: { path: string; body: any; auth: string }[] = [];
   let down = 0;
+  let failurePrefix = "";
   const server = Bun.serve({
     port: 0, hostname: "127.0.0.1",
     async fetch(req) {
@@ -51,7 +52,7 @@ function fakeGateway() {
       const body = req.method === "POST" ? await req.json().catch(() => null) : null;
       seen.push({ path: url.pathname, body, auth });
       if (url.pathname === "/healthz") return Response.json({ ok: true, service: "development-memory", generation_model_calls: 0 });
-      if (down > 0) { down--; return Response.json({ error: "memory_temporarily_unavailable" }, { status: 503 }); }
+      if (down > 0 && (!failurePrefix || String(body?.experience?.event_id ?? "").startsWith(failurePrefix))) { down--; return Response.json({ error: "memory_temporarily_unavailable" }, { status: 503 }); }
       if (url.pathname.startsWith("/v1/")) {
         if (auth !== SERVICE_KEY) return Response.json({ error: "unauthorized" }, { status: 401 });
         if (url.pathname === "/v1/context") {
@@ -94,7 +95,7 @@ function fakeGateway() {
       return Response.json({ error: "not_found" }, { status: 404 });
     },
   });
-  return { url: `http://127.0.0.1:${server.port}`, records, seen, tokens, failNext: (n: number) => { down = n; }, stop: () => server.stop(true) };
+  return { url: `http://127.0.0.1:${server.port}`, records, seen, tokens, failNext: (n: number, prefix = "") => { down = n; failurePrefix = prefix; }, stop: () => server.stop(true) };
 }
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -166,8 +167,9 @@ describe("개발 기억 연결", () => {
     const d = t.store.createDecision({ projectId: t.project.id, memberId: w.id, who: w.name, title: "환불 방식", detail: "직원 설명: 부분 환불이 필요합니다", options: [{ k: "a", label: "부분 환불", desc: "금액만 돌려줌" }, { k: "b", label: "전체 환불" }], rec: "a", taskId });
     await t.orch.answerDecision(d.id, { choice: "a", note: "카드사 수수료는 우리가 낸다" });
     await t.devMemory!.flush(t.store);
-    expect(t.gw.records).toHaveLength(1);
-    const rec = t.gw.records[0]!;
+    const decisions = () => t.gw.records.filter(r => r.event_id.startsWith("iamceo-decision-"));
+    expect(decisions()).toHaveLength(1);
+    const rec = decisions()[0]!;
     expect(rec.project_id).toBe(`iamceo-${t.project.id}`);
     expect(rec.experience.kind).toBe("decision");
     expect(rec.experience.source).toEqual({ task_id: taskId, item_id: d.id, service: "iamceo" });
@@ -175,13 +177,14 @@ describe("개발 기억 연결", () => {
     expect(rec.experience.content).toContain('대표 답(원문): "부분 환불" (금액만 돌려줌)');
     expect(rec.experience.content).toContain("대표 메모(원문): 카드사 수수료는 우리가 낸다");
     expect(rec.experience.content).toContain("배경(직원이 쓴 설명이며 대표 결정이 아니다):\n직원 설명: 부분 환불이 필요합니다");
-    expect(t.store.listMemoryUploads()[0]).toMatchObject({ status: "sent", remoteId: "exp-1", refId: d.id });
+    const decisionJob = t.store.listMemoryUploads().find(job => job.refId === d.id && job.refType === "decision")!;
+    expect(decisionJob).toMatchObject({ status: "sent", remoteId: rec.id, refId: d.id });
     // 같은 답을 다시 처리해도(재시작 뒤 대기열 재전송 포함) 기록은 하나
     await t.orch.answerDecision(d.id, { choice: "a", note: "카드사 수수료는 우리가 낸다" });
-    t.store.settleMemoryUpload(t.store.listMemoryUploads()[0]!.eventId, { status: "pending", attempts: 1, nextAt: new Date(0).toISOString() });
+    t.store.settleMemoryUpload(decisionJob.eventId, { status: "pending", attempts: 1, nextAt: new Date(0).toISOString() });
     await t.devMemory!.flush(t.store);
-    expect(t.gw.records).toHaveLength(1);
-    expect(t.store.listMemoryUploads()).toHaveLength(1);
+    expect(decisions()).toHaveLength(1);
+    expect(t.store.listMemoryUploads().filter(job => job.refType === "decision")).toHaveLength(1);
     // 대표가 끈 프로젝트의 결재는 올리지 않는다
     const ow = await t.worker(t.other.id, "o1");
     const od = t.store.createDecision({ projectId: t.other.id, memberId: ow.id, who: ow.name, title: "다른 일", options: [{ k: "a", label: "가" }] });
@@ -203,8 +206,9 @@ describe("개발 기억 연결", () => {
     const found = await t.call(w, "memory_search", { query: "트랜잭션" });
     expect(found.isError).toBeFalsy();
     const parsed = JSON.parse(found.text);
-    const mine = t.store.listMemoryUploads(t.project.id)[0]!.remoteId!;
-    expect(parsed.experiences.map((e: { id: string }) => e.id)).toEqual([mine]);
+    const mine = t.store.listMemoryUploads(t.project.id).find(job => job.refId === d.id && job.refType === "decision")!.remoteId!;
+    expect(parsed.experiences.map((e: { id: string }) => e.id)).toContain(mine);
+    expect(parsed.experiences.map((e: { id: string }) => e.id)).not.toContain("exp-x");
     expect(found.text).not.toContain("mcp-");
     const ctx = t.gw.seen.find((s) => s.path === "/v1/context")!;
     expect(ctx.body).toMatchObject({ project_id: `iamceo-${t.project.id}`, task_id: `iamceo-${w.id}-general`, query: "트랜잭션" });
@@ -245,17 +249,17 @@ describe("개발 기억 연결", () => {
   test("게이트웨이가 잠깐 안 되면 대기열에 남아 같은 사건으로 다시 보내고, 키 파일이 없으면 키 없이 알린다", async () => {
     const t = await setup();
     const w = await t.worker(t.project.id, "w1");
-    t.gw.failNext(1);
+    t.gw.failNext(1, "iamceo-decision-");
     const d = t.store.createDecision({ projectId: t.project.id, memberId: w.id, who: w.name, title: "배포 시각", options: [{ k: "a", label: "밤" }] });
     await t.orch.answerDecision(d.id, { choice: "a" });
     await t.devMemory!.flush(t.store);
-    const job = t.store.listMemoryUploads()[0]!;
+    const job = t.store.listMemoryUploads().find(job => job.refId === d.id && job.refType === "decision")!;
     expect(job).toMatchObject({ status: "pending", attempts: 1 });
     expect(job.lastError).toContain("503");
     t.store.settleMemoryUpload(job.eventId, { status: "pending", attempts: 1, nextAt: new Date(0).toISOString() });
     await t.devMemory!.flush(t.store);
-    expect(t.store.listMemoryUploads()[0]).toMatchObject({ status: "sent", attempts: 2 });
-    expect(t.gw.records).toHaveLength(1);
+    expect(t.store.getMemoryUpload(job.eventId)).toMatchObject({ status: "sent", attempts: 2 });
+    expect(t.gw.records.filter(r => r.event_id === job.eventId)).toHaveLength(1);
 
     const missing = await setup({ memory: true, keyFile: join(tmpdir(), `no-such-key-${crypto.randomUUID()}`) });
     const mw = await missing.worker(missing.project.id, "w1");

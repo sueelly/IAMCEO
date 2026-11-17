@@ -57,7 +57,7 @@ const runsThen = (m: Member, output: string, report = false) => () => {
   h.screen = composer(`⏺ Bash(touch probe-claude.txt && ls -l probe-claude.txt)\n  ⎿  Running…`);
   // 직원이 결과를 보고한 뒤 턴을 끝낸다(보고 없이 끝나면 서버가 보고 보완을 보내 다시 일하게 된다)
   setTimeout(async () => {
-    if (report) await orch.recordPost(store.requireMember(m.id), { kind: "완료", title: "시험 파일을 만들었습니다", taskId: task.id });
+    if (report) await orch.recordPost(store.requireMember(m.id), { kind: "완료", title: "시험 파일을 만들었습니다", taskId: task.id, contractRev: 1, checks: [{ kind: "other", name: "격리 단말 보고", result: "pass", evidence: "가짜 단말의 결과를 보고했다", criterion: 1 }] });
     h.terminal.status = { state: "idle" } as CoreTerminal["status"]; h.terminal.turn = (h.terminal.turn ?? 0) + 1; h.screen = composer(output);
   }, 600);
 };
@@ -118,6 +118,7 @@ beforeAll(async () => {
   orch.setServerUrl(base);
   pay = await orch.createMember(project.id, { name: "결제 연동", cli: "claude" });
   task = orch.saveTask(pay, { title: "환불 기능", branch: "feat/refund" }).task;
+  store.saveTaskContract(task.id, { kind: "other", goal: "격리 단말의 결과를 보고한다", acceptance: ["가짜 단말의 결과를 보고했다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
   await orch.recordPost(pay, { kind: "진행", title: "환불 설계 시작", taskId: task.id });
   // 업무가 붙은 실행을 하나 연다(카드의 '업무' 칸). 실제 CLI 대신 가짜 소켓이 일하는 중으로 받는다.
   await orch.sendUserMessage(project.id, { text: "환불 기능 시험 파일을 만들어 주세요", targetMemberId: pay.id, taskId: task.id });

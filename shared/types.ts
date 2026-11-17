@@ -60,7 +60,13 @@ export interface Project {
 export interface ProjectMemory { mode: "on" | "off" | "legacy"; on: boolean; enabledAt: string | null }
 
 /** 서버의 개발 기억 연결 상태. not_configured: 연결 설정 없음 · key_unreadable: 키 파일을 못 읽음 · unreachable: 서버가 응답 안 함 · ok: 마지막 확인에서 닿음 · unknown: 아직 확인 전 */
-export interface MemoryServiceInfo { state: "not_configured" | "key_unreadable" | "unreachable" | "ok" | "unknown"; detail: string | null; checkedAt: string | null }
+export interface MemoryServiceInfo {
+  state: "not_configured" | "key_unreadable" | "unreachable" | "ok" | "unknown";
+  detail: string | null;
+  checkedAt: string | null;
+  uploads?: { pending: number; sent: number; rejected: number; lastSentAt: string | null; lastError: string | null };
+  feedback?: { unassessed: number; awaitingDelivery: number; pending: number; sent: number; notUsed: number; rejected: number; lastError: string | null };
+}
 
 export interface ProjectSummary extends Pick<Project, "id" | "name" | "isHq" | "cwd" | "now" | "runnerEnabled" | "maxConcurrentTurns" | "connection"> {
   decisionCount: number; // 열린 결재

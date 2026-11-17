@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { MIGRATIONS, openDb } from "../server/db.ts";
+import { MEMORY_ARCHIVE_SCHEMA } from "../server/integrations/memory-archive.ts";
+import { MEMORY_FEEDBACK_SCHEMA } from "../server/integrations/memory-feedback.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
 const command = "bun  test 'synthetic 한글.ts'";
@@ -34,20 +36,25 @@ function seed(db: Database, version: number) {
     db.query("INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES('t','synthetic-decision',?,'synthetic-trigger',?)").run(at,at);
   }
   if (version >= 41) db.query("UPDATE members SET execution_issue_json=? WHERE id='m'").run(JSON.stringify({kind: 'quota', detail: 'synthetic fixture', at}));
+  if (version >= 42) {
+    db.query("INSERT INTO memory_archive_sources(project_id,source_type,source_id,fingerprint,version,updated_at) VALUES('p','task','t','synthetic-source-fingerprint',2,?)").run(at);
+    db.query("INSERT INTO memory_feedback_exposures(id,project_id,member_id,task_id,scope,experience_id,source_task_id,summary,first_seen_at,outcome,reason,status,attempts,next_at,assessed_at,updated_at) VALUES('synthetic-feedback','p','m','t','t','exp-synthetic','source-task','합성 평가',?,'helped','합성 근거','pending',2,?,?,?)").run(at, at, at, at);
+  }
 }
 
 function snapshot(db: Database) {
   const names = new Set(["projects", "members", "tasks", "deliveries", "decisions", "report_checks",
-    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'task_%' OR name='workflow_assignment_receipts')").all().map(r => r.name)]);
+    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'task_%' OR name LIKE 'memory_%' OR name='workflow_assignment_receipts')").all().map(r => r.name)]);
   return [...names].sort().map(table => {
     const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(r => r.name);
     return { table, columns, rows: db.query(`SELECT ${columns.join(",")} FROM ${table} ORDER BY rowid`).all() };
   });
 }
 
-for (const version of [35, 37, 41]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
-  expect(MIGRATIONS).toHaveLength(42);
+for (const version of [35, 37, 41, 42]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
+  expect(MIGRATIONS).toHaveLength(43);
   expect(MIGRATIONS[40]).toBe('ALTER TABLE members ADD COLUMN execution_issue_json TEXT;');
+  expect(MIGRATIONS[41]).toBe(`${MEMORY_ARCHIVE_SCHEMA}\n${MEMORY_FEEDBACK_SCHEMA}`);
   const path = join(mkdtempSync(join(tmpdir(), `workdir-v${version}-`)), "synthetic.db");
   const old = new Database(path, { create: true });
   old.exec("PRAGMA foreign_keys=ON");
@@ -72,7 +79,7 @@ for (const version of [35, 37, 41]) test(`v${version}→연결판 이주·재열
     const reopened = before.map(s => ({ ...s, rows: again.query(`SELECT ${s.columns.join(",")} FROM ${s.table} ${s.table === "report_checks" ? "WHERE message_id='old'" : ""} ORDER BY rowid`).all() }));
     expect(digest(reopened)).toBe(digest(before));
     expect(again.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(MIGRATIONS.length);
-    console.info(JSON.stringify({ historicalVersion: version, baselineVersion: 41, connectedVersion: MIGRATIONS.length, existingTables: before.length,
+    console.info(JSON.stringify({ historicalVersion: version, baselineVersion: 42, connectedVersion: MIGRATIONS.length, existingTables: before.length,
       beforeSha256: digest(before), reopenedSha256: digest(reopened), commandSha256: digest(command),
       legacyWorkdir: null, explicitWorkdirPreserved: true }));
   } finally { again.close(); }

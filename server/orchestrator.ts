@@ -106,7 +106,9 @@ import { ApiError, provisionalTaskTitle, type AppliedConfig, type ExecutionJourn
 import { cleanText, RESERVED_HANDLES } from "./text.ts";
 import { MIGRATIONS, newId } from "./db.ts";
 import { datedTitle, taskTitleFrom } from "./task-names.ts";
-import { clip, DevMemory, devMemoryConfigFromEnv, findSensitive, memoryKindLabel, memoryTaskId, MemoryError, redactSensitive, stableEventId, type Experience, type ExperienceInput } from "./integrations/dev-memory.ts";
+import { clip, DevMemory, loadDevMemoryConfig, findSensitive, memoryKindLabel, memoryTaskId, MemoryError, redactSensitive, stableEventId, type Experience, type ExperienceInput } from "./integrations/dev-memory.ts";
+import { MemoryArchive } from "./integrations/memory-archive.ts";
+import { MemoryFeedback, MemoryFeedbackError, type MemoryFeedbackOutcome } from "./integrations/memory-feedback.ts";
 import { conductorHandle, conductorName } from "./text.ts";
 
 // ---- 전달 글(§4). 서버만 만든다 ----
@@ -671,7 +673,7 @@ export function createOrchestrator(config: Config, store: Store): Orchestrator {
     quiescence: (_memberId, dispatch) => ({ originalWrite: dispatch.transportState === "rejected" ? "rejected" : dispatch.transportState === "accepted" ? "settled" : "unresolved", externalInput: null }),
   }));
   const herdr: HerdrQueries = { info: () => detectHerdr(config.herdrSocket), agents: () => listAgents(config.herdrSocket), inspect: (a) => inspectPane(config.herdrSocket, a) };
-  const memoryConfig = devMemoryConfigFromEnv(process.env);
+  const memoryConfig = loadDevMemoryConfig(process.env, config.home);
   orchestrator = new Orchestrator({ config, store, runners, herdr, deliveryRecovery, providerHomes: { claudeHome: defaultClaudeHome(), codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"), antigravityRoot: config.antigravityRoot }, notifier: macNotifier(), devMemory: memoryConfig ? new DevMemory(memoryConfig) : null });
   return orchestrator;
 }
@@ -703,6 +705,8 @@ export class Orchestrator implements OrchestratorApi {
   private readonly herdr: HerdrQueries | null;
   private agentTools: AgentToolsImpl | null;
   readonly devMemory: DevMemory | null;
+  readonly memoryArchive: MemoryArchive | null;
+  readonly memoryFeedback: MemoryFeedback | null;
   private memoryReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private serverUrl: string;
   private runtimes = new Map<string, Runtime>();
@@ -759,6 +763,12 @@ export class Orchestrator implements OrchestratorApi {
     // 어느 프로젝트가 기억을 쓰는지는 프로젝트 설정이 정한다. 환경 목록은 값이 없는 이전 프로젝트에만 쓴다.
     this.store.setLegacyMemoryProjects(this.devMemory?.config.projects ?? []);
     this.devMemory?.setProjectGate((projectId) => this.store.getProject(projectId)?.memory?.on ?? false);
+    this.memoryArchive = this.devMemory ? new MemoryArchive(this.store, this.devMemory, () => this.memorySecrets(), {
+      subscribe: listener => this.store.subscribeCommitted(listener),
+    }) : null;
+    this.memoryFeedback = this.devMemory ? new MemoryFeedback(this.store, this.devMemory, { secrets: () => this.memorySecrets() }) : null;
+    this.memoryArchive?.start();
+    this.memoryFeedback?.start();
     this.devMemory?.start(this.store);
     if (this.devMemory) {
       queueMicrotask(() => { if (!this.closed) this.reconcileDecisionMemory(); });
@@ -976,7 +986,16 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 서버의 개발 기억 연결 상태. 설정이 없으면 '미연결'을 사실대로 돌려준다. */
   memoryServiceInfo(): MemoryServiceInfo {
-    return this.devMemory?.status() ?? { state: "not_configured", detail: "서버에 개발 기억 연결 설정(IAMCEO_MEMORY_URL·IAMCEO_MEMORY_KEY_FILE)이 없습니다", checkedAt: null };
+    if (!this.devMemory) return { state: "not_configured", detail: "서버의 development-memory.json 또는 IAMCEO_MEMORY_URL·IAMCEO_MEMORY_KEY_FILE 연결 설정이 없습니다", checkedAt: null };
+    const uploads = { pending: 0, sent: 0, rejected: 0, lastSentAt: null as string | null, lastError: null as string | null };
+    for (const row of this.store.db.query<{ status: string; count: number; updated_at: string | null }, []>(
+      "SELECT status,COUNT(*) count,MAX(updated_at) updated_at FROM memory_outbox GROUP BY status").all()) {
+      if (row.status === "pending" || row.status === "sent" || row.status === "rejected") uploads[row.status] = row.count;
+      if (row.status === "sent") uploads.lastSentAt = row.updated_at;
+    }
+    const failure = this.store.db.query<{ last_error: string }, []>("SELECT last_error FROM memory_outbox WHERE status<>'sent' AND last_error IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get();
+    uploads.lastError = failure ? redactSensitive(failure.last_error, this.memorySecrets()) : null;
+    return { ...this.devMemory.status(), uploads, feedback: this.memoryFeedback?.status() };
   }
 
   /** 접속 코드·토큰이 있는 폴더. file 도구가 읽지 못하게 막는다. */
@@ -1939,6 +1958,7 @@ export class Orchestrator implements OrchestratorApi {
   async shutdown(): Promise<void> {
     this.closed = true;
     this.devMemory?.stop();
+    await Promise.all([this.memoryArchive?.stop(), this.memoryFeedback?.stop(), this.devMemory?.drain()]);
     if (this.memoryReconcileTimer) clearInterval(this.memoryReconcileTimer);
     await Promise.all([...this.terminalStreamClosers].map(close => close()));
     await this.coreSupervisor?.shutdown();
@@ -3092,9 +3112,31 @@ export class Orchestrator implements OrchestratorApi {
     return this.devMemory;
   }
 
+  noteMemoryExperiences(member: Member, taskId: string | null, experiences: readonly Experience[], deliveryIds?: readonly string[]): void {
+    if (this.closed || !this.memoryEnabledFor(member)) return;
+    this.memoryFeedback?.register(member, this.memoryTask(member, taskId), experiences, deliveryIds ? { deliveryIds } : undefined);
+  }
+
+  assessMemoryFeedback(member: Member, taskId: string | null, id: string, outcome: MemoryFeedbackOutcome, reason: string) {
+    if (this.closed) throw new ApiError(503, "서버가 재시작 중입니다. 기억 평가를 다시 제출해 주세요");
+    this.requireMemory(member);
+    try {
+      const result = this.memoryFeedback!.assess(member, this.memoryTask(member, taskId), id, outcome, reason);
+      void this.memoryFeedback!.flush().catch(error => console.warn("기억 피드백 전송 실패:", (error as Error).message));
+      return result;
+    } catch (error) {
+      if (error instanceof MemoryFeedbackError) throw new ApiError(error.status, error.message);
+      throw error;
+    }
+  }
+
   /** 기억 범위의 작업: 직원이 밝힌 task_id 만 쓴다(없으면 직원별 전체 범위). 검색·조회는 프로젝트 범위라 글 귀속 규칙과 따로 둔다. */
   memoryScope(member: Member, taskId?: string | null): string {
-    return memoryTaskId(taskId ? this.requireTaskInProject(member, taskId).id : null, member.id);
+    return memoryTaskId(this.memoryTask(member, taskId ?? null), member.id);
+  }
+
+  private memoryTask(member: Member, taskId: string | null): string | null {
+    return taskId ? this.store.resolveTask(this.requireTaskInProject(member, taskId)).id : null;
   }
 
   /**
@@ -3104,27 +3146,42 @@ export class Orchestrator implements OrchestratorApi {
    */
   private async attachMemoryContext(member: Member, pending: Delivery[]): Promise<void> {
     const memory = this.devMemory;
-    if (!memory || !this.memoryEnabledFor(member)) return;
+    if (this.closed || !memory || !this.memoryEnabledFor(member)) return;
+    const groups = new Map<string | null, Delivery[]>();
+    for (const delivery of pending) {
+      if (!delivery.wake || delivery.attempts !== 0 || !MEMORY_SEARCH_KINDS.has(delivery.kind) || this.store.memorySearchedDelivery(delivery.id)) continue;
+      const taskId = this.memoryTask(member, this.store.deliveryTaskId(delivery.id));
+      const group = groups.get(taskId) ?? [];
+      group.push(delivery);
+      groups.set(taskId, group);
+    }
+    // A conductor can receive several tasks in one batch. Keep each search and receipt in its actual task.
+    await Promise.all([...groups].map(([taskId, triggers]) => this.attachMemoryTaskContext(member, triggers, taskId)));
+  }
+
+  private async attachMemoryTaskContext(member: Member, triggers: Delivery[], taskId: string | null): Promise<void> {
+    const memory = this.devMemory!;
     try {
-      const triggers = pending.filter((d) => d.wake && d.attempts === 0 && MEMORY_SEARCH_KINDS.has(d.kind) && !this.store.memorySearchedDelivery(d.id));
-      if (!triggers.length) return;
       const query = memoryQuery(triggers.map((d) => this.memoryQueryText(d)));
       if (query.length < MEMORY_QUERY_MIN) return; // "응", "진행해" 같은 짧은 답은 앞서 찾은 기억을 그대로 쓴다.
-      const taskIds = [...new Set(triggers.map((d) => this.store.deliveryTaskId(d.id)))];
-      const taskId = taskIds.length === 1 ? taskIds[0]! : null;
       const queryHash = createHash("sha256").update(query).digest("hex").slice(0, 32);
       const deliveryIds = triggers.map((d) => d.id);
       const notice = (block: string): NewDelivery => ({ projectId: member.projectId, memberId: member.id, kind: "system", text: formatSystem(block), wake: false, ...(taskId ? { taskId } : {}) });
       const reused = this.store.recentMemorySearch(member.projectId, member.id, queryHash, new Date(Date.now() - MEMORY_REUSE_MS).toISOString());
-      if (reused?.block) {
+      if (reused?.block && reused.taskId === taskId) {
         const block = `${reused.block}\n(10분 안에 같은 검색어로 찾은 결과를 다시 씀 · 검색 #${reused.id})`;
-        this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status: reused.status, resultIds: reused.resultIds, block, detail: `reused:${reused.id}` }, { deliveryIds, notice: notice(block) });
-        return;
+        const linked = this.store.transaction(() => {
+          if (!this.memoryFeedback!.registerCached(member, taskId, reused.resultIds, deliveryIds)) return false;
+          this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status: reused.status, resultIds: reused.resultIds, block, detail: `reused:${reused.id}` }, { deliveryIds, notice: notice(block) });
+          return true;
+        });
+        if (linked) return;
       }
       let status: "ok" | "empty" | "error";
       let resultIds: string[] = [];
       let block: string;
       let detail: string | null = null;
+      let experiences: Experience[] = [];
       try {
         const scope = this.memoryScope(member, taskId);
         const result = await memory.context(member.projectId, scope, query, MEMORY_AUTO_LIMIT, MEMORY_SEARCH_TIMEOUT_MS);
@@ -3132,14 +3189,18 @@ export class Orchestrator implements OrchestratorApi {
         resultIds = found.map((e) => e.id);
         status = found.length ? "ok" : "empty";
         block = formatMemoryContext(found, result.semantic_index ?? null);
+        experiences = found;
         detail = result.semantic_index ? `semantic_index=${result.semantic_index}` : null;
       } catch (e) {
         status = "error";
         detail = (e as Error).message.slice(0, 300);
         block = formatMemoryFailure(detail);
       }
-      if (!this.store.getMember(member.id)) return;
-      this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status, resultIds, block, detail }, { deliveryIds, notice: notice(block) });
+      if (this.closed || !this.store.getMember(member.id)) return;
+      this.store.transaction(() => {
+        this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "delivery", queryHash, status, resultIds, block, detail }, { deliveryIds, notice: notice(block) });
+        this.noteMemoryExperiences(member, taskId, experiences, deliveryIds);
+      });
     } catch (e) {
       // 기억 붙이기가 일을 막지는 않는다.
       console.warn("일 시작 전 기억 검색을 붙이지 못했습니다:", (e as Error).message);
@@ -3160,7 +3221,9 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 직원이 memory_search 도구로 찾은 것도 남긴다(일 시작 전 검색과 같은 기준으로 결과 없음·실패를 나눈다). */
   noteToolMemorySearch(member: Member, taskId: string | null, query: string, outcome: { ids: string[]; error?: string }): void {
+    if (this.closed) return;
     try {
+      taskId = this.memoryTask(member, taskId);
       this.store.recordMemorySearch({ projectId: member.projectId, memberId: member.id, taskId, trigger: "tool", queryHash: createHash("sha256").update(memoryQuery([query])).digest("hex").slice(0, 32),
         status: outcome.error ? "error" : outcome.ids.length ? "ok" : "empty", resultIds: outcome.ids, block: null, detail: outcome.error?.slice(0, 300) ?? null });
     } catch (e) { console.warn("기억 검색 기록 실패:", (e as Error).message); }
@@ -3168,7 +3231,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 기억에 올릴 글에 그대로 들어 있으면 안 되는 이 서버의 비밀(접속 코드·서비스 키). 밖으로 내지 않는다. */
   memorySecrets(): string[] {
-    return [(this.config as Partial<Config>).accessCode ?? "", ...(this.devMemory?.secrets() ?? [])].filter((v) => v.length >= 8);
+    return [(this.config as Partial<Config>).accessCode ?? "", ...(this.devMemory?.secrets() ?? [])].filter(Boolean);
   }
 
   /** 결재 답 저장과 기억 대기열 넣기 사이에 서버가 멈춰 빠진 것을 같은 사건 id 로 다시 넣는다(이미 있으면 그대로). */
@@ -4259,6 +4322,10 @@ export class Orchestrator implements OrchestratorApi {
       ...files.map((f) => f.taskId),
       input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
     ]);
+    if ((input.kind === "완료" || input.kind === "막힘") && this.memoryEnabledFor(member)) {
+      const pending = this.memoryFeedback?.pending(member, taskId) ?? [];
+      if (pending.length) throw new ApiError(409, `이번 업무에서 받은 기억의 활용 결과를 먼저 남겨 주세요. memory_feedback에 task_id=${taskId ?? "null"}, id와 outcome·reason을 적습니다. helped(도움 됨), did_not_help(도움 안 됨), contradicted(반박됨), not_used(사용하지 않음) 중 실제 결과만 고르세요. 미평가: ${pending.map(item => item.id).join(", ")}`);
+    }
     const checks = harnessChecks(input);
     const contract = taskId ? this.store.getEffectiveContract(taskId) : null;
     const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
@@ -5074,6 +5141,7 @@ export class Orchestrator implements OrchestratorApi {
     if (this.devMemory && this.memoryEnabledFor(member) && pending.some((d) => d.wake)) {
       rt.pumpStage = "memory_search";
       await this.attachMemoryContext(member, pending);
+      if (this.closed) return;
     }
 
     const hasWake = pending.some((d) => d.wake);
@@ -6388,6 +6456,8 @@ export function memoryGuide(kind: MemberKind): string {
     "- 그 기억은 과거 기록이다. 지금 대표 원문·승인·정본이 앞선다. 중요한 판단에 쓸 후보만 `memory_get`으로 전문·근거를 확인한다. '대표 결재 답'·'대표 원문' 기록이 아닌 것(직원·AI 보고 등)을 대표 결정으로 읽지 않는다.",
     "- 같은 일의 후속 대화에서는 받은 기억을 다시 쓴다. 새 조건·정정·반례가 나오면 `memory_search`로 다시 찾는다. 상태 안내·기존 결과 재보고에는 찾지 않는다.",
     "- '기억 검색 실패'는 '관련 기억 없음'이 아니다. 지금 근거로 진행하고, 이전 결정 해석이 꼭 필요할 때만 한 번 다시 찾는다.",
+    "- 완료·막힘 보고 전에 이번 업무에 받은 타 업무 기억마다 memory_feedback으로 활용 결과와 구체적인 reason을 남긴다. 실제 도움은 helped, 도움 없음은 did_not_help, 근거와 충돌하면 contradicted다. 적용하지 않았다면 not_used와 그 이유를 남기며, 성공했다는 이유로 helped를 만들지 않는다.",
+    "- 지시·대화·결재·업무·자료 원문은 서버가 출처와 함께 자동 보관한다. 자동 보관된 AI 보고를 대표의 결정이나 검증된 사실로 바꾸지 않는다. 추가로 검증한 교훈은 memory_record로 남긴다.",
   ];
   if (kind === "conductor") return [...common,
     "- 대표가 대화에서 결정·제약을 밝히거나 수정 이유·피드백을 주면 `memory_capture`로 남긴다. 그 대표 글 끝의 `#id`를 `message_ids`에 넣는다. 원문·시각·작업은 서버가 고정하고, 네 해석은 `interpretation`에 따로 쓴다.",
