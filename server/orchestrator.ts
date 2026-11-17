@@ -1101,7 +1101,7 @@ export class Orchestrator implements OrchestratorApi {
     const log = target.cli === "antigravity" ? null : this.contextLog(target, selection);
     if (target.cli === "antigravity") selection.code = "unsupported";
     const observed = inspectProviderEvidence(target.cli, log ? { ...log, root: providerLogRoot(target.cli, log.home) } : null,
-      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; });
+      contract!.at, check.command, target.cwd, ref => { const used = this.store.execRefTask(ref); return used && used !== contract!.taskId ? used : null; }, task.worktree);
     return { scope: { taskId: task.id, reportId, checkIndex, memberId: target.id,
       contract: { taskId: contract!.taskId, rev: contract!.rev, at: contract!.at } },
       observation: { kind: "current_requery", at: new Date().toISOString(), provider: target.cli,
@@ -4404,7 +4404,7 @@ export class Orchestrator implements OrchestratorApi {
     // 실행 증거: 이 세션의 제공자 기록에서 계약 시각 뒤의 실행만 본다(옛 판·다른 업무·실패·없는 실행은 받지 않는다).
     const log = this.contextLog(member);
     const evidence = readProviderEvidence(member.cli, log ? { ...log, root: providerLogRoot(member.cli, log.home) } : null, contract.at);
-    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd);
+    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd, taskId ? this.store.requireTask(taskId).worktree : null);
     const verified = verifyClaims(claims, evidence, source => {
       const file = /^f_[A-Za-z0-9_-]+$/.test(source) ? this.store.getFile(source) : null;
       // 자기가 올린 자료는 자기 글이다. 대표·다른 직원의 자료 본문만 원문으로 친다.
