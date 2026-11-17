@@ -68,6 +68,17 @@ function fixture(maxConcurrentTurns = 2) {
   return { isolated, config, store, project, runner, orch, orchestrator, member, db, bus };
 }
 
+function confirmedTask(f: ReturnType<typeof fixture>, goal: string) {
+  const taskId = defaultTaskId(f.store, f.project.id);
+  f.store.saveTaskContract(taskId, {
+    kind: "other", goal, inputs: ["격리 시험의 요청과 연결 기록"], outputs: ["요청 처리 결과"],
+    scope: goal, constraints: [], exclusions: [], acceptance: ["요청 처리 결과를 확인한다"], checks: [],
+  }, { author: "대표", authorMemberId: null, authorKind: "owner" });
+  return taskId;
+}
+
+const completionEvidence = { contractRev: 1, checks: [{ name: "처리 결과", kind: "other" as const, result: "pass" as const, evidence: "격리 시험의 요청 처리 결과를 확인했습니다", criterion: 1 }] };
+
 test("turn start/end member notifications already include the corresponding work timestamp", async () => {
   const f = fixture();
   const member = f.member();
@@ -121,8 +132,9 @@ test("unknown todo writes stay fenced and compensation is created after later po
 test("closing a decision persists the explicit follow-up and original source atomically", async () => {
   const f = fixture(); const lead = f.member("conductor"); const worker = f.member();
   f.store.patchProject(f.project.id, { runnerEnabled: false });
-  const source = f.store.createMessage({ projectId: f.project.id, mine: true, kind: "나", body: "새 저장소로 이전을 진행하세요" });
-  const decision = f.store.createDecision({ projectId: f.project.id, memberId: worker.id, who: worker.name, title: "Move?" });
+  const taskId = confirmedTask(f, "저장소 이전을 처리한다");
+  const source = f.store.createMessage({ projectId: f.project.id, taskId, mine: true, kind: "나", body: "새 저장소로 이전을 진행하세요" });
+  const decision = f.store.createDecision({ projectId: f.project.id, taskId, memberId: worker.id, who: worker.name, title: "Move?" });
   const followUp = { kind: "instruction" as const, memberId: worker.id, text: "저장소 이전 실행", sourceMessageId: source.id };
   await f.orch.closeDecision(lead, { id: decision.id, kind: "decided", reason: "대표가 결정", userQuote: source.body, followUp });
   expect(f.store.requireDecision(decision.id).status).toBe("closed");
@@ -138,8 +150,9 @@ test("closing a decision persists the explicit follow-up and original source ato
 
 test("failed follow-up enqueue rolls back decision closing and follow-up metadata", async () => {
   const f = fixture(); const lead = f.member("conductor"); const worker = f.member();
-  const source = f.store.createMessage({ projectId: f.project.id, mine: true, kind: "나", body: "저장소를 이전해 주세요" });
-  const decision = f.store.createDecision({ projectId: f.project.id, memberId: worker.id, who: worker.name, title: "Move?" });
+  const taskId = confirmedTask(f, "저장소 이전을 처리한다");
+  const source = f.store.createMessage({ projectId: f.project.id, taskId, mine: true, kind: "나", body: "저장소를 이전해 주세요" });
+  const decision = f.store.createDecision({ projectId: f.project.id, taskId, memberId: worker.id, who: worker.name, title: "Move?" });
   const enqueue = f.store.enqueue.bind(f.store);
   f.store.enqueue = () => { throw new Error("injected enqueue failure"); };
   await expect(f.orch.closeDecision(lead, { id: decision.id, kind: "decided", reason: "대표 결정", userQuote: source.body, followUp: { kind: "instruction", memberId: worker.id, text: "Move", sourceMessageId: source.id } })).rejects.toThrow("injected");
@@ -152,10 +165,11 @@ test("failed follow-up enqueue rolls back decision closing and follow-up metadat
 test("report envelope retains every file, decision, authored order and explicit correction", async () => {
   const f = fixture(); f.member("conductor"); const worker = f.member();
   f.store.patchProject(f.project.id, { runnerEnabled: false });
+  const taskId = confirmedTask(f, "자료와 결재를 연결한 처리 결과를 보고한다");
   const files = ["One", "Two", "Three"].map(title => f.store.createFile({ projectId: f.project.id, title }));
   const decision = f.store.createDecision({ projectId: f.project.id, memberId: worker.id, who: worker.name, title: "Reference" });
-  const first = await f.orch.recordPost(worker, { kind: "완료", title: "Artifacts", fileIds: files.map(file => file.id), decisionId: decision.id, taskId: defaultTaskId(f.store, f.project.id) });
-  const correction = await f.orch.recordPost(worker, { kind: "알림", title: "Correction", correctsMessageId: first.id, taskId: defaultTaskId(f.store, f.project.id) });
+  const first = await f.orch.recordPost(worker, { kind: "완료", title: "Artifacts", fileIds: files.map(file => file.id), decisionId: decision.id, taskId, ...completionEvidence });
+  const correction = await f.orch.recordPost(worker, { kind: "알림", title: "Correction", correctsMessageId: first.id, taskId });
   const refs = f.orch.reportReferences(f.project.id, first.id);
   expect(refs).toMatchObject({ sourceMessageId: first.id, fileIds: files.map(file => file.id), decisionIds: [decision.id], authoredAt: first.at, correctsMessageId: null });
   const newer = f.orch.reportReferences(f.project.id, correction.id);
@@ -200,14 +214,15 @@ test("core missing final report requests a single supplement, progress is insuff
 test("completed/blocked posts, questions, delegation and tidy-only turns are valid no-supplement exits", async () => {
   for (const kind of ["완료", "막힘", "질문", "위임", "정리"] as const) {
     const f = fixture(); const member = f.member(kind === "위임" ? "conductor" : "worker");
+    const taskId = kind === "정리" ? null : confirmedTask(f, "배정된 요청을 처리하고 결과를 남긴다");
     const text = kind === "정리" ? "[시스템] 판 정리: nothing changed" : "Work";
-    f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "system", text });
+    f.store.enqueue({ projectId: f.project.id, taskId, memberId: member.id, kind: "system", text });
     await f.orch.pump(member.id);
     if (kind === "질문") await f.orch.registerAsk(member, { title: "Need a decision", taskId: defaultTaskId(f.store, f.project.id) });
     else if (kind === "위임") {
       const child = f.member();
       expect((await f.orch.handleAgentTool(member, "team_assign", withDefaultTask(f.store, member, "team_assign", { member: child.handle, text: "Delegate" }))).isError).toBeUndefined();
-    } else if (kind !== "정리") await f.orch.recordPost(member, { kind, title: "Result", taskId: defaultTaskId(f.store, f.project.id) });
+    } else if (kind !== "정리") await f.orch.recordPost(member, { kind, title: "Result", taskId, ...(kind === "완료" ? completionEvidence : {}) });
     f.runner.end(member);
     await Bun.sleep(10);
     expect(f.store.listDeliveries().filter(d => d.text.includes("보고 보완:"))).toHaveLength(0);

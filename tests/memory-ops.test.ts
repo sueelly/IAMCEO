@@ -240,6 +240,7 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   // 총괄의 위임은 직원 쪽에서 찾는다.
   const refund = t.orch.saveTask(t.store.requireMember(leadId), { title: "부분 환불 금액 검증", contract: {
     kind: "coding", goal: "부분 환불 API 의 금액 검증을 고친다", acceptance: ["0원과 환불 가능 금액 초과 요청을 거절한다"], checks: ["real"],
+    inputs: ["부분 환불 API와 환불 가능 금액"], outputs: ["금액 검증 수정과 경계 입력 확인 결과"], scope: "부분 환불 금액 검증", constraints: [], exclusions: [],
   } }).task;
   await t.orch.assign(t.project.id, w.handle, { taskId: refund.id, text: "부분 환불 API 의 금액 검증을 고쳐 주세요" }, t.store.requireMember(leadId));
   await until(() => t.store.listMemorySearches(t.project.id).some((s) => s.memberId === w.id), "직원 검색");

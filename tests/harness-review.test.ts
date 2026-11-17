@@ -154,7 +154,8 @@ for(const defect of ['bad','missing','zero'] as const)test(`P2 백업: 최근 �
   writeFileSync(join(folder,'manifest.json'),JSON.stringify(manifest));
   const response=await f.tool(f.worker,'server_backup',{});expect(response.isError).toBeUndefined();
   const made=JSON.parse(response.text);expect(made.created).toBe(true);expect(made.backup.verified).toBe(true);expect(made.backup.databaseBytes).toBeGreaterThan(0);expect(made.backup.id).not.toBe(fakeId);
-  const reused=JSON.parse((await f.tool(f.lead,'server_backup',{})).text);
+  const reuseResponse=await f.tool(f.worker2,'server_backup',{});expect(reuseResponse.isError).toBeUndefined();
+  const reused=JSON.parse(reuseResponse.text);
   expect(reused).toMatchObject({created:false,backup:{id:made.backup.id,verified:true}});
 });
 
