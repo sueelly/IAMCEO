@@ -20,51 +20,73 @@ async function fail(f: F, taskId: string, name = "저장 결과 다시 읽기", 
 }
 const open = (f: F) => f.store.listDecisions(f.project.id).filter(d => d.status === "open");
 
-test("the third identical worker failure creates one actionable decision and preserves it across restart", async () => {
+test("three identical failures notify the conductor once without manufacturing owner approval", async () => {
   const f = fixture(), id = await task(f);
-  await fail(f, id); await fail(f, id);
+  await fail(f, id); await fail(f, id); const third = await fail(f, id);
   expect(open(f)).toHaveLength(0);
-  const third = await fail(f, id);
-  expect(open(f)).toHaveLength(1);
-  const decision = open(f)[0]!;
-  expect(decision.taskId).toBe(id);
-  expect(decision.memberId).toBe(f.lead.id);
-  expect(decision.detail).toContain("3");
-  expect(decision.detail).toContain("저장 결과 다시 읽기");
-  expect(decision.detail).toContain(contract.acceptance[0]!);
-  expect(decision.detail).toContain(third);
-  expect(f.store.taskProgress(id).stage).toBe("owner");
+  expect(f.store.taskProgress(id).stage).toBe("check");
+  const notices = () => f.store.listDeliveries().filter(d => d.taskId === id && d.kind === "system");
+  expect(notices()).toHaveLength(1);
+  expect(notices()[0]!.text).toContain(third);
+  expect(notices()[0]!.text).toContain(contract.acceptance[0]!);
   await fail(f, id);
-  f.orch.checkTaskWatches(Date.now() + 12 * 60 * 60_000);
-  expect(open(f).map(d => d.id)).toEqual([decision.id]);
-  const restarted = new Store(f.store.db, new Bus());
-  expect(restarted.pendingTaskFailureDecision(id)?.id).toBe(decision.id);
+  f.orch.checkTaskWatches(Date.now() + 100_000);
+  expect(notices()).toHaveLength(1);
+  expect((await f.tool(f.lead, "task_stage", { task_id: id, stage: "reopen", evidence: "저장 경로 대신 직렬화 단계를 먼저 검증한다" })).isError).toBeUndefined();
+  expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: id, text: "직렬화 단계부터 확인하고 원래 완료 조건을 검증하세요" })).isError).toBeUndefined();
+  expect(f.runner.to(f.worker)).toHaveLength(1);
 });
 
-test("conductor summaries do not count as another failed implementation attempt", async () => {
+test("conductor summaries and changed failures do not trip the worker failure limit", async () => {
   const f = fixture(), id = await task(f);
-  await fail(f, id);
-  await fail(f, id, "저장 결과 다시 읽기", f.lead);
-  await fail(f, id, "저장 결과 다시 읽기", f.lead);
-  expect(open(f)).toHaveLength(0);
+  await fail(f, id); await fail(f, id, undefined, f.lead); await fail(f, id, undefined, f.lead);
   expect(f.store.getTaskWatch(id)?.same).toBe(1);
-  await fail(f, id); await fail(f, id);
-  expect(open(f)).toHaveLength(1);
-});
-
-test("a changed failure resets the identical-failure count", async () => {
-  const f = fixture(), id = await task(f);
-  await fail(f, id); await fail(f, id);
-  await fail(f, id, "권한 거절");
-  expect(open(f)).toHaveLength(0);
-  expect(f.store.getTaskWatch(id)?.same).toBe(1);
+  await fail(f, id); await fail(f, id, "권한 거절");
+  expect(f.store.getTaskWatch(id)).toMatchObject({ same: 1, trippedAt: null });
   await fail(f, id, "권한 거절"); await fail(f, id, "권한 거절");
-  expect(open(f)).toHaveLength(1);
+  expect(f.store.getTaskWatch(id)?.trippedAt).toBeTruthy();
+  expect(open(f)).toHaveLength(0);
 });
 
-test("a conductor cannot bypass the failure decision by reopen, reassignment, or an obsolete close", async () => {
+for (const scope of ["same", "ancestor", "descendant"] as const) {
+  test(`a conductor intervention preserves already queued ${scope} work until the failed scope is reopened`, async () => {
+    const f = fixture(), parent = await task(f), child = await task(f, parent, "하위 저장 검사");
+    const failedId = scope === "descendant" ? parent : child;
+    const queuedId = scope === "ancestor" ? parent : child;
+    f.runner.busy.add(f.worker.id);
+    f.store.patchMember(f.worker.id, { status: "working" });
+    await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: queuedId, text: "저장 결과를 다시 확인하세요" });
+    const queued = f.store.listPending(f.worker.id).find(d => d.kind === "instruction")!;
+    for (let i = 0; i < 3; i++) await fail(f, failedId);
+    f.runner.busy.delete(f.worker.id);
+    f.runner.callback({ type: "status", memberId: f.worker.id, status: "idle" });
+    await f.orch.pump(f.worker.id);
+    expect(f.runner.to(f.worker)).toHaveLength(0);
+    expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: "queued", attempts: 0 });
+    expect(open(f)).toHaveLength(0);
+    expect((await f.tool(f.lead, "task_stage", { task_id: failedId, stage: "reopen", evidence: "직렬화 단계부터 검사하도록 접근을 변경" })).isError).toBeUndefined();
+    await f.orch.pump(f.worker.id);
+    expect(f.store.requireDelivery(queued.id).status).toBe("delivered");
+  });
+}
+
+// Model an approval that already existed before the conductor-first policy.
+// New runtime failures never call this fixture migration.
+async function legacyFailure(f: F, taskId: string, name?: string, member = f.worker, correctsMessageId?: string) {
+  const message = await fail(f, taskId, name, member, correctsMessageId);
+  const watch = f.store.getTaskWatch(taskId);
+  if (watch?.trippedAt && !f.store.db.query("SELECT 1 FROM task_failure_escalations WHERE task_id=?").get(taskId)) {
+    const decision = f.store.createDecision({ projectId: f.project.id, taskId, memberId: f.lead.id, who: "기존 실패 승인",
+      title: "기존 대표 재시도 승인", detail: "이전 정책에서 생성되어 아직 답을 기다리는 결재입니다" });
+    f.store.db.query("INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES(?,?,?,?,?)")
+      .run(taskId, decision.id, watch.trippedAt, message, watch.trippedAt);
+  }
+  return message;
+}
+
+test("a conductor cannot bypass a legacy failure decision by reopen, reassignment, or an obsolete close", async () => {
   const f = fixture(), id = await task(f);
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   expect(open(f)).toHaveLength(1);
   const decision = open(f)[0]!;
   const reopen = () => f.tool(f.lead, "task_stage", { task_id: id, stage: "reopen", evidence: "접근을 바꿉니다" });
@@ -79,22 +101,23 @@ test("a conductor cannot bypass the failure decision by reopen, reassignment, or
   expect((await reopen()).isError).toBe(true);
 });
 
-test("an explicit owner answer permits a new scoped attempt and another three failures create a new card", async () => {
+test("a legacy owner answer permits a new scoped attempt and new failures return to the conductor", async () => {
   const f = fixture(), id = await task(f);
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   expect(open(f)).toHaveLength(1);
   const first = open(f)[0]!;
   f.store.answerDecision(first.id, { note: "저장 경로를 확인한 뒤 같은 업무를 다시 시도하세요" });
   expect((await f.tool(f.lead, "task_stage", { task_id: id, stage: "reopen", evidence: "대표 답에 따라 저장 경로부터 확인" })).isError).toBeUndefined();
   expect(f.store.pendingTaskFailureDecision(id)).toBeNull();
-  for (let i = 0; i < 3; i++) await fail(f, id);
-  expect(open(f)).toHaveLength(1);
-  expect(open(f)[0]!.id).not.toBe(first.id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
+  expect(open(f)).toHaveLength(0);
+  expect(f.store.pendingTaskFailureDecision(id)).toBeNull();
+  expect(f.store.taskProgress(id).stage).toBe("check");
 });
 
 test("the owner gate also covers a derived task and an apparent pass cannot erase it", async () => {
   const f = fixture(), id = await task(f);
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   const child = f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "같은 결과의 파생 업무", parentTaskId: id }).task;
   expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: child.id, text: "아래 업무로 계속" })).isError).toBe(true);
   expect((await f.tool(f.lead, "task_stage", { task_id: child.id, stage: "reopen", evidence: "새 업무로 재개" })).isError).toBe(true);
@@ -112,7 +135,7 @@ for (const source of ["before_failure", "unrelated_task", "unscoped"] as const) 
     const ownerMessage = () => f.store.createMessage({ projectId: f.project.id, mine: true, who: "나", kind: "나", body: quote,
       taskId: source === "unrelated_task" ? unrelated : source === "unscoped" ? null : id });
     if (source === "before_failure") ownerMessage();
-    for (let i = 0; i < 3; i++) await fail(f, id);
+    for (let i = 0; i < 3; i++) await legacyFailure(f, id);
     if (source !== "before_failure") ownerMessage();
     const decision = open(f)[0]!;
     const close = await f.tool(f.lead, "ask_close", { id: decision.id, kind: "decided", reason: "대표가 정한 대로 재개", user_quote: quote, follow_up: { kind: "none" } });
@@ -125,7 +148,7 @@ for (const source of ["before_failure", "unrelated_task", "unscoped"] as const) 
 test("a persisted decided-close without a new scoped owner source remains blocked after restart", async () => {
   const f = fixture(), id = await task(f), quote = "저장 경로를 확인한 뒤 다시 시도하세요";
   f.store.createMessage({ projectId: f.project.id, mine: true, who: "나", kind: "나", body: quote, taskId: id });
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   const decision = open(f)[0]!;
   f.store.closeDecision(decision.id, { kind: "decided", reason: "old fixture record", by: "총괄", quote });
   const restarted = new Store(f.store.db, new Bus());
@@ -140,7 +163,7 @@ test("a new scoped owner quote permits the close and its follow-up atomically, e
   // An identical older quote must not hide the valid post-failure source.
   f.store.createMessage({ projectId: f.project.id, mine: true, who: "나", kind: "나", body: quote, taskId: id });
   let third = "";
-  for (let i = 0; i < 3; i++) third = await fail(f, id);
+  for (let i = 0; i < 3; i++) third = await legacyFailure(f, id);
   const decision = open(f)[0]!;
   const owner = f.store.createMessage({ projectId: f.project.id, mine: true, who: "나", kind: "나", body: quote,
     taskId: parent, at: f.store.requireMessage(third).at });
@@ -156,7 +179,7 @@ test("a new scoped owner quote permits the close and its follow-up atomically, e
 
 test("a failed descendant blocks parent reassignment and reopening while unrelated work remains available", async () => {
   const f = fixture(), parent = await task(f), child = await task(f, parent, "하위 저장 검사"), unrelated = await task(f, undefined, "별도 결과");
-  for (let i = 0; i < 3; i++) await fail(f, child);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, child);
   const decision = open(f)[0]!;
   expect(f.store.pendingTaskFailureDecision(parent)?.id).toBe(decision.id);
   expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: parent, text: "하위 실패를 포함해 다시 수정하세요" })).isError).toBe(true);
@@ -178,7 +201,8 @@ test("correcting a failed report, including a correction chain, does not create 
   expect(open(f)).toHaveLength(0);
   await fail(f, id);
   expect(f.store.getTaskWatch(id)).toMatchObject({ attempts: 3, same: 3 });
-  expect(open(f)).toHaveLength(1);
+  expect(open(f)).toHaveLength(0);
+  expect(f.store.taskProgress(id).stage).toBe("check");
 });
 
 for (const queuedScope of ["same", "ancestor", "descendant"] as const) {
@@ -191,7 +215,7 @@ for (const queuedScope of ["same", "ancestor", "descendant"] as const) {
     expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: queuedId, text: "저장 결과를 다시 확인하세요" })).isError).toBeUndefined();
     const queued = f.store.listPending(f.worker.id).find(d => d.kind === "instruction")!;
     expect(queued).toBeDefined();
-    for (let i = 0; i < 3; i++) await fail(f, failedId);
+    for (let i = 0; i < 3; i++) await legacyFailure(f, failedId);
     f.runner.busy.delete(f.worker.id);
     f.runner.callback({ type: "status", memberId: f.worker.id, status: "idle" });
     await f.orch.pump(f.worker.id);
@@ -207,7 +231,7 @@ for (const queuedScope of ["same", "ancestor", "descendant"] as const) {
 test("reopening a parent resets resolved descendant episodes only after every related owner card is resolved", async () => {
   const f = fixture(), parent = await task(f), child = await task(f, parent, "첫 저장 검사"), sibling = await task(f, parent, "두 번째 저장 검사");
   const unrelated = await task(f, undefined, "별도 저장 검사");
-  for (const id of [child, sibling, unrelated]) for (let i = 0; i < 3; i++) await fail(f, id);
+  for (const id of [child, sibling, unrelated]) for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   const first = f.store.pendingTaskFailureDecision(child)!, second = f.store.pendingTaskFailureDecision(sibling)!;
   f.store.answerDecision(first.id, { note: "첫 저장 경로를 바꾸어 다시 시도하세요" });
   expect((await f.tool(f.lead, "task_stage", { task_id: parent, stage: "reopen", evidence: "첫 검사 답을 받음" })).isError).toBe(true);
@@ -219,19 +243,20 @@ test("reopening a parent resets resolved descendant episodes only after every re
   expect(f.store.getTaskWatch(child)).toMatchObject({ same: 0, trippedAt: null });
   expect(f.store.getTaskWatch(sibling)).toMatchObject({ same: 0, trippedAt: null });
   expect(f.store.getTaskWatch(unrelated)).toMatchObject({ same: 3, trippedAt: expect.any(String) });
-  await fail(f, child); await fail(f, child);
+  await legacyFailure(f, child); await legacyFailure(f, child);
   expect(f.store.pendingTaskFailureDecision(child)).toBeNull();
-  await fail(f, child);
-  expect(f.store.pendingTaskFailureDecision(child)?.id).not.toBe(first.id);
+  await legacyFailure(f, child);
+  expect(f.store.pendingTaskFailureDecision(child)).toBeNull();
+  expect(f.store.taskProgress(child).stage).toBe("check");
   f.orch.checkTaskWatches();
-  expect(open(f)).toHaveLength(2);
+  expect(open(f)).toHaveLength(1);
 });
 
 test("a pending failure decision also preserves queued manual inbox input", async () => {
   const f = fixture(), id = await task(f);
   const manual = f.store.createMember({ projectId: f.project.id, handle: "manual", name: "수동 직원", kind: "worker", origin: "manual", status: "idle" });
   const queued = f.store.enqueue({ projectId: f.project.id, memberId: manual.id, kind: "instruction", taskId: id, text: "이전부터 대기한 검사" });
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   expect(await f.orch.manualInbox(manual.id, 0)).toBeNull();
   expect(await f.orch.waitInbox(manual, 0)).toBeNull();
   expect(f.store.requireDelivery(queued.id).status).toBe("queued");
@@ -248,7 +273,7 @@ test("recovery cannot resend an already prepared failed-task envelope before the
   const runner: Runner = f.runner;
   let repairs = 0;
   runner.repairDelivery = async () => { repairs++; return { ok: true, started: false, turn: 0 }; };
-  for (let i = 0; i < 3; i++) await fail(f, id);
+  for (let i = 0; i < 3; i++) await legacyFailure(f, id);
   const request = { action: "resend" as const, dispatchId: dispatch.dispatchId, expectedRecoveryVersion: 1, expectedSessionGeneration: 0,
     expectedSessionId: f.worker.sessionId, expectedTerminalId: f.worker.paneId!, expectedInputEpoch: 0 };
   const member: RunnerMember = { ...f.worker, model: null, effort: null, subagentModel: null, permissionMode: "default", sessionGeneration: 0 };
@@ -267,7 +292,7 @@ for (const resolution of ["answer", "decided_close"] as const) {
     f.store.patchMember(f.worker.id, { status: "working" });
     expect((await f.tool(f.lead, "team_assign", { member: f.worker.handle, task_id: id, text: "저장 결과를 다시 검사하세요" })).isError).toBeUndefined();
     let third = "";
-    for (let i = 0; i < 3; i++) third = await fail(f, id);
+    for (let i = 0; i < 3; i++) third = await legacyFailure(f, id);
     const original = open(f)[0]!;
     const quote = "대기 중인 저장 검사를 새 경로에서 다시 실행하세요";
     if (resolution === "answer") f.store.answerDecision(original.id, { note: quote });
@@ -276,25 +301,24 @@ for (const resolution of ["answer", "decided_close"] as const) {
       expect((await f.tool(f.lead, "ask_close", { id: original.id, kind: "decided", reason: "대표가 재시도를 정함", user_quote: quote, follow_up: { kind: "none" } })).isError).toBeUndefined();
     }
     const oldTrip = f.store.getTaskWatch(id)!.trippedAt;
-    await fail(f, id, undefined, undefined, third);
+    await legacyFailure(f, id, undefined, undefined, third);
     expect(f.store.getTaskWatch(id)).toMatchObject({ same: 3, trippedAt: oldTrip });
     // An old running turn's late failure is not proof that the retry started.
-    await fail(f, id);
+    await legacyFailure(f, id);
     expect(f.store.getTaskWatch(id)?.trippedAt).toBe(oldTrip);
     f.runner.busy.delete(f.worker.id);
     f.runner.callback({ type: "status", memberId: f.worker.id, status: "idle" });
     await f.orch.pump(f.worker.id);
     expect(f.runner.to(f.worker)).toHaveLength(1);
-    await fail(f, id, undefined, undefined, third);
+    await legacyFailure(f, id, undefined, undefined, third);
     expect(f.store.getTaskWatch(id)?.trippedAt).toBe(oldTrip);
-    await fail(f, id);
+    await legacyFailure(f, id);
     expect(f.store.getTaskWatch(id)).toMatchObject({ same: 1, trippedAt: null });
-    await fail(f, id);
+    await legacyFailure(f, id);
     expect(f.store.pendingTaskFailureDecision(id)).toBeNull();
-    await fail(f, id);
-    const next = f.store.pendingTaskFailureDecision(id)!;
-    expect(next).not.toBeNull();
-    expect(next.id).not.toBe(original.id);
-    expect(open(f)).toHaveLength(1);
+    await legacyFailure(f, id);
+    expect(f.store.pendingTaskFailureDecision(id)).toBeNull();
+    expect(f.store.taskProgress(id).stage).toBe("check");
+    expect(open(f)).toHaveLength(0);
   });
 }

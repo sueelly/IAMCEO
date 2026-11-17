@@ -235,15 +235,13 @@ export function watchOnReopen(w: WatchFact | null, at: string): WatchFact | null
 
 /** 총괄에게 한 번 보내는 점검 글: 원인·지금까지 한 일·남은 조건. */
 export function watchNotice(task: { id: string; title: string }, w: WatchFact, reason: string, remaining: string[]): string {
-  const lines = w.history.slice(-5).map((h) => `- ${h.at} ${h.who}: ${h.fingerprint === "unknown" ? "검사 근거 없는 막힘" : h.fingerprint}`);
+  const lines = w.history.slice(-5).map((h) => `- 보고 #${h.messageId} · ${h.at} ${h.who}: ${h.fingerprint === "unknown" ? "검사 근거 없는 막힘" : h.fingerprint}`);
   return [
     `반복 감시: 업무 #${task.id} '${task.title}'의 막힘이 ${reason}. 이 업무의 자동 반복을 멈췄습니다. 같은 실패의 막힘은 더는 총괄을 깨우지 않습니다.`,
     `- 시작 ${w.startedAt} · 시도 ${w.attempts}번 · 같은 실패 연속 ${w.same}번 · 마지막 진척 ${w.lastProgressAt}`,
     "지금까지:",
     ...lines,
     `남은 조건: ${remaining.length ? remaining.join(", ") : "보고에 적힌 남은 조건 없음"}`,
-    w.same >= 3
-      ? "같은 실패 세 번은 결재함에 올립니다. 대표 답 전에는 다시 열거나 재배정하지 마세요. 대표가 정한 접근과 범위에 따라 기준을 확인하고 직원에게 맡깁니다."
-      : "점검한 뒤 같은 접근으로 다시 맡기지 말고 원인·접근을 바꿔 맡기세요. 다시 열 때는 task_stage(reopen), 멈출 때는 task_stage(hold)를 남깁니다. 대표 판단이 필요하면 ask 로 올립니다.",
+    "총괄이 원인과 남은 조건을 확인하고 바꾼 접근을 기록합니다. 같은 접근을 반복하지 말고 task_stage(reopen, evidence 바꾼 접근) 뒤 직원에게 맡기세요. 보류하면 task_stage(hold)를 남깁니다. 기존 대표 결재는 보존하고 새로운 권한·범위 판단이 필요할 때만 ask로 올립니다.",
   ].join("\n");
 }

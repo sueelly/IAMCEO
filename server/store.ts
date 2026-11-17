@@ -66,7 +66,7 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { deriveProgress, isDone, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
+import { deriveProgress, isDone, watchNotice, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
 import { bindingContract, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
@@ -2341,6 +2341,23 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return null;
   }
 
+  /** A stopped failure episode blocks its execution scope until the conductor
+   * records a changed approach. Previously resolved owner approvals retain their
+   * established retry path, whose first new delivery starts the next episode. */
+  pendingTaskIntervention(taskId: string): { taskId: string; reason: string } | null {
+    const rows = this.rows(`SELECT w.task_id,w.trip_reason,w.tripped_at,w.project_id,e.decision_id,e.tripped_at AS owner_trip
+      FROM task_watch w LEFT JOIN task_failure_escalations e ON e.task_id=w.task_id
+      WHERE w.tripped_at IS NOT NULL AND w.project_id=(SELECT project_id FROM tasks WHERE id=?)`, taskId);
+    if (!rows.length) return null;
+    const tasks = new Map(this.listTasks(rows[0]!.project_id).map(task => [task.id, task]));
+    for (const row of rows) {
+      if (!relatedWork(taskId, row.task_id, tasks) || this.doneMark(row.task_id)) continue;
+      if (row.decision_id && row.owner_trip === row.tripped_at && !this.pendingTaskFailureDecision(row.task_id)) continue;
+      return { taskId: row.task_id, reason: row.trip_reason ?? "진척 없는 반복" };
+    }
+    return null;
+  }
+
   isTaskFailureDecision(decisionId: string): boolean {
     return !!this.row("SELECT 1 FROM task_failure_escalations WHERE decision_id=?", decisionId);
   }
@@ -2390,30 +2407,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return inputs.some(input => relatedWork(input.task_id, taskId, tasks)) ? resolvedAt : null;
   }
 
-  /** Called in the same transaction as the failure report/watch. The watch's
-   * tripped timestamp identifies its episode across repeated ticks/restarts. */
+  /** Legacy owner approvals retain their gate. New failures are conductor work. */
   ensureTaskFailureDecision(taskId: string): Decision | null {
+    return this.pendingTaskFailureDecision(taskId);
+  }
+
+  /** One actionable conductor notice per watch episode, including after restart.
+   * An unavailable conductor leaves the watch intact for the next scan. */
+  ensureTaskFailureNotice(taskId: string): Delivery | null {
     return this.transaction(() => {
       const task = this.requireTask(taskId), watch = this.getTaskWatch(taskId);
-      if (!watch?.trippedAt || watch.same < 3 || this.doneMark(taskId)) return null;
-      const old = this.row("SELECT decision_id,tripped_at FROM task_failure_escalations WHERE task_id=?", taskId);
-      const pending = this.pendingTaskFailureDecision(taskId);
-      if (pending) return pending;
-      if (old?.tripped_at === watch.trippedAt) return this.getDecision(old.decision_id);
-      const conductor = this.getConductor(task.projectId), contract = this.getEffectiveContract(taskId);
-      const history = watch.history.slice(-3);
-      const conditions = contract?.acceptance ?? ["총괄이 원 지시에서 판정 가능한 완료 기준을 먼저 확정해야 합니다"];
-      const decision = this.createDecision({ projectId: task.projectId, taskId, memberId: conductor?.id ?? null, who: "업무 반복 확인",
-        title: `같은 실패 3회: ${task.title}`,
-        detail: [`같은 실패가 ${watch.same}회 이어져 자동 재배정을 멈췄습니다. 업무는 완료되지 않았습니다.`,
-          `원인: ${watch.reason ?? watch.fingerprint}`,
-          "최근 시도:", ...history.map(h => `- ${h.who} · ${h.at} · 보고 #${h.messageId}: ${h.fingerprint}`),
-          "남은 완료 기준:", ...conditions.map((criterion, i) => `${i + 1}. ${criterion}`),
-          "담당자를 바꿀지, 접근 권한·입력을 보완할지, 다른 접근으로 재시도할지 또는 보류할지 결정해 주세요. 총괄은 대표 답의 범위에서 기준과 배정을 갱신합니다."].join("\n") });
-      this.run(`INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(task_id) DO UPDATE SET decision_id=excluded.decision_id,tripped_at=excluded.tripped_at,trigger_message_id=excluded.trigger_message_id,created_at=excluded.created_at`,
-        taskId, decision.id, watch.trippedAt, history.at(-1)?.messageId ?? null, nowIso());
-      return decision;
+      const conductor = this.getConductor(task.projectId);
+      if (!watch?.trippedAt || this.doneMark(taskId) || !conductor || this.watchNoticeSent(taskId)) return null;
+      const contract = this.getEffectiveContract(taskId);
+      const failed = [...new Set(watch.history.flatMap(h => h.failed))];
+      const pending = watch.fingerprint.startsWith("pending:") ? watch.fingerprint.slice(8).split("|").filter(Boolean) : [];
+      const remaining = [...(contract?.acceptance ?? []), ...failed, ...pending];
+      const owner = this.pendingTaskFailureDecision(taskId);
+      const delivery = this.enqueue({ projectId: task.projectId, memberId: conductor.id, kind: "system", wake: true, taskId,
+        text: `[시스템] ${watchNotice(task, watch, watch.reason ?? "진척 없는 반복", remaining)}\n${owner ? `기존 대표 결재 #${owner.id}는 계속 대기합니다. 대표 답 전에는 해당 범위를 다시 열거나 배정하지 마세요.` : "현재 승인 범위에서 원인을 확인하고 바꾼 접근을 기록한 뒤 다시 열어 직원에게 맡기세요. 새로운 권한·범위 결정이 실제로 필요할 때만 ask로 대표에게 요청하세요."}` });
+      this.claimWatchNotice(taskId, delivery.id);
+      return delivery;
     });
   }
 
