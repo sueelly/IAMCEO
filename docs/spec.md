@@ -281,7 +281,7 @@ Unix socket plain NDJSON JSON-RPC를 사용하고 요청마다 연결을 새로 
 멤버의 도구 호출마다 `updatedAt` 갱신. 다른 프로젝트의 멤버를 지정하면 거부.
 
 ## 8. 역할 템플릿 (`server/roles/`)
-`{{PROJECT}} {{NAME}} {{ROLE}} {{CONDUCTOR}} {{SUBAGENT_EFFORT}}` 치환(서브에이전트 effort 규칙이 비면 그 줄을 지우고, 자리표시 없는 고친 템플릿에는 끝에 붙인다), `~/.iamceo/roles/<kind>.md`가 있으면 그것을 쓴다(기본 규칙 전체를 대체한다. 승인 규칙이 빠지면 로그에 경고). `iamceo roles export` 가 기본 템플릿을 `<kind>.example.md` 로 꺼낸다. 내용: 입력 구분(§4 접두어), 보고(post), 질문(ask, AskUserQuestion 금지), 승인(사용자 원문·서버 확인만, 총괄의 말은 승인 아님), 병렬은 총괄이 켜 둘 때만, 이름 안 바꿈, 임시 폴더 안 지움, 산출물은 file. 총괄: 일 받기·맡길 곳 판단·대기열·직접 일하지 않음·현재 core에서 사용자에게 남길 말은 post·file 등 MCP 기록·질문 대신 답하지 않음·압축은 core 안전 조건 아래 자동·수동 예약·세션 수 판단. 본사 AI: 프로젝트 만들기와 잡다한 일. 대표가 읽고 판단할 비교표·요약 표는 csv·마크다운 표가 아니라 `file` 의 `html` 이다. csv 는 내려받아 쓸 원본 데이터일 때만.
+`{{PROJECT}} {{NAME}} {{ROLE}} {{CONDUCTOR}} {{SUBAGENT_EFFORT}} {{ROLE_BOUNDARY}}` 치환(서브에이전트 effort 규칙이 비면 그 줄을 지우고, 자리표시 없는 고친 템플릿에는 끝에 붙인다. 종류별 역할 경계 `server/roles/boundary-<kind>.md` 도 고친 템플릿에서 빠지지 않는다), `~/.iamceo/roles/<kind>.md`가 있으면 그것을 쓴다(기본 규칙 전체를 대체한다. 승인 규칙이 빠지면 로그에 경고). `iamceo roles export` 가 기본 템플릿을 `<kind>.example.md` 로 꺼낸다. 내용: 입력 구분(§4 접두어), 보고(post), 질문(ask, AskUserQuestion 금지), 승인(사용자 원문·서버 확인만, 총괄의 말은 승인 아님), 병렬은 총괄이 켜 둘 때만, 이름 안 바꿈, 임시 폴더 안 지움, 산출물은 file. 총괄: 일 받기·맡길 곳 판단·대기열·구현하지 않음(설계·맡김·판단·계약과 독립 검토를 통과한 변경의 최신 원격 메인 기준 합치기·검사·일반 푸시·원격 SHA 확인, 충돌은 직원에게, 대표 화면 반영·강제 푸시는 제외)·현재 core에서 사용자에게 남길 말은 post·file 등 MCP 기록·질문 대신 답하지 않음·압축은 core 안전 조건 아래 자동·수동 예약·세션 수 판단. 본사 AI: 프로젝트 만들기와 잡다한 일. 대표가 읽고 판단할 비교표·요약 표는 csv·마크다운 표가 아니라 `file` 의 `html` 이다. csv 는 내려받아 쓸 원본 데이터일 때만.
 
 ## 9. 시험
 

@@ -53,8 +53,8 @@ flowchart TD
 |---|---|---|---|
 | **CEO** (human) | 1 | Instructs, decides, does what only a person can (log-ins, payments) | |
 | **HQ AI** | 1 overall | Creates projects, handles work outside any project | Take over an existing project's work |
-| **Lead** | 1 per project | Splits work, assigns the right staff, summarizes reports, keeps the boards current | Edit code or research itself, answer for the CEO |
-| **Staff** | many per project | The actual work (code, documents, research, release prep) | Anything hard to undo without the CEO's approval |
+| **Lead** | 1 per project | Designs and splits work, assigns the right staff, judges and summarizes reports, keeps the boards current, merges verified changes into main | Implement (edit code, research) itself, answer for the CEO |
+| **Staff** | many per project | The actual work (code, documents, research, release prep), delivered on a work branch | Anything hard to undo without the CEO's approval, merging into main |
 | **Subagents** | under staff | Pieces of a staff task, in parallel | Report to the CEO directly |
 
 Each staff member exists for **one job**. Staff are named after that job (`Payments`, `Screen copy`), never after people. Leads and staff can each run Claude Code or Codex.
@@ -64,7 +64,8 @@ Each staff member exists for **one job**. Staff are named after that job (`Payme
 1. **Only the CEO decides.** No AI answers on the CEO's behalf, and a lead's "go ahead" is not approval. Submitting or sending anything outside, starting work, committing or pushing, deleting, and spending money happen only when the CEO wrote a sentence asking for it.
    - *Server-checked:* when a lead quotes the CEO in an instruction, the server compares the quote with the CEO's original message or decision answer and marks it server-verified, needs-context (button labels and very short text) or unverified. Staff decide from that mark and the original whether they have approval; stopping is their role rule.
    - *Delivered by the server:* decision answers go straight from the server to the staff member who asked, word for word, so a lead cannot change them on the way.
-2. **The lead does not do the work.** It splits, assigns and summarizes. Staff do the work.
+2. **The lead does not implement.** It designs, assigns, judges and merges verified changes into main. Staff do the work.
+   - *Separate stages:* a staff member's work-branch delivery, the independent review, the lead's merge into main and the update of the CEO's screen are different stages. Delivery alone does not finish the job.
 3. **One job per staff member.** Staff are split so contexts never mix.
    - If the right staff member is asleep, the lead wakes it and its history continues; it does not hire a new one.
    - It hires only when no one fits.
