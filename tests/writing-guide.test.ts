@@ -46,6 +46,7 @@ describe("글 지침", () => {
       }
     }
     expect(renderRole("conductor", vars)).toContain("목업·플로우차트·아키텍처 다이어그램의 제작과 등록을 담당 직원에게 맡긴다");
+    expect(renderRole("worker", vars)).toContain("결재에서 조작해 볼 목업은 `ask.file_id`로 연결한다");
   });
 
   test("사용자 정의 역할도 최신 공통 작성 지침을 받고 작성자의 역할 내용은 보존된다", () => {

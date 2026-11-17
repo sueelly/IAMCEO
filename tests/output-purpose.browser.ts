@@ -155,13 +155,14 @@ test("file로 등록한 목업·플로우차트·아키텍처 다이어그램이
   await withScreens(async (page, f, base, taskId, width) => {
     const examples = [
       { title: "로그인 재개 화면 목업", body: '<section aria-label="로그인 화면"><label>계정 <input type="email"></label><button type="button">로그인 재개</button></section>', visible: "로그인 재개", role: "button" as const },
-      { title: "로그인 재개 유저 플로우차트", body: '<figure aria-label="로그인 재개 동작 흐름"><ol><li>저장된 세션 확인 ↓</li><li>만료 · 다시 로그인</li><li>유효 · 읽던 페이지로 복귀</li></ol></figure>', visible: "로그인 재개 동작 흐름", role: "figure" as const },
-      { title: "로그인 재개 아키텍처 다이어그램", body: '<figure aria-label="세션 이동 경로"><p>웹 앱 → 인증 API → 세션 저장소</p></figure>', visible: "세션 이동 경로", role: "figure" as const },
+      { title: "로그인 재개 유저 플로우차트", body: '<figure aria-label="로그인 재개 동작 흐름"><div class="node">저장된 세션 확인</div><div class="diagram"><div><span>만료 ↓</span><div class="node">다시 로그인</div></div><div><span>유효 ↓</span><div class="node">읽던 페이지로 복귀</div></div></div></figure>', visible: "로그인 재개 동작 흐름", role: "figure" as const },
+      { title: "로그인 재개 아키텍처 다이어그램", body: '<figure aria-label="세션 이동 경로" class="diagram"><div class="node">웹 앱</div><span>→</span><div class="node">인증 API</div><span>→</span><div class="node">세션 저장소</div></figure>', visible: "세션 이동 경로", role: "figure" as const },
     ];
+    const css = ".diagram { display:flex; align-items:center; flex-wrap:wrap; gap:8px; } .node { border:1px solid; border-radius:8px; padding:8px; }";
     const files: string[] = [];
     for (const { title, body } of examples) {
       const result = await f.tool(f.worker, "file", { task_id: taskId, title,
-        html: `<!doctype html><html lang="ko"><meta charset="utf-8"><title>${title}</title><body><main><h1>${title}</h1>${body}</main></body></html>` });
+        html: `<!doctype html><html lang="ko"><meta charset="utf-8"><title>${title}</title><style>${css}</style><body><main><h1>${title}</h1>${body}</main></body></html>` });
       expect(result.isError).not.toBe(true);
       files.push(result.text.match(/#(f_[\w-]+)/)![1]!);
     }
@@ -178,7 +179,9 @@ test("file로 등록한 목업·플로우차트·아키텍처 다이어그램이
       expect(await link.getAttribute("href")).toContain(`/files/${fileId}`);
       const [opened] = await Promise.all([page.waitForEvent("popup"), link.click()]);
       const result = opened.frameLocator("iframe.afr-frame");
-      await result.getByRole(role, { name: visible, exact: true }).waitFor();
+      const artifact = result.getByRole(role, { name: visible, exact: true });
+      await artifact.waitFor();
+      if (role === "figure") expect(await artifact.locator(".node:visible").count()).toBe(3);
       await opened.close();
     }
     expect(f.store.requireDecision(decisionId).status).toBe("open");
