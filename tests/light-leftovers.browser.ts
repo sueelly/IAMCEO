@@ -31,6 +31,8 @@ let server: ReturnType<typeof Bun.spawn> | null = null;
 let base = "";
 let browser: Browser;
 let project: Project;
+/** 홈 12·결재함 11: 두 자리 건수 */
+let busy: Project;
 
 const api = async <T,>(method: string, path: string, body?: unknown, token = CODE): Promise<T> => {
   const res = await fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -73,6 +75,12 @@ beforeAll(async () => {
   // 홈·결재함 탭에 건수가 붙도록 할 일과 결재를 하나씩 둔다
   await tool(w.token, "todo", { title: "아이폰에서 홈 화면에 추가해 보기" });
   await tool(w.token, "ask", { title: "탭 글자 크기를 이대로 둘까요?", detail: "확인했습니다.", options: [{ k: "keep", label: "이대로 두기" }, { k: "big", label: "키우기" }], rec: "keep", rec_reason: "겹침이 없습니다" });
+  const busyDir = join(WORK, "busy");
+  mkdirSync(busyDir);
+  busy = await api<Project>("POST", "/api/projects", { name: "두 자리", cwd: busyDir });
+  const b = await api<{ token: string }>("POST", "/agent/join", { project: busy.id, name: "영희", handle: "younghee" });
+  for (let i = 1; i <= 12; i++) await tool(b.token, "todo", { title: `할 일 ${i}` });
+  for (let i = 1; i <= 11; i++) await tool(b.token, "ask", { title: `결재 ${i}번을 정해 주세요`, detail: "확인", options: [{ k: "a", label: "가" }, { k: "b", label: "나" }] });
   browser = await chromium.launch();
 }, 40_000);
 
@@ -84,7 +92,7 @@ afterAll(async () => {
 
 async function open(width: number, hash: string): Promise<Page> {
   const phone = width < 1024;
-  const ctx = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone });
+  const ctx = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone });
   const page = await ctx.newPage();
   await page.addInitScript((code) => localStorage.setItem("iamceo.accessCode", code), CODE);
   await page.goto(`${base}/${hash}`);
@@ -149,35 +157,51 @@ describe("라이트 테마 남은 일", () => {
     }, 20_000);
   }
 
+  type Box = { l: number; r: number; t: number; b: number };
+  const hit = (a: Box, b: Box) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+  /** 건수가 상자 밖으로 나간 가장 큰 거리(px). 0 이면 안에 있다 */
+  const overflow = (inner: Box, outer: Box) => Math.max(0, outer.l - inner.l, inner.r - outer.r, outer.t - inner.t, inner.b - outer.b);
+  const measured: unknown[] = [];
+  afterAll(() => { if (process.env.LIGHT_TAB_MEASURE) Bun.write(process.env.LIGHT_TAB_MEASURE, JSON.stringify(measured, null, 2)); });
+
   for (const width of [390, 375, 320]) {
-    for (const tab of ["home", "inbox"]) {
-      test(`폰 ${width}px ${tab}: 아래 탭 건수가 글자·옆 칸·물방울 위선과 겹치지 않고 가로로 밀리지 않는다`, async () => {
-        const page = await open(width, `#/p/${project.id}/${tab}`);
-        await page.locator(".gtabs__count").first().waitFor();
-        await page.waitForTimeout(700); // 물방울이 제자리에 온 뒤
-        const m = await page.evaluate(() => {
-          const box = (e: Element | Range) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
-          const links = [...document.querySelectorAll(".gtabs__link")].map((a) => ({
-            text: a.querySelector(".gtabs__label")!.firstChild!.textContent!,
-            label: (() => { const range = document.createRange(); range.selectNodeContents(a.querySelector(".gtabs__label")!.firstChild!); return box(range); })(),
-            count: a.querySelector(".gtabs__count") ? box(a.querySelector(".gtabs__count")!) : null,
-            current: a.hasAttribute("aria-current"),
-          }));
-          return { links, drop: box(document.querySelector(".gtabs__drop")!), bar: box(document.querySelector(".gtabs")!), scrollW: document.documentElement.scrollWidth, winW: innerWidth };
-        });
-        const hit = (a: { l: number; r: number; t: number; b: number }, b: { l: number; r: number; t: number; b: number }) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
-        expect(m.scrollW).toBeLessThanOrEqual(m.winW);
-        const counted = m.links.filter((l) => l.count);
-        expect(counted.map((l) => l.text)).toEqual(["홈", "결재함"]);
-        for (const l of counted) {
-          for (const other of m.links) expect({ tab: l.text, over: other.text, hit: hit(l.count!, other.label) }).toEqual({ tab: l.text, over: other.text, hit: false });
-          expect(l.count!.t).toBeGreaterThanOrEqual(m.bar.t);
-          expect(l.count!.r).toBeLessThanOrEqual(m.bar.r);
-          // 고른 칸의 건수는 물방울 위선을 넘지 않는다
-          if (l.current) expect(l.count!.t).toBeGreaterThanOrEqual(m.drop.t + 2);
-        }
-        await page.context().close();
-      }, 20_000);
+    for (const [kind, digits] of [["project", "1"], ["busy", "2"]] as const) {
+      for (const tab of ["home", "inbox", "team", "thread", "files"]) {
+        test(`폰 ${width}px 건수 ${digits}자리 '${tab}' 고름: 건수가 자기 칸·고른 칸 테두리 안에 있고 글자와 겹치지 않으며 가로로 밀리지 않는다`, async () => {
+          const p = kind === "project" ? project : busy;
+          const page = await open(width, `#/p/${p.id}/${tab}`);
+          await page.locator(".gtabs__count").nth(1).waitFor();
+          await page.waitForTimeout(700); // 물방울이 제자리에 온 뒤
+          const m = await page.evaluate(() => {
+            const box = (e: Element | Range) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+            const links = [...document.querySelectorAll(".gtabs__link")].map((a) => ({
+              text: a.querySelector(".gtabs__label")!.firstChild!.textContent!,
+              link: box(a),
+              label: (() => { const range = document.createRange(); range.selectNodeContents(a.querySelector(".gtabs__label")!.firstChild!); return box(range); })(),
+              count: a.querySelector(".gtabs__count") ? { ...box(a.querySelector(".gtabs__count")!), n: a.querySelector(".gtabs__count")!.textContent } : null,
+              current: a.hasAttribute("aria-current"),
+            }));
+            return { links, drop: box(document.querySelector(".gtabs__drop")!), scrollW: document.documentElement.scrollWidth, winW: innerWidth };
+          });
+          if (process.env.LIGHT_TAB_SHOTS) await page.locator(".gtabs").screenshot({ path: join(process.env.LIGHT_TAB_SHOTS, `${width}-${digits}-${tab}.png`) });
+          expect(m.scrollW).toBeLessThanOrEqual(m.winW);
+          const counted = m.links.filter((l) => l.count);
+          expect(counted.map((l) => [l.text, l.count!.n!.length])).toEqual([["홈", Number(digits)], ["결재함", Number(digits)]]);
+          for (const l of counted) {
+            const ownCell = overflow(l.count!, l.link);
+            const selected = l.current ? overflow(l.count!, m.drop) : null;
+            const gapToLabel = l.count!.l - l.label.r;
+            measured.push({ width, digits, selected: tab, tab: l.text, count: l.count!.n, ownCellOverflow: +ownCell.toFixed(2), dropOverflow: selected === null ? null : +selected.toFixed(2), gapToLabel: +gapToLabel.toFixed(2), dropTopGap: l.current ? +(l.count!.t - m.drop.t).toFixed(2) : null });
+            for (const other of m.links) expect({ tab: l.text, over: other.text, hit: hit(l.count!, other.label) }).toEqual({ tab: l.text, over: other.text, hit: false });
+            expect({ tab: l.text, ownCell }).toEqual({ tab: l.text, ownCell: 0 });
+            if (l.current) {
+              expect({ tab: l.text, selected }).toEqual({ tab: l.text, selected: 0 });
+              expect(l.count!.t).toBeGreaterThanOrEqual(m.drop.t + 2); // 물방울 윗선에서 떨어져 있다
+            }
+          }
+          await page.context().close();
+        }, 20_000);
+      }
     }
   }
 });
