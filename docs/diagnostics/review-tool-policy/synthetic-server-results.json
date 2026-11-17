@@ -1,0 +1,46 @@
+{
+  "syntheticOnly": true,
+  "tools": [
+    "status",
+    "task_trace",
+    "post",
+    "task_review",
+    "task_review_evidence"
+  ],
+  "annotationsPresent": false,
+  "ordinaryPostRead": {
+    "ok": true
+  },
+  "designatedPostRead": {
+    "ok": true
+  },
+  "unauthorizedEvidence": {
+    "error": "쓸 수 없는 도구입니다: task_review_evidence"
+  },
+  "missingEvidenceDecision": {
+    "error": "task_review_evidence에서 현재 계약과 검사, 해당 커밋의 변경분을 먼저 확인해 주세요"
+  },
+  "designatedEvidence": {
+    "ok": true,
+    "evidenceReaderUpdated": true
+  },
+  "wrongTarget": {
+    "error": "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요"
+  },
+  "forbiddenPost": {
+    "error": "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다",
+    "noNewPosts": true
+  },
+  "forbiddenFile": {
+    "error": "쓸 수 없는 도구입니다: file"
+  },
+  "designatedDecision": {
+    "ok": true
+  },
+  "humanApproval": {
+    "reviewDenied": true,
+    "decisionStillOpen": true,
+    "error": "검수 대상 또는 상태가 바뀌었습니다. 최신 기록을 확인해 주세요"
+  },
+  "liveCalls": 0
+}

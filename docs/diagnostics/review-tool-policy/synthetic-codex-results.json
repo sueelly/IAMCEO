@@ -1,0 +1,138 @@
+{
+  "sourceSha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "checkoutHead": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "binaryVersion": "0.167.0",
+  "realModelRequests": 0,
+  "operationalCalls": 0,
+  "syntheticResponseRequests": 4,
+  "conditions": [
+    {
+      "condition": "baseline",
+      "fixtureRoot": "/private/tmp/iamceo-review-codex-7LYCK9",
+      "exitCode": 0,
+      "requestCount": 2,
+      "injected": true,
+      "tools": [
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+        "request_user_input",
+        "view_image",
+        "mcp__iamceo.post",
+        "mcp__iamceo.status",
+        "mcp__iamceo.task_review",
+        "mcp__iamceo.task_review_evidence",
+        "mcp__iamceo.task_trace"
+      ],
+      "forbiddenTools": [],
+      "externalStarted": false,
+      "calls": [],
+      "callCount": 0,
+      "policy": {
+        "askForApproval": "never",
+        "sandbox": "read-only",
+        "shellDisabled": true,
+        "externalDisabled": true
+      },
+      "toolOutputs": [
+        {
+          "callId": "call_0",
+          "output": "MCP tool call requires approval, but approval policy is never"
+        },
+        {
+          "callId": "call_1",
+          "output": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "toolEvents": [
+        {
+          "tool": "task_review_evidence",
+          "status": "failed",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        },
+        {
+          "tool": "post",
+          "status": "failed",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "errors": [
+        "MCP tool call requires approval, but approval policy is never",
+        "MCP tool call requires approval, but approval policy is never"
+      ],
+      "cliNotices": [
+        "Configured service tier `priority` is not advertised as supported for model `gpt-5-codex` and will be omitted from requests.",
+        "Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+      ]
+    },
+    {
+      "condition": "per-tool-approve",
+      "fixtureRoot": "/private/tmp/iamceo-review-codex-JspLEX",
+      "exitCode": 0,
+      "requestCount": 2,
+      "injected": true,
+      "tools": [
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+        "request_user_input",
+        "view_image",
+        "mcp__iamceo.post",
+        "mcp__iamceo.status",
+        "mcp__iamceo.task_review",
+        "mcp__iamceo.task_review_evidence",
+        "mcp__iamceo.task_trace"
+      ],
+      "forbiddenTools": [],
+      "externalStarted": false,
+      "calls": [
+        {
+          "name": "task_review_evidence"
+        },
+        {
+          "name": "post"
+        }
+      ],
+      "callCount": 2,
+      "policy": {
+        "askForApproval": "never",
+        "sandbox": "read-only",
+        "shellDisabled": true,
+        "externalDisabled": true
+      },
+      "toolOutputs": [
+        {
+          "callId": "call_0",
+          "output": "{\"synthetic\":true,\"tool\":\"task_review_evidence\",\"accepted\":true}"
+        },
+        {
+          "callId": "call_1",
+          "output": "{\"synthetic\":true,\"tool\":\"post\",\"accepted\":true}"
+        }
+      ],
+      "toolEvents": [
+        {
+          "tool": "task_review_evidence",
+          "status": "completed",
+          "error": null
+        },
+        {
+          "tool": "post",
+          "status": "completed",
+          "error": null
+        }
+      ],
+      "errors": [],
+      "cliNotices": [
+        "Configured service tier `priority` is not advertised as supported for model `gpt-5-codex` and will be omitted from requests.",
+        "Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+      ]
+    }
+  ],
+  "verification": {
+    "restrictionsPreserved": true,
+    "baselineDeniedBeforeMcp": true,
+    "candidateAllowedMcp": true
+  },
+  "fixtureRootsPreserved": true
+}

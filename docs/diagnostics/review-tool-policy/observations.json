@@ -1,0 +1,109 @@
+{
+  "taskId": "tk_34o1KVuzwy5Z",
+  "contractRev": 1,
+  "source": {
+    "sha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+    "registeredReleasePathSha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+    "registeredBinaryBuildId": "6e2371cab9260fd6a97ef706705055b846ada4510cb1e6b0ec7a8918a9c31bec",
+    "schema": 48,
+    "supportedSchema": 48,
+    "harness": "required",
+    "activeReadinessIdentity": "unverified: worker-token HTTP error; no retry or auth expansion"
+  },
+  "liveObservation": {
+    "basis": "총괄이 전달한 최초06:39 KST의 도구 승인정책never 거절 관측",
+    "literalErrorIndependentlyRead": false,
+    "bridgeCallArrivalIndependentlyRead": false,
+    "limit": "지원task_trace는오류문자열/전담검수터미널을노출하지않음"
+  },
+  "targets": [
+    {
+      "reportId": "msg_cW0EDY8b1sJc",
+      "taskId": "tk_CcCxGdmUtcju",
+      "label": "Cc r2",
+      "observedAt": "2026-11-17T21:49:21.807Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 0
+    },
+    {
+      "reportId": "msg_tAVxiIAc1DMx",
+      "taskId": "tk_VBzACjwkhhZ1",
+      "label": "A6",
+      "observedAt": "2026-11-17T21:49:21.880Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 2,
+      "pendingWake": 1
+    },
+    {
+      "reportId": "msg_FxrxRSWpvxw6",
+      "taskId": "tk_w_WoIvxxUlyITh",
+      "label": "Astra 선행",
+      "observedAt": "2026-11-17T21:49:21.937Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 1,
+      "pendingWake": 1
+    },
+    {
+      "reportId": "msg_KxVn7uPOBJrV",
+      "taskId": "tk_pz1kVxp42KsP",
+      "label": "독자 전용 디자인",
+      "observedAt": "2026-11-17T21:49:22.137Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 2,
+      "pendingWake": 1
+    }
+  ],
+  "officialDoc": {
+    "url": "https://developers.openai.com/codex/config-reference",
+    "verifiedKeys": [
+      "mcp_servers.<id>.default_tools_approval_mode",
+      "mcp_servers.<id>.tools.<tool>.approval_mode"
+    ],
+    "enum": [
+      "auto",
+      "prompt",
+      "writes",
+      "approve"
+    ]
+  },
+  "commands": [
+    {
+      "command": "bun docs/diagnostics/review-tool-policy/synthetic-codex.ts",
+      "exit": 0,
+      "meaning": "real installed CLI; loopback model and fake MCP only"
+    },
+    {
+      "command": "bun test --preload ./tests/fixtures/preserve-temp.ts ./docs/diagnostics/review-tool-policy/synthetic-server.test.ts",
+      "exit": 0,
+      "pass": 1,
+      "fail": 0,
+      "expectations": 20,
+      "meaning": "synthetic IAMCEO roles and human decision preservation"
+    }
+  ],
+  "preservation": {
+    "productSourceEdits": 0,
+    "operationalCalls": 0,
+    "liveReviewDecisions": 0,
+    "liveApprovalPolicyChanges": 0,
+    "realModelRequests": 0,
+    "tempDeleted": false,
+    "oldDeliveryDiagnosisRestarted": false,
+    "modelsEffortFastChanged": false
+  },
+  "independentReview": {
+    "roleSources": "review_policy_sources",
+    "liveRead": "review_error_evidence",
+    "syntheticCli": "review_synthetic_design",
+    "rootReexecutedCli": true
+  },
+  "minimumMissingLiveEvidence": [
+    "최초06:39 KST의지정검수도구명과오류한줄",
+    "같은호출이MCP tools/call 또는bridge /agent/tool에도달했는지",
+    "내용/접속정보없이세대·실행역할·정책이읽은릴리스와같은지"
+  ]
+}
