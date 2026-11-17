@@ -4642,16 +4642,14 @@ export class Orchestrator implements OrchestratorApi {
     const applied = marks.findLast((m) => m.stage === "applied");
     const unverified = delivery ? (this.store.getReportHarness(delivery.id)?.checks ?? []).filter((c) => c.kind === "unverified" || c.result === "not_run").map((c) => c.name) : [];
     const message = delivery ? this.store.getMessage(delivery.id) : null;
-    // 대표가 읽는 글이라 내부 번호·커밋 id 는 뺀다(원래 근거는 단계 표시에 그대로 남는다).
-    const plain = (text: string) => text.replace(/\s*#?\b(?:msg|tk|dl|tn|f|dc|td)_[\w-]+/g, "").replace(/\s*\b[0-9a-f]{7,40}\b/gi, "").replace(/\s+/g, " ").trim() || "확인함";
     return [
       `${task.title} 완료`,
-      ...(contract && bindingContract(contract) ? [`계약 r${contract.rev} 기준`] : []),
-      ...(message ? [`완료 보고: ${message.who} '${message.title.replace(/^\(직접\) /, "")}'`] : []),
-      ...(merged ? [`메인 합침: ${plain(merged.evidence)}`] : []),
-      ...(applied ? [`대표 화면 반영: ${plain(applied.evidence)}`] : []),
-      done.memberId ? `완료 판단: ${done.who} · ${plain(done.evidence)}` : "완료 기준: 계약·브랜치가 없는 업무라 완료 보고로 끝났습니다",
-      ...(unverified.length ? [`미검증: ${unverified.slice(0, 4).join(", ")}${unverified.length > 4 ? ` 외 ${unverified.length - 4}건` : ""}`] : []),
+      ...(contract && bindingContract(contract) ? [`요청한 결과: ${contract.goal}`, `확정 완료 기준 r${contract.rev}: ${contract.acceptance.join(" / ")}`] : []),
+      ...(message ? [`완료 보고: ${message.who} '${message.title.replace(/^\(직접\) /, "")}' · ${message.at} · 보고 메시지 ID ${message.id}`] : []),
+      ...(merged ? [`메인 합침: ${merged.evidence} · ${merged.at}`] : []),
+      ...(applied ? [`대표 화면 반영: ${applied.evidence} · ${applied.at}`] : []),
+      done.memberId ? `완료 판단: ${done.who} · ${done.evidence} · ${done.at}` : "완료 기준: 계약·브랜치가 없는 업무라 완료 보고로 끝났습니다",
+      ...(unverified.length ? [`미검증: ${unverified.join(", ")}`] : []),
     ];
   }
 

@@ -18,7 +18,7 @@ import { josa } from "./roles.ts";
 import { ApiError, Store } from "./store.ts";
 import { MemoryError, stableEventId, clip, findSensitive, memoryKindLabel } from "./integrations/dev-memory.ts";
 import { oneLineProblem } from "./text.ts";
-import { formatLintWarnings, lintAsk, lintFile, lintPost, withLint } from "./writing-lint.ts";
+import { formatLintWarnings, lintAsk, lintFile, lintPost, lintStatus, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
 
 /** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
@@ -378,25 +378,25 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   status: tool(
-    "지금 하는 일을 일상어 한 줄로 적는다. 일을 시작하거나 바뀔 때마다 부른다. 대표 팀 화면에 보인다.",
-    z.strictObject({ now: oneLine(500).describe("지금 하는 일(한 줄)"), next: oneLineOpt(500).optional().describe("다음에 할 일(한 줄)") }),
+    "팀 진행 상황에 업무명과 현재 행동 대상을 적는다. 며칠 뒤에도 무엇을 왜 하는지 이해할 수 있게 쓰고, 일이 바뀌면 갱신한다. 진행 중·확인 대기만 쓰지 않는다.",
+    z.strictObject({ now: oneLine(500).describe("어떤 업무의 무엇을 현재 확인·수정하는지 완전한 문장으로 쓴다"), next: oneLineOpt(500).optional().describe("남은 대상과 다음 행동의 주체·조건을 적는다") }),
     (orch, member, a) => {
       orch.setMemberStatus(member, a.now, a.next);
-      return reply("적었습니다");
+      return reply(withLint("적었습니다", lintStatus({ now: a.now, next: a.next })));
     },
   ),
 
   ask: tool(
     "대표가 정하거나 승인할 일을 결재함에 카드로 올린다. AskUserQuestion 대신 쓴다. 같은 안건의 카드가 열려 있으면 새 카드는 거절된다. 결과 글이 턴을 끝내라고 하면 바로 끝낸다. 답은 다음 입력으로 온다.",
     z.strictObject({
-      title: oneLine(200).describe("질문 한 문장(40자까지). 권장을 알면 제목에 넣는다. 예: 'Gemini 직원은 유료 API 키로 붙일까요?'"),
-      detail: text.describe("카드만 읽고 고를 수 있게 쓴다(마크다운). 확정 사실 → 비교표(3열·5행) → 미정 → 지금 단계 → 배경 차례. 권장 줄은 서버가 맨 위에 쓰므로 다시 쓰지 않는다. 굵은 글씨는 쓰지 않는다"),
+      title: oneLine(200).describe("업무와 결정할 대상을 포함한 질문. 예: Gemini 직원의 연결에 유료 API 키를 사용할까요?"),
+      detail: text.describe("카드만 읽어도 어떤 업무에서 무엇을 왜 정해야 하는지 이해할 수 있게 쓴다(마크다운). 요청 내용·현재 결과·선택지별 영향·근거·미확인을 연결한다. 결론을 바꾸는 조건은 본문에 남긴다. 권장 줄은 중복 작성하지 않는다"),
       options: z
         .array(z.strictObject({ k: oneLine(64).describe("선택지 키"), label: oneLine(120).describe("버튼 글(한 줄, 20자 안팎). 대표 말투의 동작. 그대로 대표 원문이 된다"), desc: oneLineOpt(300).optional().describe("고르면 생기는 일과 감수할 조건(한 줄)") }))
         .optional()
         .describe("비우면 자유 답"),
       rec: z.string().optional().describe("권장 선택지의 k"),
-      rec_reason: oneLineOpt(300).optional().describe("권장 이유 한 줄(60자까지). 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
+      rec_reason: oneLineOpt(300).optional().describe("권장 이유를 구체적인 대상과 함께 쓴다. 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
       group: oneLineOpt(80).optional().describe("묶음 이름"),
       file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
@@ -431,9 +431,9 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       report_id: text.optional().describe("조회할 보고 원본 메시지 id. 조회할 때는 이 필드만 준다"),
       kind: z.enum(["완료", "진행", "막힘", "알림"]).optional(),
-      title: oneLine(300).optional().describe("결과 한 문장(45자까지). 일을 했으면 지금 단계(커밋·시험·합치기·대표 화면)를 제목이나 본문 첫 줄에"),
-      body: z.string().optional().describe("결과와 근거(마크다운). 진행 2줄, 완료·막힘 6줄까지. 파일 목록·해시·경로는 쓰지 않는다. 넘치면 자료로 보내고 '자료에 둔 것: …'에 실제로 넣은 것만 적는다"),
-      owner_action: oneLineOpt(200).optional().describe("대표가 할 일 한 줄(40자까지). 무엇을, 어디서. 예: '커밋할지 정해 주세요 · 결재함 1건'. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
+      title: oneLine(300).optional().describe("업무명과 핵심 결과를 함께 쓴다. 구현·검증·main 통합·배포 중 실제 확인한 단계를 구분한다"),
+      body: z.string().optional().describe("이 글만 읽어도 이해할 업무·요청 맥락, 핵심 결과, 가까운 근거, 남은 확인 대상과 다음 행동(마크다운). 줄 수 때문에 대상·조건·불확실성을 빼지 않는다. 상세 근거는 실제 자료에 연결한다"),
+      owner_action: oneLineOpt(200).optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
@@ -474,10 +474,10 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   file: tool(
-    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 결과의 id 는 post 의 file_ids 로 잇는다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 3열·5행 안의 표는 post 에 마크다운 표로 쓰고, 넘으면 html 로 올린다. 대표용 자료는 기본 한 개다. 같은 본문을 html 과 md 로 두 번 올리지 않는다(그림·차트·조작 요소가 있어도). 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
+    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 결과의 id 는 post 의 file_ids 로 잇는다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 표는 내용과 독자의 목적에 따라 post 또는 content에도 쓸 수 있다. 상호작용 자료는 독립 실행 HTML과 같은 핵심 내용을 읽을 텍스트 대체 파일을 제공한다. 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
     z.strictObject({
-      title: text.describe("결론 한 문장(45자까지). 주제어가 아니라 결론."),
-      summary: z.string().optional().describe("세 줄 요약. 첫 줄은 대표 차례나 결론. 자료의 '찾는 말' 낱말도 넣는다"),
+      title: text.describe("대상과 핵심 결과를 포함한 제목. 독자의 이해·탐색·비교·결정·검토·사용 목적에 맞춘다."),
+      summary: z.string().optional().describe("자료의 대상·핵심 결과와 판단을 바꾸는 조건을 요약한다. 본문에 없는 내용을 만들지 않는다"),
       path: z.string().optional().describe("파일 경로. 작업 폴더 안의 파일만. 상대 경로는 작업 폴더 기준"),
       content: z.string().optional().describe("마크다운 전문"),
       html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),

@@ -1,3 +1,4 @@
+import { describeTaskContext } from "./task-context.ts";
 import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
@@ -2381,16 +2382,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const pending = this.pendingTaskFailureDecision(taskId);
       if (pending) return pending;
       if (old?.tripped_at === watch.trippedAt) return this.getDecision(old.decision_id);
-      const conductor = this.getConductor(task.projectId), contract = this.getEffectiveContract(taskId);
+      const conductor = this.getConductor(task.projectId);
       const history = watch.history.slice(-3);
-      const conditions = contract?.acceptance ?? ["총괄이 원 지시에서 판정 가능한 완료 기준을 먼저 확정해야 합니다"];
       const decision = this.createDecision({ projectId: task.projectId, taskId, memberId: conductor?.id ?? null, who: "업무 반복 확인",
-        title: `같은 실패 3회: ${task.title}`,
-        detail: [`같은 실패가 ${watch.same}회 이어져 자동 재배정을 멈췄습니다. 업무는 완료되지 않았습니다.`,
+        title: `같은 ${history.at(-1)?.failed.length ? "실패" : "막힘"} ${watch.same}회: ${task.title}`,
+        detail: [`‘${this.getProject(task.projectId)?.name ?? "프로젝트 이름 미확인"}’의 ‘${task.title}’ 업무에서 같은 막힘 보고가 ${watch.same}회 이어져 자동 재배정을 멈췄습니다. 업무는 완료되지 않았습니다.`,
           `원인: ${watch.reason ?? watch.fingerprint}`,
           "최근 시도:", ...history.map(h => `- ${h.who} · ${h.at} · 보고 #${h.messageId}: ${h.fingerprint}`),
-          "남은 완료 기준:", ...conditions.map((criterion, i) => `${i + 1}. ${criterion}`),
-          "담당자를 바꿀지, 접근 권한·입력을 보완할지, 다른 접근으로 재시도할지 또는 보류할지 결정해 주세요. 총괄은 대표 답의 범위에서 기준과 배정을 갱신합니다."].join("\n") });
+          "이 업무의 담당 직원을 바꿀지, 접근 권한·입력을 보완할지, 다른 접근으로 재시도할지 또는 보류할지 결정해 주세요. 총괄은 대표 답의 범위에서 기준과 배정을 갱신합니다.", "", describeTaskContext(this, task)].join("\n") });
       this.run(`INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES(?,?,?,?,?)
         ON CONFLICT(task_id) DO UPDATE SET decision_id=excluded.decision_id,tripped_at=excluded.tripped_at,trigger_message_id=excluded.trigger_message_id,created_at=excluded.created_at`,
         taskId, decision.id, watch.trippedAt, history.at(-1)?.messageId ?? null, nowIso());
