@@ -13,7 +13,7 @@ import { MIGRATIONS, openDb } from "../server/db.ts";
 import { MAX_ARTIFACT_BYTES } from "../server/files.ts";
 import { startServer } from "../server/http.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
-import { renderRole } from "../server/roles.ts";
+import { renderRole, TERMINAL_APPROVAL_GUIDE } from "../server/roles.ts";
 import { buildClaudeArgs, childEnv, HeadlessRunner, StreamParser } from "../server/runner/headless.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "../server/runner/types.ts";
 import { ApiError, Store } from "../server/store.ts";
@@ -864,7 +864,7 @@ describe("직급별 모델·effort", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 고친 템플릿");
     expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: rule }, dir)).toContain(rule);
-    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe("승인 규칙만 있는 고친 템플릿");
+    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`);
 
     const t = await setup();
     await t.api("PUT", "/api/settings", { ranks: { staff: { effort: "xhigh" } } });

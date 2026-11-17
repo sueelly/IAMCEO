@@ -1,0 +1,56 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { Bus } from '../../server/bus.ts';
+import { loadConfig } from '../../server/config.ts';
+import { openDb } from '../../server/db.ts';
+import { Store } from '../../server/store.ts';
+import { CoreRunner } from '../../server/runner/core.ts';
+import { Orchestrator } from '../../server/orchestrator.ts';
+if(process.env.IAMCEO_E2E_CORE!=='1'||!process.env.IAMCEO_CORE_BIN)throw new Error('Explicit isolated core opt-in required');
+const bin=process.env.IAMCEO_CORE_BIN,dir=mkdtempSync('/private/tmp/iqia-');
+const parts=Object.fromEntries(['state','config','cache','work','claude','codex','home','context'].map(k=>[k,join(dir,k)]));for(const p of Object.values(parts))mkdirSync(p);
+const session='ia'+Date.now().toString(36),socket=join(parts.state,'herdr-core',session,session+'.sock');
+const env=Object.fromEntries(Object.entries(process.env).filter(([k,v])=>v!==undefined&&!/^(HC_|HERDR_|IAMCEO_)/.test(k))) as Record<string,string>;
+Object.assign(env,{HC_SESSION:session,HC_SOCKET:socket,XDG_STATE_HOME:parts.state,XDG_CONFIG_HOME:parts.config,XDG_CACHE_HOME:parts.cache});
+const hc=(...a:string[])=>spawnSync(bin,a,{env,encoding:'utf8',timeout:30000});
+const version=hc('--version').stdout.trim();if(version!=='hc 0.1.18')throw new Error('Required isolated hc0.1.18 unavailable');
+const started=hc('server','start','--json');let stopped=false;process.on('exit',()=>{if(!stopped&&started.status===0)hc('server','stop','--json');});
+if(started.status!==0||!existsSync(socket)||JSON.parse(hc('server','status','--json').stdout).live!==0)throw new Error('Refusing unready/nonempty isolated core');
+const fake=join(dir,'fake-claude');writeFileSync(fake,`#!/bin/sh\nIAMCEO_INTEGRATION_FIXTURE='${dir}' exec '${process.execPath}' '${resolve('tests/fixtures/approval-background-tui.ts')}' "$@"\n`,{mode:0o700});
+const config=loadConfig({IAMCEO_HOME:parts.home,IAMCEO_PORT:'0',IAMCEO_CORE_SOCKET:socket,IAMCEO_CORE_BIN:bin,IAMCEO_CLAUDE_BIN:fake,IAMCEO_CODEX_BIN:'/usr/bin/false'});
+const bus=new Bus(),store=new Store(openDb(config.dbPath),bus);store.patchSettings({maxConcurrentTurns:1,boardTidyHours:0});
+const runner=new CoreRunner({socketPath:socket,coreBin:bin,claudeBin:fake,codexBin:'/usr/bin/false',claudeHome:parts.claude,codexHome:parts.codex,contextHome:parts.context},{recoveryStore:store,pollMs:50});
+const orch=new Orchestrator({config,store,runners:new Map([['core',runner]]),providerHomes:{claudeHome:parts.claude,codexHome:parts.codex},timings:{tickMs:60000,healthMs:60000}});orch.setServerUrl('http://127.0.0.1:1');
+const events:{type:string;label?:string|null}[]=[];const eventRunner=runner as unknown as {event(track:unknown,e:{type:string;label?:string|null}):void};const emit=eventRunner.event.bind(eventRunner);eventRunner.event=(t,e)=>{events.push(e);emit(t,e);};
+const checks:{name:string;pass:boolean}[]=[];const check=(name:string,pass:boolean)=>{checks.push({name,pass});if(!pass)throw new Error(name);};
+async function until(read:()=>boolean){const end=Date.now()+15000;while(!read()&&Date.now()<end)await Bun.sleep(20);if(!read())throw new Error('Bounded observation timeout');}
+const log=()=>existsSync(join(dir,'events.jsonl'))?readFileSync(join(dir,'events.jsonl'),'utf8').trim().split('\n').map(x=>JSON.parse(x)):[];
+let failure:string|null=null,proof:unknown=null;
+try{
+ const project=store.createProject({name:'Isolated approval/background integration',cwd:parts.work,chiefCli:'claude'});
+ const member=await orch.createMember(project.id,{name:'Isolated integration fake',cli:'claude'});
+ const original=store.enqueue({projectId:project.id,memberId:member.id,kind:'instruction',text:'INTEGRATION_ORIGINAL',wake:true});await orch.pump(member.id);
+ await until(()=>store.requireDelivery(original.id).status==='delivered'&&store.requireMember(member.id).status==='blocked'&&log().some(e=>e.event==='window'));
+ const originalRun=store.listPendingExecutions().find(r=>r.deliveryIds.includes(original.id))!;
+ const card=await orch.memberNativePrompt(member.id);
+ proof={initialCard:card,initialMember:store.requireMember(member.id),screen:await orch.memberScreen(member.id),physical:log()};
+ check('real core permission window is recognized',!!card.context&&card.prompt?.kind==='permission');
+ const next=store.enqueue({projectId:project.id,memberId:member.id,kind:'instruction',text:'INTEGRATION_NEXT',wake:true});await orch.pump(member.id);check('next original waits behind the actual approval window',store.requireDelivery(next.id).status!=='delivered');
+ const req={...card.context!,operationId:crypto.randomUUID(),option:1,via:'inbox' as const};const receipt=await orch.answerNativePrompt(member.id,req);
+ check('approval receipt reports actual terminal acceptance',receipt.status==='answered'&&receipt.terminal==='accepted');
+ check('same operation returns the same persistent receipt',JSON.stringify(await orch.answerNativePrompt(member.id,req))===JSON.stringify(receipt));
+ let conflict=false;try{await orch.answerNativePrompt(member.id,{...req,option:4});}catch(e){conflict=(e as {status?:number}).status===409;}check('changed request is rejected with 409',conflict);
+ await until(()=>store.requireDelivery(next.id).status==='delivered'&&store.listPendingExecutions().length===0);
+ check('original foreground is ended',store.getExecutionJournal(originalRun.runId)?.phase==='ended');
+ check('background-only member remains working',store.requireMember(member.id).status==='working');
+ const bg=events.findIndex(e=>e.type==='background'&&!!e.label),end=events.findIndex(e=>e.type==='turn_end');check('background is emitted before the ending foreground turn',bg>=0&&end>bg);
+ const physical=log(),received=physical.filter(e=>e.event==='received');
+ check('both original inputs are physically received once',received.length===2&&received.filter(e=>e.text.includes('INTEGRATION_ORIGINAL')).length===1&&received.filter(e=>e.text.includes('INTEGRATION_NEXT')).length===1);
+ check('the approval selection is physically entered once',physical.filter(e=>e.event==='choose').length===1);
+ check('no duplicate report supplement is inserted for background wait',!store.listDeliveries().some(d=>d.text.includes('보고 보완')));
+ proof={receipt,originalId:original.id,nextId:next.id,originalRun:store.getExecutionJournal(originalRun.runId),member:store.requireMember(member.id),events,physical};
+ writeFileSync(join(dir,'clear'),'clear');await until(()=>store.requireMember(member.id).status==='idle');
+ check('clearing background settles idle without another original or approval',log().filter(e=>e.event==='received').length===2&&log().filter(e=>e.event==='choose').length===1);
+}catch(e){failure=String(e);}
+finally{await orch.shutdown();store.db.close();const stop=hc('server','stop','--json');stopped=true;const result={kind:'real-core-fake-cli-cross-integration',version,dir,socket,checks,proof,failure,stopExit:stop.status};writeFileSync(resolve('evidence/integration-core.json'),JSON.stringify(result,null,2));console.log(JSON.stringify({version,dir,checks,failure,stopExit:stop.status},null,2));if(failure||stop.status!==0)process.exitCode=1;}

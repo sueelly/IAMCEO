@@ -66,7 +66,10 @@ describe("글 지침", () => {
     const paths = exportRoles(dir);
     for (const path of paths) expect(count(readFileSync(path, "utf8"), HEAD)).toBe(1);
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 템플릿");
-    expect(renderRole("worker", vars, dir)).toBe("승인 규칙만 있는 템플릿");
+    // 글 지침은 붙이지 않는다. 터미널 승인 안내만 빠지지 않게 끝에 붙는다(tests/terminal-approval-guide.test.ts).
+    const custom = renderRole("worker", vars, dir);
+    expect(custom.startsWith("승인 규칙만 있는 템플릿\n\n## 터미널 승인 창")).toBe(true);
+    expect(count(custom, HEAD)).toBe(0);
   });
 
   test("Claude·Codex·Antigravity 세 CLI 모두 지침이 든 역할 글을 받는다", () => {

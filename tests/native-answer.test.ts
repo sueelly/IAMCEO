@@ -79,13 +79,14 @@ describe("core: 대화에서 창에 답하기", () => {
     f.block(fx("codex-mcp-approval.txt"));
     const read = (await f.runner.nativePrompt!(f.m))!;
     expect(read.prompt.question).toBe('Allow the iamceo MCP server to run tool "status"?');
-    expect(read.promptKey).toMatch(/^1:0:\d+:[0-9a-f]{24}$/);
+    expect(read.promptKey).toMatch(/^[0-9a-f]{8}:1:0:\d+:[0-9a-f]{24}$/); // 앞은 실행기 기동 표지(재시작 전 카드로 넣지 않음)
     const r = await f.runner.answerNativePrompt!(f.m, read.promptKey, 2);
     expect(r).toMatchObject({ ok: true, chosen: { n: 2, label: "Allow for this session" } });
     expect(f.writes().map((c) => [c.method, c.params.keys ?? c.params.text])).toEqual([["terminal.keys", ["down", "enter"]]]);
     // 응답을 잃고 같은 창 키로 다시 와도 넣지 않는다
     expect(await f.runner.answerNativePrompt!(f.m, read.promptKey, 2)).toMatchObject({ ok: false, reason: "already" });
-    expect(await f.runner.nativePrompt!(f.m)).toBeNull();
+    // 창이 그대로여도 이미 답한 창이라고만 알린다(카드는 선택지를 다시 내지 않는다)
+    expect(await f.runner.nativePrompt!(f.m)).toMatchObject({ promptKey: read.promptKey, answered: true });
     expect(f.writes()).toHaveLength(1);
   });
 
@@ -190,7 +191,7 @@ describe("orchestrator: 영수증·귀속", () => {
     const t = await orchSetup();
     const state = await t.orch.memberNativePrompt(t.w.id);
     expect(state.context).toMatchObject({ projectId: t.project.id, memberId: t.w.id, generation: 0, executionId: null, taskId: null, promptId: "0:0:1:abc" });
-    const req = { operationId: "op-1", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 };
+    const req = { projectId: t.project.id, memberId: t.w.id, operationId: "op-1", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 };
     const [a, b] = await Promise.all([t.orch.answerNativePrompt(t.w.id, req), t.orch.answerNativePrompt(t.w.id, req)]);
     expect(a).toEqual(b);
     expect(a).toMatchObject({ status: "answered", option: 1, label: "Allow" });
@@ -203,13 +204,13 @@ describe("orchestrator: 영수증·귀속", () => {
 
   test("세대·실행이 카드와 다르면 넣지 않고, 실행기의 거절은 사람 말로 돌려준다", async () => {
     const t = await orchSetup();
-    expect(await t.orch.answerNativePrompt(t.w.id, { operationId: "op-g", promptId: "0:0:1:abc", generation: 7, executionId: null, option: 1 })).toMatchObject({ status: "stale" });
-    expect(await t.orch.answerNativePrompt(t.w.id, { operationId: "op-e", promptId: "0:0:1:abc", generation: 0, executionId: "run-x", option: 1 })).toMatchObject({ status: "stale" });
+    expect(await t.orch.answerNativePrompt(t.w.id, { projectId: t.project.id, memberId: t.w.id, operationId: "op-g", promptId: "0:0:1:abc", generation: 7, executionId: null, option: 1 })).toMatchObject({ status: "stale" });
+    expect(await t.orch.answerNativePrompt(t.w.id, { projectId: t.project.id, memberId: t.w.id, operationId: "op-e", promptId: "0:0:1:abc", generation: 0, executionId: "run-x", option: 1 })).toMatchObject({ status: "stale" });
     expect(t.runner.answers).toHaveLength(0);
     t.runner.result = { ok: false, reason: "leased" };
-    expect(await t.orch.answerNativePrompt(t.w.id, { operationId: "op-l", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 })).toMatchObject({ status: "busy", note: expect.stringContaining("조작 중") });
+    expect(await t.orch.answerNativePrompt(t.w.id, { projectId: t.project.id, memberId: t.w.id, operationId: "op-l", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 })).toMatchObject({ status: "busy", note: expect.stringContaining("조작 중") });
     t.runner.result = { ok: false, reason: "not_blocked" };
-    expect(await t.orch.answerNativePrompt(t.w.id, { operationId: "op-n", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 })).toMatchObject({ status: "already_answered" });
+    expect(await t.orch.answerNativePrompt(t.w.id, { projectId: t.project.id, memberId: t.w.id, operationId: "op-n", promptId: "0:0:1:abc", generation: 0, executionId: null, option: 1 })).toMatchObject({ status: "already_answered" });
     await t.orch.shutdown();
   });
 });

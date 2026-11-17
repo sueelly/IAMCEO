@@ -23,6 +23,11 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const project = store.createProject({ name: 'Queue status fixture', cwd: dir });
   const terminals = new Map<string, CoreTerminal>(); const sockets = new Set<Socket>();
   const writes: { terminal: string; text: string }[] = [];
+  const keys: { terminal: string; keys: string[] }[] = [];
+  let onKeys: (() => void) | null = null;
+  let keyGate: Promise<void> | null = null;
+  let pendingKeys = 0;
+  let loseKeyReply = false;
   let screen = composer();
   let complete = true;
   let readFailure = false;
@@ -46,6 +51,16 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
           continue;
         }
         if (req.method === 'terminal.read') result = { text: screen, complete, how: 'screen' };
+        if (req.method === 'terminal.keys') {
+          pendingKeys++;
+          const apply = () => {
+            pendingKeys--; keys.push({ terminal: p.terminal, keys: p.keys }); onKeys?.();
+            if (loseKeyReply) { loseKeyReply = false; socket.destroy(); }
+            else socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { turn: terminals.get(p.terminal)?.turn } })+'\n');
+          };
+          if (keyGate) void keyGate.then(apply); else apply();
+          continue;
+        }
         if (req.method === 'terminal.send') {
           const terminal = terminals.get(p.terminal)!;
           if (!terminal || (p.if ? terminal.status?.state !== p.if : !['idle', 'done'].includes(terminal.status?.state ?? ''))) throw new Error('unsafe fixture input');
@@ -57,12 +72,14 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
     });
   });
   await new Promise<void>(done => server.listen(socketPath, done));
-  const runner = new CoreRunner({ socketPath, claudeBin: '/usr/bin/false', codexBin: '/usr/bin/false', claudeHome, codexHome, contextHome: dir }, { pollMs: 10 });
+  const runner = new CoreRunner({ socketPath, claudeBin: '/usr/bin/false', codexBin: '/usr/bin/false', claudeHome, codexHome, contextHome: dir }, { pollMs: 10, acceptCheckMs: 120, rpcTimeoutMs: 1000, sendTimeoutMs: 1000 });
   const orch = new Orchestrator({ config, store, runners: new Map([['core', runner]]), providerHomes: { claudeHome, codexHome }, timings: { healthMs: 60_000, tickMs: 60_000 } });
   orch.setServerUrl('http://127.0.0.1:1');
   const stop = async () => { await Bun.sleep(50); await orch.shutdown(); for (const socket of sockets) socket.destroy(); await new Promise<void>(done => server.close(() => done())); db.close(); };
   const member = await orch.createMember(project.id, { name: 'Fixture worker', cli: 'claude' });
-  return { dir, config, bus, store, orch, project, runner, member, terminals, writes, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
+  return { dir, config, bus, store, orch, project, runner, member, terminals, writes, keys, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
+    setOnKeys(value: (() => void) | null) { onKeys = value; }, setKeyGate(value: Promise<void> | null) { keyGate = value; },
+    keyRequests() { return pendingKeys; }, dropKeyReply() { loseKeyReply = true; },
     setReadFailure(value: boolean) { readFailure = value; },
     done() { const t = terminals.get(store.requireMember(member.id).paneId!)!; t.turn = (t.turn ?? 0)+1; t.status = { state: 'done', app: 'claude-code' }; } };
 }

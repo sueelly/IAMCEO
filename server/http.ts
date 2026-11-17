@@ -214,11 +214,14 @@ const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().opt
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
 const AnswerNativePromptSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  projectId: z.string().min(1).max(100),
+  memberId: z.string().min(1).max(100),
   promptId: z.string().min(1).max(200),
   generation: z.number().int().min(0),
   executionId: z.string().min(1).max(200).nullable(),
   option: z.number().int().min(1).max(99),
   text: z.string().min(1).max(4000).optional(),
+  via: z.enum(["inbox", "thread"]).optional(),
 });
 const TerminalSendSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),

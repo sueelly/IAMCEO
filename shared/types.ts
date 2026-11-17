@@ -538,18 +538,33 @@ export interface NativePromptContext {
   taskId: string | null;
   /** 창이 뜬 차례(같은 창이 다시 떠도 다르게 센다)와 창 지문 */
   promptId: string;
+  /** 서버가 이 창을 처음 읽은 시각(카드 등록). 모르면 null */
+  observedAt: string | null;
 }
-export interface NativePromptState { prompt: NativePrompt | null; context: NativePromptContext | null }
+/** answered: 지금 창에는 이미 답을 넣었다(창이 그대로일 수 있다). 선택지를 다시 보이지 않는다. */
+export interface NativePromptState { prompt: NativePrompt | null; context: NativePromptContext | null; answered?: boolean }
 export interface AnswerNativePromptReq {
   operationId: string;
+  /** 카드가 고정한 귀속. 지금 직원·프로젝트와 다르면 넣지 않는다 */
+  projectId: string;
+  memberId: string;
   promptId: string;
   generation: number;
   executionId: string | null;
   /** 고른 선택지 번호. text 와 함께면 그 줄이 자유 응답 줄이어야 한다 */
   option: number;
   text?: string;
+  /** 답한 화면(기록 문구용). 없으면 대화 */
+  via?: "inbox" | "thread";
 }
-export type NativeAnswerStatus = "answered" | "already_answered" | "changed" | "gone" | "busy" | "stale" | "unsupported";
+export type NativeAnswerStatus = "answered" | "already_answered" | "changed" | "gone" | "busy" | "stale" | "unsupported" | "unknown";
+/**
+ * 터미널 접수: accepted 넣은 뒤 창이 닫히거나 바뀜 · unconfirmed 넣었지만 창이 그대로(다시 넣지 않음)
+ * · not_sent 넣지 않음 · unknown 넣는 중 결과를 모름(다시 넣지 않음)
+ */
+export type NativeAnswerTerminal = "accepted" | "unconfirmed" | "not_sent" | "unknown";
+/** 접수를 확인한 순간의 직원 CLI 상태. 명령 출력 자체가 아니다 */
+export type NativeAnswerAfter = "working" | "blocked" | "idle" | "gone";
 export interface NativeAnswerReceipt {
   operationId: string;
   status: NativeAnswerStatus;
@@ -559,7 +574,15 @@ export interface NativeAnswerReceipt {
   promptId: string;
   option: number | null;
   label: string | null;
+  /** 응답 기록: 서버가 이 답을 받아 적은 시각 */
   at: string;
+  /** 카드 등록: 서버가 그 창을 처음 읽은 시각 */
+  observedAt: string | null;
+  terminal: NativeAnswerTerminal;
+  /** 이후 상태(명령 결과 쪽). 넣지 않았거나 모르면 null */
+  after: NativeAnswerAfter | null;
+  /** 고른 줄이 거절이었는가 */
+  reject: boolean;
 }
 export interface AnswerApprovalReq { fingerprint: string; option: number; /** 거절할 때 직원에게 전할 말 */ note?: string }
 
