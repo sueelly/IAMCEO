@@ -233,16 +233,18 @@ describe("총괄 도구와 화면이 같은 경로", () => {
 });
 
 describe("실행의 작업 표시", () => {
-  test("멈출 실행이 받은 작업들을 보인다(한 턴이 여러 작업을 받을 수 있다)", async () => {
+  test("총괄의 멈출 실행이 받은 여러 작업을 모두 보인다", async () => {
     const f = fixture();
-    const a = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "철수", title: "작업 A", branch: "feat/a" }).task;
-    const b = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "철수", title: "작업 B", branch: "feat/b" }).task;
-    f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "A 일", taskId: a.id });
-    f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "B 일", taskId: b.id });
-    await f.orch.pump(f.member.id);
-    await until("묶음 전달", () => f.sentTo().length === 1);
-    const exec = f.store.requireMember(f.member.id).executionState!;
+    // Workers now receive independent tasks in row order; coordinators still
+    // collect multiple scopes and their stop control must show every scope.
+    const a = f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: "총괄", title: "작업 A", branch: "feat/a" }).task;
+    const b = f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: "총괄", title: "작업 B", branch: "feat/b" }).task;
+    f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "instruction", text: "A 일", taskId: a.id });
+    f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "instruction", text: "B 일", taskId: b.id });
+    await f.orch.pump(f.lead.id);
+    await until("묶음 전달", () => f.fake.sent.filter(s => s.memberId === f.lead.id).length === 1);
+    const exec = f.store.requireMember(f.lead.id).executionState!;
     expect([...exec.taskIds!].sort()).toEqual([a.id, b.id].sort());
-    expect(f.orch.roster(f.project.id).find(r => r.handle === "w1")?.run).toMatchObject({ id: exec.runId, taskIds: expect.arrayContaining([a.id, b.id]) });
+    expect(f.orch.roster(f.project.id).find(r => r.handle === "lead")?.run).toMatchObject({ id: exec.runId, taskIds: expect.arrayContaining([a.id, b.id]) });
   });
 });

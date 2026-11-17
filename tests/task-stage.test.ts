@@ -30,6 +30,32 @@ const stage = (f: F, task: string, s: string, evidence = "근거") => f.tool(f.l
 const notices = (f: F) => f.store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM task_notices").get()!.n;
 const conductorSystem = (f: F) => f.store.db.query<{ text: string; wake: number }, [string]>("SELECT text, wake FROM deliveries WHERE member_id = ? AND kind = 'system' AND text LIKE '%반복 감시%'").all(f.lead.id);
 
+test("코딩 업무는 main에 합쳐도 실제 적용 근거가 없으면 완료하지 않는다", async () => {
+  const f = fixture(), task = await newTask(f);
+  await deliver(f, task);
+  expect((await stage(f, task, "merged", "main 0123abcd")).isError).toBeUndefined();
+  const premature = await stage(f, task, "done", "코드만 합쳤습니다");
+  expect(premature.isError).toBe(true);
+  expect(premature.text).toContain("applied");
+  expect(progressOf(f, task)!.stage).not.toBe("done");
+  expect(notices(f)).toBe(0);
+  expect((await stage(f, task, "applied", "검증한 릴리스와 실제 서비스 화면 일치")).isError).toBeUndefined();
+  expect((await stage(f, task, "done", "완료 조건과 실제 적용을 확인했습니다")).isError).toBeUndefined();
+  expect(progressOf(f, task)!.stage).toBe("done");
+});
+
+test("이전 릴리스의 적용 근거로 새 통합을 완료 처리하지 않는다", async () => {
+  const f = fixture(), task = await newTask(f);
+  await deliver(f, task);
+  await stage(f, task, "merged", "main aaa1111");
+  await stage(f, task, "applied", "실제 서비스 aaa1111 확인");
+  await stage(f, task, "merged", "추가 수정 main bbb2222");
+  expect((await stage(f, task, "done", "과거 적용 근거 재사용")).isError).toBe(true);
+  expect(progressOf(f, task)!.stage).toBe("merged");
+  await stage(f, task, "applied", "실제 서비스 bbb2222 확인");
+  expect((await stage(f, task, "done", "최신 릴리스 적용 확인")).isError).toBeUndefined();
+});
+
 describe("막힘의 원인과 다음 차례", () => {
   test("결재 0건인데 막힘: 실행 안 한 검사만 남은 막힘은 대표 차례가 아니라 총괄 확인 대기다", async () => {
     const f = fixture(), task = await newTask(f);
@@ -88,6 +114,7 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
     expect((await stage(f, task, "merged", "메인에 합침")).isError).toBe(true);
     expect((await stage(f, task, "merged", "메인에 합침 0123abcd")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("merged");
+    expect((await stage(f, task, "applied", "통합 릴리스의 실제 사용 화면 확인")).isError).toBeUndefined();
     const done = await stage(f, task, "done", "통합 뒤 확인 통과");
     expect(done.isError).toBeUndefined();
     const again = await stage(f, task, "done", "응답 유실 재시도");
