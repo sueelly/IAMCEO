@@ -22,8 +22,8 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { currentReviewedCommit, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
-import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
+import { currentReviewedCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -2502,7 +2502,8 @@ export class Orchestrator implements OrchestratorApi {
       const lead = this.store.getConductor(projectId);
       if (lead) for (const message of this.store.listReportsMissingDeliveries(projectId)) {
         const author = message.memberId ? this.store.getMember(message.memberId) : null;
-        if (author?.kind === "worker" && author.id !== lead.id) this.store.enqueue({ projectId, memberId: lead.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(message.kind), refType: "message", refId: message.id });
+        if (author?.kind === "worker" && author.id !== lead.id) this.store.enqueue({ projectId, memberId: lead.id, kind: "report", text: this.reportText(message),
+          wake: this.reportWakesConductor(message), refType: "message", refId: message.id });
       }
     });
   }
@@ -4463,7 +4464,7 @@ export class Orchestrator implements OrchestratorApi {
       const watch = this.watchReport(message, input.continueWork === true);
       if (watch.trip && taskId) noticeTo = this.watchNoticeDelivery(member.projectId, taskId, watch.trip)?.memberId ?? null;
       if (taskId && member.kind === "worker") synchronizeRelatedTaskCompletion(this.store, taskId);
-      return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: WAKE_POST_KINDS.has(input.kind) && !watch.quiet, refType: "message", refId: message.id }] : [];
+      return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: this.reportWakesConductor(message) && !watch.quiet, refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
     if (taskId && member.kind === "worker" && this.store.doneMark(taskId)) {
@@ -4471,6 +4472,11 @@ export class Orchestrator implements OrchestratorApi {
     }
     await Promise.all([...new Set([...deliveries.map(d => d.memberId), ...(noticeTo ? [noticeTo] : [])])].map(id => this.pump(id)));
     return message;
+  }
+
+  private reportWakesConductor(message: Message): boolean {
+    return WAKE_POST_KINDS.has(message.kind) && !(message.kind === "완료" &&
+      isCompletionReviewPending(this.store, message.taskId, message.id) && this.store.getFinalReviewer(message.projectId));
   }
 
   /**
@@ -4914,7 +4920,7 @@ export class Orchestrator implements OrchestratorApi {
       patch });
   }
 
-  finishFinalReview(member: Member, input: { taskId: string; reportId: string; result: "confirmed" | "changes_requested";
+  finishFinalReview(member: Member, input: { taskId: string; reportId: string; result: "confirmed" | "changes_requested" | "confirmed_with_repair";
     evidence: string; reviewedCommit?: string; repairTitle?: string }): { status: string; followupId?: string } {
     const task = this.store.resolveTask(this.requireTaskInProject(member, input.taskId));
     this.requireActive(this.store.requireProject(task.projectId));
@@ -4930,6 +4936,11 @@ export class Orchestrator implements OrchestratorApi {
         throw new ApiError(409, "현재 검수할 다른 직원의 완료 보고를 확인해 주세요");
       }
       if (review.status !== "pending") {
+        if (input.result === "confirmed_with_repair" && review.status === "confirmed" &&
+          review.reviewer_id === member.id && !review.reviewed_commit && !input.reviewedCommit) {
+          const existing = findIndependentReviewRepair(this.store, task.projectId, report.id);
+          if (existing) return { status: input.result, followup: existing };
+        }
         if (review.status === input.result && review.reviewer_id === member.id &&
           (input.reviewedCommit?.toLowerCase() ?? null) === review.reviewed_commit) return { status: review.status };
         throw new ApiError(409, "검수 대상 또는 상태가 바뀌었습니다. 최신 기록을 확인해 주세요");
@@ -4947,6 +4958,19 @@ export class Orchestrator implements OrchestratorApi {
         }
         followup = this.markTaskStage(member, { taskId: task.id, stage: "done", evidence, reviewedCommit: input.reviewedCommit }).followup;
         text = `${member.name}가 '${task.title}'의 최신 완료 보고 #${review.report_id}를 독립 검수했습니다.`;
+      } else if (input.result === "confirmed_with_repair") {
+        const title = input.repairTitle?.trim();
+        if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 원래 완료 근거를 먼저 확인해 주세요");
+        if (!title || input.reviewedCommit) throw new ApiError(400, "별도 수정 업무 이름을 적어 주세요. 통합 검수 커밋은 수정 결과를 확인할 때 기록합니다");
+        const existing = findIndependentReviewRepair(this.store, task.projectId, report.id);
+        if (existing) followup = existing;
+        else {
+          const issue = this.store.createMessage({ projectId: task.projectId, taskId: task.id, memberId: member.id,
+            who: member.name, kind: "알림", title, body: evidence, aboutMessageId: report.id });
+          followup = queueIndependentReviewRepair(this.store, task, report.id, issue.id, title, evidence);
+        }
+        confirmCompletionReview(this.store, task.id, member, evidence);
+        text = `${member.name}가 '${task.title}'의 기존 완료 근거를 확인하고 새 결함을 별도 수정 업무에 연결했습니다.`;
       } else {
         const title = input.repairTitle?.trim();
         if (!title || input.reviewedCommit) throw new ApiError(400, "확인된 문제를 고칠 업무 이름을 적어 주세요");

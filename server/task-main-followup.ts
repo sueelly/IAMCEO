@@ -160,3 +160,13 @@ export function queueIntegrationRepair(store: Store, source: Task, reportId: str
       [`원 업무 #${source.id} ${source.title} · 문제 보고 #${reportId} ${report.title}`, detail].filter(Boolean).join("\n"));
   });
 }
+
+export function findIndependentReviewRepair(store: Store, projectId: string, reportId: string): WorkItem | undefined {
+  const sourceRef = `independent-review-repair:${reportId}`;
+  return store.listWork(projectId).find(item => item.taskId && store.taskSourceRef(item.taskId) === sourceRef);
+}
+
+export function queueIndependentReviewRepair(store: Store, source: Task, reportId: string, findingId: string, title: string, evidence: string): WorkItem {
+  return workFor(store, source, `independent-review-repair:${reportId}`, title,
+    [`원 업무 #${source.id} · 완료 보고 #${reportId} · 사후 검수 결함 보고 #${findingId}`, evidence].join("\n"));
+}

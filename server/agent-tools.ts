@@ -840,15 +840,16 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_review: tool(
-    "최종 검수 전담 직원이 받은 통과 보고의 독립 검수 결과를 기록한다. 문제를 확인하면 해당 부분의 수정 업무를 총괄에게 연결한다.",
+    "최종 검수 전담 직원의 판정을 기록한다. confirmed는 현재 완료 근거를 확인한 경우, confirmed_with_repair는 근거가 유효한 업무에서 별도 수정할 새 결함을 찾은 경우, changes_requested는 원래 완료 조건이나 근거가 성립하지 않는 경우에 쓴다.",
     z.strictObject({
-      task_id: text, report_id: text, result: z.enum(["confirmed", "changes_requested"]), evidence: text,
+      task_id: text, report_id: text, result: z.enum(["confirmed", "changes_requested", "confirmed_with_repair"]), evidence: text,
       reviewed_commit: z.string().regex(fullCommit).optional(), repair_title: oneLine(120).optional(),
     }),
     (orch, member, a) => {
       const result = orch.finishFinalReview(member, { taskId: a.task_id, reportId: a.report_id, result: a.result,
         evidence: a.evidence, reviewedCommit: a.reviewed_commit, repairTitle: a.repair_title });
-      const status = result.status === "confirmed" ? "최종 검수를 확인했습니다" : "보완 필요를 기록했습니다";
+      const status = result.status === "confirmed_with_repair" ? "완료를 확인하고 별도 수정 업무를 기록했습니다"
+        : result.status === "confirmed" ? "최종 검수를 확인했습니다" : "보완 필요를 기록했습니다";
       return reply(status + (result.followupId ? ` · 예정 업무 #${result.followupId}` : ""));
     },
   ),

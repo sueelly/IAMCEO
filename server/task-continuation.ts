@@ -31,8 +31,19 @@ export function taskScopeForDeliveryIds(store: Store, deliveryIds: readonly stri
   const pending = [...deliveryIds], seen = new Set<string>(), tasks = new Set<string>();
   while (pending.length) {
     const id = pending.pop()!; if (seen.has(id)) continue; seen.add(id);
-    if (!store.getDelivery(id)?.wake) continue;
-    const taskId = store.deliveryTaskId(id); if (taskId) tasks.add(taskId);
+    const delivery = store.getDelivery(id);
+    if (!delivery?.wake) continue;
+    const reviews = delivery.kind === "system" ? store.db.query<{ task_id: string; mark_id: number; status: string }, [string]>(
+      "SELECT task_id, mark_id, status FROM task_completion_reviews WHERE delivery_id=?",
+    ).all(id) : [];
+    if (reviews.length) {
+      for (const review of reviews) {
+        if (review.status === "pending" && store.doneMark(review.task_id)?.id === review.mark_id) tasks.add(review.task_id);
+      }
+    } else {
+      const taskId = store.deliveryTaskId(id);
+      if (taskId) tasks.add(taskId);
+    }
     const followup = store.getReportFollowupByDelivery(id);
     if (followup) pending.push(...(store.getExecutionJournal(followup.rootRunId)?.deliveryIds ?? []));
   }

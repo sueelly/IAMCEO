@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { listAgentTools } from "../server/agent-tools.ts";
-import { checkCompletionReviews, completionReviewAllowsDelivery } from "../server/task-completion.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, latestCompletionReview, synchronizeTaskCompletion } from "../server/task-completion.ts";
 import { activeTaskContinuationPauses } from "../server/task-continuation.ts";
 import { fixture, until } from "./fixtures/harness-fixture.ts";
 
@@ -30,6 +30,57 @@ async function pendingReview() {
   expect(f.store.taskProgress(source.id).finalReview?.status).toBe("pending");
   return { ...f, reviewer, source, report, head };
 }
+
+async function addPendingReview(f: Awaited<ReturnType<typeof pendingReview>>) {
+  const task = f.orch.saveTask(f.lead, { title: "별도 인계 자료", contract }).task;
+  const report = await f.orch.recordPost(f.worker, { taskId: task.id, kind: "완료", title: "인계 대조", contractRev: 1,
+    checks: [{ name: "인계 대조", kind: "other", result: "pass", evidence: "입력과 산출물을 대조했습니다", criterion: 1 }] });
+  return { task, report };
+}
+
+test("eligible completions wake one dedicated reviewer with one project batch and do not wake the conductor individually", async () => {
+  const f = await pendingReview();
+  const second = await addPendingReview(f);
+  expect(f.runner.to(f.lead)).toHaveLength(0);
+  const batch = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
+  expect(batch).toHaveLength(1);
+  expect(batch[0]!.text).toContain(f.report.id);
+  expect(batch[0]!.text).toContain(second.report.id);
+  expect(checkCompletionReviews(f.store, Date.now() + 120_000, 30_000)).toHaveLength(0);
+  const evidence = await f.tool(f.reviewer, "task_review_evidence", { task_id: second.task.id, report_id: second.report.id });
+  expect(evidence.isError, evidence.text).toBeUndefined();
+  const checked = await f.tool(f.reviewer, "task_review", { task_id: second.task.id, report_id: second.report.id, result: "confirmed", evidence: "인계 자료에서 완료 조건을 확인했습니다" });
+  expect(checked.isError, checked.text).toBeUndefined();
+  expect(completionReviewAllowsDelivery(f.store, batch[0]!)).toBe(true);
+  expect(f.store.requireDelivery(batch[0]!.id).status).toBe("queued");
+});
+
+test("stopping a running review batch pauses every still pending source without reopening its completion", async () => {
+  const f = await pendingReview();
+  const second = await addPendingReview(f);
+  const reminders = f.orch.checkTaskContinuations(Date.now() + 60_000).filter(d => d.memberId === f.reviewer.id);
+  expect(reminders).toHaveLength(1);
+  await until("검수 묶음 수신", () => f.store.requireDelivery(reminders[0]!.id).status === "delivered");
+  await f.orch.stopMember(f.reviewer.id, { by: "user" });
+  expect(new Set(activeTaskContinuationPauses(f.store, f.project.id).map(p => p.taskId))).toEqual(new Set([f.source.id, second.task.id]));
+  expect(f.store.doneMark(f.source.id)).not.toBeNull();
+  expect(f.store.doneMark(second.task.id)).not.toBeNull();
+});
+
+test("a reopened source drops its stale notice without preventing the next valid review", async () => {
+  const f = await pendingReview();
+  const [old] = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
+  expect(old).toBeDefined();
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: f.source.id, kind: "user_message",
+    text: "변경된 조건을 다시 확인하세요" });
+  expect(completionReviewAllowsDelivery(f.store, old!)).toBe(false);
+  synchronizeTaskCompletion(f.store, f.source.id);
+  expect(f.store.requireDelivery(old!.id).status).toBe("failed");
+  const next = await addPendingReview(f);
+  const [current] = checkCompletionReviews(f.store, Date.now() + 120_000, 30_000);
+  expect(current?.text).toContain(next.report.id);
+  expect(current?.text).not.toContain(f.report.id);
+});
 
 test("one dedicated reviewer is reused and review is routed there while the conductor is busy", async () => {
   const f = await pendingReview();
@@ -120,6 +171,47 @@ test("a review finding creates one scoped repair and a conductor notification", 
   expect(f.store.taskProgress(f.source.id).finalReview?.status).toBe("changes_requested");
   expect(f.store.listWork(f.project.id).filter(w => w.title === args.repair_title)).toHaveLength(1);
   expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id && d.text.includes(args.repair_title))).toHaveLength(1);
+});
+
+test("a new defect can be recorded as a separate repair without reopening valid completion or authorizing main", async () => {
+  const f = await pendingReview();
+  const args = { task_id: f.source.id, report_id: f.report.id, result: "confirmed_with_repair",
+    evidence: "현재 완료 조건의 검증은 통과했고 다른 설정을 열면 추가 초기화가 재현됐습니다", repair_title: "다른 설정의 값 초기화 수정" };
+  expect((await f.tool(f.reviewer, "task_review", args)).isError).toBe(true);
+  const evidence = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.source.id, report_id: f.report.id, path: "setting.txt" });
+  expect(evidence.isError, evidence.text).toBeUndefined();
+  const first = await f.tool(f.reviewer, "task_review", args);
+  expect(first.isError, first.text).toBeUndefined();
+  const second = await f.tool(f.reviewer, "task_review", args);
+  expect(second.text).toBe(first.text);
+  expect(f.store.taskProgress(f.source.id)).toMatchObject({ stage: "done", finalReview: { status: "confirmed" } });
+  expect(latestCompletionReview(f.store, f.source.id)?.reviewed_commit).toBeNull();
+  const work = f.store.listWork(f.project.id).filter(w => w.sec === "next");
+  expect(work.map(w => w.title)).toEqual([args.repair_title]);
+  expect(f.store.requireTask(work[0]!.taskId!).parentTaskId).toBeNull();
+  const integration = await f.tool(f.lead, "task_followup", { task_id: f.source.id, kind: "integration", reviewed_commit: f.head });
+  expect(integration.isError).toBe(true);
+});
+
+test("a parent and child verified by the same report share one independent repair", async () => {
+  const f = fixture(), reviewer = f.store.ensureFinalReviewer(f.project.id)!;
+  const parent = f.orch.saveTask(f.lead, { title: "묶인 인계", contract }).task;
+  const child = f.orch.saveTask(f.worker, { title: "인계 결과", parentTaskId: parent.id }).task;
+  for (const task of [parent, child]) {
+    const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "instruction", text: task.title });
+    f.store.markDelivered(delivery.id);
+  }
+  const report = await f.orch.recordPost(f.worker, { taskId: child.id, kind: "완료", title: "인계 확인", contractRev: 1,
+    checks: [{ name: "인계 대조", kind: "other", result: "pass", evidence: "입력과 산출물을 대조했습니다", criterion: 1 }] });
+  for (const task of [child, parent]) {
+    const evidence = await f.tool(reviewer, "task_review_evidence", { task_id: task.id, report_id: report.id });
+    expect(evidence.isError, evidence.text).toBeUndefined();
+    const result = await f.tool(reviewer, "task_review", { task_id: task.id, report_id: report.id,
+      result: "confirmed_with_repair", evidence: "인계를 검수했고 별도 결함이 재현됐습니다", repair_title: "추가 결함 수정" });
+    expect(result.isError, result.text).toBeUndefined();
+    expect(f.store.taskProgress(task.id).stage).toBe("done");
+  }
+  expect(f.store.listWork(f.project.id).filter(w => w.title === "추가 결함 수정")).toHaveLength(1);
 });
 
 test("an old unsent conductor reminder is retired without reusing its receipt", async () => {
