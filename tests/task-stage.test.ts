@@ -159,32 +159,30 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
 });
 
 describe("반복 감시", () => {
-  test("같은 실패 3번이면 결재함에 올리고 대표 답 뒤에 다시 연다", async () => {
+  test("같은 실패 3번이면 총괄이 접근을 바꾸고 다시 연다", async () => {
     const f = fixture(), task = await newTask(f);
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(conductorSystem(f)).toHaveLength(0);
     await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     const p = progressOf(f, task)!;
-    expect(p).toMatchObject({ stage: "owner", cause: "owner", owner: "대표", loop: { attempts: 3, same: 3 } });
+    expect(p).toMatchObject({ stage: "check", cause: "loop", owner: "총괄", loop: { attempts: 3, same: 3 } });
     expect(p.loop!.trippedAt).toBeTruthy();
     expect(conductorSystem(f)).toHaveLength(1);
     expect(conductorSystem(f)[0]!.text).toContain("같은 실패 3번");
-    expect(conductorSystem(f)[0]!.text).toContain("남은 조건: 저장 시험");
+    expect(conductorSystem(f)[0]!.text).toContain("저장 시험");
     const quiet = await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     const wake = f.store.db.query<{ wake: number }, [string, string]>("SELECT wake FROM deliveries WHERE member_id = ? AND ref_id = ?").get(f.lead.id, quiet)!.wake;
     expect(wake).toBe(0);
     expect(conductorSystem(f)).toHaveLength(1);
     const refused = await f.tool(f.lead, "team_assign", { member: "철수", text: "같은 방법으로 다시", task_id: task });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("결재");
+    expect(refused.text).toContain("접근");
     // 재시작에도 감시가 남는다.
     const store = new Store(f.store.db, new Bus());
     expect(store.getTaskWatch(task)).toMatchObject({ attempts: 4, trippedAt: p.loop!.trippedAt });
-    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBe(true);
-    const decision = f.store.pendingTaskFailureDecision(task)!;
-    f.store.answerDecision(decision.id, { note: "저장 경로를 확인한 뒤 다시 진행하세요" });
-    expect((await stage(f, task, "reopen", "대표 답에 따라 저장 경로부터 재확인")).isError).toBeUndefined();
+    expect(f.store.pendingTaskFailureDecision(task)).toBeNull();
+    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(progressOf(f, task)!.loop).toMatchObject({ attempts: 4, trippedAt: null });
     expect((await f.tool(f.lead, "team_assign", { member: "철수", text: "저장 경로부터 다시", task_id: task })).isError).toBeUndefined();

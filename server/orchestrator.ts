@@ -78,7 +78,7 @@ import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderRole } from "./roles.ts";
-import { DEFAULT_WATCH_LIMITS, watchNotice, watchOnReopen, watchOnReport, watchOnTick, type MarkFact } from "./task-progress.ts";
+import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, type MarkFact } from "./task-progress.ts";
 import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
 import { relatedWork } from "./workflow.ts";
@@ -3621,8 +3621,8 @@ export class Orchestrator implements OrchestratorApi {
     if (input.contract && !task) throw new ApiError(400, "계약은 업무에 붙습니다. task_id 를 함께 넣으세요");
     if (assignedBy) this.requireInstructionContract(assignedBy, task?.id ?? null, input.contract);
     // 반복 감시로 멈춘 업무는 총괄이 원인·접근을 바꿨다고 남긴 뒤에만 다시 맡긴다(같은 반복을 자동으로 잇지 않게). 대표 화면의 지시는 막지 않는다.
-    const watch = task && assignedBy ? this.store.getTaskWatch(task.id) : null;
-    if (watch?.trippedAt) throw new ApiError(409, `반복 감시로 멈춘 업무입니다(${watch.reason ?? "같은 실패 반복"}). 원인·접근을 바꿨으면 task_stage(task_id "${task!.id}", stage "reopen", evidence 바꾼 접근)로 다시 연 뒤 맡기세요`);
+    const watch = task && assignedBy ? this.store.pendingTaskIntervention(task.id) : null;
+    if (watch) throw new ApiError(409, `반복 감시로 멈춘 업무입니다(${watch.reason ?? "같은 실패 반복"}). 원인·접근을 바꿨으면 task_stage(task_id "${watch.taskId}", stage "reopen", evidence 바꾼 접근)로 다시 연 뒤 맡기세요`);
     const delivery = this.store.transaction(() => {
       if (input.contract && task) this.store.saveTaskContract(task.id, cleanContract(input.contract), { author: assignedBy?.name ?? "대표 화면", authorMemberId: assignedBy?.id ?? null, authorKind: !assignedBy ? "owner" : assignedBy.kind === "worker" ? "worker" : "conductor", sourceMessageId: quote?.verified ? quote.source?.id ?? null : null });
       const taskLine = this.instructionTaskLines(projectId, task?.id ?? null);
@@ -4629,26 +4629,16 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 멈춘 감시의 총괄 알림을 같은 거래 안에서 만든다. 감시 하나에 한 번(이미 보냈으면 null). */
   private watchNoticeDelivery(projectId: string, taskId: string, reason: string): Delivery | null {
-    const conductor = this.store.getConductor(projectId);
-    const w = this.store.getTaskWatch(taskId);
-    // Owner escalation is independent of whether an awake lead can receive the
-    // coordination notice. It is persisted atomically with the third failure.
-    if (w?.trippedAt && w.same >= 3) this.store.ensureTaskFailureDecision(taskId);
-    if (!conductor || !w || this.store.watchNoticeSent(taskId)) return null;
-    const task = this.store.requireTask(taskId);
-    const failed = [...new Set(w.history.flatMap((h) => h.failed))];
-    const pending = w.fingerprint.startsWith("pending:") ? w.fingerprint.slice(8).split("|").filter(Boolean) : [];
-    const delivery = this.store.enqueue({ projectId, memberId: conductor.id, kind: "system", text: `[시스템] ${watchNotice(task, w, reason, [...failed, ...pending])}\n작업 #${taskId}`, wake: true, taskId });
-    this.store.claimWatchNotice(taskId, delivery.id);
-    return delivery;
+    return this.store.ensureTaskFailureNotice(taskId);
   }
 
   /** 시간 경계: 직원 쪽 단계에서 진척 없이 오래 지난 감시를 한 번 멈춘다. 대표·승인·보류 기다림은 세지 않는다. */
   checkTaskWatches(now = Date.now()): void {
-    // Adopt unresolved pre-policy trips too, without replaying work or creating
-    // duplicate cards on every restart/tick.
-    for (const row of this.store.db.query("SELECT task_id,project_id FROM task_watch WHERE tripped_at IS NOT NULL AND same_count >= 3").all() as { task_id: string; project_id: string }[]) {
-      if (!this.store.getProject(row.project_id)?.archived) this.store.ensureTaskFailureDecision(row.task_id);
+    // Recover undelivered conductor interventions without creating owner cards.
+    for (const row of this.store.db.query("SELECT task_id,project_id FROM task_watch WHERE tripped_at IS NOT NULL").all() as { task_id: string; project_id: string }[]) {
+      if (this.store.getProject(row.project_id)?.archived) continue;
+      const notice = this.store.ensureTaskFailureNotice(row.task_id);
+      if (notice) void this.pump(notice.memberId);
     }
     const limits = { sameLimit: this.timings.loopSameLimit, idleMs: this.timings.loopIdleMs };
     for (const { taskId, projectId, watch } of this.store.listOpenTaskWatches()) {
@@ -4936,7 +4926,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
       if (!worker || !taskId) return true;
-      if (!blocked.has(taskId)) blocked.set(taskId, this.store.pendingTaskFailureDecision(taskId) !== null || this.store.taskSequenceBlocker(memberId, taskId) !== null);
+      if (!blocked.has(taskId)) blocked.set(taskId, this.store.pendingTaskFailureDecision(taskId) !== null || this.store.pendingTaskIntervention(taskId) !== null || this.store.taskSequenceBlocker(memberId, taskId) !== null);
       return !blocked.get(taskId);
     });
   }
@@ -5394,7 +5384,7 @@ export class Orchestrator implements OrchestratorApi {
         const dispatch = this.store.getDispatch(request.dispatchId);
         if (dispatch && member.kind === "worker" && dispatch.items.some(item => {
           const taskId = this.store.deliveryTaskId(item.deliveryId);
-          return taskId && this.store.pendingTaskFailureDecision(taskId);
+          return taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId));
         })) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
         if (!dispatch || this.closed || this.recovering || this.settingsWriting || this.configWrites.has(member.id) || rt.turn || rt.starting || rt.closing || rt.reopening || this.retryDue(member) > Date.now() || !this.hasAutomaticCapacity(member)) {
           this.waiting.add(member.id);
@@ -5636,8 +5626,11 @@ export class Orchestrator implements OrchestratorApi {
       return false;
     }
     return deliveries.every(delivery => {
+      // The current reservation is the occupied run, but its authorization and
+      // contract may have changed while the runner was inspecting the terminal.
+      if (!this.taskContinuations.canDispatch(delivery, false)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
-      if (member.kind === "worker" && taskId && this.store.pendingTaskFailureDecision(taskId)) return false;
+      if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
       return this.instructionCriteriaAllow(delivery);
     });
   }

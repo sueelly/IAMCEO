@@ -35,6 +35,47 @@ function fixture() {
   return { store, project, lead, worker, next, coordinator, task, blocked, finish, start };
 }
 
+function contractFor(f: ReturnType<typeof fixture>, task: Task) {
+  const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
+  f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "승인된 결과를 완성한다", acceptance: ["남은 검증을 통과한다"], checks: [] },
+    { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+}
+
+test("an idle assigned worker continues confirmed unfinished work while the conductor is working with queued reports", () => {
+  const f = fixture(), task = f.task("approved remaining work", false); contractFor(f, task);
+  f.store.patchMember(f.lead.id, { status: "working" });
+  f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, taskId: task.id, kind: "report", text: "Review the partial result" });
+  const next = f.next.check(f.start, member => member.id === f.worker.id);
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({ memberId: f.worker.id, taskId: task.id, kind: "system" });
+  expect(next[0]!.text).toContain("남은 조건만");
+  expect(f.next.canDispatch(next[0]!)).toBe(true);
+  expect(f.coordinator().check(f.start + 10_000, () => true)).toHaveLength(0);
+});
+
+test("an explicit blocker retires a queued worker continuation before dispatch", () => {
+  const f = fixture(), task = f.task("approved scope", false); contractFor(f, task);
+  const next = f.next.check(f.start, () => true)[0]!;
+  expect(next.memberId).toBe(f.worker.id);
+  f.blocked(task);
+  expect(f.next.canDispatch(next)).toBe(false);
+  expect(f.store.requireDelivery(next.id)).toMatchObject({ status: "failed", deliveredAt: null });
+  expect(f.next.check(f.start + 10_000, () => true)[0]?.memberId).toBe(f.lead.id);
+});
+
+test("changing the binding contract retires a worker reminder carrying the previous revision", () => {
+  const f = fixture(), task = f.task("contract revision", false); contractFor(f, task);
+  const queued = f.next.check(f.start, () => true)[0]!;
+  const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
+  f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "새 범위만 확인한다", acceptance: ["새로운 검증을 통과한다"], scope: "원본을 바꾸지 않는 조사", checks: [] },
+    { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  expect(f.next.canDispatch(queued)).toBe(false);
+  const [current] = f.next.check(f.start + 10_000, () => true);
+  expect(current?.memberId).toBe(f.worker.id);
+  expect(current?.text).toContain("원본을 바꾸지 않는 조사");
+  expect(current?.text).toContain("새로운 검증을 통과한다");
+});
+
 test("an accepted old instruction with a failed review produces a task-scoped coordinator continuation", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   const queued = f.next.check(f.start, () => true);
@@ -118,7 +159,7 @@ test("persistent user stop cancels only the generated continuation and survives 
   expect(f.next.check(f.start + 30000, () => true)).toHaveLength(1);
 });
 
-test("no-progress retries become an actionable unresolved decision instead of infinite duplicate work or completion", () => {
+test("no-progress retries stop worker repetition and request one conductor intervention", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   let now = f.start;
   for (let i = 0; i < 3; i++) {
@@ -127,11 +168,13 @@ test("no-progress retries become an actionable unresolved decision instead of in
     f.store.patchMember(f.worker.id, { now: "같은 자기 보고 " + i }); // heartbeat must not count as progress.
     now += 10000;
   }
-  expect(f.next.check(now, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
-  expect(f.store.taskProgress(t.id).stage).toBe("owner");
+  const intervention = f.next.check(now, () => true);
+  expect(intervention).toHaveLength(1);
+  expect(intervention[0]?.memberId).toBe(f.lead.id);
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
+  expect(f.store.taskProgress(t.id).stage).toBe("check");
   expect(f.coordinator().check(now + 10000, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
 });
 
 test("new completion evidence resets no-progress accounting and final done stops the cycle", () => {
@@ -282,8 +325,9 @@ test("reassigning identical downstream instructions does not reset the no-progre
     const same = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: original.text, taskId: t.id });
     f.store.markDelivered(same.id); now += 10000;
   }
-  expect(f.next.check(now, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
+  expect(f.next.check(now, () => true)).toHaveLength(1);
+  expect(f.store.taskProgress(t.id).stage).toBe("check");
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
 });
 
 test("an unrelated input at its rejection limit does not starve followthrough", () => {
