@@ -216,6 +216,8 @@ export interface ReviewDocumentProps {
   activeThread: string | null;
   /** 새 댓글을 달 수 있는지(과거 판 보기·닫힌 검토에서는 false). */
   canComment: boolean;
+  /** 도식에 새 댓글을 달 수 있는지(canComment 이고 Agent-A 가 댓글 추가의 초안 판 조건을 알 때). false 면 도식에 누를 자리를 내지 않는다. */
+  canDiagram: boolean;
   regionDraft: AgentAReviewImageRegion | null;
   /** 지금 댓글을 쓰고 있는 도식 자리. */
   diagramDraft: DiagramDraft | null;
@@ -236,7 +238,7 @@ export interface ReviewDocumentProps {
   onEditLabels?: () => void;
 }
 
-export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, diagramDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onDiagram, onOpenThread, labels, onLabel, onEditLabels }: ReviewDocumentProps) {
+export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, canDiagram, regionDraft, diagramDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onDiagram, onOpenThread, labels, onLabel, onEditLabels }: ReviewDocumentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ranges = useRef(new Map<string, Range>());
   /** 고른 글과 뜨는 단추의 자리. menu 면 단추 대신 라벨 목록을 보인다. */
@@ -299,7 +301,7 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
     if (!blocks.length) return by;
     for (const t of threads) {
       const anchor = t.root.diagram;
-      const owner = anchor ? ownerOf(anchor, blocks) : null;
+      const owner = anchor ? ownerOf(anchor, blocks, t.root.diagramBlock) : null;
       if (!anchor || owner === null) continue;
       const index = at[owner]!;
       by.set(index, [...(by.get(index) ?? []), { threadId: t.root.id, anchor, done: t.done }]);
@@ -425,7 +427,7 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
         if (part.kind === "markdown") return <Chunk key={`m${i}`} text={part.text} />;
         if (part.kind === "mermaid") {
           return <Diagram key={`d${i}`} index={i} code={part.code} line={part.line} marks={diagramMarks.get(i) ?? NO_MARKS} active={activeThread} draft={diagramDraft && diagramDraft.line === part.line ? diagramDraft.anchor : null}
-            canComment={canComment} onPick={onDiagram} onOpen={onOpenThread} onDrawn={onDrawn} />;
+            canComment={canDiagram} onPick={onDiagram} onOpen={onOpenThread} onDrawn={onDrawn} />;
         }
         const image = imageFor(images, part.src, part.line);
         if (!image) return <p key={`i${i}`} className="aar-fig__wait">그림 정보를 찾지 못했습니다: {part.alt}</p>;

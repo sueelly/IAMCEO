@@ -56,11 +56,17 @@ export interface FakeReviewOptions {
    * 1 은 원래 Agent-A(c559881): 초안 판이 없고 초안 저장은 늘 통째로 바꾼다.
    */
   draftProtocol?: 1 | 2;
+  /**
+   * 댓글 추가의 초안 판 조건(annotation_if_draft_revision)을 아는지. 기본은 안다.
+   * false 는 그 조건이 없던 앞선 초안 보존 패치의 Agent-A 다(초안 규약 2 이지만 주석 추가가 annotation 칸만 받는다).
+   */
+  annotationCondition?: boolean;
 }
 
 export function fakeAgentAReview(options: FakeReviewOptions = {}) {
   const delay = options.answerDelayMs ?? 250;
   let protocol = options.draftProtocol ?? 2;
+  let conditional = options.annotationCondition ?? true;
   const REVISION = "x-enouv-draft-revision";
   const revisionHead = (s: Json): Record<string, string> => (protocol >= 2 ? { [REVISION]: String(s.draft_revision ?? 0) } : {});
   const startedAt = Date.now();
@@ -94,7 +100,7 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     return { id: s.id, artifact_id: s.artifact_id, server_session: s.server_session, markdown: s.projection.markdown, markdown_hash: s.projection.markdown_hash,
       context_revision: s.projection.context_revision, layout_revision: s.projection.layout_revision, blocks: s.projection.blocks, source_map: s.projection.source_map,
       image_region_targets: {}, decision: s.decision, draft: s.draft, documents: [], stale: s.projection_key !== latest, recoveries: recoveries(s.artifact_id, s.id, latest),
-      ...(protocol >= 2 ? { draft_revision: s.draft_revision ?? 0, capabilities: { draft_protocol: 2 } } : {}) };
+      ...(protocol >= 2 ? { draft_revision: s.draft_revision ?? 0, capabilities: { draft_protocol: 2, ...(conditional ? { annotation_if_draft_revision: true } : {}) } } : {}) };
   };
   const compatible = (s: Json) => rows.filter((r) => r.artifact_id === s.artifact_id && (r.review_session_id === s.id || (r.projection_key === s.projection_key && r.markdown_hash === s.projection.markdown_hash)));
   const bump = (r: Json) => { r.version++; r.updated_at = Date.now(); };
@@ -508,8 +514,9 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       // 원래 Agent-A 에는 이 길이 없다(Fastify 의 없는 길 응답).
       if (protocol < 2) return Response.json({ message: "Route POST:/api/draft/annotations not found", error: "Not Found", statusCode: 404 }, { status: 404 });
       const a = body && typeof body.annotation === "object" && body.annotation && !Array.isArray(body.annotation) ? clone(body.annotation) : null;
-      if (!a || Object.keys(body!).some((k) => k !== "annotation") || !ANNOTATION.test(a.id ?? "") || !["COMMENT", "GLOBAL_COMMENT", "DELETION"].includes(a.type) || a.source !== undefined || a.inReplyTo !== undefined
+      if (!a || Object.keys(body!).some((k) => k !== "annotation" && !(conditional && k === "ifDraftRevision")) || !ANNOTATION.test(a.id ?? "") || !["COMMENT", "GLOBAL_COMMENT", "DELETION"].includes(a.type) || a.source !== undefined || a.inReplyTo !== undefined
         || typeof a.originalText !== "string" || (a.type !== "DELETION" && !(typeof a.text === "string" && a.text.trim()))) return fail(400, "invalid_request", "Invalid annotation.");
+      if (body!.ifDraftRevision !== undefined && !(Number.isSafeInteger(body!.ifDraftRevision) && body!.ifDraftRevision >= 0)) return fail(400, "invalid_request", "Invalid draft revision.");
       const draft = s.draft ?? { annotations: [], globalAttachments: [] };
       const stored: Json[] = Array.isArray(draft.annotations) ? draft.annotations : [];
       const same = (x: Json) => JSON.stringify([x.type, x.text ?? "", x.originalText ?? "", x.imageRegion ?? null, x.images ?? [], x.aiSettings ?? null]);
@@ -517,6 +524,9 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
       if (prior) return same(prior) === same(a) ? Response.json({ ok: true, id: a.id, duplicate: true, draftRevision: s.draft_revision }) : fail(409, "idempotency_conflict", "This comment ID was already used for different content.");
       if (s.decision) return Response.json({ ok: false, decided: true, draftGeneration: s.draft_generation, draftRevision: s.draft_revision }, { status: 409 });
       if (s.projection_key !== keyOf(state)) return fail(409, "revision_conflict", "The document changed.");
+      // 조건부 추가: 읽은 초안 판이 그대로일 때만 쓴다. 차례는 실제 패치와 같다(재전송 확인 → 닫힘 → 지난 판 → 초안 판).
+      if (body!.ifDraftRevision !== undefined && body!.ifDraftRevision !== (s.draft_revision ?? 0))
+        return Response.json({ ok: false, code: "draft_conflict", draftGeneration: s.draft_generation, draftRevision: s.draft_revision ?? 0 }, { status: 409 });
       if (!regionOk(a)) return fail(400, "invalid_image_region", "The image rectangle must lie inside the original image.");
       a.createdA = Date.now();
       const previous = new Set(stored.map((x) => x.id));
@@ -825,6 +835,8 @@ export function fakeAgentAReview(options: FakeReviewOptions = {}) {
     chats,
     /** 초안 규약 판을 바꾼다(1 = 원래 Agent-A). 이미 열린 검토에도 바로 적용된다. */
     setDraftProtocol(v: 1 | 2) { protocol = v; },
+    /** 댓글 추가의 초안 판 조건을 아는지를 바꾼다(false = 앞선 초안 보존 패치). 이미 열린 검토에도 바로 적용된다. */
+    setAnnotationCondition(v: boolean) { conditional = v; },
     /** AI 답을 끄면 새 댓글은 답 없이 저장되고 답글은 거절된다. */
     setEnabled(v: boolean) { enabled = v; },
     setDown(v: boolean) { down = v; },

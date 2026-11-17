@@ -499,6 +499,11 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
           <span>이 Agent-A 는 초안 보존 규약을 몰라 새 댓글·삭제 표시·본문 고치기·검토 제출을 막았습니다. 읽기·답글·수정안 저장은 그대로 됩니다.</span>
         </p>
       ) : null}
+      {canWrite && !doc.diagramWrites ? (
+        <p className="aar-banner" data-quiet="" role="status">
+          <span>이 Agent-A 는 댓글 추가의 초안 판 조건을 몰라 도식 댓글을 막았습니다. 다른 댓글은 그대로 됩니다.</span>
+        </p>
+      ) : null}
       {!past && historical.length ? (
         <p className="aar-banner" data-quiet="" role="status">
           <span>다른 판에 남은 댓글이 {historical.reduce((n, h) => n + h.count, 0)}개 있습니다.</span>
@@ -519,6 +524,7 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
               threads={past ? [] : threads}
               activeThread={openThread}
               canComment={canWrite}
+              canDiagram={canWrite && doc.diagramWrites}
               regionDraft={regionDraft}
               diagramDraft={diagramDraft}
               mode={tool.mode}

@@ -4,7 +4,7 @@
 // 그림 안의 요소는 누를 수 없으므로, 그리는 칸이 돌려준 부분의 자리에 투명한 단추를 겹쳐 놓는다. 댓글이 달린 부분은 번호 표시로 보인다.
 import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent } from "react";
 import type { AgentAReviewDiagramAnchor } from "@shared/agent-a";
-import { anchorFor, anchorText, findPart, partKey, type DiagramBox, type DiagramPart } from "../../lib/agent-a-diagram";
+import { anchorFor, anchorText, findPart, partKey, pickable, type DiagramBox, type DiagramPart } from "../../lib/agent-a-diagram";
 import { renderDiagram, type DiagramImage } from "../../lib/mermaid";
 
 /** 이 도식에 달린 댓글 하나의 표시. */
@@ -75,11 +75,12 @@ export function MermaidBlock({ code, line, marks, active, draft, canComment, onP
   }, [code, attempt, onDrawn]);
 
   const parts = image?.drawn.parts;
-  /** 누르는 자리들. 겹치면 노드가 선 위에, 선이 묶음 위에 온다. */
-  const hits = useMemo(() => (parts ?? [])
+  const family = image?.drawn.family;
+  /** 누르는 자리들. 도식 글의 문장에서 찾을 수 있는 부분만 낸다(그 밖의 자리는 도식 전체에 단다). 겹치면 노드가 선 위에, 선이 묶음 위에 온다. */
+  const hits = useMemo(() => (parts && family ? pickable(family, parts, code) : [])
     .map((part, at) => ({ part, at }))
     .sort((a, b) => ORDER[a.part.kind] - ORDER[b.part.kind] || a.at - b.at)
-    .flatMap(({ part, at }) => part.hits.map((box, i) => ({ part, box, key: `${at}:${i}`, first: i === 0 }))), [parts]);
+    .flatMap(({ part, at }) => part.hits.map((box, i) => ({ part, box, key: `${at}:${i}`, first: i === 0 }))), [parts, family, code]);
   /** 자리(부분의 둘레나 도식 전체)를 찾는다. 다시 그린 도식에 그 부분이 없으면 null(표시 없이 댓글 목록에만 남는다). */
   const place = (anchor: AgentAReviewDiagramAnchor): DiagramBox | null => {
     const found = findPart(parts ?? [], anchor);

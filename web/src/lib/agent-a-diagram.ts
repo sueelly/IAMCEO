@@ -4,7 +4,7 @@
 // 출처: 자리의 모양과 규칙(이름 읽기·줄 찾기·다시 찾는 차례)은 원래 화면의 편집기 plannotator v0.28.48(backnotprop, MIT OR Apache-2.0)의
 // diagramAnchor 규약을 따른다. 그 소스를 싣지 않고 같은 규칙을 이 화면의 짜임(그림 + 겹친 단추)에 맞게 따로 썼다.
 import type { AgentADiagramFamily, AgentAReviewDiagramAnchor } from "@shared/agent-a";
-import { diagramLabel, ORDINAL, sourceLineOf, type DiagramTarget } from "@shared/agent-a-diagram";
+import { diagramLabel, ORDINAL, partLine, sourceLineOf, sourceParts, type DiagramTarget } from "@shared/agent-a-diagram";
 
 // 도식 글에서 줄을 찾는 규칙은 서버도 쓴다(새 댓글의 자리가 문서의 도식에 이어지는지 본다). 한 곳(shared)에 둔다.
 export { sourceLineOf, type DiagramTarget };
@@ -101,8 +101,23 @@ export const anchorText = (a: AgentAReviewDiagramAnchor | Pick<DiagramPart, "lab
 export function anchorFor(family: Exclude<AgentADiagramFamily, "graphviz">, part: DiagramPart | null, source: string, fenceLine: number): AgentAReviewDiagramAnchor {
   const inDoc = (line: [number, number] | null): [number, number] | null => (line ? [line[0] + fenceLine, line[1] + fenceLine] : null);
   if (!part) return { v: 1, family, kind: "diagram", label: diagramLabel(source), sourceLine: inDoc(sourceLineOf(source, { family, kind: "diagram" })) };
-  const target: DiagramTarget = { family, kind: part.kind, ...(part.id !== undefined ? { id: part.id } : {}), ...(part.from !== undefined && part.to !== undefined ? { from: part.from, to: part.to } : {}) };
+  const target = targetOf(family, part);
   return { v: 1, ...target, label: part.label, sourceLine: inDoc(sourceLineOf(source, target)) };
+}
+
+/** 그려진 부분이 가리키는 대상(이름이나 양 끝). */
+function targetOf(family: AgentADiagramFamily, part: Pick<DiagramPart, "kind" | "id" | "from" | "to">): DiagramTarget {
+  return { family, kind: part.kind, ...(part.id !== undefined ? { id: part.id } : {}), ...(part.from !== undefined && part.to !== undefined ? { from: part.from, to: part.to } : {}) };
+}
+
+/**
+ * 새 댓글을 달 수 있는 부분만 고른다: 도식 글의 문장에서 그 부분을 찾을 수 있는 것(sourceParts).
+ * 서버가 같은 규칙으로 대상이 본문에 있는지 확인하므로, 글에서 찾지 못하는 부분(상태도의 메모·구획 조각 등)은 따로 누를 자리로 내지 않는다.
+ * 그 자리를 누르면 도식 전체에 다는 댓글이 된다. 이미 있는 댓글의 표시는 이 목록과 상관없이 그려진 부분에 붙는다(findPart).
+ */
+export function pickable<T extends Pick<DiagramPart, "kind" | "id" | "from" | "to">>(family: AgentADiagramFamily, parts: readonly T[], source: string): T[] {
+  const found = sourceParts(source);
+  return parts.filter((part) => partLine(found, targetOf(family, part)) !== null);
 }
 
 /** 두 자리가 같은 부분을 가리키는지: 종류가 같고, 이름이 있으면 이름이, 없으면 양 끝이 같다. */
@@ -144,15 +159,21 @@ export interface DiagramBlockInfo {
 
 /**
  * 이미 있는 도식 댓글이 본문의 몇 번째 도식 것인지(표시를 어디에 그릴지). 새 댓글의 자리 검사(서버의 diagramInBody)와는 다른 일이다.
- * 원래 화면의 규칙을 따른다:
- * - Graphviz 댓글은 Mermaid 도식의 것이 아니다(B 라는 이름이 같아도 DOT 의 부분이다). 이 화면은 Mermaid 만 그리므로 Graphviz 댓글은 늘 null 이다: 목록에만 남는다.
- * - Mermaid 안의 갈래는 견주지 않는다. 본문의 도식을 흐름도에서 상태도로 바꿔도 같은 이름의 부분이 있으면 옛 댓글이 다시 붙는다.
+ * 댓글의 주인 도식은 자리의 문서 줄로 가린다. 이 화면이 쓰는 댓글은 blockId 가 비어 있고(원래 화면의 조각 번호를 만들지 못한다),
+ * 대신 쓰는 순간 서버가 그 줄이 본문의 한 도식 조각에 묶이는지 확인한다. 원래 화면이 쓴 댓글의 줄도 문서 줄이다.
+ * - 줄이 가리키는 도식 조각이 지금 본문에 있으면 그 도식의 댓글이다. 그 도식에 그 부분이 있으면 거기 표시하고, 없으면(부분이 사라졌으면) null 이다:
+ *   표시 없이 댓글 목록에만 남는다. 같은 이름의 부분이 다른 도식에 있어도 그리로 옮기지 않는다.
+ * - 줄이 없거나 어느 도식 조각에도 들지 않으면(조각이 지워졌거나 밖에서 온 댓글) 줄로는 주인을 모른다. 그때 댓글에 적힌 블록 이름(blockId)을 본다:
+ *   - 원래 화면의 블록 이름(block-숫자)이 아니면(빈 값·external·없는 이름) 주인 없는 댓글이다: 그 자리를 찾는 문서 차례의 첫 도식에 붙는다(원래 화면의 규칙).
+ *   - 원래 화면의 블록 이름이면 그 블록이 지금도 남아 있는 도식일 수 있다(원래 화면은 그 블록에서만 찾는다). 이 화면은 그 번호가 어느 도식인지 알지 못한다.
+ *     도식이 하나뿐이면 어느 쪽이든 답이 같으므로 그 도식에서 찾는다. 도식이 여럿이면 옮기지 않는다(null: 목록에만 남는다).
+ * - Graphviz 댓글은 Mermaid 도식의 것이 아니다(B 라는 이름이 같아도 DOT 의 부분이다). 이 화면은 Mermaid 만 그리므로 Graphviz 댓글은 늘 null 이다.
+ * - Mermaid 안의 갈래는 견주지 않는다(원래 화면과 같다). 같은 조각을 흐름도에서 상태도로 바꿔도 같은 이름의 부분이 있으면 옛 댓글이 다시 붙는다.
  *   이름의 문법이 다른 갈래(순서도의 msg-2 같은 차례 이름)는 그 이름의 부분이 없어 붙지 않는다.
- * 자리의 문서 줄이 그 도식의 줄 안이고 그 도식에 그 부분이 있으면 그 도식이다. 줄이 없거나 맞지 않으면(본문이 바뀌었으면)
- * 그 자리를 찾는 문서 차례의 첫 도식이다(원래 화면과 같다). 가릴 도식을 아직 그리는 중이면 기다린다(null).
- * 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다). 어느 도식에서도 못 찾으면 null 이다: 표시 없이 댓글 목록에만 남는다.
+ * 가릴 도식을 아직 그리는 중이면 기다린다(null).
+ * 한계: 줄은 자리다. 본문을 고쳐 줄이 밀리면 옛 줄이 다른 도식 조각에 들 수 있다(그때는 그 조각의 댓글로 본다). 원래 화면의 조각 번호도 같은 한계가 있다.
  */
-export function ownerOf(anchor: AgentAReviewDiagramAnchor, blocks: readonly DiagramBlockInfo[]): number | null {
+export function ownerOf(anchor: AgentAReviewDiagramAnchor, blocks: readonly DiagramBlockInfo[], blockId: string | null = null): number | null {
   const has = (b: DiagramBlockInfo): boolean => b.drawn != null && (b.drawn.family === "graphviz") === (anchor.family === "graphviz") && (anchor.kind === "diagram" || findPart(b.drawn.parts, anchor) !== null);
   if (anchor.sourceLine) {
     const [first, last] = anchor.sourceLine;
@@ -160,12 +181,15 @@ export function ownerOf(anchor: AgentAReviewDiagramAnchor, blocks: readonly Diag
     if (at !== -1) {
       const b = blocks[at]!;
       if (b.drawn === undefined) return null;
-      // 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다).
-      if (anchor.kind === "diagram") return has(b) ? at : null;
-      if (has(b)) return at;
+      // 주인 도식이 남아 있다: 거기서만 찾는다.
+      return has(b) ? at : null;
     }
   }
+  // 줄로는 주인을 모르는데 원래 화면의 블록 이름을 가진 댓글: 그 블록이 남아 있는지 알 수 없다. 도식이 여럿이면 다른 도식으로 옮기지 않는다.
+  if (blockId !== null && ORIGINAL_BLOCK.test(blockId) && blocks.length > 1) return null;
   if (blocks.some((b) => b.drawn === undefined)) return null;
   const at = blocks.findIndex(has);
   return at === -1 ? null : at;
 }
+/** 원래 화면(plannotator)의 편집기가 블록에 붙이는 이름: block-0, block-1, … (글을 읽은 차례의 번호다). */
+const ORIGINAL_BLOCK = /^block-\d+$/;

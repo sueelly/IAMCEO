@@ -279,6 +279,11 @@ export interface AgentAReviewDoc {
    * false 면 새 댓글·초안 고치기를 서버가 막는다(다른 화면의 초안을 덮을 수 있어서). 읽기·답글·수정안·판은 그대로다.
    */
   safeWrites: boolean;
+  /**
+   * 이 Agent-A 가 댓글 추가의 초안 판 조건(annotation_if_draft_revision)을 아는지. 도식 댓글은 그 조건으로만 쓴다:
+   * 본문의 그 도식에 묶는 검사와 실제 쓰기를 Agent-A 의 한 트랜잭션으로 잇는다. false 면 서버가 도식 댓글을 막고, 화면은 도식에 누를 자리를 내지 않는다.
+   */
+  diagramWrites: boolean;
   recoveries: AgentAReviewRecovery[];
 }
 
@@ -298,6 +303,11 @@ export interface AgentAReviewAnnotation {
   region: AgentAReviewImageRegion | null;
   /** 도식의 한 부분(또는 도식 전체)에 단 댓글이면 그 자리. 아니거나 자리의 모양이 틀리면 null. */
   diagram: AgentAReviewDiagramAnchor | null;
+  /**
+   * 도식 댓글에 적힌 블록 이름(주석의 blockId). 원래 화면은 이 이름으로 댓글의 주인 도식을 가린다. 이 화면이 쓴 댓글은 빈 값이라 null 이다
+   * (원래 편집기의 블록 번호를 서버가 만들지 못한다. 이 화면은 주인을 문서 줄로 가린다). 도식 댓글이 아니면 null.
+   */
+  diagramBlock: string | null;
   /** 답을 아직 쓰는 중인지(대기·준비). */
   writing: boolean;
   error: { code: string; message: string } | null;

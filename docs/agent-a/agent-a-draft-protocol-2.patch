@@ -1,5 +1,5 @@
 diff --git a/src/server/plannotator.js b/src/server/plannotator.js
-index 473eb1a..8b40a77 100644
+index 473eb1a..a4115aa 100644
 --- a/src/server/plannotator.js
 +++ b/src/server/plannotator.js
 @@ -142,6 +142,13 @@ export function installPlannotator(app, repository) {
@@ -20,7 +20,7 @@ index 473eb1a..8b40a77 100644
      layout_revision: session.projection.layout_revision, blocks: session.projection.blocks,
      source_map: session.projection.source_map, image_region_targets: session.image_region_targets ?? {}, decision: session.decision, draft: session.draft,
      documents: Object.values(session.documents ?? {}),
-+    draft_revision: draftRevision(session), capabilities: { draft_protocol: 2 },
++    draft_revision: draftRevision(session), capabilities: { draft_protocol: 2, annotation_if_draft_revision: true },
      stale: session.projection_key !== latestKey,
      recoveries: recoveriesFor(session.artifact_id, session.id, latestKey) });
    app.post('/api/plannotator/sessions', async req => {
@@ -32,7 +32,7 @@ index 473eb1a..8b40a77 100644
      if (!session.draft) return reply.code(404).send({ found: false, draftGeneration: session.draft_generation });
      return { ...session.draft, draftGeneration: session.draft_generation, documents: Object.values(session.documents) };
    });
-@@ -263,18 +272,71 @@ export function installPlannotator(app, repository) {
+@@ -263,18 +272,78 @@ export function installPlannotator(app, repository) {
      if (session.decision) return { refusal: { ok: false, decided: true, draftGeneration: session.draft_generation } };
      const generation = body.draftGeneration ?? 0;
      if (!Number.isSafeInteger(generation) || generation < 0) invalid('Invalid draft generation.');
@@ -72,7 +72,8 @@ index 473eb1a..8b40a77 100644
 +    let change;
 +    const response = transactionReply(reply, () => {
 +      const session = context(req), body = req.body;
-+      if (!object(body) || !object(body.annotation) || Object.keys(body).some(key => key !== 'annotation')) invalid('One annotation is required.');
++      if (!object(body) || !object(body.annotation) || Object.keys(body).some(key => key !== 'annotation' && key !== 'ifDraftRevision')) invalid('One annotation is required.');
++      if (body.ifDraftRevision !== undefined && (!Number.isSafeInteger(body.ifDraftRevision) || body.ifDraftRevision < 0)) invalid('Invalid draft revision.');
 +      const annotation = structuredClone(body.annotation);
 +      if (typeof annotation.id !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(annotation.id) || ['__proto__', 'prototype', 'constructor'].includes(annotation.id) ||
 +        !['COMMENT', 'GLOBAL_COMMENT', 'DELETION'].includes(annotation.type) || annotation.source !== undefined || annotation.inReplyTo !== undefined ||
@@ -91,6 +92,12 @@ index 473eb1a..8b40a77 100644
 +      }
 +      if (session.decision) return { refusal: { ok: false, decided: true, draftGeneration: session.draft_generation, draftRevision: draftRevision(session) } };
 +      fresh(session);
++      // A conditional writer checked its comment against the draft it read at ifDraftRevision (for
++      // example, that the diagram part it names is in that draft's body). If another window saved
++      // since, nothing is written. The order is fixed: a resent id is confirmed first, then the
++      // submitted and older-canonical refusals, then this condition, all in this one transaction.
++      if (body.ifDraftRevision !== undefined && body.ifDraftRevision !== draftRevision(session))
++        return { refusal: { ok: false, code: 'draft_conflict', draftGeneration: session.draft_generation, draftRevision: draftRevision(session) } };
 +      annotation.createdA = Date.now();
 +      const targets = imageRegionTargets(session, [annotation], typeof draft.editedMarkdown === 'string' ? draft.editedMarkdown : session.projection.markdown);
 +      const previousDraft = session.draft;
@@ -106,7 +113,7 @@ index 473eb1a..8b40a77 100644
    app.delete('/api/draft', async req => {
      let change;
      const response = db.transaction(() => {
-@@ -282,7 +344,7 @@ export function installPlannotator(app, repository) {
+@@ -282,7 +351,7 @@ export function installPlannotator(app, repository) {
      if (!Number.isSafeInteger(generation) || generation < 0) invalid('Invalid draft generation.');
      if (generation >= session.draft_generation) {
        const previousDraft = session.draft;
@@ -115,7 +122,7 @@ index 473eb1a..8b40a77 100644
        change = { reviewSession: session, previousDraft, draft: null, actor: req.actor };
      }
      return { ok: true };
-@@ -302,7 +364,7 @@ export function installPlannotator(app, repository) {
+@@ -302,7 +371,7 @@ export function installPlannotator(app, repository) {
      const targets = Object.assign({}, ...documents.map(doc => imageRegionTargets(session, doc.annotations, typeof doc.editedMarkdown === 'string' ? doc.editedMarkdown : undefined)));
      session.image_region_targets = {...(session.image_region_targets ?? {}), ...targets};
      for (const doc of documents) session.documents[doc.path] = structuredClone(doc);
@@ -124,7 +131,7 @@ index 473eb1a..8b40a77 100644
    }));
  
    function submit(req, action) {
-@@ -326,6 +388,12 @@ export function installPlannotator(app, repository) {
+@@ -326,6 +395,12 @@ export function installPlannotator(app, repository) {
          if (session.decision.request_hash !== requestHash || session.decision.actor_id !== req.actor.id) fail(409, 'already_decided', 'This review was already submitted.');
          return session.decision.response;
        }
@@ -137,7 +144,7 @@ index 473eb1a..8b40a77 100644
        // A refusal MUST leave the full native draft intact.
        try { fresh(session); }
        catch (error) {
-@@ -335,7 +403,7 @@ export function installPlannotator(app, repository) {
+@@ -335,7 +410,7 @@ export function installPlannotator(app, repository) {
          session.draft = { ...(session.draft ?? { globalAttachments: [] }),
            ...(body.annotations !== undefined ? { annotations: structuredClone(annotations) } : {}),
            draftGeneration: session.draft_generation };
@@ -146,7 +153,7 @@ index 473eb1a..8b40a77 100644
          return { refusal: { ok: false, code: error.code, error: error.message, message: error.message,
            draft_preserved: true, session_id: session.id } };
        }
-@@ -383,7 +451,7 @@ export function installPlannotator(app, repository) {
+@@ -383,7 +458,7 @@ export function installPlannotator(app, repository) {
            ...(Array.isArray(body.globalAttachments) ? { globalAttachments: structuredClone(body.globalAttachments) } : {}) };
        }
        session.submitted_documents = session.documents;
@@ -157,10 +164,10 @@ index 473eb1a..8b40a77 100644
    }
 diff --git a/tests/server/draft-protocol.test.js b/tests/server/draft-protocol.test.js
 new file mode 100644
-index 0000000..fe5deda
+index 0000000..06749bb
 --- /dev/null
 +++ b/tests/server/draft-protocol.test.js
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,238 @@
 +// Draft protocol 2: a real draft revision, conditional whole-draft saves and an atomic comment append.
 +// The native Plannotator client keeps its unconditional saves; these additions only protect writers
 +// that opt in (the IAMCEO direct screen) from replacing another window's draft.
@@ -198,7 +205,7 @@ index 0000000..fe5deda
 +
 +test('a session advertises draft protocol 2 and every draft mutation moves draftRevision', async t => {
 +  const { review, request } = await open(t);
-+  assert.deepEqual(review.capabilities, { draft_protocol: 2 });
++  assert.deepEqual(review.capabilities, { draft_protocol: 2, annotation_if_draft_revision: true });
 +  assert.equal(review.draft_revision, 0);
 +  const empty = await request('/api/draft');
 +  assert.equal(empty.statusCode, 404);
@@ -302,6 +309,62 @@ index 0000000..fe5deda
 +  // A resend of the comment saved before the canonical change is still confirmed.
 +  assert.equal((await request('/api/draft/annotations', { annotation: comment('root') })).json().duplicate, true);
 +  assert.equal((await as(latest.id)('/api/draft/annotations', { annotation: comment('current') })).statusCode, 200);
++});
++
++test('a conditional comment append checks the resend, the canonical document and the draft revision in the write transaction', async t => {
++  const { repository, review, request } = await open(t);
++  // The writer read the draft at revision 0 and appends on that condition.
++  const first = await request('/api/draft/annotations', { annotation: comment('one'), ifDraftRevision: 0 });
++  assert.equal(first.statusCode, 200, first.body);
++  assert.equal(first.json().draftRevision, 1);
++  // Another window saves after the writer's next read (revision 1): nothing is appended.
++  const theirs = await request('/api/draft', { draftGeneration: 0, annotations: (await request('/api/draft')).json().annotations, globalAttachments: [], editedMarkdown: 'their edit' });
++  assert.equal(theirs.statusCode, 200);
++  const before = await request('/api/draft');
++  const moved = await request('/api/draft/annotations', { annotation: comment('two'), ifDraftRevision: 1 });
++  assert.equal(moved.statusCode, 409);
++  assert.deepEqual(moved.json(), { ok: false, code: 'draft_conflict', draftGeneration: 0, draftRevision: 2 });
++  const unchanged = await request('/api/draft');
++  assert.deepEqual(unchanged.json(), before.json());
++  assert.equal(revision(unchanged), revision(before));
++  // A resent id is confirmed before the condition is looked at, even with the old revision.
++  const again = await request('/api/draft/annotations', { annotation: comment('one'), ifDraftRevision: 0 });
++  assert.equal(again.statusCode, 200);
++  assert.equal(again.json().duplicate, true);
++  // Malformed conditions and unknown fields are refused without a write.
++  for (const bad of [-1, 1.5, '2', null]) {
++    assert.equal((await request('/api/draft/annotations', { annotation: comment('bad'), ifDraftRevision: bad })).statusCode, 400, String(bad));
++  }
++  assert.equal((await request('/api/draft/annotations', { annotation: comment('bad'), ifDraftRevision: 2, extra: 1 })).statusCode, 400);
++  // The canonical document changes after the writer's read. The draft revision still matches,
++  // yet the append is refused in the same transaction and the stored draft is untouched.
++  const state = repository.require(review.artifact_id), block = state.blocks.find(b => !b.archived);
++  repository.run(review.artifact_id, { command_id: 'make-new-canonical-cas', type: 'edit_block', block_id: block.id, base_revision: block.revision,
++    context_revision: state.context_revision, content: { ...block.content, body: `${block.content.body}\n\nnew canonical` } }, { id: 'local-user', role: 'user' });
++  const stale = await request('/api/draft/annotations', { annotation: comment('three'), ifDraftRevision: 2 });
++  assert.equal(stale.statusCode, 409);
++  assert.equal(stale.json().code, 'revision_conflict');
++  const kept = await request('/api/draft');
++  assert.deepEqual(kept.json(), before.json());
++  assert.equal(revision(kept), revision(before));
++  // The comment saved before the canonical change is still confirmed on resend.
++  assert.equal((await request('/api/draft/annotations', { annotation: comment('one'), ifDraftRevision: 2 })).json().duplicate, true);
++});
++
++test('a conditional comment append to a submitted review is refused as submitted, whatever the condition', async t => {
++  const { request, review } = await open(t);
++  assert.equal((await request('/api/draft/annotations', { annotation: comment('kept'), ifDraftRevision: 0 })).statusCode, 200);
++  const submitted = await request('/api/feedback', { serverSession: review.server_session, feedback: '', annotations: [], nothingToSend: true });
++  assert.equal(submitted.statusCode, 200, submitted.body);
++  const current = revision(await request('/api/draft'));
++  for (const condition of [current, current + 5]) {
++    const closed = await request('/api/draft/annotations', { annotation: comment('after-submit'), ifDraftRevision: condition });
++    assert.equal(closed.statusCode, 409);
++    assert.equal(closed.json().decided, true);
++  }
++  assert.equal(revision(await request('/api/draft')), current);
++  // The comment saved before the submit is still confirmed on resend.
++  assert.equal((await request('/api/draft/annotations', { annotation: comment('kept'), ifDraftRevision: 0 })).json().duplicate, true);
 +});
 +
 +test('malformed, reply-shaped and submitted-review appends are refused without touching the draft', async t => {

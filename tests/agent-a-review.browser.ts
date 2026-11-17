@@ -17,6 +17,7 @@ import { Orchestrator } from "../server/orchestrator.ts";
 import type { Runner, RunnerEvent, SendResult } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
 import type { AgentAReviewDiagramAnchor } from "../shared/agent-a.ts";
+import { mermaidBlocks, sourceParts } from "../shared/agent-a-diagram.ts";
 import type { Backend, FileDoc, Project } from "../shared/types.ts";
 import { fakeAgentAReview } from "./fixtures/fake-agent-a-review.ts";
 import { pngBase64 } from "./fixtures/png.ts";
@@ -863,6 +864,187 @@ describe("Agent-A 문서 화면", () => {
     expect(errors).toEqual([]);
     await page.close();
   }, 180_000);
+
+  // ---- R3 세 경계 보완: 본문의 도식에 없는 대상 · 남아 있는 주인 도식 · 실제로 그려진 부분 ----
+  for (const width of [1280, 390] as const) {
+    const phone = width === 390;
+    const where = phone ? "폰 390" : "PC 1280";
+    const newPage = () => browser.newPage(phone ? { viewport: { width, height: 844 }, hasTouch: true, isMobile: true } : { viewport: { width, height: 900 } });
+    /** 그 부분을 눌러 댓글을 달고 답을 기다린다(폰은 손끝으로 누르고 보내기 단추를 쓴다). */
+    const comment = async (page: Page, hit: ReturnType<Page["locator"]>, text: string) => {
+      await hit.scrollIntoViewIfNeeded();
+      if (phone) await hit.tap(); else await hit.click();
+      const panel = phone ? page.locator("dialog[open]") : pane(page);
+      await panel.getByLabel("댓글", { exact: true }).fill(text);
+      if (phone) await panel.getByRole("button", { name: "보내기" }).tap(); else await panel.getByLabel("댓글", { exact: true }).press("Enter");
+      await answered(page, 1, `시험 답: ${text}`);
+      if (phone) await panel.getByRole("button", { name: "닫기" }).tap(); else await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    };
+    const reopen = async (page: Page) => {
+      await page.reload();
+      await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+      await drawn(page);
+      await page.waitForTimeout(600);
+    };
+    const partsIn = (page: Page) => page.locator(".aar-diagram").evaluateAll((list) => list.map((d) => [...new Set([...d.querySelectorAll(".aar-diagram__part")].map((b) => `${b.getAttribute("data-kind")}:${b.getAttribute("data-part")}`))].sort()));
+    const marksIn = (page: Page) => page.locator(".aar-diagram").evaluateAll((list) => list.map((d) => d.querySelectorAll(".aar-diagram__mark").length));
+
+    test(`${where}: 도식에 없는 부분과 줄이 없는 자리의 새 댓글은 받지 않는다(댓글·번호 표시·초안 판이 그대로다). 실제로 있는 부분은 자리의 갈래·글이 달라도 받는다`, async () => {
+      const fileId = await newDiagramDoc(`없는 부분 문서 ${width}`);
+      const doc = await review.open(fileId);
+      const fence = doc.markdown.split("\n").indexOf("```mermaid") + 1;
+      const page = await newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await open(page, fileId);
+      await drawn(page);
+      // 실제로 그려져 누를 수 있는 부분은 노드 A·B·C 와 선 A→B·B→C 뿐이다
+      await expect(partsIn(page)).resolves.toEqual([["edge:A→B", "edge:B→C", "node:A", "node:B", "node:C"]]);
+      // 정상군: 실제 B 를 눌러 댓글 하나
+      await comment(page, page.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first(), `실제 B 의 댓글 ${width}`);
+      const mine: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] };
+      const stored = async () => (await review.comments(fileId, doc.sessionId, null))!.annotations.filter((a) => !a.ai).map((a) => [a.text, a.diagram]);
+      await expect(stored()).resolves.toEqual([[`실제 B 의 댓글 ${width}`, mine]]);
+      await expect(marksIn(page)).resolves.toEqual([1]);
+      const before = await rawDraft(fileId, doc.sessionId);
+      const send = async (id: string, anchor: AgentAReviewDiagramAnchor) => {
+        const res = await fetch(`${base}/api/agent-a/docs/${fileId}/review/comments`, { method: "POST", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ session: doc.sessionId, id, kind: "comment", text: "직접 보낸 도식 댓글", diagram: anchor }) });
+        return [id, res.status, ((await res.json()) as { code?: string }).code ?? null];
+      };
+      // 본문의 도식에 없는 대상(모양은 맞다): 줄이 없는 자리(없는 이름·실제 이름) · 없는 이름 · 상자 글의 낱말 · 선 위 글의 낱말 · 없는 선 · 없는 묶음
+      const absent: [string, AgentAReviewDiagramAnchor][] = [
+        ["absent-null-line", { ...mine, id: "NO_SUCH_PART", label: "없는 부분", sourceLine: null }],
+        ["real-null-line", { ...mine, sourceLine: null }],
+        ["absent-name", { ...mine, id: "NO_SUCH_PART", label: "없는 부분" }],
+        ["box-word", { ...mine, id: "검토" }],
+        ["link-word", { ...mine, id: "통과", label: "통과", sourceLine: [fence + 3, fence + 3] }],
+        ["absent-edge", { v: 1, family: "flowchart", kind: "edge", from: "A", to: "C", label: "", sourceLine: [fence + 2, fence + 2] }],
+        ["absent-cluster", { v: 1, family: "flowchart", kind: "cluster", id: "subGraph0", label: "", sourceLine: [fence + 1, fence + 1] }],
+      ];
+      for (const [id, anchor] of absent) await expect(send(`${id}-${width}`, anchor)).resolves.toEqual([`${id}-${width}`, 400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+      // 아무것도 쓰이지 않았다: Agent-A 의 초안 전체와 초안 판이 그대로다. 다시 열어도 댓글 하나·번호 표시 하나다
+      await expect(rawDraft(fileId, doc.sessionId)).resolves.toEqual(before);
+      await reopen(page);
+      await expect(stored()).resolves.toHaveLength(1);
+      await expect(marksIn(page)).resolves.toEqual([1]);
+      if (phone) await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+      else await expect(pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).count()).resolves.toBe(1);
+      await shot(page, `37-${phone ? "phone" : "desk"}-diagram-absent-part`);
+      // 견주는 정상군(없는 대상과 다른 일이다): 대상이 실제로 있는 B 면 자리에 적힌 갈래나 보이는 글이 달라도 받는다(남은 범위)
+      await expect(send(`real-other-family-${width}`, { ...mine, family: "state" })).resolves.toEqual([`real-other-family-${width}`, 200, null]);
+      await expect(send(`real-other-label-${width}`, { ...mine, label: "그려진 글과 다른 글" })).resolves.toEqual([`real-other-label-${width}`, 200, null]);
+      await reopen(page);
+      await expect(stored()).resolves.toHaveLength(3);
+      await expect(marksIn(page)).resolves.toEqual([3]);
+      expect(errors).toEqual([]);
+      await page.close();
+    }, 180_000);
+
+    test(`${where}: 첫 도식의 B 만 Z 로 바꾸면 그 댓글은 목록에 남고 둘째 도식의 B 로 옮겨 가지 않는다. B 를 되돌리면 제 도식에 다시 붙는다. 주인 도식이 없는 원래 댓글은 같은 이름의 첫 부분에 붙는다`, async () => {
+      const markdown = ["## 유지할 첫 도식", "", "```mermaid", "graph TD", "  A[시작] --> B[검토]", "```", "", "## 다른 도식", "", "```mermaid", "graph LR", "  B[검토] --> C[끝]", "```", "", "끝 문장."].join("\n");
+      const fileId = (await agentA.createDoc(project.id, { title: `주인 도식 문서 ${width}`, markdown })).fileId;
+      const doc = await review.open(fileId);
+      const page = await newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await open(page, fileId);
+      await drawn(page);
+      await expect(partsIn(page)).resolves.toEqual([["edge:A→B", "node:A", "node:B"], ["edge:B→C", "node:B", "node:C"]]);
+      // 화면에서 첫 도식의 B 에 댓글을 단다. IAMCEO 댓글은 블록 이름이 비어 있고(원래 편집기의 블록 이름을 모른다) 문서 줄이 주인 도식을 가리킨다
+      const text = `첫 도식의 B ${width}`;
+      await comment(page, page.locator(".aar-diagram").nth(0).locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first(), text);
+      await expect(marksIn(page)).resolves.toEqual([1, 0]);
+      const [first] = mermaidBlocks(doc.markdown);
+      const saved = (await rawDraft(fileId, doc.sessionId)).json!.annotations as { text: string; blockId: string; diagramAnchor: AgentAReviewDiagramAnchor }[];
+      expect(saved.map((a) => [a.text, a.blockId, a.diagramAnchor.sourceLine])).toEqual([[text, "", [first!.line + 2, first!.line + 2]]]);
+      const body = async (markdown: string, opId: string) => {
+        const d = await review.draft(fileId, doc.sessionId);
+        await review.saveDraft(fileId, doc.sessionId, { markdown, revision: d.revision, opId });
+      };
+      // 다른 화면이 본문 초안에서 첫 도식의 B 만 Z 로 바꿨다. 첫 도식은 남아 있고, 둘째 도식에는 원래부터 B 가 있다
+      await body(doc.markdown.replace("  A[시작] --> B[검토]", "  A[시작] --> Z[다른 부분]"), `ui-owner-rename-${width}`);
+      await reopen(page);
+      await expect(partsIn(page)).resolves.toEqual([["edge:A→Z", "node:A", "node:Z"], ["edge:B→C", "node:B", "node:C"]]);
+      // 번호 표시는 어느 도식에도 없다(둘째 도식의 B 로 옮기지 않는다). 댓글 글은 그대로 남아 있다
+      await expect(marksIn(page)).resolves.toEqual([0, 0]);
+      const texts = async () => (await review.comments(fileId, doc.sessionId, null))!.annotations.filter((a) => !a.ai).map((a) => a.text);
+      await expect(texts()).resolves.toEqual([text]);
+      if (!phone) {
+        // 목록에서 그 댓글을 열어 읽을 수 있다. 도식에 고른 표시는 생기지 않는다
+        await pane(page).locator(".aar-row", { hasText: text }).click();
+        await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain(text);
+        await expect(page.locator(".aar-diagram__ring[data-active], .aar-diagram__mark[data-active]").count()).resolves.toBe(0);
+        await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+      }
+      await shot(page, `38-${phone ? "phone" : "desk"}-diagram-owner-kept`);
+      // 견주는 정상군(다른 일이다): 주인 도식이 없는 원래 댓글(줄 없음, 지금 문서에 없는 블록 이름)은 같은 이름을 찾는 첫 도식 = 둘째 도식에 붙는다
+      expect(await otherWindowComment(fileId, doc.sessionId, { id: `unowned-${width}`, blockId: "old-block", startOffset: 0, endOffset: 0, type: "COMMENT", text: "주인 없는 원래 댓글", originalText: "검토",
+        diagramAnchor: { v: 1, family: "state", kind: "node", id: "B", label: "검토", sourceLine: null } })).toBe(200);
+      await reopen(page);
+      await expect(marksIn(page)).resolves.toEqual([0, 1]);
+      // 원래 화면이 제 블록 이름(block-숫자)으로 남긴 줄 없는 댓글: 그 블록이 남아 있는 첫 도식일 수 있다. 도식이 여럿이라 어느 도식인지 알 수 없으므로 옮기지 않는다
+      expect(await otherWindowComment(fileId, doc.sessionId, { id: `own-block-${width}`, blockId: "block-1", startOffset: 0, endOffset: 0, type: "COMMENT", text: "제 블록 이름이 있는 원래 댓글", originalText: "검토",
+        diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: null } })).toBe(200);
+      await reopen(page);
+      await expect(marksIn(page)).resolves.toEqual([0, 1]);
+      // B 를 되돌리면 내 댓글은 제 도식(첫 도식)에 다시 붙는다. 주인 없는 댓글은 이제 B 를 찾는 첫 도식(첫 도식)에 붙는다. 제 블록 이름이 있는 줄 없는 댓글은 그대로 목록에만 있다
+      await body(doc.markdown, `ui-owner-restore-${width}`);
+      await reopen(page);
+      await expect(marksIn(page)).resolves.toEqual([2, 0]);
+      await expect(texts()).resolves.toEqual([text, "주인 없는 원래 댓글", "제 블록 이름이 있는 원래 댓글"]);
+      expect(errors).toEqual([]);
+      await page.close();
+    }, 180_000);
+  }
+
+  test("데스크톱: 도식 글에서 뽑은 부분은 모두 실제 Mermaid 가 그린 부분이다(없는 부분을 지어내지 않는다). 글에서 못 찾는 그려진 부분은 누를 자리로 내지 않는다", async () => {
+    // [도식 글, 실제로 그려지지만 글의 문장에서 찾지 않는 부분(따로 누를 자리가 없다: 그 자리를 누르면 도식 전체에 단다)]
+    const probes: [string[], string[]][] = [
+      [["flowchart LR", "  A -- 글 하나 --> B", "  B -. 점선 글 .-> C", "  C == 굵은 글 ==> D", "  D --o E", "  E <--> F", "  A & B --> G", "  J ~~~ K", "  K -->|go to Z| L", "  X[go to B] --> Y"], []],
+      [["flowchart TD", "  subgraph 묶음 하나", "    A[시작] --> B[끝]", "  end", "  subgraph G2 [둘째 묶음]", "    C --> D", "    subgraph 안쪽 묶음", "      E --> F", "    end", "  end", "  subgraph named", "    H --> I", "  end", "  B --> C"], []],
+      [["stateDiagram-v2", "  [*] --> First", "  state First {", "    [*] --> second", "    second --> [*]: 안쪽끝", "  }", "  First --> Third: 가기", "  note right of Third: 메모", "  Third --> [*]: 끝"], ["node:Third----note"]],
+      [["sequenceDiagram", "  actor A as 사람", "  participant B", "  A->>+B: 요청 C 에게", "  B-->>-A: 응답", "  par 병렬", "    B-)C: 비동기", "  and 다른", "    B-xD: 실패", "  end", "  Note right of B: 메모 E"], []],
+      [["classDiagram", "  class Drawable", "  <<interface>> Drawable", "  class Circle", "  Drawable <|.. Circle : 구현", "  Circle \"1\" *-- \"many\" Square : 가짐", "  Square : +int side"], []],
+      [["erDiagram", "  CUSTOMER {", "    string name", "    string ORDER", "  }", "  CUSTOMER ||--o{ ORDER : places", "  ORDER }|..|{ LINE-ITEM : has"], []],
+      [["requirementDiagram", "  requirement test_req {", "    id: 1", "    text: the test text.", "    risk: high", "    verifymethod: test", "  }", "  element test_entity {", "    type: simulation", "  }", "  test_entity - satisfies -> test_req"], []],
+    ];
+    const markdown = probes.flatMap(([code], i) => [`## 도식 ${i + 1}`, "", "```mermaid", ...code, "```", ""]).join("\n");
+    const fileId = (await agentA.createDoc(project.id, { title: "그려진 부분 대조 문서", markdown })).fileId;
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    // 그리기 틀이 돌려준 부분을 그대로 받아 적는다(화면이 고르기 전의 것). 틀은 문서 차례대로 d1, d2, … 로 답한다
+    await page.addInitScript(() => {
+      const w = window as unknown as { __drawn: { id: string; parts: string[] }[] };
+      w.__drawn = [];
+      addEventListener("message", (e) => {
+        const m = e.data as { kind?: string; id?: string; parts?: { kind: string; id?: string; from?: string; to?: string }[] } | null;
+        if (m && m.kind === "aar-diagram-result" && typeof m.id === "string" && Array.isArray(m.parts)) w.__drawn.push({ id: m.id, parts: m.parts.map((p) => `${p.kind}:${p.id ?? `${p.from ?? ""}→${p.to ?? ""}`}`) });
+      });
+    });
+    try {
+      await open(page, fileId);
+      await drawn(page);
+      await expect(page.locator(".aar-diagram").count()).resolves.toBe(probes.length);
+      const results = await page.evaluate(() => (window as unknown as { __drawn: { id: string; parts: string[] }[] }).__drawn);
+      expect(results.map((r) => r.id)).toEqual(probes.map((_, i) => `d${i + 1}`));
+      const shown = await page.locator(".aar-diagram").evaluateAll((list) => list.map((d) => [...new Set([...d.querySelectorAll(".aar-diagram__part")].map((b) => `${b.getAttribute("data-kind")}:${b.getAttribute("data-part")}`))].sort()));
+      probes.forEach(([code, unsupported], i) => {
+        const real = [...new Set(results[i]!.parts)].sort();
+        const found = [...new Set(sourceParts(code.join("\n")).map((p) => `${p.kind}:${p.id ?? `${p.from}→${p.to}`}`))].sort();
+        // 글에서 뽑은 부분은 하나도 빠짐없이 실제로 그려졌다. 그려졌는데 글에서 못 찾는 부분은 적어 둔 것뿐이다
+        expect([i, found.filter((k) => !real.includes(k))]).toEqual([i, []]);
+        expect([i, real.filter((k) => !found.includes(k))]).toEqual([i, unsupported]);
+        // 화면이 누를 자리로 낸 부분은 글에서 찾은 부분과 같다
+        expect([i, shown[i]]).toEqual([i, found]);
+      });
+      // 글에서 못 찾는 부분(상태도의 메모)이 그려진 자리를 누르면 도식 전체에 다는 댓글이 된다
+      const state = page.locator(".aar-diagram").nth(2);
+      await state.scrollIntoViewIfNeeded();
+      await expect(state.locator('.aar-diagram__part[data-part="Third----note"]').count()).resolves.toBe(0);
+    } finally {
+      await page.close();
+    }
+  }, 150_000);
 });
 
 // ---- 독립 검토 뒤에 되살린 기능(가짜 Agent-A 로만 돈다: 답 글·AI 표시가 가짜의 규칙이다) ----
@@ -878,6 +1060,12 @@ async function otherWindowSaves(sessionId: string, change: Record<string, unknow
 async function otherWindowComment(fileId: string, sessionId: string, annotation: Record<string, unknown>): Promise<number> {
   const init = { method: "POST", headers: { "x-enouv-artifact": agentA.docOf(fileId).artifactId, "x-enouv-review-session": sessionId, "content-type": "application/json" }, body: JSON.stringify({ annotation }) };
   return (REAL ? await fetch(`${REAL}/api/draft/annotations`, init) : await fake!.transport("http://127.0.0.1:4999/api/draft/annotations", init)).status;
+}
+/** Agent-A 가 가진 초안을 그대로 읽는다(IAMCEO 를 거치지 않는다). 가짜와 실제 Agent-A 서버 코드 둘 다에 쓴다. */
+async function rawDraft(fileId: string, sessionId: string): Promise<{ revision: string | null; json: Record<string, any> | null }> {
+  const init = { method: "GET", headers: { "x-enouv-artifact": agentA.docOf(fileId).artifactId, "x-enouv-review-session": sessionId } };
+  const res = REAL ? await fetch(`${REAL}/api/draft`, init) : await fake!.transport("http://127.0.0.1:4999/api/draft", init);
+  return { revision: res.headers.get("x-enouv-draft-revision"), json: res.status === 200 ? ((await res.json()) as Record<string, any>) : null };
 }
 const banner = (page: Page, text: string) => page.locator(".aar-banner", { hasText: text }).waitFor({ timeout: 15_000 });
 const tool = (page: Page, name: string) => page.locator(".aar-seg__btn", { hasText: new RegExp(`^${name}$`) }).click();
@@ -1227,6 +1415,42 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
       await shot(page, "17-desk-unsupported");
     } finally {
       fake!.setDraftProtocol(2);
+      await page.close();
+    }
+  }, 120_000);
+
+  test("댓글 추가의 초안 판 조건을 모르는 Agent-A(앞선 초안 보존 패치)에서는 도식에 누를 자리를 내지 않고 까닭을 보인다. 글 댓글과 이미 있는 도식 댓글의 표시는 그대로다", async () => {
+    const fileId = await newDiagramDoc("도식 댓글이 막힌 문서");
+    const doc = await review.open(fileId);
+    const fence = doc.markdown.split("\n").indexOf("```mermaid") + 1;
+    const B: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] };
+    await review.addComment(fileId, doc.sessionId, { id: "before-old-patch", kind: "comment", text: "먼저 단 도식 댓글", diagram: B });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    try {
+      await open(page, fileId);
+      await drawn(page);
+      await expect(page.locator(".aar-diagram__part").count()).resolves.toBeGreaterThan(0);
+      // 그 조건을 모르는 Agent-A 로 바뀐 뒤 다시 열면 도식에 누를 자리가 없다. 먼저 단 댓글의 번호 표시는 남는다
+      fake!.setAnnotationCondition(false);
+      await page.reload();
+      await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+      await drawn(page);
+      await banner(page, "이 Agent-A 는 댓글 추가의 초안 판 조건을 몰라 도식 댓글을 막았습니다. 다른 댓글은 그대로 됩니다.");
+      await expect(page.locator(".aar-diagram__part").count()).resolves.toBe(0);
+      await expect(page.locator(".aar-diagram__layer[data-pick]").count()).resolves.toBe(0);
+      await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 1, null, { timeout: 20_000 });
+      // 화면을 거치지 않고 서버 길을 직접 불러도 거절한다(쓰기는 Agent-A 에 가지 않는다)
+      const before = fake!.calls.length;
+      const direct = await fetch(`${base}/api/agent-a/docs/${fileId}/review/comments`, { method: "POST", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ session: doc.sessionId, id: "old-patch-direct", kind: "comment", text: "직접 보낸 도식 댓글", diagram: B }) });
+      expect([direct.status, ((await direct.json()) as { code?: string }).code]).toEqual([409, "AGENT_A_UNSUPPORTED"]);
+      expect(fake!.calls.slice(before).filter((c) => c.method === "POST" && c.path.startsWith("/api/draft"))).toEqual([]);
+      // 글 댓글은 그대로 된다
+      await quoteComment(page, "끝 문장입니다.", "글 댓글은 됩니다");
+      await answered(page, 1, "시험 답: 글 댓글은 됩니다");
+      await shot(page, "39-desk-diagram-old-patch");
+    } finally {
+      fake!.setAnnotationCondition(true);
       await page.close();
     }
   }, 120_000);
@@ -1786,16 +2010,23 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
       expect(stored.map((a) => [a.originalText, a.diagramAnchor])).toEqual([["응답", { v: 1, family: "sequence", kind: "edge", id: "msg-2", from: "S", to: "U", label: "응답", sourceLine: [line, line] }]]);
       await expect(diagrams.nth(1).locator(".aar-diagram__mark").count()).resolves.toBe(1);
       await shot(page, "34-desk-diagram-families");
-      // 원래 화면(다른 창)이 남긴 자리도 그 부분에 표시한다. 이름이 바뀌어 못 찾는 자리는 목록에만 남는다.
+      // 원래 화면(다른 창)이 남긴 자리도 그 부분에 표시한다(원래 화면은 제 블록 이름과 그 부분이 적힌 문서 줄을 싣는다). 이름이 바뀌어 못 찾는 자리는 목록에만 남는다.
+      // 줄이 어느 도식도 가리키지 않는 원래 댓글(여기서는 6 줄: 도식 밖이다)은 제 블록이 남아 있는지 알 수 없다. 도식이 여럿인 문서에서는 같은 이름을 찾는 도식으로 옮기지 않고 목록에만 남긴다.
+      const lineB = (await review.open(fileId)).markdown.split("\n").indexOf("    A[시작] --> B[끝]") + 1;
+      expect(lineB).toBeGreaterThan(6);
       await otherWindowSaves((await sessionOf(page))!, { annotations: [...stored,
-        { id: "native-dg-1", blockId: "block-9", type: "COMMENT", text: "원래 화면의 도식 댓글", originalText: "끝", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "B", label: "끝", sourceLine: [6, 6] } },
-        { id: "native-dg-2", blockId: "block-9", type: "COMMENT", text: "사라진 부분의 댓글", originalText: "옛 노드", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "Z", label: "옛 노드", sourceLine: null } }] });
+        { id: "native-dg-1", blockId: "block-9", type: "COMMENT", text: "원래 화면의 도식 댓글", originalText: "끝", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "B", label: "끝", sourceLine: [lineB, lineB] } },
+        { id: "native-dg-2", blockId: "block-9", type: "COMMENT", text: "사라진 부분의 댓글", originalText: "옛 노드", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "Z", label: "옛 노드", sourceLine: null } },
+        { id: "native-dg-3", blockId: "block-9", type: "COMMENT", text: "줄이 어긋난 원래 댓글", originalText: "끝", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "B", label: "끝", sourceLine: [6, 6] } }] });
       await page.reload();
       await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
       await drawn(page);
       await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 2, null, { timeout: 20_000 });
       await expect(diagrams.nth(0).locator(".aar-diagram__mark").count()).resolves.toBe(1);
       await pane(page).locator(".aar-row", { hasText: "사라진 부분의 댓글" }).waitFor();
+      await pane(page).locator(".aar-row", { hasText: "줄이 어긋난 원래 댓글" }).waitFor();
+      await page.waitForTimeout(600);
+      await expect(page.locator(".aar-diagram__mark").count()).resolves.toBe(2);
       await diagrams.nth(0).locator(".aar-diagram__mark").click();
       await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("원래 화면의 도식 댓글");
       // 새 댓글이 막힌 때(초안 보존 규약을 모르는 Agent-A): 누를 부분이 없고, 남은 표시는 읽을 수 있다

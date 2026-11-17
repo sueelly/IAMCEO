@@ -3,6 +3,7 @@
 // 그 서버는 '초안 규약 2'(docs/agent-a/agent-a-draft-protocol-2.patch)를 넣은 Agent-A 를 새 격리 데이터로 띄운 것이어야 하고,
 // AI 는 정해진 답을 내는 대역이어야 한다(댓글 '시험 답: …', 문서에 묻기 '문서 답: …', 고른 AI 는 답 끝의 [플랫폼/모델/추론]).
 // IAMCEO_AGENT_A_REAL_PROTOCOL=1 을 함께 주면 원래 Agent-A(c559881)로 보고, 안전하지 않은 쓰기를 거절하는지만 본다.
+// IAMCEO_AGENT_A_REAL_PROTOCOL=2old 를 함께 주면 앞선 초안 보존 패치(댓글 추가의 초안 판 조건이 없다)로 보고, 도식 댓글을 보내지 않는지만 본다.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import { pngBase64 } from "./fixtures/png.ts";
 
 const REAL = process.env.IAMCEO_AGENT_A_REAL_URL ?? null;
 const ORIGINAL = process.env.IAMCEO_AGENT_A_REAL_PROTOCOL === "1";
+const OLD_PATCH = process.env.IAMCEO_AGENT_A_REAL_PROTOCOL === "2old";
 const MARKDOWN = "머리 문단입니다.\n\n## 배경\n\n배경 문장 하나. 배경 문장 둘.\n\n## 계획\n\n계획은 세 단계입니다.";
 
 const BOX = { x: 0.1, y: 0.1, w: 0.2, h: 0.2 };
@@ -29,11 +31,16 @@ async function setup(title: string, content: { markdown?: string; images?: Agent
   const project = store.createProject({ name: "실제 규약 시험", cwd: tmpdir() });
   // 실제 Agent-A 가 응답한 뒤에 끼어드는 고리. 저장은 됐는데 응답만 잃는 경우를 만든다(던지면 서버는 응답을 받지 못한 것이 된다).
   const hooks: { after?: Hook } = {};
+  /** IAMCEO 서버가 실제 Agent-A 에 보낸 요청(쓰기 길로 무엇이 갔는지 센다). */
+  const calls: { method: string; path: string; body: Record<string, any> | null }[] = [];
   const transport = async (input: string, init: RequestInit) => {
     const res = await fetch(input, init);
+    calls.push({ method: String(init.method ?? "GET"), path: new URL(input).pathname, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
     if (hooks.after) await hooks.after(input, init, res);
     return res;
   };
+  /** 이 서버가 초안을 바꾸는 길(통째 저장·주석 추가)로 보낸 요청. */
+  const sent = () => calls.filter((c) => c.method === "POST" && (c.path === "/api/draft" || c.path === "/api/draft/annotations"));
   const service = new AgentAService(store, new AgentAClient({ baseUrl: REAL!, appToken: null, agentToken: null }, transport));
   const review = new AgentAReview(service);
   const view = await service.createDoc(project.id, { title, markdown: content.markdown ?? MARKDOWN, images: content.images });
@@ -53,7 +60,7 @@ async function setup(title: string, content: { markdown?: string; images?: Agent
       }
     };
   };
-  return { store, project, service, review, other, hooks, loseOnce, fileId: view.fileId, artifactId: view.artifactId, doc, sid: doc.sessionId };
+  return { store, project, service, review, other, hooks, loseOnce, calls, sent, fileId: view.fileId, artifactId: view.artifactId, doc, sid: doc.sessionId };
 }
 const failure = async (p: Promise<unknown>): Promise<{ status: number; code?: string }> => p.then(() => ({ status: 200 }), (e) => (e instanceof ApiError ? { status: e.status, code: e.code } : { status: -1 }));
 async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: string): Promise<T> {
@@ -86,7 +93,7 @@ async function* stream(res: Response): AsyncGenerator<Record<string, unknown>> {
 const failed = async (p: Promise<unknown>): Promise<{ status: number; code?: string; message?: string }> =>
   p.then(() => ({ status: 200 }), (e) => (e instanceof ApiError ? { status: e.status, code: e.code, message: e.message } : { status: -1, message: String(e) }));
 
-describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길", () => {
+describe.skipIf(!REAL || ORIGINAL || OLD_PATCH)("실제 Agent-A(초안 규약 2): 검토 길", () => {
   test("새 댓글·삭제 표시·고른 AI·붙인 그림이 실제 규약으로 가고, 다른 창의 초안은 남는다", async () => {
     const s = await setup("실제: 댓글");
     expect(s.doc.safeWrites).toBe(true);
@@ -592,6 +599,126 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     }
   }, 120_000);
 
+  test("R3 세 경계 ①: 검사와 쓰기 사이에 정본이 바뀌거나 검토가 닫히면 실제 초안에 쓰지 않는다(초안 전체와 초안 판이 그대로다). 이미 받은 댓글의 재전송은 그 뒤에도 확인한다", async () => {
+    const markdown = ["도식이 있는 문서입니다.", "", "```mermaid", "graph TD", "  A[시작] --> B[검토]", "```", "", "끝 문장입니다."].join("\n");
+    const partB: DiagramPart = { kind: "node", id: "B", label: "검토", box: BOX, hits: [BOX] };
+    const nodeOf = (text: string) => { const [block] = mermaidBlocks(text); return anchorFor("flowchart", partB, block!.code, block!.line); };
+    // 이 댓글을 쓰려고 서버가 Agent-A 에 보내는 읽기 요청 하나하나의 바로 뒤(마지막 것은 쓰기 직전이다)에 끼어든다
+    const points: [string, string][] = [["GET", "/api/draft"], ["POST", "/api/plannotator/sessions"], ["GET", "/api/external-annotations"]];
+    const seen: unknown[] = [];
+    for (const [method, path] of points) {
+      for (const change of ["canonical", "closed"] as const) {
+        const s = await setup(`실제: 쓰기 경계 ${method} ${path} ${change}`, { markdown });
+        const B = nodeOf(s.doc.markdown);
+        // 먼저 받은 댓글 하나와, 다른 창이 초안에 남긴 것(직접 고친 본문과 저장 기록)
+        expect(await s.review.addComment(s.fileId, s.sid, { id: "kept-before", kind: "comment", text: "먼저 받은 댓글", diagram: B })).toEqual({ ok: true, id: "kept-before" });
+        const kept = (await s.other("GET", "/api/draft")).json!;
+        expect((await s.other("POST", "/api/draft", { ...kept, draftGeneration: 0, editedMarkdown: s.doc.markdown, iamceoSave: { marker: "preserve" } })).status).toBe(200);
+        const shown = await s.review.open(s.fileId);
+        let before = await s.other("GET", "/api/draft");
+        let fired = 0;
+        s.hooks.after = async (input, init) => {
+          if (fired || String(init.method ?? "GET") !== method || new URL(input).pathname !== path) return;
+          fired += 1;
+          if (change === "canonical") {
+            const block = (await s.review.manage(s.fileId)).blocks[0]!;
+            await s.review.edit(s.fileId, { blockId: block.id, revision: block.revision, title: block.title, body: `${block.body}\n그사이 바뀐 정본`, opId: `real-race-canonical-${seen.length + 1}` });
+          } else {
+            const d = await s.review.draft(s.fileId, s.sid);
+            await s.review.submit(s.fileId, s.sid, { revision: d.revision, decision: "feedback" });
+            // 제출은 초안을 닫는다. 그 뒤 상태가 그대로인지 본다
+            before = await s.other("GET", "/api/draft");
+          }
+        };
+        const sent = s.sent().length;
+        const result = await failure(s.review.addComment(s.fileId, s.sid, { id: "race-new", kind: "comment", text: "그사이 지난 판이 된 검토의 새 댓글", diagram: B, bodyMark: shown.bodyMark }));
+        s.hooks.after = undefined;
+        expect([method, path, change, fired, result]).toEqual([method, path, change, 1, { status: 409, code: change === "canonical" ? "AGENT_A_REVISION_CONFLICT" : "AGENT_A_ALREADY_DECIDED" }]);
+        // 아무것도 쓰이지 않았다: 실제 초안 전체(다른 창의 본문·저장 기록·먼저 받은 댓글)와 초안 판이 그대로다
+        const after = await s.other("GET", "/api/draft");
+        expect([after.status, after.revision, after.json]).toEqual([before.status, before.revision, before.json]);
+        const listed = (await s.other("GET", "/api/external-annotations")).json!;
+        expect(JSON.stringify(listed).includes("race-new")).toBe(false);
+        // 통째 저장 길은 쓰지 않았다. 주석 추가 길로 갔다면 읽은 초안 판 조건을 달고 갔다
+        const wrote = s.sent().slice(sent);
+        expect(wrote.map((c) => [c.path, "ifDraftRevision" in c.body!])).toEqual(wrote.map(() => ["/api/draft/annotations", true]));
+        // 이미 받은 댓글의 재전송(같은 id·같은 내용)은 지난 판·닫힌 검토에서도 처음 결과를 확인한다. 다른 내용은 거절한다
+        expect(await s.review.addComment(s.fileId, s.sid, { id: "kept-before", kind: "comment", text: "먼저 받은 댓글", diagram: B, bodyMark: shown.bodyMark })).toEqual({ ok: true, id: "kept-before" });
+        expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "kept-before", kind: "comment", text: "다른 내용", diagram: B }))).toEqual({ status: 409, code: "AGENT_A_IDEMPOTENCY_CONFLICT" });
+        const end = await s.other("GET", "/api/draft");
+        expect([end.status, end.revision, end.json]).toEqual([before.status, before.revision, before.json]);
+        seen.push({ at: `${method} ${path}`, change, result, draftRevision: [before.revision, after.revision], conditionalAppends: wrote.length });
+      }
+    }
+    console.log(`R3 경계 ① 실제 관찰: ${JSON.stringify(seen)}`);
+  }, 180_000);
+
+  test("R3 세 경계 ②: 본문의 도식에 없는 대상에는 실제 초안에 쓰지 않는다(줄이 없는 자리·없는 이름과 번호·글에 든 낱말). 번호로 부르는 실제 부분과 묶음·노드·선·전체는 받는다", async () => {
+    const markdown = [
+      "## 상태", "", "```mermaid", "stateDiagram-v2", "  [*] --> Idle", "  Idle --> Busy: 시작", "  note right of Busy: 메모", "  Busy --> [*]", "```", "",
+      "## 순서", "", "```mermaid", "sequenceDiagram", "  participant U as 대표", "  U->>S: 요청", "  Note over U,S: 확인", "  loop 반복", "    S-->>U: 응답", "  end", "```", "",
+      "## 묶음", "", "```mermaid", "flowchart TD", "  subgraph 제목 하나", "    A[go to B] --> C", "  end", "  subgraph G2 [둘째]", "    B -- Z 로 --> C", "  end", "```",
+    ].join("\n");
+    const s = await setup("실제: 없는 대상", { markdown });
+    const [state, seq, flow] = mermaidBlocks(s.doc.markdown);
+    const at = (b: NonNullable<typeof state>, text: string) => b.line + b.code.split("\n").indexOf(text) + 1;
+    const line = (n: number): [number, number] => [n, n];
+    const made = (b: NonNullable<typeof state>, family: "state" | "sequence" | "flowchart", p: Partial<DiagramPart> & Pick<DiagramPart, "kind">): AgentAReviewDiagramAnchor => anchorFor(family, { label: "", box: BOX, hits: [BOX], ...p }, b.code, b.line);
+    const realB = made(flow!, "flowchart", { kind: "node", id: "B", label: "B" });
+    expect(realB.sourceLine).toEqual(line(at(flow!, "    B -- Z 로 --> C")));
+    const before = await s.other("GET", "/api/draft");
+    const refused: [string, AgentAReviewDiagramAnchor][] = [
+      ["null-line-real", { ...realB, sourceLine: null }],
+      ["null-line-absent", { ...realB, id: "NO_SUCH_PART", label: "없는 부분", sourceLine: null }],
+      ["null-line-state-edge", { v: 1, family: "state", kind: "edge", id: "edge1", label: "시작", sourceLine: null }],
+      ["absent-name", { ...realB, id: "NO_SUCH_PART" }],
+      ["absent-edge", { v: 1, family: "flowchart", kind: "edge", from: "C", to: "B", label: "", sourceLine: realB.sourceLine }],
+      ["absent-cluster", { v: 1, family: "flowchart", kind: "cluster", id: "subGraph1", label: "둘째", sourceLine: line(at(flow!, "  subgraph G2 [둘째]")) }],
+      ["absent-state-edge", { v: 1, family: "state", kind: "edge", id: "edge7", label: "", sourceLine: line(at(state!, "  Busy --> [*]")) }],
+      ["absent-message", { v: 1, family: "sequence", kind: "edge", id: "msg-3", label: "응답", sourceLine: line(at(seq!, "    S-->>U: 응답")) }],
+      ["label-word-node", { v: 1, family: "flowchart", kind: "node", id: "go", label: "go", sourceLine: line(at(flow!, "    A[go to B] --> C")) }],
+      ["label-word-line", { ...realB, sourceLine: line(at(flow!, "    A[go to B] --> C")) }],
+      ["link-word-node", { v: 1, family: "flowchart", kind: "node", id: "Z", label: "Z", sourceLine: realB.sourceLine }],
+      ["note-number", { v: 1, family: "state", kind: "edge", id: "edge2", label: "", sourceLine: line(at(state!, "  note right of Busy: 메모")) }],
+      ["unsupported-note", { v: 1, family: "state", kind: "node", id: "Busy----note", label: "메모", sourceLine: line(at(state!, "  note right of Busy: 메모")) }],
+      ["other-block-line", { ...realB, sourceLine: line(at(seq!, "  U->>S: 요청")) }],
+    ];
+    for (const [id, anchor] of refused) {
+      expect([id, await failure(s.review.addComment(s.fileId, s.sid, { id, kind: "comment", text: "댓글", diagram: anchor, bodyMark: s.doc.bodyMark }))]).toEqual([id, { status: 400, code: "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT" }]);
+    }
+    // 실제 초안 전체와 초안 판이 그대로다. 쓰기 길로 보낸 것도 없다
+    const after = await s.other("GET", "/api/draft");
+    expect([after.status, after.revision, after.json, s.sent()]).toEqual([before.status, before.revision, before.json, []]);
+    // 정상군: 번호로 부르는 실제 부분(상태도의 전이 · 순서도의 메시지·메모·틀 · 제목만 있는 묶음), 이름 있는 묶음, 노드, 선, 도식 전체
+    const whole = (b: NonNullable<typeof state>, family: "state" | "sequence" | "flowchart"): AgentAReviewDiagramAnchor => anchorFor(family, null, b.code, b.line);
+    const accepted: [string, AgentAReviewDiagramAnchor, number][] = [
+      ["state-edge1", made(state!, "state", { kind: "edge", id: "edge1", label: "시작" }), at(state!, "  Idle --> Busy: 시작")],
+      ["state-edge3", made(state!, "state", { kind: "edge", id: "edge3" }), at(state!, "  Busy --> [*]")],
+      ["seq-msg2", made(seq!, "sequence", { kind: "edge", id: "msg-2", from: "S", to: "U", label: "응답" }), at(seq!, "    S-->>U: 응답")],
+      ["seq-note1", made(seq!, "sequence", { kind: "node", id: "note-1", label: "확인" }), at(seq!, "  Note over U,S: 확인")],
+      ["seq-frame1", made(seq!, "sequence", { kind: "cluster", id: "frame-1", label: "loop [반복]" }), at(seq!, "  loop 반복")],
+      ["flow-titled", made(flow!, "flowchart", { kind: "cluster", id: "subGraph0", label: "제목 하나" }), at(flow!, "  subgraph 제목 하나")],
+      ["flow-named", made(flow!, "flowchart", { kind: "cluster", id: "G2", label: "둘째" }), at(flow!, "  subgraph G2 [둘째]")],
+      ["flow-node", realB, at(flow!, "    B -- Z 로 --> C")],
+      ["flow-edge", made(flow!, "flowchart", { kind: "edge", from: "B", to: "C", label: "Z 로" }), at(flow!, "    B -- Z 로 --> C")],
+    ];
+    for (const [id, anchor, n] of accepted) {
+      expect([id, anchor.sourceLine]).toEqual([id, line(n)]);
+      expect([id, await failure(s.review.addComment(s.fileId, s.sid, { id, kind: "comment", text: "댓글", diagram: anchor, bodyMark: s.doc.bodyMark }))]).toEqual([id, { status: 200 }]);
+    }
+    const wholeFlow = whole(flow!, "flowchart");
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "flow-whole", kind: "comment", text: "댓글", diagram: wholeFlow })).toEqual({ ok: true, id: "flow-whole" });
+    // 남은 범위(없는 대상과 다른 일이다): 대상이 실제로 있는 B 면 자리에 적힌 갈래나 보이는 글이 달라도 받는다
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "real-b-other-family", kind: "comment", text: "댓글", diagram: { ...realB, family: "state" } })).toEqual({ ok: true, id: "real-b-other-family" });
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "real-b-other-label", kind: "comment", text: "댓글", diagram: { ...realB, label: "그려진 글과 다른 글" } })).toEqual({ ok: true, id: "real-b-other-label" });
+    const draft = (await s.other("GET", "/api/draft")).json!;
+    expect(draft.annotations.map((a: { id: string; blockId: string; diagramAnchor: AgentAReviewDiagramAnchor }) => [a.id, a.blockId, a.diagramAnchor.sourceLine])).toEqual([
+      ...accepted.map(([id, , n]) => [id, "", line(n)]), ["flow-whole", "", wholeFlow.sourceLine], ["real-b-other-family", "", realB.sourceLine], ["real-b-other-label", "", realB.sourceLine]]);
+    // 쓰는 길은 하나다: 주석 하나에 읽은 초안 판 조건을 붙인다
+    expect(s.sent().map((c) => [c.path, Object.keys(c.body!).sort().join(",")])).toEqual(s.sent().map(() => ["/api/draft/annotations", "annotation,ifDraftRevision"]));
+    expect(s.sent().length).toBe(accepted.length + 3);
+  }, 120_000);
+
   test("문서 대화 가르기와 AI 의 권한 요청: 허용·거절·멈춤", async () => {
     const s = await setup("실제: 가르기와 권한");
     for (const [id, prompt] of [["real-f-0001", "첫 질문"], ["real-f-0002", "둘째 질문"]] as const) await lines(await s.review.chatAsk(s.fileId, s.sid, { id, prompt }));
@@ -820,10 +947,12 @@ describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하�
     for (const attempt of [
       () => s.review.addComment(s.fileId, s.sid, { id: "orig-c1", kind: "global", text: "댓글" }),
       () => s.review.addComment(s.fileId, s.sid, { id: "orig-d1", kind: "deletion", text: "", quote: "배경 문장 하나." }),
+      () => s.review.addComment(s.fileId, s.sid, { id: "orig-g1", kind: "comment", text: "도식 댓글", diagram: { v: 1, family: "flowchart", kind: "diagram", label: "graph TD", sourceLine: [1, 1] } }),
       () => s.review.saveDraft(s.fileId, s.sid, { markdown: "덮기", revision: 0 }),
       () => s.review.submit(s.fileId, s.sid, { revision: 0 }),
       () => s.review.draft(s.fileId, s.sid),
     ]) expect(await failure(attempt())).toEqual({ status: 409, code: "AGENT_A_UNSUPPORTED" });
+    expect([s.doc.diagramWrites, s.sent()]).toEqual([false, []]);
     const draft = (await s.other("GET", "/api/draft")).json!;
     expect([draft.editedMarkdown, draft.annotations.map((a: { id: string }) => a.id)]).toEqual(["원래 화면의 초안", ["native-1"]]);
     expect((await s.review.open(s.fileId, s.sid)).closed).toBe(false);
@@ -863,5 +992,35 @@ describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하�
     const first = await s.review.chatHistory(s.fileId, s.sid);
     const forked = await s.review.chatFork(s.fileId, s.sid, { conversationId: first.conversationId, questionId: "orig-q-0001", point: "answer" });
     expect(forked.branchedFrom).toBe(first.conversationId);
+  }, 60_000);
+});
+
+describe.skipIf(!REAL || !OLD_PATCH)("실제 앞선 초안 보존 패치의 Agent-A(댓글 추가의 초안 판 조건이 없다): 도식 댓글을 보내지 않는다", () => {
+  test("도식 댓글은 보내지 않고 거절하고 실제 초안은 그대로다. 글 댓글·전체 댓글·본문 고치기는 그 Agent-A 가 아는 길로 그대로 된다", async () => {
+    const markdown = ["도식이 있는 문서입니다.", "", "```mermaid", "graph TD", "  A[시작] --> B[검토]", "```", "", "끝 문장입니다."].join("\n");
+    const s = await setup("앞선 패치: 도식 댓글 거절", { markdown });
+    expect([s.doc.safeWrites, s.doc.diagramWrites]).toEqual([true, false]);
+    const [block] = mermaidBlocks(s.doc.markdown);
+    const B = anchorFor("flowchart", { kind: "node", id: "B", label: "검토", box: BOX, hits: [BOX] }, block!.code, block!.line);
+    // 다른 창이 초안에 남긴 것
+    expect((await s.other("POST", "/api/draft/annotations", { annotation: { id: "other-window-1", blockId: "", startOffset: 0, endOffset: 0, type: "GLOBAL_COMMENT", text: "다른 창의 댓글", originalText: "" } })).status).toBe(200);
+    const before = await s.other("GET", "/api/draft");
+    // 조건을 붙인 추가를 이 Agent-A 는 모른다(모르는 칸을 거절한다): 조건 없이 보내거나 초안을 통째로 다시 쓰는 길로 돌아가지 않는다
+    for (const diagram of [B, anchorFor("flowchart", null, block!.code, block!.line), { ...B, id: "NO_SUCH_PART", sourceLine: null }]) {
+      expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "old-patch-diagram", kind: "comment", text: "도식 댓글", diagram, bodyMark: s.doc.bodyMark }))).toEqual({ status: 409, code: "AGENT_A_UNSUPPORTED" });
+    }
+    const after = await s.other("GET", "/api/draft");
+    expect([after.status, after.revision, after.json, s.sent()]).toEqual([before.status, before.revision, before.json, []]);
+    // 이 Agent-A 가 조건 칸을 실제로 모른다는 것(직접 보내 본다): 400 이고 쓰지 않는다
+    const direct = await s.other("POST", "/api/draft/annotations", { annotation: { id: "direct-conditional", blockId: "", startOffset: 0, endOffset: 0, type: "GLOBAL_COMMENT", text: "조건을 붙인 추가", originalText: "" }, ifDraftRevision: Number(before.revision) });
+    expect(direct.status).toBe(400);
+    expect((await s.other("GET", "/api/draft")).revision).toBe(before.revision);
+    // 도식이 아닌 댓글과 본문 고치기는 그대로 된다
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "old-patch-global", kind: "global", text: "문서 전체 댓글" })).toEqual({ ok: true, id: "old-patch-global" });
+    expect(await s.review.addComment(s.fileId, s.sid, { id: "old-patch-quote", kind: "comment", text: "글 댓글", quote: "끝 문장입니다." })).toEqual({ ok: true, id: "old-patch-quote" });
+    const d = await s.review.draft(s.fileId, s.sid);
+    await s.review.saveDraft(s.fileId, s.sid, { markdown: `${s.doc.markdown}\n더한 줄`, revision: d.revision, opId: "old-patch-body-0001" });
+    const end = (await s.other("GET", "/api/draft")).json!;
+    expect([end.annotations.map((a: { id: string }) => a.id), end.editedMarkdown]).toEqual([["other-window-1", "old-patch-global", "old-patch-quote"], `${s.doc.markdown}\n더한 줄`]);
   }, 60_000);
 });
