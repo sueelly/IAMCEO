@@ -104,3 +104,9 @@ test.each(["inputs", "outputs"])("agent schema rejects explicit empty %s without
   expect(result.isError).toBe(true);
   expect(f.store.getTaskContract(f.task.id)).toBeNull();
 });
+
+test("normalization cannot turn blank restrictions into an explicit none declaration", () => {
+  const f = setup();
+  const { contract } = f.orch.saveTask(f.lead, { taskId: f.task.id, contract: { ...COMPLETE, constraints: ["\u0000"], exclusions: ["\n "] } });
+  expect(harness.missingExecutionContractFields(contract)).toEqual(["constraints", "exclusions"]);
+});
