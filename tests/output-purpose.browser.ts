@@ -102,3 +102,51 @@ test("보고는 결과와 근거, 자료는 이름·용도·사용 본문, 업�
     await shot("purpose-artifact");
   });
 });
+
+test("기존 결재의 업무와 자료를 선택지 앞에 열고 완료 알림을 아래에서 5개씩 읽는다", async () => {
+  await withScreens(async (page, f, base, taskId, _width, shot) => {
+    const evidence = f.store.createFile({ projectId: f.project.id, taskId, who: f.worker.name, title: "로그인 재개 독립 검수서", body: "# 검수 내용\n입력 수신을 확인했습니다." });
+    const decision = f.store.createDecision({ projectId: f.project.id, taskId, memberId: f.worker.id, who: f.worker.name,
+      title: "검수한 로그인 재개 수정판을 적용할까요?",
+      detail: "대표 요청에 따른 외부 검수 대행입니다.\n\n좁은 화면의 로그인 재개 오류를 확인했습니다.",
+      options: [{ k: "apply", label: "수정판 적용" }] });
+    const lastLine = "확정 완료 기준 r2: 상세 원문에서만 펼치는 기준";
+    for (let i = 0; i < 6; i++) {
+      const task = f.store.saveTask({ projectId: f.project.id, memberId: f.worker.id, who: f.worker.name, title: `완료 업무 ${i}` }).task;
+      const mark = f.store.addStageMark({ projectId: f.project.id, taskId: task.id, stage: "done", evidence: "검수 기록 확인", memberId: f.lead.id, who: f.lead.name });
+      f.store.createTaskNotice(f.project.id, task.id, mark.id, [`업무 ${i}를 마쳤습니다`]);
+    }
+    const notice = f.store.listTasks(f.project.id).find(task => task.progress?.notice)?.progress?.notice;
+    expect(notice).toBeDefined();
+    const lines = ["로그인 검수 완료", "요청한 결과: 로그인 확인", lastLine, "완료 보고: 검수 완료", "대표 화면 반영: 화면 확인", "메인 합침: 병합 확인", "완료 판단: 총괄 확인", "미검증: 휴대폰 세로 모드"];
+    f.store.db.query("UPDATE task_notices SET lines_json = ? WHERE seen_at IS NULL").run(JSON.stringify(lines));
+
+    await page.goto(`${base}/#/p/${f.project.id}/inbox`);
+    const card = page.locator(`[data-decision="${decision.id}"]`);
+    const link = card.locator(`a[href$="/files/${evidence.id}"]`);
+    await link.waitFor({ timeout: 3500 });
+    expect(await card.innerText()).toContain(taskName);
+    expect(await card.innerText()).toContain("별도로 진행한 검수 결과");
+    expect(await card.innerText()).not.toContain("외부 검수 대행");
+    expect((await link.boundingBox())!.y).toBeLessThan((await card.getByRole("button", { name: "수정판 적용" }).boundingBox())!.y);
+
+    const completion = page.getByRole("region", { name: "완료 알림" });
+    expect((await completion.boundingBox())!.y).toBeGreaterThan((await card.boundingBox())!.y);
+    expect(await completion.locator(".ibx-notice").count()).toBe(5);
+    const summary = completion.locator(".ibx-notice").first();
+    expect(await summary.locator(":scope > .ibx-notice__lines > li").count()).toBe(5);
+    expect(await summary.locator(":scope > .ibx-notice__lines").innerText()).toContain("미검증: 휴대폰 세로 모드");
+    expect(await summary.innerText()).not.toContain(lastLine);
+    await summary.getByText("완료 근거", { exact: true }).click();
+    await summary.getByText(lastLine, { exact: true }).waitFor();
+    await completion.getByRole("button", { name: "이전 완료 알림 1개 보기" }).click();
+    expect(await completion.locator(".ibx-notice").count()).toBe(6);
+    await shot("inbox-context");
+    const [document] = await Promise.all([page.waitForEvent("popup"), link.click()]);
+    await document.getByRole("heading", { name: evidence.title, exact: true }).waitFor();
+    await document.close();
+    const later = f.store.createFile({ projectId: f.project.id, taskId, who: f.worker.name, title: "나중에 등록한 브라우저 검사 기록" });
+    await card.locator(`a[href$="/files/${later.id}"]`).waitFor();
+    expect(f.store.requireDecision(decision.id).status).toBe("open");
+  });
+});

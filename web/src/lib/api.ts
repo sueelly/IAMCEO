@@ -14,6 +14,7 @@ import type {
   CreateMemberReq,
   RuntimeInfo,
   Decision,
+  DecisionContext,
   Member,
   ModelList,
   Message,
@@ -218,6 +219,7 @@ export const api = {
     return request<Attachment>("POST", `/api/uploads${s ? `?${s}` : ""}`, form, null); // 50MB 까지라 시간을 정할 수 없다
   },
 
+  decisionContext: (decisionId: string, signal?: AbortSignal) => get<DecisionContext>(`/api/decisions/${seg(decisionId)}/context`, signal),
   decision: (decisionId: string, signal?: AbortSignal) => get<Decision>(`/api/decisions/${seg(decisionId)}`, signal),
   doneDecisions: (projectId: string, opts: { before?: string; limit?: number } = {}, signal?: AbortSignal) => {
     const q = new URLSearchParams();

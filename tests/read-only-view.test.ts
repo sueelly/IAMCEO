@@ -11,7 +11,7 @@ import { startReadOnlyView } from "../server/read-only-view.ts";
 const code = "123456"; // Existing snapshots may use a shorter code than today's generated default.
 let home: string, config: Config, view: Awaited<ReturnType<typeof startReadOnlyView>>, origin: string;
 let before: string, filePath: string;
-let memberId: string;
+let memberId: string, decisionId: string, fileId: string;
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const request = (path: string, method = "GET", auth = true) => fetch(origin + path, {
   method, headers: auth ? { Authorization: `Bearer ${code}`, "Content-Type": "application/json" } : {},
@@ -25,6 +25,9 @@ beforeAll(async () => {
   const db = openDb(config.dbPath); const store = new Store(db, new Bus());
   store.createProject({ id: "p_view", name: "조회 프로젝트", cwd: home });
   memberId = store.createMember({ projectId: "p_view", handle: "lead", name: "조회 직원", kind: "conductor" }).id;
+  const evidence = store.createFile({ projectId: "p_view", title: "기존 결재 자료", who: "조회 직원" });
+  fileId = evidence.id;
+  decisionId = store.createDecision({ projectId: "p_view", title: "검토를 끝낼까요?", who: "조회 직원", fileId }).id;
   store.createMessage({ id: "msg_view", projectId: "p_view", kind: "나", mine: true, who: "나", body: "보존한 대화" });
   filePath = join(config.uploadsDir, "fixture.txt"); writeFileSync(filePath, "attachment");
   store.createAttachment({ id: "a_view", name: "fixture.txt", mime: "text/plain", size: 10, path: filePath });
@@ -50,6 +53,15 @@ test("restored fenced data is readable with normal authentication", async () => 
   expect(await (await request(`/api/members/${memberId}/prompt`)).json()).toEqual({ prompt: null, context: null });
   expect(await (await request(`/api/members/${memberId}/approval`)).json()).toEqual({ approval: null });
   expect((await request(`/api/members/${memberId}/activity`)).status).toBe(200);
+});
+
+test("restored approvals can read evidence without changing the snapshot", async () => {
+  const path = `/api/decisions/${decisionId}/context`;
+  expect((await request(path, "GET", false)).status).toBe(401);
+  const result = await request(path);
+  expect(result.status).toBe(200);
+  expect(await result.json()).toEqual({ references: [{ id: fileId, title: "기존 결재 자료" }], tasks: [] });
+  expect(digest(config.dbPath)).toBe(before);
 });
 
 test("mutations, external filesystem, pairing, agents and terminal are refused", async () => {

@@ -25,6 +25,15 @@ describe("글 지침", () => {
     }
   });
 
+  test("모든 역할이 독립적으로 이해되는 구체적인 문장을 작성하게 한다", () => {
+    for (const kind of KINDS) {
+      const text = renderRole(kind, vars);
+      for (const phrase of ["대상 명사", "그것", "누가 무엇을", "직접 확인", "요청의 출처", "판단이 필요한 이유", "다음 행동", "맥락이 이미 전달됐다고 가정하지 않는다"]) {
+        expect(text).toContain(phrase);
+      }
+    }
+  });
+
   test("사용자 정의 역할도 최신 공통 작성 지침을 받고 작성자의 역할 내용은 보존된다", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-custom-guide-"));
     for (const kind of KINDS) {

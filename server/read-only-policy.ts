@@ -7,6 +7,7 @@ export function readOnlyRequestAllowed(method: string, path: string): boolean {
   return /^\/api\/(?:health|readiness|bootstrap|sync|capabilities|models|runtime|projects\/archived)$/.test(path) ||
     /^\/api\/projects\/[^/]+\/(?:state|files\/page|messages(?:\/page)?|archive\/(?:state|messages(?:\/page|\/[^/]+)?)|decisions)$/.test(path) ||
     /^\/api\/(?:messages|decisions|members|files)\/[^/]+$/.test(path) ||
+    /^\/api\/decisions\/[^/]+\/context$/.test(path) ||
     /^\/api\/members\/[^/]+\/(?:activity|prompt|approval)$/.test(path) ||
     /^\/api\/files\/[^/]+\/artifact$/.test(path);
 }

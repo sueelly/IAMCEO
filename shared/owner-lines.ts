@@ -109,3 +109,6 @@ export function withRecLine(detail: string | null | undefined, label: string | n
   const line = buildRecLine(label!, reason);
   return rest ? `${line}\n\n${rest}` : line;
 }
+
+/** 예전 결재 본문에서 별도의 검수 절차를 설명하던 문구. */
+export const EXTERNAL_REVIEW_BOILERPLATE = "대표 요청에 따른 외부 검수 대행입니다.";

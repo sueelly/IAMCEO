@@ -25,6 +25,8 @@ import type {
   CliProvider,
   Decision,
   DecisionCloseKind,
+  DecisionContext,
+  DecisionFileLink,
   DecisionOption,
   DecisionStatus,
   Delivery,
@@ -1516,6 +1518,63 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 결재 ----
+  /** References named in this card and recent material from the exact tasks it points to. */
+  getDecisionContext(id: string): DecisionContext {
+    const decision = this.requireDecision(id);
+    const projectId = decision.projectId;
+    const refs = new Map<string, DecisionFileLink>();
+    const tasks = new Map<string, DecisionContext["tasks"][number]>();
+    const addFile = (fileId: string | null) => {
+      if (!fileId || refs.has(fileId) || refs.size >= 10) return;
+      const row = this.row("SELECT id, title FROM files WHERE id = ? AND project_id = ?", fileId, projectId);
+      if (row) refs.set(row.id, { id: row.id, title: row.title });
+    };
+    const addTask = (taskId: string | null | undefined) => {
+      if (!taskId || tasks.has(taskId) || tasks.size >= 4) return;
+      const task = this.getTask(taskId);
+      if (!task || task.projectId !== projectId) return;
+      const resolved = this.resolveTask(task);
+      tasks.set(resolved.id, { id: resolved.id, title: resolved.title, files: [] });
+    };
+
+    const addReport = (source: Row) => {
+      addTask(source.task_id);
+      addFile(source.file_id);
+      for (const fileId of this.getReportReferences(projectId, source.id)?.fileIds ?? []) addFile(fileId);
+    };
+
+    addFile(decision.fileId);
+    addTask(decision.taskId);
+    const tokens = new Set(decision.detail.match(/\b(?:f_|msg_|tk_|d_)[A-Za-z0-9_-]{3,128}(?![A-Za-z0-9_-])/g) ?? []);
+    for (const token of [...tokens].slice(0, 24)) {
+      if (token.startsWith("f_")) addFile(token);
+      else if (token.startsWith("tk_")) addTask(token);
+      else if (token.startsWith("msg_")) {
+        const source = this.row("SELECT id, file_id, task_id FROM messages WHERE id = ? AND project_id = ?", token, projectId);
+        if (source) addReport(source);
+      } else if (token !== decision.id) {
+        const earlier = this.row("SELECT file_id, task_id FROM decisions WHERE id = ? AND project_id = ?", token, projectId);
+        if (!earlier) continue;
+        addFile(earlier.file_id);
+        addTask(earlier.task_id);
+      }
+    }
+
+    const reports = this.rows(`SELECT id, file_id, task_id FROM messages
+      WHERE project_id = ? AND decision_id = ? AND kind IN ('완료', '진행', '막힘', '알림')
+      ORDER BY at DESC, id DESC LIMIT 6`, projectId, decision.id);
+    reports.forEach(addReport);
+
+    const shown = new Set(refs.keys());
+    for (const task of tasks.values()) {
+      const rows = this.rows(`SELECT id, title FROM files WHERE project_id = ? AND task_id = ?
+        ORDER BY sort_order DESC, id COLLATE BINARY DESC LIMIT ?`, projectId, task.id, 3 + shown.size);
+      task.files = rows.filter(row => !shown.has(row.id)).slice(0, 3).map(row => ({ id: row.id, title: row.title }));
+      task.files.forEach(file => shown.add(file.id));
+    }
+    return { references: [...refs.values()], tasks: [...tasks.values()] };
+  }
+
   getDecision(id: string): Decision | null {
     const r = this.row("SELECT * FROM decisions WHERE id = ?", id);
     return r ? toDecision(r) : null;

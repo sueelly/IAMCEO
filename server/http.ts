@@ -810,6 +810,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       if (status !== "done") throw new ApiError(400, "status 는 open 또는 done 입니다");
       return Response.json(store.listDoneDecisions(id!, { before: url.searchParams.get("before") ?? undefined, limit: parseLimit(url) }));
     }),
+    route("GET", "/api/decisions/:id/context", (_req, _url, [id]) => Response.json(store.getDecisionContext(id!))),
     route("GET", "/api/decisions/:id", (_req, _url, [id]) => Response.json(store.requireDecision(id!))),
     route("PATCH", "/api/projects/:id", async (req, _url, [id]) => {
       store.requireProject(id!);

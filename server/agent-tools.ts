@@ -399,7 +399,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "대표가 정하거나 승인할 일을 결재함에 카드로 올린다. AskUserQuestion 대신 쓴다. 같은 안건의 카드가 열려 있으면 새 카드는 거절된다. 결과 글이 턴을 끝내라고 하면 바로 끝낸다. 답은 다음 입력으로 온다.",
     z.strictObject({
       title: oneLine(200).describe("목록에서 무엇을 정할지 알 수 있는 결정할 질문. 업무 대상과 선택 범위를 쓴다. 예: 로그인 오류 진단용 세션 기록을 제공할까요?"),
-      detail: text.describe("카드만 읽어도 어떤 업무에서 무엇을 왜 정해야 하는지 이해할 수 있게 쓴다(마크다운). 요청 내용·현재 결과·선택지별 영향·근거·미확인을 연결한다. 결론을 바꾸는 조건은 본문에 남긴다. 권장 줄은 중복 작성하지 않는다"),
+      detail: text.describe("카드만 읽어도 어떤 업무에서 무엇을 왜 정해야 하는지 이해할 수 있게 쓴다(마크다운). 요청 내용·현재 결과·선택지별 영향·근거·미확인을 연결한다. 결론을 바꾸는 조건은 본문에 남긴다. 검수로 생긴 결재는 검수 대상·담당자·확인 범위와 확인한 요청 출처를 쓴다. 권장 줄은 중복 작성하지 않는다"),
       options: z
         .array(z.strictObject({ k: oneLine(64).describe("선택지 키"), label: oneLine(120).describe("버튼 글(한 줄, 20자 안팎). 대표 말투의 동작. 그대로 대표 원문이 된다"), desc: oneLineOpt(300).optional().describe("고르면 생기는 일과 감수할 조건(한 줄)") }))
         .optional()
@@ -407,7 +407,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       rec: z.string().optional().describe("권장 선택지의 k"),
       rec_reason: oneLineOpt(300).optional().describe("권장 이유를 구체적인 대상과 함께 쓴다. 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
       group: oneLineOpt(80).optional().describe("묶음 이름"),
-      file_id: z.string().optional().describe("근거 자료 id(file 도구의 결과)"),
+      file_id: z.string().optional().describe("대표가 판단할 때 열어 볼 실제 검수 보고서·비교 자료의 id. 이미 등록한 관련 자료가 있으면 연결하고, 새 문서를 만들면 file로 등록한 뒤 받은 id를 넣는다"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),

@@ -283,6 +283,12 @@ export interface Decision {
 /** decided 대표가 대화 등으로 이미 정함(서버가 대표 글로 확인) · obsolete 상황이 바뀌어 필요 없어짐 */
 export type DecisionCloseKind = "decided" | "obsolete";
 
+export type DecisionFileLink = Pick<FileDoc, "id" | "title">;
+export interface DecisionContext {
+  references: DecisionFileLink[];
+  tasks: { id: string; title: string; files: DecisionFileLink[] }[];
+}
+
 /** done 끝남 · dropped 필요 없어짐(홈에서 빠진다). 둘 다 done=true 다. */
 export type TodoOutcome = "done" | "dropped";
 export interface Todo {

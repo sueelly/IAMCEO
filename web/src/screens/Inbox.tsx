@@ -1,7 +1,7 @@
 // 결재함: 결재할 항목 · 결재된 항목 두 쪽. 선택지를 눌러도 바로 가지 않고, 카드 아래 확인 버튼을 눌러야 보낸다.
 // 이번 방문에 답한 카드는 결재할 항목 쪽 제자리에 남아 '보냄 → 받음'을 보여 주고, 쪽을 옮기거나 다시 들어오면 결재된 항목으로 간다.
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { Attachment, Decision, Member, Task } from "@shared/types";
+import type { Attachment, Decision, DecisionContext, DecisionFileLink, Member, Task } from "@shared/types";
 import ApprovalPanel from "../components/ApprovalPanel";
 import NativePromptCard from "../components/NativePromptCard";
 import { enterSends, isComposing, useAutoGrow } from "../components/Composer";
@@ -10,8 +10,8 @@ import { Badge, CONFIRM_MIN_MS, Empty, Markdown, Modal, StatusDot, Time } from "
 import { Glass, GlassButton, glassClass } from "../glass";
 import { ApiError, api, errorText, fileUrl, saveAttachment } from "../lib/api";
 import { useRecentAnswers } from "../lib/nativeAnswers";
-import { splitDetail, type RecBandText } from "../lib/decision-view";
-import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute } from "../lib/store";
+import { COMPLETION_PREVIEW_LIMIT, decisionDetail, noticePreview, splitDetail, type RecBandText } from "../lib/decision-view";
+import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute, useStore } from "../lib/store";
 import { noticeTasks } from "../lib/task-list";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, sameDecisionReview, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
@@ -155,11 +155,41 @@ function RecBand({ rec }: { rec: RecBandText }) {
   );
 }
 
-/** 결재의 배경: 글·그림·자료 링크. 결재 카드와 펼친 결재된 항목이 함께 쓴다. detail 은 권장 줄을 뺀 글이다. */
+function DecisionFile({ projectId, file }: { projectId: string; file: DecisionFileLink }) {
+  return (
+    <a className="ibx-file" href={routeHash({ projectId, tab: "files", sub: file.id })} target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <path d="M4 1.8h5l3.2 3.2v9.2H4zM9 1.8V5h3.2" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+      <span>{file.title}</span>
+    </a>
+  );
+}
+
+/** 결재의 배경과 검토 자료. 열린 카드와 펼친 기록에서 함께 쓴다. */
 function Background({ decision, detail, fileTitle, onZoom }: { decision: Decision; detail: string; fileTitle: string | null; onZoom: (a: Attachment) => void }) {
+  const fileRevision = useStore(state => state.fileRevision);
+  const [context, setContext] = useState<DecisionContext | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    api.decisionContext(decision.id, controller.signal).then(
+      (result) => { if (!controller.signal.aborted) { setContext(result); setFailed(false); } },
+      () => { if (!controller.signal.aborted) setFailed(true); },
+    );
+    return () => controller.abort();
+  }, [decision.id, decision.updatedAt, fileRevision, attempt]);
+
+  const { projectId, fileId } = decision;
+  const references = context?.references ?? (fileId ? [{ id: fileId, title: fileTitle ?? "첨부 자료 보기" }] : []);
+  const taskFiles = context?.tasks.filter(task => task.files.length > 0) ?? [];
+  const task = decision.taskId ? context?.tasks[0] : undefined;
+  const hasFiles = references.length > 0 || taskFiles.length > 0;
   return (
     <>
-      {detail.trim() ? <Markdown text={detail} className="ibx-detail" /> : null}
+      {task ? <p className="ibx-context__task">업무 · {task.title}</p> : null}
+      {detail.trim() ? <Markdown text={decisionDetail(detail)} className="ibx-detail" /> : null}
       {decision.images.length > 0 ? (
         <div className="ibx-images">
           {decision.images.map((a) => (
@@ -169,13 +199,28 @@ function Background({ decision, detail, fileTitle, onZoom }: { decision: Decisio
           ))}
         </div>
       ) : null}
-      {decision.fileId ? (
-        <a className="ibx-file" href={routeHash({ projectId: decision.projectId, tab: "files", sub: decision.fileId })}>
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
-            <path d="M4 1.8h5l3.2 3.2v9.2H4zM9 1.8V5h3.2" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-          </svg>
-          <span>{fileTitle ?? "자료 보기"}</span>
-        </a>
+      {hasFiles ? (
+        <div className="ibx-sources">
+          {references.length > 0 ? (
+            <div className="ibx-sources__group">
+              <p>결재에 첨부·인용한 자료</p>
+              <ul>{references.map(file => <li key={file.id}><DecisionFile projectId={projectId} file={file} /></li>)}</ul>
+            </div>
+          ) : null}
+          {taskFiles.map(group => (
+            <div className="ibx-sources__group" key={group.id}>
+              <p>{group.id === task?.id ? "같은 업무의 자료" : `${group.title} 자료`}</p>
+              <ul>{group.files.map(file => <li key={file.id}><DecisionFile projectId={projectId} file={file} /></li>)}</ul>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {failed ? (
+        <p className="ibx-context__task">관련 자료를 불러오지 못했습니다.{" "}
+          <button type="button" className="ibx-more" onClick={() => { setFailed(false); setAttempt(n => n + 1); }}>다시 불러오기</button>
+        </p>
+      ) : context && !hasFiles && !decision.images.length ? (
+        <p className="ibx-context__task">이 결재의 첨부나 관련 업무에서 등록된 자료를 찾지 못했습니다.</p>
       ) : null}
     </>
   );
@@ -405,7 +450,7 @@ function DoneBackground({ decision, fileTitle, onZoom }: { decision: Decision; f
 
 /** 결재된 항목 한 줄. 누르면 펼쳐 배경을 본다. */
 function DoneRow({ decision, fileTitle, expanded, onToggle, onZoom }: { decision: Decision; fileTitle: string | null; expanded: boolean; onToggle: () => void; onZoom: (a: Attachment) => void }) {
-  const hasMore = !!decision.detail || decision.images.length > 0 || !!decision.fileId;
+  const hasMore = !!decision.detail || decision.images.length > 0 || !!decision.fileId || !!decision.taskId;
   return (
     <li className="ibx-answered ibx-done__row" data-decision={decision.id}>
       <AnsweredBody decision={decision} />
@@ -540,6 +585,9 @@ function BlockedList({ members, projectName, tasks }: { members: Member[]; proje
  * 확인은 서버에 남아 다른 화면에서도 같이 내려간다.
  */
 function NoticeList({ tasks }: { tasks: readonly Task[] }) {
+  const [showOlder, setShowOlder] = useState(false);
+  const olderCount = Math.max(0, tasks.length - COMPLETION_PREVIEW_LIMIT);
+  const visible = showOlder ? tasks : tasks.slice(0, COMPLETION_PREVIEW_LIMIT);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const see = (t: Task) => {
@@ -556,19 +604,27 @@ function NoticeList({ tasks }: { tasks: readonly Task[] }) {
       <h2 className="ibx-sec__head">
         완료 <Count n={tasks.length} />
       </h2>
-      {tasks.map((t) => {
+      {visible.map((t) => {
         const notice = t.progress!.notice!;
         const [head, ...lines] = notice.lines;
+        const preview = noticePreview(lines);
+        const hasDetail = lines.some(line => !preview.includes(line));
         return (
           <Glass key={notice.id} as="article" level="regular" tint className="ibx-card ibx-notice" aria-label={head}>
             <div className="ibx-notice__head">
               <p className="ibx-notice__title">{head}</p>
               <Time iso={notice.at} relative className="ibx-notice__at" />
             </div>
-            {lines.length ? (
+            {preview.length ? (
               <ul className="ibx-notice__lines">
-                {lines.map((line, i) => <li key={i} data-unverified={line.startsWith("미검증") ? "" : undefined}>{line}</li>)}
+                {preview.map((line, i) => <li key={i} data-unverified={line.startsWith("미검증") ? "" : undefined}>{line}</li>)}
               </ul>
+            ) : null}
+            {hasDetail ? (
+              <details className="ibx-notice__details">
+                <summary>완료 근거</summary>
+                <ul className="ibx-notice__lines">{lines.map((line, i) => <li key={i}>{line}</li>)}</ul>
+              </details>
             ) : null}
             <GlassButton variant="ghost" size="m" className="ibx-notice__seen" disabled={busy === notice.id} onClick={() => see(t)}>
               확인
@@ -576,6 +632,11 @@ function NoticeList({ tasks }: { tasks: readonly Task[] }) {
           </Glass>
         );
       })}
+      {olderCount ? (
+        <GlassButton variant="ghost" size="m" className="ibx-loadmore" ariaExpanded={showOlder} onClick={() => setShowOlder(value => !value)}>
+          {showOlder ? "이전 완료 알림 접기" : `이전 완료 알림 ${olderCount}개 보기`}
+        </GlassButton>
+      ) : null}
       {error ? <p className="ibx-error" role="alert">{error}</p> : null}
     </section>
   );
@@ -780,7 +841,6 @@ export default function Inbox() {
 
       {view === "open" ? (
         <>
-          {notices.length > 0 ? <NoticeList tasks={notices} /> : null}
           {blocked.length > 0 ? <BlockedList members={blocked} projectName={state.project.name} tasks={state.tasks ?? []} /> : null}
           {live.length === 0 && blocked.length === 0 ? (
             <Glass level="regular" tint className="ibx-empty">
@@ -792,6 +852,7 @@ export default function Inbox() {
               {blocks}
             </section>
           ) : null}
+          {notices.length > 0 ? <NoticeList key={projectId} tasks={notices} /> : null}
         </>
       ) : doneDecisions.length === 0 ? (
         <Glass level="regular" tint className="ibx-empty">

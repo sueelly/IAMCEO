@@ -2,7 +2,7 @@
 // 대표 화면에는 보이지 않는다. 막으면 다듬지 않은 마지막 글이 대신 올라가므로 언제나 경고로 끝낸다.
 // 길이·강조 개수·기술 용어 때문에 대상과 근거를 지우게 하지 않는다.
 // 이 검사는 의미 판정이 아닌 비차단 안내이며 공통 작성 프롬프트를 보완한다.
-import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
+import { EXTERNAL_REVIEW_BOILERPLATE, parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
 
 /** 도구 결과에 붙일 경고 줄 수(머리 줄 제외). */
 export const MAX_WARNING_LINES = 4;
@@ -172,6 +172,9 @@ export function lintAsk(input: { title: string; detail?: string | null; options?
     const opts = (input.options ?? []).map((o) => `${o.label}\n${o.desc ?? ""}`).join("\n");
     const plain = stripMd(rest);
     titlePurpose(bag, input.title, "결재 제목");
+    if (plain.includes(EXTERNAL_REVIEW_BOILERPLATE)) {
+      bag.push({ code: "review-context", text: "검수 대상과 담당자, 확인한 범위를 적으세요. 대표 요청을 근거로 들면 확인한 원문과 출처를 연결하고, 근거 자료는 ask.file_id에 넣으세요." });
+    }
     doneClaims(bag, rest);
     const all = `${input.title}\n${plain}\n${opts}\n${reason}`;
     hedging(bag, all);
