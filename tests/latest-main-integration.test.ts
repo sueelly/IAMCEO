@@ -70,6 +70,6 @@ test('latest snapshot history and authenticated trace stay read-only while one n
     expect(f.keys).toHaveLength(1);expect(f.writes).toHaveLength(1);
     f.store.createMessage({projectId:f.project.id,taskId:task.id,kind:'진행',body:'after pending read'});
     const next=await fetch(sync+'&history=50',{headers}).then(r=>r.json());expect(next.history.items.at(-1).body).toBe('after pending read');expect(next.cursor).toEqual(f.bus.cursor);
-    writeFileSync('evidence/latest-main-20261117/http-cross.json',JSON.stringify({originalId:original.id,orphanId:orphan.id,trace,snapshot:{cursor:snap.cursor,history:snap.history},receipt,changedStatus:changed.status,approvalInputs:f.keys.length,originalInputs:f.writes.length,wrapperChanges,readChanges,readBoundaryUnchanged:true},null,2));
+    writeFileSync(join(f.dir, 'http-cross.json'),JSON.stringify({originalId:original.id,orphanId:orphan.id,trace,snapshot:{cursor:snap.cursor,history:snap.history},receipt,changedStatus:changed.status,approvalInputs:f.keys.length,originalInputs:f.writes.length,wrapperChanges,readChanges,readBoundaryUnchanged:true},null,2));
   } finally {release();await answer?.catch(()=>{});await server.stop();await f.stop();}
 },15000);

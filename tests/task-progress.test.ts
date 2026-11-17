@@ -42,11 +42,89 @@ describe("단계 계산", () => {
     expect(deriveProgress(f).stage).toBe("fix");
   });
 
+  test("작성자 납품 뒤 독립 검토가 통과하면 두 보고를 근거로 합치기를 기다린다", () => {
+    const f = empty();
+    f.reports.push(report("완료", { id: "msg_author", at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
+    f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
+    f.reports.push(report("완료", { id: "msg_review", at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", passed: true, checks: 2 }));
+    expect(deriveProgress(f)).toMatchObject({ stage: "merge", owner: "총괄", basis: ["msg_review", "msg_author"] });
+  });
+
+  test("같은 시각의 납품과 검토도 글 순서로 독립 검토 결과를 구분한다", () => {
+    const f = empty(), at = "2026-11-17T10:00:00.000Z";
+    f.reports.push(report("완료", { id: "msg_author", at, passed: true, checks: 2 }));
+    f.marks.push({ id: 1, stage: "review", at, who: "총괄", evidence: "영희에게 독립 검토 맡김" });
+    f.reports.push(report("완료", { id: "msg_review", at, memberId: "w2", who: "영희", passed: true, checks: 2 }));
+    expect(deriveProgress(f)).toMatchObject({ stage: "merge", basis: ["msg_review", "msg_author"] });
+  });
+
+  test("검토 기준은 검토를 맡기기 전의 최신 통과 납품이다", () => {
+    const f = empty();
+    f.reports.push(report("완료", { id: "msg_old", at: "2026-11-17T09:00:00.000Z", memberId: "w2", who: "영희", passed: true, checks: 2 }));
+    f.reports.push(report("완료", { id: "msg_author", at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
+    f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 최신 납품 검토 맡김" });
+    f.reports.push(report("완료", { id: "msg_review", at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", passed: true, checks: 2 }));
+    expect(deriveProgress(f)).toMatchObject({ stage: "merge", basis: ["msg_review", "msg_author"] });
+  });
+
+  test("검토를 맡기기 전 납품이 없으면 뒤의 서로 다른 완료만으로 검토 통과라 하지 않는다", () => {
+    const f = empty();
+    f.marks.push({ id: 1, stage: "review", at: "2026-11-17T10:00:00.000Z", who: "총괄", evidence: "검토 맡김" });
+    f.reports.push(report("완료", { at: "2026-11-17T11:00:00.000Z", passed: true, checks: 2 }));
+    f.reports.push(report("완료", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", passed: true, checks: 2 }));
+    expect(deriveProgress(f).stage).not.toBe("merge");
+  });
+
+  for (const [name, change] of [
+    ["판정을 통과하지 않은 검토", { passed: false }],
+    ["실패 검사가 있는 검토", { failed: ["회귀"] }],
+    ["실행하지 않은 검사가 남은 검토", { notRun: ["회귀"] }],
+    ["작성자가 다시 올린 완료", { memberId: "w1", who: "철수" }],
+    ["작성자를 확인할 수 없는 검토", { memberId: null }],
+  ] satisfies [string, Partial<ReportFact>][]) {
+    test(`${name}는 합치기 대기로 올리지 않는다`, () => {
+      const f = empty();
+      f.implementationOwner = {memberId:"w1",who:"철수",deliveryId:"dl_original"};
+    f.reports.push(report("완료", { at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
+      f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
+      f.reports.push({ ...report("완료", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", passed: true, checks: 2 }), ...change });
+      expect(deriveProgress(f).stage).not.toBe("merge");
+    });
+  }
+
+  test("정정되어 통과 근거에서 빠진 검토는 뒤에 알림이 있어도 합치기 대기가 아니다", () => {
+    const f = empty();
+    f.implementationOwner = {memberId:"w1",who:"철수",deliveryId:"dl_original"};
+    f.reports.push(report("완료", { at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
+    f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
+    // Store는 정정된 완료의 passed를 false로 내려 준다.
+    f.reports.push(report("완료", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", passed: false, checks: 2 }));
+    f.reports.push(report("알림", { at: "2026-11-17T13:00:00.000Z", memberId: "w2", who: "영희" }));
+    expect(deriveProgress(f).stage).not.toBe("merge");
+  });
+
+  test("검토자가 실패한 막힘을 보고하면 작성자가 고칠 차례로 남는다", () => {
+    const f = empty();
+    f.implementationOwner = {memberId:"w1",who:"철수",deliveryId:"dl_original"};
+    f.reports.push(report("완료", { at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
+    f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
+    f.reports.push(report("막힘", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", failed: ["회귀"], checks: 2 }));
+    expect(deriveProgress(f)).toMatchObject({ stage: "fix", owner: "철수" });
+  });
+
   test("잠든 세션을 기다리는 입력은 막힘이 아니라 진행 중(의존 대기)이다", () => {
     const f = empty();
     f.held.push({ id: "dl_1", who: "영희", reason: "asleep", at: "2026-11-17T10:00:00.000Z" });
     expect(deriveProgress(f)).toMatchObject({ stage: "confirm", cause: "dependency" });
     expect(needsAction(deriveProgress(f))).toBe(true);
+  });
+
+  test("보고 없이 전달 대기 입력만 있으면 실행 중인 보고로 표현하지 않는다", () => {
+    const f = empty();
+    f.queued.push({ id: "dl_1", who: "영희", at: "2026-11-17T10:00:00.000Z" });
+    const p = deriveProgress(f);
+    expect(p).toMatchObject({ stage: "confirm", cause: "pending", basis: ["dl_1"] });
+    expect(p.next).toContain("전달 대기");
   });
 
   test("보류 까닭: 자동으로 들어가는 기다림과 다시 보내지 않는 보류를 가른다", () => {

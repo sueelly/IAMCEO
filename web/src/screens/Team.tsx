@@ -1,9 +1,11 @@
 // 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type Task, type WorkItem, type WorkSec } from "@shared/types";
+import type { WorkflowNode } from "@shared/workflow";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import { PROVIDERS } from "../lib/runtime";
 import ApprovalPanel from "../components/ApprovalPanel";
+import WorkFlow from "../components/WorkFlow";
 import { enterSends, isComposing } from "../components/Composer";
 import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
@@ -12,7 +14,7 @@ import { ApiError, api, errorText } from "../lib/api";
 import { applyLocal, findMember, getState, loadActivity, navigate, newId, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
-import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
+import { chooseTask, memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import { isLocalTerminalHost, terminalCommand } from "../lib/terminal-command";
 import { SEC_LABEL, hasTaskRows, workRows, type WorkRow } from "../lib/task-list";
@@ -201,18 +203,18 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 /** 지금 · 다음 · 대기열 · 문맥. 카드와 상세가 같은 줄을 쓴다 */
 function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: number; openAsks: number; extra?: ReactNode }) {
+  const state = useProject();
+  const current = state?.workflow?.nodes.find((node) => node.memberId === m.id && node.current);
+  const task = current ? state?.tasks?.find((item) => item.id === current.taskId) : null;
   return (
     <dl className="tm-facts">
       {extra}
-      {/* 턴이 끝나도 now 는 남는다. 쉬는 직원의 글은 지금 하는 일이 아니다. */}
-      {m.status === "idle" || m.status === "asleep" || m.status === "offline" || m.executionState?.phase !== "running" ? (
-        m.now ? <Row label="마지막 일">{m.now}</Row> : <Row label="지금"><span className="ink-3">맡은 일 없음</span></Row>
-      ) : (
-        <Row label="지금">{m.now || <span className="ink-3">맡은 일 없음</span>}</Row>
-      )}
+      {current && task ? <Row label="현재 업무"><a className="tm-inlink" href={routeHash({ projectId: m.projectId, tab: "thread" })} onClick={() => chooseTask(m.projectId, task)}>{task.title}</a></Row> : null}
+      {/* now is a staff self-report, not evidence that a particular task is executing. */}
+      {m.now ? <Row label="마지막 보고">{m.now}</Row> : null}
       {m.next ? <Row label="다음">{m.next}</Row> : null}
       {/* 보류(보호·수신 불확실·보관)는 자동으로 들어가지 않는다. 실행할 입력과 나눠 센다. */}
-      {m.queuedCount > 0 ? <Row label="대기열"><span className="t-tabular">{queueText(m)}</span></Row> : null}
+      {m.queuedCount > 0 ? <Row label="입력"><span className="t-tabular">{queueText(m, state?.workflow?.nodes)}</span></Row> : null}
       {m.contextPct !== null ? (
         <Row label="문맥">
           <ContextMeter pct={m.contextPct} compactAt={compactAt} />
@@ -294,7 +296,7 @@ function AsleepRow({ m, runnerEnabled }: { m: Member; runnerEnabled: boolean }) 
           <Badge>{providerName(m.cli ?? "claude")}</Badge>
           {m.role ? <span className="tm-asleep__role">{m.role}</span> : null}
         </span>
-        {m.now ? <span className="tm-asleep__last">마지막 일: {m.now}</span> : null}
+        {m.now ? <span className="tm-asleep__last">마지막 보고: {m.now}</span> : null}
       </a>
       {manual || !runnerEnabled ? null : (
         <GlassButton
@@ -319,8 +321,13 @@ function AsleepRow({ m, runnerEnabled }: { m: Member; runnerEnabled: boolean }) 
 
 // ---- 일 목록 ----
 
-/** 대기열 칸: 보류가 있으면 '대기 N · 보류 M'. 옛 서버(heldCount 없음)는 전과 같다. */
-function queueText(m: Member): string {
+/** Workflow counts distinguish actionable inputs from quiet notices. Unclassified legacy rows remain factual. */
+function queueText(m: Member, nodes?: readonly WorkflowNode[]): string {
+  if (nodes) {
+    const counts = nodes.filter((node) => node.memberId === m.id).reduce((sum, node) => ({ queued: sum.queued + node.counts.queued, held: sum.held + node.counts.held, notices: sum.notices + node.counts.notices }), { queued: 0, held: 0, notices: 0 });
+    const other = Math.max(0, m.queuedCount - counts.queued - counts.held - counts.notices);
+    return [counts.queued ? `전달 대기 ${counts.queued}` : "", counts.held ? `보류 ${counts.held}` : "", counts.notices ? `알림 ${counts.notices}` : "", other ? `기타 ${other}` : ""].filter(Boolean).join(" · ");
+  }
   const held = m.heldCount ?? 0;
   return held > 0 ? [m.queuedCount - held > 0 ? `대기 ${m.queuedCount - held}` : "", `보류 ${held}`].filter(Boolean).join(" · ") : `${m.queuedCount}건`;
 }
@@ -1014,6 +1021,7 @@ export default function Team() {
 
   return (
     <div className="tm">
+      <WorkFlow state={state} />
       {!project.runnerEnabled || members.length === 0 ? <StartPanel project={project} hasMembers={members.length > 0} /> : null}
 
       {project.now ? (

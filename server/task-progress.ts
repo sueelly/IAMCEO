@@ -12,6 +12,7 @@ export interface ReportFact {
   memberId: string | null;
   who: string;
   authorKind: MemberKind | null;
+  current?: boolean;
   /** 실패한 검사 이름 */
   failed: string[];
   failureKeys?: string[];
@@ -36,8 +37,11 @@ export interface WatchFact {
   history: AttemptFact[];
 }
 export interface HeldFact { id: string; who: string; reason: string | null; at: string }
-export interface ExecutionFact { runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; at: string; who: string; background: string | null }
+export interface ImplementationOwner { memberId: string; who: string; deliveryId: string }
+export interface ExecutionFact { memberId: string; terminalId: string | null; runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; at: string; who: string; background: string | null }
 export interface ProgressFacts {
+  implementationOwner?: ImplementationOwner | null;
+  unattributedBackgrounds?: { who: string; at: string; label: string }[];
   cycleAt?: string;
   executions?: ExecutionFact[];
   reports: ReportFact[];
@@ -98,19 +102,21 @@ export function isDone(marks: MarkFact[]): MarkFact | null {
 }
 
 export function deriveProgress(f: ProgressFacts): TaskProgress {
+  const reports=f.reports.filter(r=>r.current!==false && (r.kind!=="완료" || r.passed));
   const rev = maxTime([
     ...f.reports.map((r) => r.at), ...f.marks.map((m) => m.at), ...f.decisions.map((d) => d.at), ...f.todos.map((t) => t.at),
     ...(f.executions ?? []).map(e => e.at), ...f.held.map((h) => h.at), ...f.queued.map((q) => q.at), ...f.approvals.map((a) => a.at), f.watch?.updatedAt, f.notice?.at, f.notice?.seenAt, ...f.revTimes,
   ]);
   const loop = f.watch ? { startedAt: f.watch.startedAt, attempts: f.watch.attempts, same: f.watch.same, trippedAt: f.watch.trippedAt, reason: f.watch.reason } : null;
-  const latestExecution = f.executions?.at(-1);
+  const unfinished = (f.executions ?? []).filter(e => !!e.background || !["ended", "interrupted"].includes(e.phase));
+  const latestExecution = unfinished.at(-1) ?? f.executions?.at(-1);
   const make = (stage: TaskStage, cause: TaskBlockCause | null, next: string | null, owner: string | null, since: string | null, basis: string[]): TaskProgress =>
-    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null, ...(latestExecution ? { execution: {runId: latestExecution.runId, phase: latestExecution.phase, sessionGeneration: latestExecution.sessionGeneration, inputReceivedAt: latestExecution.inputReceivedAt, background: latestExecution.background} } : {}) });
+    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null, ...(latestExecution ? { execution: {memberId:latestExecution.memberId,runId: latestExecution.runId, phase: latestExecution.phase, sessionGeneration: latestExecution.sessionGeneration, inputReceivedAt: latestExecution.inputReceivedAt, background: latestExecution.background} } : {}) });
 
   const active = activeMarks(f.marks).filter(m => !f.cycleAt || m.at >= f.cycleAt);
   const done = active.findLast((m) => m.stage === "done");
   // 현재 주기의 완료만 유지한다. 새 계약·대표 차례·정정은 이전 완료를 쓰지 않는다.
-  if (done && !f.decisions.some(d => d.at >= done.at) && !f.todos.some(t => t.at >= done.at)) return make("done", null, null, null, done.at, [`mark:${done.id}`]);
+  if (done && !unfinished.length && !f.unattributedBackgrounds?.length && !f.decisions.some(d => d.at >= done.at) && !f.todos.some(t => t.at >= done.at)) return make("done", null, null, null, done.at, [`mark:${done.id}`]);
   const last = active.at(-1);
   if (last?.stage === "hold") return make("hold", "hold", `보류: ${last.evidence}`, CONDUCTOR, last.at, [`mark:${last.id}`]);
 
@@ -136,21 +142,23 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     return make("held", cause, `${h.who}에게 갈 입력 ${stuck.length}건 보류(${why}) · 자동으로 다시 보내지 않습니다. 총괄이 확인할 차례`, CONDUCTOR, h.at, stuck.map((x) => x.id));
   }
 
-  const live = f.executions?.findLast(e => e.background || e.phase === "running" && !!e.inputReceivedAt);
+  const live = unfinished.findLast(e => e.background || e.phase === "running" && !!e.inputReceivedAt);
   if (live) return make("working", null, live.background ? `뒤 작업: ${live.background}` : null, live.who, live.at, [live.runId]);
 
-  const outcomes = f.reports.filter((r) => r.kind === "완료" || r.kind === "막힘");
+  if (f.unattributedBackgrounds?.length) return make("confirm", "unknown", "창의 뒤 작업은 관찰했지만 원 업무 귀속을 확인하지 못했습니다. 총괄이 확인할 차례", CONDUCTOR, f.unattributedBackgrounds[0]!.at, []);
+
+  const outcomes = reports.filter((r) => r.kind === "완료" || r.kind === "막힘");
   const lastOutcome = outcomes.at(-1);
   const progressMark = active.findLast((m) => m.stage === "review" || m.stage === "merged" || m.stage === "applied");
   // 작성자 납품: 마지막 통과 완료(계약 판정). 계약이 없으면 마지막 완료.
-  const delivery = f.reports.findLast((r) => r.kind === "완료" && r.passed);
+  const delivery = reports.findLast((r) => r.kind === "완료" && r.passed);
 
   if (lastOutcome && (!progressMark || lastOutcome.at >= progressMark.at)) {
     if (lastOutcome.kind === "막힘") {
       if (lastOutcome.failed.length) {
-        const fixer = delivery && delivery.memberId && delivery.memberId !== lastOutcome.memberId && delivery.seq < lastOutcome.seq ? delivery.who : lastOutcome.who;
-        const busy = f.reports.some((r) => r.seq > lastOutcome.seq && r.who === fixer && r.kind === "진행");
-        return make("fix", "technical", `${josaI(fixer)} ${busy ? "고치는 중" : "고칠 차례"}: 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`, fixer, lastOutcome.at, [lastOutcome.id]);
+        const fixer = f.implementationOwner?.who ?? CONDUCTOR;
+        const busy = reports.some((r) => r.seq > lastOutcome.seq && r.who === fixer && r.kind === "진행");
+        return make("fix", "technical", `${f.implementationOwner ? josaI(fixer) + (busy ? " 고치는 중" : " 고칠 차례") : "총괄이 구현 소관을 확인할 차례"}: 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`, fixer, lastOutcome.at, [lastOutcome.id]);
       }
       if (!lastOutcome.checks && !lastOutcome.notRun.length) {
         return make("confirm", "unknown", "검사 근거 없는 막힘 · 총괄이 원인을 확인할 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
@@ -163,8 +171,13 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     if (progressMark?.stage === "merged" || progressMark?.stage === "applied") {
       return make(progressMark.stage, null, "통합 뒤 확인 통과 · 총괄이 완료로 옮길 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id, `mark:${progressMark.id}`]);
     }
-    if (progressMark?.stage === "review" && delivery && lastOutcome.memberId !== delivery.memberId && lastOutcome.seq > delivery.seq) {
-      return make("merge", null, "검토 통과 · 총괄이 메인에 합칠 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id, delivery.id]);
+    // 검토자의 완료를 작성자 납품으로 다시 고르면 두 보고가 같아진다. 검토를 맡기기 전 납품을 따로 찾는다.
+    // 시각이 같아도 마지막 보고 자신을 기준으로 삼지 않도록 글 순서를 함께 비교한다.
+    const reviewDelivery = progressMark?.stage === "review" ? reports.findLast((r) =>
+      r.kind === "완료" && r.passed && !r.failed.length && !r.notRun.length && r.at <= progressMark.at && r.seq < lastOutcome.seq) : null;
+    if (reviewDelivery?.memberId && lastOutcome.memberId && lastOutcome.memberId !== reviewDelivery.memberId
+      && lastOutcome.passed && !lastOutcome.failed.length && !lastOutcome.notRun.length) {
+      return make("merge", null, "검토 통과 · 총괄이 메인에 합칠 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id, reviewDelivery.id]);
     }
     const d = delivery ?? lastOutcome;
     return make("delivered", null, "총괄이 독립 검토를 맡기거나 합칠 차례", CONDUCTOR, d.at, [d.id]);
@@ -180,7 +193,8 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     const h = waiting[0]!;
     return make("confirm", "dependency", `${h.who} 세션을 기다림(${h.reason}) · 깨면 그대로 들어갑니다`, null, h.at, waiting.map((x) => x.id));
   }
-  const lastAny = f.reports.at(-1);
+  const lastAny = reports.at(-1);
+  if(!lastAny && f.queued.length){const q=f.queued[0]!;return make("confirm","pending",`${q.who}에게 입력 ${f.queued.length}건 전달 대기 · 실제 수신과 실행은 확인 전입니다`,q.who,q.at,f.queued.map(q=>q.id));}
   if (latestExecution) return make("confirm", latestExecution.phase === "interrupted" ? "limit" : "pending", latestExecution.phase === "interrupted" ? "원 실행이 중단됐습니다. 총괄이 기존 결과와 다음 실행을 확인할 차례" : latestExecution.inputReceivedAt && !["ended", "interrupted"].includes(latestExecution.phase) ? "원 입력을 수신했습니다. 실행 시작 확인을 기다립니다" : "실행이 끝났습니다. 총괄이 결과와 다음 차례를 확인합니다", CONDUCTOR, latestExecution.at, [latestExecution.runId]);
   if (lastAny || f.queued.length) {
     const since = maxTime([lastAny?.at, f.queued.at(-1)?.at]);

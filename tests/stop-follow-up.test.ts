@@ -236,7 +236,7 @@ describe("실행의 작업 표시", () => {
   test("멈출 실행이 받은 작업들을 보인다(한 턴이 여러 작업을 받을 수 있다)", async () => {
     const f = fixture();
     const a = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "철수", title: "작업 A", branch: "feat/a" }).task;
-    const b = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "철수", title: "작업 B", branch: "feat/b" }).task;
+    const b = f.store.saveTask({ projectId: f.project.id, memberId: f.member.id, who: "철수", title: "작업 B", branch: "feat/b", parentTaskId: a.id }).task;
     f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "A 일", taskId: a.id });
     f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, kind: "instruction", text: "B 일", taskId: b.id });
     await f.orch.pump(f.member.id);

@@ -636,6 +636,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       member: memberRef,
       text: text.describe("할 일. 끝났다고 볼 기준, 참고 파일, 주의점 포함"),
+      purpose: z.enum(["implementation","review"]).optional().describe("명시적인 구현 소관 재배정은 implementation, 읽기 전용 검토는 review. 보고자만으로 구현 소관을 바꾸지 않는다"),
       user_quote: userQuote,
       parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
@@ -646,7 +647,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
       const taskId = orch.instructionTask(member, a.task_id, a.user_quote);
-      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId, contract: a.contract }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
+      return reply(`${target.name}: ${assignNote(await orch.assign(member.projectId, target.handle, { text: a.text, purpose: a.purpose, userQuote: a.user_quote, parallel: a.parallel, urgent: a.urgent, attachmentIds: a.attachments, taskId, contract: a.contract }, member))}${taskId ? ` · 작업 #${taskId}` : " · 작업 없음(전체)"}`);
     },
   ),
 

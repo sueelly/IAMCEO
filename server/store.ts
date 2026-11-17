@@ -1,3 +1,5 @@
+import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
+import type { ProjectWorkflow } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { canonicalAgentRequest as stableJson, agentRequestHash, encodeAgentResult, decodeAgentResult, type AgentReceiptState } from "./agent-receipts.ts";
 import { encodeStoredText, decodeStoredText } from "./stored-text.ts";
@@ -63,7 +65,7 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { deriveProgress, isDone, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
+import { deriveProgress, isDone, type ImplementationOwner, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
 import { bindingContract, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
@@ -691,6 +693,7 @@ function toAttachment(r: Row): Attachment {
 
 function toDelivery(r: Row): Delivery {
   return {
+    taskId: r.task_id ?? null,
     id: r.id,
     projectId: r.project_id,
     memberId: r.member_id,
@@ -1272,16 +1275,18 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   projectState(id: string, opts: { compact?: boolean } = {}): ProjectState {
     const project = this.requireProject(id);
+    const members = this.listMembers(id), tasks = this.listTasks(id);
     return {
       project,
-      members: this.listMembers(id),
+      members,
+      workflow: this.projectWorkflow(id, tasks, members),
       decisions: this.listDecisions(id),
       doneDecisionCount: this.row("SELECT COUNT(*) AS n FROM decisions WHERE project_id = ? AND status != 'open'", id)!.n as number,
       todos: this.listTodos(id),
       work: this.listWork(id),
       messages: opts.compact ? [] : this.listMessages(id, { limit: 200 }),
       files: opts.compact ? this.listFilePage(id).items.map(file => ({ ...file, body: "" })) : this.listFiles(id),
-      tasks: this.listTasks(id),
+      tasks,
     };
   }
 
@@ -1939,6 +1944,82 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return !!this.row("SELECT 1 FROM tasks WHERE project_id = ? LIMIT 1", projectId);
   }
 
+  /** Actual recipients and queue classes, one aggregate query regardless of task count. */
+  private workflowAssignments(projectId: string, memberId?: string): WorkflowAssignment[] {
+    const work = "d.kind IN ('instruction','user_message') AND d.wake = 1";
+    const retryableResolved = "COALESCE(r.reason,'') = 'not_received' AND COALESCE((SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1),'') = 'rejected'";
+    const protectedHistory = `(COALESCE(r.phase,'none') = 'stopped' OR (COALESCE(r.phase,'none') = 'resolved' AND NOT (${retryableResolved})))`;
+    const protectedInput = `(COALESCE(r.phase,'none') IN ('needs_owner','checking','waiting') OR ${protectedHistory})`;
+    return this.rows(`SELECT d.task_id, d.member_id, MIN(CASE WHEN ${work} THEN d.rowid END) AS first_order,
+      MIN(CASE WHEN ${work} THEN d.created_at END) AS assigned_at,
+      MAX(CASE WHEN ${work} AND q.task_id IS NOT NULL AND (d.status = 'delivered' OR NOT ${protectedHistory}) THEN 1 ELSE 0 END) AS eligible,
+      MAX(CASE WHEN q.task_id IS NOT NULL THEN 1 ELSE 0 END) AS enrolled,
+      SUM(CASE WHEN d.status = 'queued' AND d.wake = 1 AND NOT (${protectedInput}) THEN 1 ELSE 0 END) AS queued,
+      SUM(CASE WHEN d.status = 'held' AND d.wake = 1 THEN 1 ELSE 0 END) AS held,
+      SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 0 THEN 1 ELSE 0 END) AS notices,
+      SUM(CASE WHEN d.status IN ('queued','held','delivering') AND d.wake = 1 AND ${protectedInput} THEN 1 ELSE 0 END) AS protected,
+      MIN(CASE WHEN d.status = 'queued' THEN d.next_attempt_at END) AS retry_at
+      FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+      LEFT JOIN task_sequence q ON q.member_id = d.member_id AND q.task_id = d.task_id
+      WHERE d.project_id = ? AND d.task_id IS NOT NULL ${memberId ? "AND d.member_id = ?" : ""}
+      GROUP BY d.task_id, d.member_id HAVING first_order IS NOT NULL ORDER BY first_order`, projectId, ...(memberId ? [memberId] : [])).map(r => ({
+        taskId: r.task_id, memberId: r.member_id, order: r.first_order, assignedAt: r.assigned_at, eligible: !!r.eligible, enrolled: !!r.enrolled,
+        queued: Number(r.queued), held: Number(r.held), notices: Number(r.notices), protected: Number(r.protected), retryAt: r.retry_at ?? null,
+      }));
+  }
+
+  /** Only actionable work inputs block final completion; quiet reports to the coordinator do not. */
+  hasUnsettledTaskInput(taskId: string): boolean {
+    return !!this.row("SELECT 1 FROM deliveries WHERE task_id = ? AND wake = 1 AND kind IN ('instruction','user_message','answer','todo_done') AND status IN ('queued','held','delivering') LIMIT 1", taskId);
+  }
+
+  /** Current derived continuations share the ancestor's final completion obligation. */
+  taskCompletionScope(taskId: string): string[] {
+    return this.rows(`WITH RECURSIVE family(id) AS (
+      SELECT id FROM tasks WHERE id = ? UNION SELECT t.id FROM tasks t JOIN family f ON t.parent_task_id = f.id WHERE t.merged_into IS NULL
+    ) SELECT f.id FROM family f WHERE f.id = ? OR (
+      EXISTS(SELECT 1 FROM task_sequence q WHERE q.task_id = f.id)
+      AND NOT EXISTS(SELECT 1 FROM task_stage_marks d WHERE d.task_id = f.id AND d.stage = 'done'
+        AND d.id > COALESCE((SELECT MAX(r.id) FROM task_stage_marks r WHERE r.task_id = f.id AND r.stage = 'reopen'),0))
+    )`, taskId, taskId).map(r => r.id as string);
+  }
+
+  /** Worker row order is executable policy. A stopped historical input never becomes a predecessor. */
+  taskSequenceBlocker(memberId: string, taskId: string | null): { taskId: string; title: string } | null {
+    if (!taskId) return null;
+    const m = this.requireMember(memberId);
+    if (m.kind !== "worker") return null; // coordinators must receive reports/approvals across their team
+    const tasks = this.rows("SELECT id,title,parent_task_id,merged_into FROM tasks WHERE project_id=?",m.projectId);
+    const assignments = this.workflowAssignments(m.projectId,memberId);
+    // Sequence admission and the displayed stage share the current contract/cycle and all live runs.
+    const facts = this.taskProgressFacts(m.projectId,new Set(assignments.map(a=>a.taskId)));
+    const byId = new Map(tasks.map(t => [t.id as string, { title: t.title as string,
+      done: facts.has(t.id) && deriveProgress(facts.get(t.id)!).stage === "done",
+      merged_into: t.merged_into as string | null, parentTaskId: t.parent_task_id as string | null }]));
+    const open = orderAssignments(assignments, byId).filter(a => a.eligible && byId.has(a.taskId) && !byId.get(a.taskId)!.done && !byId.get(a.taskId)!.merged_into);
+    const first = open[0];
+    if (!first) return null;
+    if (!relatedWork(first.taskId, taskId, byId)) return { taskId: first.taskId, title: byId.get(first.taskId)!.title };
+    // A descendant may continue its parent, but two sibling continuations still run in row order.
+    for (const a of open) {
+      if (a.taskId === taskId) break;
+      if (relatedWork(first.taskId, a.taskId, byId) && !relatedWork(a.taskId, taskId, byId)) return { taskId: a.taskId, title: byId.get(a.taskId)!.title };
+    }
+    return null;
+  }
+
+  projectWorkflow(projectId: string, tasks = this.listTasks(projectId), members = this.listMembers(projectId)): ProjectWorkflow {
+    const reports = this.rows(`SELECT m.task_id, m.member_id, m.kind, m.title, m.at FROM messages m
+      JOIN (SELECT MAX(rowid) AS rid FROM messages WHERE project_id = ? AND mine = 0 AND task_id IS NOT NULL GROUP BY task_id, member_id) latest ON m.rowid = latest.rid
+      ORDER BY m.rowid`, projectId).map(r => ({ taskId: r.task_id as string, memberId: r.member_id as string | null, kind: r.kind as string, title: r.title as string, at: r.at as string }));
+    const runningIds = members.filter(m => m.executionState && !m.executionState.endedAt && m.executionState.taskIds?.length).map(m => m.id);
+    const activity = runningIds.length ? this.rows(`SELECT a.member_id, a.kind, a.text, a.at FROM activity a
+      JOIN (SELECT MAX(a.id) AS id FROM activity a JOIN members m ON m.id = a.member_id
+        WHERE m.project_id = ? AND a.member_id IN (${runningIds.map(() => '?').join(',')}) AND a.kind IN ('tool','text','error') GROUP BY a.member_id) latest ON latest.id = a.id`, projectId, ...runningIds)
+      .map(r => ({ memberId: r.member_id as string, kind: r.kind as string, title: redactHarnessText(decodeStoredText(r.text)).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").slice(0, 180), at: r.at as string })) : [];
+    return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity);
+  }
+
   // ---- 업무 단계 ----
   /** 업무 하나의 단계. 근거에서 다시 계산한다(저장하지 않는다). */
   taskProgress(taskId: string): TaskProgress {
@@ -1967,21 +2048,51 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const filter = only ? ` AND task_id IN (${[...only].map(() => "?").join(",")})` : "";
     const ids = only ? [...only] : [];
     const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind,
+        EXISTS(SELECT 1 FROM report_references rr JOIN messages n ON n.id=rr.source_message_id
+          LEFT JOIN report_harness nh ON nh.message_id=n.id LEFT JOIN report_harness oh ON oh.message_id=m.id
+          WHERE rr.project_id=m.project_id AND rr.corrects_message_id=m.id AND n.project_id=m.project_id
+          AND n.member_id=m.member_id AND n.mine=0 AND n.task_id IS m.task_id AND n.rowid>m.rowid
+          AND nh.contract_task_id IS oh.contract_task_id AND nh.contract_rev IS oh.contract_rev) AS corrected,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failed,
         (SELECT group_concat(c.kind || ':' || COALESCE(c.exec_command,c.command,'') || ':' || c.evidence, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failure_keys,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'not_run') AS not_run,
         (SELECT COUNT(*) FROM report_checks c WHERE c.message_id = m.id AND NOT (c.kind = 'unverified' AND c.result = 'pass')) AS checks
       FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
-      WHERE NOT EXISTS (SELECT 1 FROM report_references rr WHERE rr.project_id = m.project_id AND rr.corrects_message_id = m.id) AND m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
+      WHERE m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
       ORDER BY m.rowid`, projectId, ...ids);
     // 지금 계약 판의 통과 완료(서버 판정). 계약이 묶이지 않은 업무는 완료 보고가 곧 작성자 납품이다.
     const passed = new Map<string, Set<string> | null>();
-    const passedFor = (taskId: string): Set<string> | null => {
-      if (!passed.has(taskId)) {
-        const contract = this.getEffectiveContract(taskId);
-        passed.set(taskId, bindingContract(contract) ? new Set(this.completionEvidence(contract!.taskId, contract!.rev).filter((b) => b.eligible).map((b) => b.messageId)) : null);
+    const parents = new Map<string, string | null>();
+    const latestContracts = new Map<string, TaskContract>();
+    const boundContracts = new Map<string, TaskContract>();
+    const evidenceByContract = new Map<string, Set<string>>();
+    let contractsLoaded = false;
+    let evidenceLoaded = false;
+    const contractCache=new Map<string,TaskContract|null>();
+    const effectiveFor=(taskId:string):TaskContract|null=>{
+      if(contractCache.has(taskId))return contractCache.get(taskId)!;
+      if(only?.size===1){const c=this.getEffectiveContract(taskId);contractCache.set(taskId,c);return c;}
+      if(!contractsLoaded){
+        for(const r of this.rows("SELECT id,parent_task_id FROM tasks WHERE project_id=?",projectId))parents.set(r.id,r.parent_task_id??null);
+        for(const r of this.rows("SELECT c.* FROM task_contracts c JOIN tasks t ON t.id=c.task_id WHERE t.project_id=? ORDER BY c.rev DESC",projectId)){
+          if(!latestContracts.has(r.task_id))latestContracts.set(r.task_id,toContract(r));
+          if(!boundContracts.has(r.task_id)&&(r.author_kind!=='worker'||r.confirmed_at!=null))boundContracts.set(r.task_id,toContract(r));
+        }contractsLoaded=true;
       }
-      return passed.get(taskId)!;
+      const seen=new Set<string>();let id:string|null=taskId,pending:TaskContract|null=null,c:TaskContract|null=null;
+      while(id&&!seen.has(id)&&seen.size<32){seen.add(id);c=boundContracts.get(id)??null;if(c)break;pending??=latestContracts.get(id)??null;id=parents.get(id)??null;}
+      c??=pending;contractCache.set(taskId,c);return c;
+    };
+    const passedFor=(taskId:string):Set<string>|null=>{
+      if(passed.has(taskId))return passed.get(taskId)!;
+      const contract=effectiveFor(taskId);
+      if(!bindingContract(contract)){passed.set(taskId,null);return null;}
+      if(only?.size===1){const set=new Set(this.completionEvidence(contract!.taskId,contract!.rev).filter(b=>b.eligible).map(b=>b.messageId));passed.set(taskId,set);return set;}
+      if(!evidenceLoaded){
+        const groups=new Map<string,Row[]>();for(const r of this.completionEvidenceRows({projectId})){const key=JSON.stringify([r.contract_task_id,r.contract_rev]);const group=groups.get(key)??[];group.push(r);groups.set(key,group);}
+        for(const [key,group]of groups)evidenceByContract.set(key,new Set(this.classifyCompletionEvidence(group).filter(b=>b.eligible).map(b=>b.messageId)));evidenceLoaded=true;
+      }
+      const set=evidenceByContract.get(JSON.stringify([contract!.taskId,contract!.rev]))??new Set<string>();passed.set(taskId,set);return set;
     };
     for (const r of reportRows) {
       const f = of(r.task_id);
@@ -1989,9 +2100,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const split = (v: unknown) => (typeof v === "string" && v ? v.split("\u001f") : []);
       const set = r.kind === "완료" ? passedFor(r.task_id) : null;
       f.revTimes.push(r.at);
-      if (r.kind === "완료" && set && !set.has(r.id)) continue;
       f.reports.push({ id: r.id, seq: r.seq, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null,
-        failed: split(r.failed), failureKeys: split(r.failure_keys), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
+        current:!r.corrected, failed: split(r.failed), failureKeys: split(r.failure_keys), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && !r.corrected && (set ? set.has(r.id) : true) } satisfies ReportFact);
     }
     for (const r of this.rows(`SELECT id, title, task_id, created_at FROM decisions WHERE project_id = ? AND status = 'open' AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.decisions.push({ id: r.id, title: r.title, at: r.created_at });
     for (const r of this.rows(`SELECT id, title, task_id, created_at FROM todos WHERE project_id = ? AND done = 0 AND outcome IS NULL AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.todos.push({ id: r.id, title: r.title, at: r.created_at });
@@ -1999,14 +2109,25 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         UNION ALL SELECT task_id, MAX(COALESCE(updated_at, created_at)) FROM todos WHERE project_id = ? AND task_id IS NOT NULL${filter} GROUP BY task_id
         UNION ALL SELECT task_id, MAX(COALESCE(delivered_at, created_at)) FROM deliveries WHERE project_id = ? AND task_id IS NOT NULL${filter} GROUP BY task_id`, projectId, ...ids, projectId, ...ids, projectId, ...ids)) of(r.task_id)?.revTimes.push(r.at);
     for (const r of this.rows(`SELECT d.id, d.task_id, d.status, d.hold_reason, d.created_at, mem.name FROM deliveries d JOIN members mem ON mem.id = d.member_id
-        WHERE d.project_id = ? AND d.task_id IS NOT NULL AND d.status IN ('queued','held')${filter.replaceAll("task_id", "d.task_id")} ORDER BY d.created_at, d.rowid`, projectId, ...ids)) {
+        WHERE d.project_id = ? AND d.task_id IS NOT NULL AND d.wake = 1 AND d.status IN ('queued','held')${filter.replaceAll("task_id", "d.task_id")} ORDER BY d.created_at, d.rowid`, projectId, ...ids)) {
       const f = of(r.task_id);
       if (!f) continue;
       if (r.status === "held") f.held.push({ id: r.id, who: r.name, reason: r.hold_reason ?? null, at: r.created_at });
       else f.queued.push({ id: r.id, who: r.name, at: r.created_at });
     }
-    for (const m of this.rows("SELECT id, name, updated_at FROM members WHERE project_id = ? AND status = 'blocked'", projectId)) {
-      for (const taskId of this.openAssignedTasks(m.id)) of(taskId)?.approvals.push({ who: m.name, at: m.updated_at });
+    // Keep the member change time even after an approval clears: removing a fact must not lower rev.
+    const assigned = this.rows(`SELECT DISTINCT d.task_id, m.id, m.name, m.status, m.blocked_reason, m.updated_at
+      FROM deliveries d JOIN members m ON m.id = d.member_id
+      WHERE d.project_id = ? AND d.task_id IS NOT NULL AND d.kind IN ('instruction','user_message')${filter.replaceAll("task_id", "d.task_id")}`, projectId, ...ids);
+    const openByMember = new Map<string, string[]>();
+    for (const m of assigned) {
+      of(m.task_id)?.revTimes.push(m.updated_at);
+      if (m.status !== "blocked" || !["permission", "selection", "setup"].includes(m.blocked_reason)) continue;
+      if (!openByMember.has(m.id)) {
+        const execution = this.requireMember(m.id).executionState;
+        openByMember.set(m.id, execution && !execution.endedAt ? execution.taskIds ?? [] : this.openAssignedTasks(m.id));
+      }
+      if (openByMember.get(m.id)!.includes(m.task_id)) of(m.task_id)?.approvals.push({ who: m.name, at: m.updated_at });
     }
     for (const r of this.rows(`SELECT * FROM task_stage_marks WHERE project_id = ?${filter} ORDER BY id`, projectId, ...ids)) of(r.task_id)?.marks.push(toMark(r));
     for (const r of this.rows(`SELECT * FROM task_watch WHERE project_id = ?${filter}`, projectId, ...ids)) { const f = of(r.task_id); if (f) f.watch = toWatch(r); }
@@ -2014,43 +2135,97 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const f = of(r.task_id);
       if (f) f.notice = { id: r.id, at: r.created_at, seenAt: r.seen_at ?? null, lines: json<string[]>(r.lines_json) };
     }
-    // Each original delivery is associated with its actual journal, never with a status memo.
-    for (const r of this.rows(`SELECT DISTINCT d.task_id, j.run_id, j.phase, j.generation, j.input_received_at, j.updated_at, m.name, m.id AS member_id
-      FROM execution_journal j JOIN json_each(j.delivery_ids_json) i JOIN deliveries d ON d.id = i.value
-      JOIN members m ON m.id = j.member_id
-      WHERE j.project_id = ? AND d.task_id IS NOT NULL AND d.member_id = j.member_id AND d.kind IN ('instruction','user_message') AND j.generation = m.session_generation
-      AND j.rowid = (SELECT MAX(e.rowid) FROM execution_journal e WHERE e.member_id = j.member_id AND e.generation = j.generation)
-      ORDER BY j.created_at, j.rowid`, projectId)) {
-      const f = of(r.task_id); if (!f) continue;
-      const runtime = this.progressRuntime(r.member_id);
-      f.executions!.push({runId:r.run_id,phase:r.phase,sessionGeneration:r.generation,inputReceivedAt:r.input_received_at,at:r.updated_at,who:r.name,background:runtime.background});
-      if (runtime.at) f.revTimes.push(runtime.at);
+    const runtimeByMember = new Map<string, ReturnType<typeof this.progressRuntime>>();
+    for(const member of this.rows("SELECT id FROM members WHERE project_id=?",projectId))runtimeByMember.set(member.id,this.progressRuntime(member.id));
+    const boundRuns=[...runtimeByMember.values()].flatMap(x=>x.runIds);
+    // Keep the latest journal per original task, every still-open foreground, and explicitly observed backgrounds.
+    for (const r of this.rows(`SELECT DISTINCT d.task_id,j.run_id,j.phase,j.generation,j.input_received_at,j.updated_at,j.created_at,m.name,m.id AS member_id,
+      json_extract(j.terminal_identity_json,'$.terminalId') AS terminal_id
+      FROM execution_journal j JOIN json_each(j.delivery_ids_json) i JOIN deliveries d ON d.id=i.value JOIN members m ON m.id=j.member_id
+      WHERE j.project_id=? AND d.task_id IS NOT NULL AND d.member_id=j.member_id AND d.kind IN ('instruction','user_message') AND j.generation=m.session_generation
+      AND (j.phase NOT IN ('ended','interrupted') OR j.run_id IN (SELECT value FROM json_each(?)) OR NOT EXISTS (
+        SELECT 1 FROM execution_journal newer JOIN json_each(newer.delivery_ids_json) ni JOIN deliveries nd ON nd.id=ni.value
+        WHERE newer.member_id=j.member_id AND newer.generation=j.generation AND newer.rowid>j.rowid
+        AND nd.task_id=d.task_id AND nd.member_id=newer.member_id AND nd.kind IN ('instruction','user_message')))
+      ORDER BY j.created_at,j.rowid`,projectId,JSON.stringify(boundRuns))) {
+      const f=of(r.task_id);if(!f)continue;const runtime=runtimeByMember.get(r.member_id)!;
+      f.executions!.push({memberId:r.member_id,terminalId:r.terminal_id,runId:r.run_id,phase:r.phase,sessionGeneration:r.generation,inputReceivedAt:r.input_received_at,at:r.updated_at,who:r.name,background:runtime.runIds.includes(r.run_id)?runtime.background:null});
+      if(runtime.at)f.revTimes.push(runtime.at);
+      if(runtime.uncertain && runtime.background && (!isDone(f.marks) || r.updated_at>isDone(f.marks)!.at))(f.unattributedBackgrounds??=[]).push({who:r.name,at:runtime.at!,label:runtime.background});
     }
+    const owners=this.implementationOwners(projectId,only);
+    const taskTimes=new Map(this.rows(`SELECT id,updated_at FROM tasks WHERE project_id=?${only?' AND id IN ('+[...only].map(()=>'?').join(',')+')':''}`,projectId,...ids).map(r=>[r.id,r.updated_at]));
+    const ownerCycles=new Map(this.rows(`SELECT x.task_id,MAX(x.created_at) AS at FROM (
+      SELECT task_id,created_at FROM todos WHERE project_id=? UNION ALL SELECT task_id,created_at FROM decisions WHERE project_id=?
+      UNION ALL SELECT task_id,created_at FROM deliveries WHERE project_id=? AND kind IN ('instruction','user_message')) x
+      JOIN task_stage_marks sm ON sm.task_id=x.task_id AND sm.stage='done' AND x.created_at>sm.at
+      GROUP BY x.task_id`,projectId,projectId,projectId).map(r=>[r.task_id,r.at]));
     for (const [taskId, f] of out) {
-      const contract = this.getEffectiveContract(taskId);
+      f.implementationOwner=owners.get(taskId) ?? null;
+      const contract = effectiveFor(taskId);
       const done = isDone(f.marks);
       const reopenedAt = f.marks.findLast(m => m.stage === "reopen")?.at;
-      const taskAt = this.requireTask(taskId).updatedAt;
+      const taskAt = taskTimes.get(taskId);
       f.revTimes.push(taskAt);
       if (contract) f.revTimes.push(contract.at);
       // New contracts and newly created owner actions establish a new cycle, even after those actions close.
-      const ownerCycle = done ? this.row(`SELECT MAX(created_at) AS at FROM (
-        SELECT created_at FROM todos WHERE task_id = ? AND created_at >= ?
-        UNION ALL SELECT created_at FROM decisions WHERE task_id = ? AND created_at >= ?
-        UNION ALL SELECT created_at FROM deliveries WHERE task_id = ? AND created_at > ? AND kind IN ('instruction','user_message'))`, taskId, done.at, taskId, done.at, taskId, done.at)?.at : null;
+      const ownerCycle=done?ownerCycles.get(taskId):null;
       f.cycleAt = [contract?.at, ownerCycle, reopenedAt].filter((v): v is string => !!v).sort().at(-1);
-      if (done && !f.reports.some(r => r.kind === "완료" && r.passed)) f.cycleAt = [f.cycleAt, ...f.revTimes].filter((v):v is string=>!!v).sort().at(-1);
+      if (done && !f.reports.some(r => r.current!==false && r.kind === "완료" && r.passed)) f.cycleAt = [f.cycleAt, ...f.reports.filter(r=>r.current!==false && r.at>done.at).map(r=>r.at)].filter((v):v is string=>!!v).sort().at(-1);
       const evidenceSince = [contract?.at, ownerCycle].filter((v): v is string => !!v).sort().at(-1);
-      if (f.cycleAt) f.reports = f.reports.filter(r => r.at >= (r.kind === "완료" ? f.cycleAt! : evidenceSince ?? ""));
+      if (f.cycleAt) f.executions=f.executions?.filter(e=>!!e.background || !["ended","interrupted"].includes(e.phase) || e.at>=f.cycleAt!);
+      if (f.cycleAt) for(const r of f.reports)if(r.at<(r.kind==="완료"?f.cycleAt!:evidenceSince??""))r.current=false;
     }
     return out;
+  }
+
+  /** Explicit reassignment is server-authored and points to an existing authorized original. No new input. */
+  recordImplementationAssignment(taskId: string, delivery: Delivery, actor: Member | undefined, purpose: "implementation" | "review"): void {
+    if (actor && !["conductor", "root"].includes(actor.kind)) throw new ApiError(403, "구현 소관은 대표 또는 총괄만 지정합니다");
+    this.createMessage({ projectId: delivery.projectId, taskId, memberId: null, who: "서버", kind: "시스템", title: "업무 맡김 범위", targetMemberId: delivery.memberId,
+      body: JSON.stringify({ deliveryId: delivery.id, purpose, assignedBy: actor?.id ?? "owner" }) });
+  }
+
+  private implementationOwners(projectId: string, only?: Set<string>): Map<string, ImplementationOwner> {
+    const result = new Map<string, ImplementationOwner>(), excluded = new Set<string>();
+    const candidates = new Map<string, Map<string, ImplementationOwner>>();
+    // A task's unique original implementation delegation before its first explicit review is legacy proof.
+    // A reviewer report, including a passed report, is never ownership proof.
+    for (const r of this.rows(`SELECT DISTINCT d.id, d.task_id, d.member_id, m.name FROM deliveries d
+      JOIN members m ON m.id=d.member_id
+      JOIN report_closures c ON c.ref_type='delivery' AND c.ref_id=d.id AND c.kind='delegated'
+      JOIN members a ON a.id=c.member_id AND a.kind IN ('conductor','root')
+      WHERE d.project_id=? AND d.task_id IS NOT NULL AND d.kind='instruction' AND d.ref_type IS NULL AND m.kind='worker'
+      AND NOT EXISTS(SELECT 1 FROM task_stage_marks sm WHERE sm.task_id=d.task_id AND sm.stage='review' AND sm.at<=d.created_at)
+      ${only ? 'AND d.task_id IN ('+[...only].map(()=>'?').join(',')+')' : ''}
+      ORDER BY d.created_at,d.rowid`,projectId,...(only?[...only]:[]))) {
+      if (only && !only.has(r.task_id)) continue;
+      const group=candidates.get(r.task_id) ?? new Map<string,ImplementationOwner>();
+      group.set(r.member_id,{memberId:r.member_id,who:r.name,deliveryId:r.id});candidates.set(r.task_id,group);
+    }
+    const explicit = this.rows(`SELECT s.task_id,d.id,d.member_id,m.name,
+        json_extract(s.body,'$.purpose') AS purpose
+      FROM messages s JOIN deliveries d ON d.id=CASE WHEN json_valid(s.body) THEN json_extract(s.body,'$.deliveryId') END
+      JOIN members m ON m.id=d.member_id AND m.kind='worker'
+      LEFT JOIN members a ON a.id=json_extract(s.body,'$.assignedBy')
+      WHERE s.project_id=? AND s.kind='시스템' AND s.who='서버' AND s.member_id IS NULL AND s.title='업무 맡김 범위'
+        AND d.project_id=s.project_id AND d.task_id=s.task_id AND d.member_id=s.target_member_id AND d.kind='instruction' AND d.ref_type IS NULL
+        AND (json_extract(s.body,'$.assignedBy')='owner' OR (a.kind IN ('conductor','root') AND (a.project_id=s.project_id OR a.kind='root')))
+        ${only ? 'AND s.task_id IN ('+[...only].map(()=>'?').join(',')+')' : ''}
+      ORDER BY s.rowid`,projectId,...(only?[...only]:[]));
+    for (const r of explicit) {
+      if (r.purpose === "review") excluded.add(r.id);
+      if (r.purpose === "implementation") result.set(r.task_id,{memberId:r.member_id,who:r.name,deliveryId:r.id});
+    }
+    for(const [id,group] of candidates)if(!result.has(id)) { const choices=[...group.values()].filter(x=>!excluded.has(x.deliveryId));if(choices.length===1)result.set(id,choices[0]!); }
+    return result;
   }
 
   /** 보고 한 건의 단계 근거(검사 결과·지금 계약 판정). 반복 감시가 쓴다. */
   reportFact(messageId: string): ReportFact | null {
     const m = this.getMessage(messageId);
     if (!m?.taskId) return null;
-    return this.taskProgressFacts(m.projectId, new Set([m.taskId])).get(m.taskId)?.reports.find((r) => r.id === messageId) ?? null;
+    return this.taskProgressFacts(m.projectId, new Set([m.taskId])).get(m.taskId)?.reports.find((r) => r.id === messageId && r.current!==false) ?? null;
   }
 
   listStageMarks(taskId: string): MarkFact[] {
@@ -2134,8 +2309,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  private progressRuntime: (memberId: string) => { background: string | null; at: string | null } = () => ({background:null,at:null});
-  setProgressRuntime(read: (memberId: string) => { background: string | null; at: string | null }): void { this.progressRuntime = read; }
+  private progressRuntime: (memberId: string) => { background: string | null; at: string | null; runIds: string[]; uncertain: boolean } = () => ({background:null,at:null,runIds:[],uncertain:false});
+  setProgressRuntime(read: typeof this.progressRuntime): void { this.progressRuntime = read; }
   refreshTaskProgressForMember(memberId: string): void {
     const ids = this.rows("SELECT DISTINCT task_id FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL", memberId).map(r => r.task_id as string);
     this.queueProgress(ids);
@@ -2935,6 +3110,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.run("UPDATE deliveries SET source_revision = ?, next_attempt_at = ?, task_id = ? WHERE id = ?", input.sourceRevision ?? null, input.nextAttemptAt ?? null,
         input.taskId !== undefined ? this.taskRef(input.projectId, input.taskId) : this.refTask(input.refType ?? null, input.refId ?? null), id);
       this.run("INSERT INTO delivery_recovery (delivery_id, updated_at) VALUES (?, ?)", id, nowIso());
+      const taskId = this.deliveryTaskId(id);
+      if (taskId && (input.wake ?? true) && ["instruction", "user_message"].includes(input.kind)) {
+        this.run("INSERT OR IGNORE INTO task_sequence(member_id, task_id, entered_at) VALUES (?, ?, ?)", member.id, taskId, nowIso());
+      }
+      if (taskId && (input.wake ?? true) && ["instruction", "user_message"].includes(input.kind) && this.doneMark(taskId)) {
+        this.addStageMark({ projectId: input.projectId, taskId, stage: "reopen", evidence: `새 지시 #${id}`, memberId: null, who: "서버" });
+      }
       this.emitMember(input.memberId);
       return this.requireDelivery(id);
     });
@@ -3792,7 +3974,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    * 검사를 생략한 총괄 승계 보고는 독립 근거가 아니다(원 직원의 정정을 세탁하지 않는다).
    */
   completionEvidence(contractTaskId: string, rev: number): CompletionEvidence[] {
-    const rows = this.rows(`SELECT h.message_id, h.gate, m.kind,
+    return this.classifyCompletionEvidence(this.completionEvidenceRows({ contractTaskId, rev }));
+  }
+
+  /** 단계 일괄 조회와 단일 계약 조회가 같은 정정·작성자 범위를 사용한다. */
+  private completionEvidenceRows(scope: { projectId: string } | { contractTaskId: string; rev: number }): Row[] {
+    const where = "projectId" in scope ? "m.project_id = ? AND h.contract_task_id IS NOT NULL AND h.contract_rev IS NOT NULL" : "h.contract_task_id = ? AND h.contract_rev = ?";
+    const params = "projectId" in scope ? [scope.projectId] : [scope.contractTaskId, scope.rev];
+    return this.rows(`SELECT h.message_id, h.contract_task_id, h.contract_rev, h.gate, m.kind,
       EXISTS (SELECT 1 FROM report_checks c WHERE c.message_id = m.id) AS has_checks,
       (SELECT n.id FROM report_references r
         JOIN messages n ON n.id = r.source_message_id JOIN report_harness nh ON nh.message_id = n.id
@@ -3802,8 +3991,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           AND nh.contract_task_id = h.contract_task_id AND nh.contract_rev = h.contract_rev
           AND n.rowid > m.rowid ORDER BY n.rowid DESC LIMIT 1) AS corrected_by
       FROM report_harness h JOIN messages m ON m.id = h.message_id
-      WHERE h.contract_task_id = ? AND h.contract_rev = ? AND m.mine = 0 AND m.member_id = h.member_id
-      ORDER BY m.rowid`, contractTaskId, rev);
+      WHERE ${where} AND m.mine = 0 AND m.member_id = h.member_id
+      ORDER BY m.rowid`, ...params);
+  }
+
+  /** 한 계약·한 판 안의 근거만 받는다. 다른 계약의 성공을 승계 근거로 섞지 않는다. */
+  private classifyCompletionEvidence(rows: Row[]): CompletionEvidence[] {
     const direct = rows.some(r => r.gate === "contract" && r.kind === "완료" && r.has_checks && !r.corrected_by);
     return rows.map(r => {
       const status: CompletionEvidence["status"] = r.gate !== "contract" || r.kind !== "완료" ? "not_passed"

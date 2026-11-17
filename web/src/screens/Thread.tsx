@@ -1,5 +1,6 @@
 // 대화: 보고와 내 말을 시간순으로. 본문 스크롤은 Shell 의 data-scroll-root 가 맡는다.
 import NativePromptCard from "../components/NativePromptCard";
+import WorkFlow from "../components/WorkFlow";
 import { useRecentAnswers } from "../lib/nativeAnswers";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Decision, FileDoc, Member, Message, Task } from "@shared/types";
@@ -77,11 +78,12 @@ function useTaskHistory(projectId: string, taskId: string | null) {
   return { ...fresh, loadOlder: () => (fresh.cursor && !fresh.busy ? load(fresh.cursor) : Promise.resolve()) };
 }
 
-function TaskBar({ task }: { task: Task }) {
+function TaskBar({ task, expanded, onFlow }: { task: Task; expanded: boolean; onFlow: () => void }) {
   return (
     <div className="th-task" role="note">
       <span className="th-task__label">업무</span>
       <span className="th-task__title">{task.title}</span>
+      <GlassButton variant="ghost" size="s" className="wf-toggle" aria-expanded={expanded} onClick={onFlow}>업무 흐름</GlassButton>
       {/* 맡은 직원은 적지 않는다. 업무에는 여러 직원이 붙고, 누가 썼는지는 글마다 보인다. */}
       {task.branch || task.worktree ? <span className="th-task__meta">{[task.branch, task.worktree].filter(Boolean).join(" · ")}</span> : null}
       {/* 단계는 누가 무엇을 해야 할 때와 끝났을 때만 적는다(늘 떠 있는 상태 글을 늘리지 않는다). 팀 목록과 같은 값이다. */}
@@ -297,6 +299,7 @@ function useKindOf(members: readonly Member[] | undefined): KindOf {
 }
 
 export default function Thread() {
+  const [flowOpen, setFlowOpen] = useState(false);
   const project = useProject();
   const projectHasOlder = useStore((s) => s.hasOlderMessages);
   const projectId = project?.project.id ?? "";
@@ -491,7 +494,8 @@ export default function Thread() {
   return (
     <div ref={anchorRef} className="th">
       {hqLead ? <HqLeadStrip lead={hqLead} /> : null}
-      {task ? <TaskBar task={task} /> : null}
+      {task ? <TaskBar task={task} expanded={flowOpen} onFlow={() => setFlowOpen((open) => !open)} /> : null}
+      {project && task && flowOpen ? <WorkFlow key={projectId} state={project} selectedTaskId={task.id} /> : null}
       {task && history.error && messages.length === 0 ? <p className="th-older__error">{history.error}</p> : null}
       {messages.length === 0 ? (
         task ? (

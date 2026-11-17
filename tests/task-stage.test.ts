@@ -45,7 +45,7 @@ describe("막힘의 원인과 다음 차례", () => {
     await blocked(f, a, []);
     await blocked(f, b, [check("behavior", "fail", "저장 시험")]);
     expect(progressOf(f, a)).toMatchObject({ stage: "confirm", cause: "unknown", owner: "총괄" });
-    expect(progressOf(f, b)).toMatchObject({ stage: "fix", cause: "technical", owner: "철수" });
+    expect(progressOf(f, b)).toMatchObject({ stage: "fix", cause: "technical", owner: "총괄" });
   });
 
   test("대표 할 일이 열려 있을 때만 대표 차례다. 닫히면 원래 단계로 돌아간다", async () => {
@@ -63,6 +63,9 @@ describe("막힘의 원인과 다음 차례", () => {
 describe("납품 뒤 단계: 검토·합치기·완료", () => {
   test("검토자 막힘(실패)은 작성자가 고칠 차례로 보이고, 계약 판정(작성자 납품)은 그대로 남는다", async () => {
     const f = fixture(), task = await newTask(f);
+    const original=f.store.enqueue({projectId:f.project.id,memberId:f.worker.id,taskId:task,kind:"instruction",text:"승인된 구현 원 지시",wake:true});
+    f.store.noteDelegation(f.lead.id,original,false);
+    f.store.markDelivered(original.id);
     await deliver(f, task);
     expect(progressOf(f, task)).toMatchObject({ stage: "delivered", owner: "총괄" });
     expect((await stage(f, task, "review", "영희에게 독립 검토 맡김")).isError).toBeUndefined();

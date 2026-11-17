@@ -314,7 +314,7 @@ export type TaskBlockCause = "technical" | "pending" | "dependency" | "owner" | 
 /** 총괄이 남기는 단계 표시. reopen 은 완료·점검·보류를 푼다. */
 export type TaskStageMark = "review" | "merged" | "applied" | "done" | "hold" | "reopen";
 export interface TaskProgress {
-  execution?: { runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; background: string | null };
+  execution?: { memberId?: string; runId: string; phase: string; sessionGeneration: number; inputReceivedAt: string | null; background: string | null };
   stage: TaskStage;
   cause: TaskBlockCause | null;
   /** 다음 차례 한 줄(누가 무엇을). 아무도 할 일이 없으면 null. */
@@ -440,6 +440,7 @@ export type DeliveryKind = "user_message" | "answer" | "todo_done" | "instructio
 export type DeliveryStatus = "queued" | "held" | "delivering" | "delivered" | "failed";
 export interface Delivery {
   id: string;
+  taskId?: string | null;
   projectId: string;
   memberId: string;
   kind: DeliveryKind;
@@ -697,6 +698,7 @@ export interface Bootstrap {
 }
 
 export interface ProjectState {
+  workflow?: import("./workflow.ts").ProjectWorkflow;
   project: Project;
   members: Member[];
   decisions: Decision[]; // 열린 것 + 최근 처리 50. 더 오래된 처리 건은 GET /api/projects/:id/decisions?status=done&before=&limit=

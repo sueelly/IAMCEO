@@ -907,6 +907,36 @@ export const MIGRATIONS: string[] = [
    );
    CREATE INDEX task_notices_task ON task_notices(task_id, created_at);
    ALTER TABLE work ADD COLUMN task_id TEXT;`,
+  // v37: adopt current queued/in-flight work, never turn all historical deliveries into prerequisites.
+  `CREATE TABLE task_sequence (
+     member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     entered_at TEXT NOT NULL,
+     PRIMARY KEY (member_id, task_id)
+   );
+   INSERT OR IGNORE INTO task_sequence(member_id, task_id, entered_at)
+     SELECT d.member_id, d.task_id, MIN(d.created_at)
+     FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+     WHERE d.task_id IS NOT NULL AND d.wake = 1 AND d.kind IN ('instruction','user_message')
+       AND d.status IN ('queued','held','delivering')
+       AND (COALESCE(r.phase,'none') NOT IN ('stopped','resolved') OR
+         (r.phase = 'resolved' AND r.reason = 'not_received' AND
+           (SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id
+             WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
+     GROUP BY d.member_id, d.task_id;
+   INSERT OR IGNORE INTO task_sequence(member_id, task_id, entered_at)
+     SELECT e.member_id, d.task_id, MIN(d.created_at)
+     FROM execution_journal e JOIN members m ON m.id = e.member_id
+       JOIN json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id = j.value
+       LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+     WHERE e.generation = m.session_generation AND e.ended_at IS NULL
+       AND e.phase NOT IN ('ended','interrupted') AND d.task_id IS NOT NULL
+       AND (d.status = 'delivered' OR COALESCE(r.phase,'none') NOT IN ('stopped','resolved') OR
+         (r.phase = 'resolved' AND r.reason = 'not_received' AND
+           (SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id
+             WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
+       AND e.rowid = (SELECT MAX(x.rowid) FROM execution_journal x WHERE x.member_id = e.member_id AND x.generation = e.generation)
+     GROUP BY e.member_id, d.task_id;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

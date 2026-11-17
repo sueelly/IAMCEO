@@ -60,12 +60,16 @@ test("받은 계약 업무의 갈래로 올린 통과 완료도 그 업무를 �
   const gated = id((await f.tool(f.lead, "task", { title: "계약 업무" })).text);
   await f.tool(f.lead, "team_assign", { member: "w1", text: "해 주세요", task_id: gated, contract: ONE });
   await until("직원 지시", () => f.runner.to(f.worker).some(t => t.includes("업무 계약 r1")));
+  const run = f.store.listPendingExecutions().find(r => r.memberId === f.worker.id)!;
   const child = id((await f.tool(f.worker, "task", { title: "갈래", parent_task_id: gated })).text);
   f.ran(f.worker, "bun test behavior");
   expect((await f.tool(f.worker, "post", { task_id: child, kind: "완료", title: "갈래로 끝", contract_rev: 1, checks: [pass("behavior", 1)] })).isError).toBeUndefined();
   f.runner.end(f.worker, 1);
+  await until("갈래 보고 턴 종료", () => f.store.getExecutionJournal(run.runId)?.phase === "ended");
+  expect(f.store.getReportFollowup(run.runId)).toBeNull();
   const own = id((await f.tool(f.worker, "task", { title: "다음 내 일" })).text);
-  expect((await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" })).isError).toBeUndefined();
+  const next = await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" });
+  expect(next.isError, next.text).toBeUndefined();
 });
 
 test("직원이 제안한 계약은 총괄 확인 전까지 판정에 묶이지 않고, 총괄이 확인하면 묶인다. 직원이 고친 새 판은 다시 확인받는다", async () => {
@@ -165,22 +169,33 @@ test("Codex 직원은 rollout 기록(CommandExecution exit_code)으로, Antigrav
   expect(f.store.listHarnessFindings(f.project.id).some(x => x.kind === "evidence_unsupported" && x.memberId === agy.id)).toBe(true);
 });
 
-test("다음 턴 비켜 가기: 받은 계약 업무를 마감하지 않은 채 다음 턴에 자기가 만든 업무로 완료를 올리면 거절한다", async () => {
+test("다음 턴 비켜 가기: 이미 다음 업무까지 받은 옛 실행에서도 미마감 계약을 자기 업무의 완료로 비켜 가지 못한다", async () => {
   const f = fixture();
   const gated = id((await f.tool(f.lead, "task", { title: "계약 업무" })).text);
   await f.tool(f.lead, "team_assign", { member: "w1", text: "해 주세요", task_id: gated, contract: ONE });
   await until("직원 지시", () => f.runner.to(f.worker).some(t => t.includes("업무 계약 r1")));
+  const firstRun = f.store.listPendingExecutions().find(r => r.memberId === f.worker.id)!;
   f.runner.end(f.worker);
+  await until("보고 보완 지시", () => f.runner.to(f.worker).some(t => t.includes("보고 보완:")));
+  f.runner.end(f.worker, 1);
+  await until("보고 보완 턴 종료", () => !f.store.listPendingExecutions().some(r => r.memberId === f.worker.id));
   const free = id((await f.tool(f.lead, "task", { title: "다른 일" })).text);
   await f.tool(f.lead, "team_assign", { member: "w1", text: "이것도", task_id: free });
-  // 첫 턴에 보고가 없어 보고 보완이 먼저 갈 수 있다. 그 턴도 끝내고 두 번째 지시를 받은 턴까지 간다.
-  for (let i = 0; i < 5 && !f.runner.to(f.worker).some(t => t.includes("이것도")); i++) { f.runner.end(f.worker, i + 1); await Bun.sleep(20); }
-  await until("두 번째 지시", () => f.runner.to(f.worker).some(t => t.includes("이것도")));
+  expect(f.runner.to(f.worker).some(t => t.includes("이것도"))).toBe(false);
+  // 새 전달은 앞 업무가 끝날 때까지 기다린다. 순서 제한 전에 다음 업무까지
+  // 이미 받은 옛 실행의 영수증과 종료 기록을 복원해 계약 우회 방지를 검사한다.
+  const received = f.store.listPending(f.worker.id).find(d => d.taskId === free && d.kind === "instruction")!;
+  expect(received).toBeDefined();
+  f.store.markDelivered(received.id);
+  const at = new Date().toISOString();
+  f.store.saveExecutionJournal({ ...firstRun, runId: `${firstRun.runId}-legacy-next`, deliveryIds: [received.id],
+    phase: "ended", turn: 2, inputReceivedAt: at, startedAt: at, lastProgressAt: at, endedAt: at,
+    result: "success", reportRequestedAt: null, createdAt: at, updatedAt: at });
   const own = id((await f.tool(f.worker, "task", { title: "내가 만든 업무" })).text);
   const bypass = await f.tool(f.worker, "post", { task_id: own, kind: "완료", title: "끝" });
   expect(bypass.isError).toBe(true);
   expect(bypass.text).toContain(`받은 업무(#${gated} 계약 r1)는 계약이 있고 아직 완료·막힘으로 마감하지 않았습니다`);
-  // 이번 턴에 받은 계약 없는 업무의 완료는 그대로 받는다
+  // 이미 받은 계약 없는 업무의 완료는 그대로 받는다
   expect((await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "다른 일 끝" })).isError).toBeUndefined();
   // 계약 업무를 막힘으로 마감하면 묶임이 풀린다
   await f.tool(f.worker, "post", { task_id: gated, kind: "막힘", title: "막힘", unverified: ["동작"] });

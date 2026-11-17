@@ -23,6 +23,8 @@ test("팀 목록·대화·결재함이 같은 업무 단계를 보이고 완료 
   const t = (title: string, contract?: unknown) => f.tool(f.lead, "task", { title, ...(contract ? { contract } : {}) }).then((r) => id(r));
   // 1) 검토자 반례가 실패한 납품: 고칠 것(철수)
   const pay = await t("결제 화면 고치기", ONE);
+  const original = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: pay, kind: "instruction", text: "기존 구현 맡김" });
+  f.store.noteDelegation(f.lead.id, original, false); f.store.markDelivered(original.id);
   f.ran(f.worker, "bun test behavior");
   await f.tool(f.worker, "post", { task_id: pay, kind: "완료", title: "결제 화면 납품", contract_rev: 1, checks: [check("behavior", "pass")] });
   await f.tool(f.worker2, "post", { task_id: pay, kind: "막힘", title: "검토 반례 1건 실패", contract_rev: 1, checks: [check("behavior", "fail", "환불 반례")] });
