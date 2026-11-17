@@ -3983,8 +3983,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.requireTask(taskId);
     return this.transaction(() => {
       const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
-      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso());
+      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at, inputs, outputs, constraints_json, exclusions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso(),
+        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions));
       return this.getTaskContract(taskId)!;
     });
   }
@@ -4358,6 +4359,8 @@ function toContract(r: Row): TaskContract {
   return {
     taskId: r.task_id as string, rev: r.rev as number, kind: r.kind as TaskContract["kind"], goal: r.goal as string,
     acceptance: JSON.parse(r.acceptance as string), scope: (r.scope as string | null) ?? null, forbidden: JSON.parse(r.forbidden as string),
+    inputs: r.inputs == null ? null : JSON.parse(r.inputs as string), outputs: r.outputs == null ? null : JSON.parse(r.outputs as string),
+    constraints: r.constraints_json == null ? null : JSON.parse(r.constraints_json as string), exclusions: r.exclusions == null ? null : JSON.parse(r.exclusions as string),
     evidence: JSON.parse(r.evidence as string), checks: JSON.parse(r.checks as string), author: r.author as string,
     authorMemberId: (r.author_member_id as string | null) ?? null, authorKind: (r.author_kind as ContractAuthorKind | null) ?? "conductor",
     sourceMessageId: (r.source_message_id as string | null) ?? null, at: r.at as string,
