@@ -421,15 +421,15 @@ describe("자료 종류", () => {
     expect(await res.text()).toContain("e.source!==parent");
   });
 
-  test("역할 템플릿: 아티팩트 안내가 들어 있고 금지는 외부 게시로 좁혔다", () => {
+  test("역할 템플릿: 총괄은 자료 제작을 위임하고 제작 직원에게 아티팩트 기준을 준다", () => {
     for (const kind of ["worker", "conductor", "root"] as const) {
       const text = renderRole(kind, { PROJECT: "P", NAME: "N", ROLE: "R", CONDUCTOR: "C" });
-      expect(text).toContain("글만으로 보기 힘든");
+      expect(text).toContain(kind === "conductor" ? "담당 직원에게 제작과 `file` 등록을 맡긴다" : "글만으로 보기 힘든");
       // 키트 클래스는 글 지침의 '자료 틀 부품' 한 곳에 적는다. 탭은 꼭 볼 내용에 쓰지 않는다(지침).
-      expect(text).toContain("'자료 틀 부품'의 클래스만 써도 깔끔하다");
+      if (kind !== "conductor") expect(text).toContain("'자료 틀 부품'의 클래스만 써도 깔끔하다");
       for (const cls of ["card", "grid", "callout", "kpi", "steps", "flow", "tag", "compare", "owner", "hero", "rec"]) expect(text).toContain(`\`${cls}\``);
       expect(text).toContain("`tabs`에는 꼭 볼 내용을 넣지 않는다");
-      expect(text).toContain("외부 사이트에 따로 게시하지 않는다");
+      if (kind !== "conductor") expect(text).toContain("외부 사이트에 따로 게시하지 않는다");
       expect(text).not.toContain("아티팩트를 만들지 않는다");
       expect(text).not.toContain("다른 아티팩트");
       expect(text).not.toContain("{{");

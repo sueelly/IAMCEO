@@ -267,9 +267,9 @@ test("representative auth required; archived project refuses writes even duplica
 test("built-in conductor and worker system prompts require published deliverables and post links", () => {
   for (const kind of ["conductor", "worker"] as const) {
     const rules = renderRole(kind, { PROJECT: "시험", NAME: "직원", ROLE: "개발", CONDUCTOR: "총괄" });
-    expect(rules).toContain("반드시 `file` 도구로 자료에 올리고");
+    expect(rules).toContain(kind === "conductor" ? "담당 직원에게 제작과 `file` 등록을 맡긴다" : "반드시 `file` 도구로 자료에 올리고");
     expect(rules).toContain("`post`의 `file_ids`");
-    expect(rules).toContain("로컬 파일 경로만 말하고 끝내지 않는다");
-    expect(rules).toContain("갱신하거나 새 판");
+    expect(rules).toContain(kind === "conductor" ? "로컬 경로만 말하고 끝내지 않는다" : "로컬 파일 경로만 말하고 끝내지 않는다");
+    expect(rules).toContain(kind === "conductor" ? "수정도 직원에게 맡겨" : "갱신하거나 새 판");
   }
 });

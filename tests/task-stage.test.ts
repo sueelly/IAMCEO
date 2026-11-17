@@ -146,27 +146,27 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
     expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
   });
 
-  test("계약·브랜치 없는 업무는 작성자 완료가 곧 완료이고 알림이 한 번 생긴다. 열린 할 일이 있으면 완료로 옮기지 않는다", async () => {
+  test("계약 없는 업무의 완료는 거절하고 열린 할 일과 미완료 상태를 유지한다", async () => {
     const f = fixture(), plain = await newTask(f, null, "질문 답하기"), waiting = await newTask(f, null, "로그인 뒤 확인");
-    expect((await f.tool(f.worker, "post", { task_id: plain, kind: "완료", title: "답함" })).isError).toBeUndefined();
-    expect(progressOf(f, plain)).toMatchObject({ stage: "done" });
-    expect(progressOf(f, plain)!.notice).toBeTruthy();
+    expect((await f.tool(f.worker, "post", { task_id: plain, kind: "완료", title: "답함" })).isError).toBe(true);
+    expect(progressOf(f, plain)!.stage).not.toBe("done");
+    expect(progressOf(f, plain)!.notice).toBeNull();
     await f.tool(f.worker, "todo", { title: "로그인", task_id: waiting });
     await f.tool(f.worker, "post", { task_id: waiting, kind: "완료", title: "확인함" });
     expect(progressOf(f, waiting)!.stage).toBe("owner");
-    expect(notices(f)).toBe(1);
+    expect(notices(f)).toBe(0);
   });
 });
 
 describe("반복 감시", () => {
-  test("같은 실패 3번이면 한 번 멈추고 총괄에게 한 번 알린다. 그 뒤 같은 실패는 총괄을 깨우지 않고, 다시 열기 전엔 같은 업무를 다시 맡기지 않는다", async () => {
+  test("같은 실패 3번이면 결재함에 올리고 대표 답 뒤에 다시 연다", async () => {
     const f = fixture(), task = await newTask(f);
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(conductorSystem(f)).toHaveLength(0);
     await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     const p = progressOf(f, task)!;
-    expect(p).toMatchObject({ stage: "check", cause: "loop", owner: "총괄", loop: { attempts: 3, same: 3 } });
+    expect(p).toMatchObject({ stage: "owner", cause: "owner", owner: "대표", loop: { attempts: 3, same: 3 } });
     expect(p.loop!.trippedAt).toBeTruthy();
     expect(conductorSystem(f)).toHaveLength(1);
     expect(conductorSystem(f)[0]!.text).toContain("같은 실패 3번");
@@ -177,11 +177,14 @@ describe("반복 감시", () => {
     expect(conductorSystem(f)).toHaveLength(1);
     const refused = await f.tool(f.lead, "team_assign", { member: "철수", text: "같은 방법으로 다시", task_id: task });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("반복 감시");
+    expect(refused.text).toContain("결재");
     // 재시작에도 감시가 남는다.
     const store = new Store(f.store.db, new Bus());
     expect(store.getTaskWatch(task)).toMatchObject({ attempts: 4, trippedAt: p.loop!.trippedAt });
-    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBeUndefined();
+    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBe(true);
+    const decision = f.store.pendingTaskFailureDecision(task)!;
+    f.store.answerDecision(decision.id, { note: "저장 경로를 확인한 뒤 다시 진행하세요" });
+    expect((await stage(f, task, "reopen", "대표 답에 따라 저장 경로부터 재확인")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(progressOf(f, task)!.loop).toMatchObject({ attempts: 4, trippedAt: null });
     expect((await f.tool(f.lead, "team_assign", { member: "철수", text: "저장 경로부터 다시", task_id: task })).isError).toBeUndefined();

@@ -988,7 +988,18 @@ export const MIGRATIONS: string[] = [
      created_at TEXT NOT NULL
    );
    CREATE INDEX workflow_assignment_receipts_project ON workflow_assignment_receipts(project_id, created_at);`,
-  // v40: persistent CLI failure prevents automatic restart loops.
+  // v40: independent project admission caps and durable owner escalation after
+  // repeated task failures. No running execution or existing answer is changed.
+  `ALTER TABLE projects ADD COLUMN max_concurrent_turns INTEGER DEFAULT NULL
+     CHECK (max_concurrent_turns IS NULL OR (typeof(max_concurrent_turns) = 'integer' AND max_concurrent_turns BETWEEN 1 AND 64));
+   CREATE TABLE task_failure_escalations (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+     decision_id TEXT NOT NULL REFERENCES decisions(id),
+     tripped_at TEXT NOT NULL,
+     trigger_message_id TEXT,
+     created_at TEXT NOT NULL
+   );`,
+  // v41: persistent CLI failure prevents automatic restart loops.
   `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
 ];
 

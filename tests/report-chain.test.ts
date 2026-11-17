@@ -11,14 +11,17 @@ import type { Runner, RunnerEvent, RunnerMember, SendResult } from "../server/ru
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 import { defaultTaskId } from "./fixtures/default-task.ts";
 
+const completion = { contractRev: 1, checks: [{ kind: "other" as const, name: "응답 결과", result: "pass" as const, evidence: "요청한 응답 결과를 확인했다", criterion: 1 }] };
+
 class FakeRunner implements Runner {
   readonly kind: Backend = "core";
   sent: { memberId: string; text: string }[] = [];
   busy = new Set<string>();
   callback: (event: RunnerEvent) => void = () => {};
   turns = new Map<string, number>();
+  panes = new Map<string, string>();
   async available() { return { ok: true }; }
-  async start(m: RunnerMember) { return { sessionId: m.sessionId ?? `session-${m.id}`, paneId: `pane-${m.id}` }; }
+  async start(m: RunnerMember) { const paneId = `pane-${m.id}`; this.panes.set(m.id, paneId); this.turns.set(m.id, 0); return { sessionId: m.sessionId ?? `session-${m.id}`, paneId }; }
   async send(m: RunnerMember, text: string): Promise<SendResult> {
     this.sent.push({ memberId: m.id, text });
     this.busy.add(m.id);
@@ -37,7 +40,7 @@ class FakeRunner implements Runner {
     const turn = (this.turns.get(member.id) ?? 0) + 1;
     this.turns.set(member.id, turn);
     this.busy.delete(member.id);
-    this.callback({ type: "turn_end", memberId: member.id, terminalId: member.paneId, sessionGeneration: 0, turn, isError: false, finalText: "" });
+    this.callback({ type: "turn_end", memberId: member.id, terminalId: this.panes.get(member.id) ?? member.paneId, sessionGeneration: 0, turn, isError: false, finalText: "" });
   }
   to(member: Member) { return this.sent.filter(s => s.memberId === member.id).map(s => s.text); }
 }
@@ -58,6 +61,7 @@ function fixture() {
   const project = store.createProject({ name: "보완", cwd: isolated.paths.work });
   // 업무를 주제로 하지 않는 시험이라, 규칙을 지키는 직원처럼 모든 글에 같은 시험 업무를 넣는다.
   const taskId = defaultTaskId(store, project.id);
+  store.saveTaskContract(taskId, { kind: "other", goal: "요청에 응답한다", acceptance: ["요청한 응답 결과를 확인한다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
   const runner = new FakeRunner();
   const orchestrators: Orchestrator[] = [];
   function orchestrator() {
@@ -72,7 +76,7 @@ function fixture() {
   const pendingRun = (member: Member) => store.listPendingExecutions().find(r => r.memberId === member.id);
   /** 직원 보고 하나로 총괄의 실행을 깨운다. */
   const wakeLeadWithReport = async (title = "구현 완료") => {
-    const report = await orch.recordPost(worker, { kind: "완료", title, taskId });
+    const report = await orch.recordPost(worker, { kind: "완료", title, taskId, ...completion });
     await until("총괄 실행", () => !!pendingRun(lead) && runner.to(lead).some(t => t.includes(report.id)));
     return { report, run: pendingRun(lead)! };
   };
@@ -89,11 +93,12 @@ test("재현 조건: 보고 보완과 조용한 안내가 한 실행에 섞여�
   f.runner.end(f.lead);
   await until("첫 보완", () => f.supplements(f.lead).length === 1);
   const second = await (async () => { await until("보완 실행", () => !!f.pendingRun(f.lead) && f.pendingRun(f.lead)!.runId !== first.runId); return f.pendingRun(f.lead)!; })();
+  await until("보완 입력 수신", () => !!f.store.getExecutionJournal(second.runId)?.inputReceivedAt);
   // 보완 실행은 보완과 조용한 안내를 함께 받았다(옛 판정은 '모두 보완'이 아니어서 여기서 보완을 또 만들었다).
   expect(second.deliveryIds.map(id => f.store.getDelivery(id)!.wake).sort()).toEqual([false, true]);
   await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "위임 결과를 기다립니다" });
   f.runner.end(f.lead);
-  await Bun.sleep(30);
+  await until("보고 미확인 마감", () => f.store.getReportFollowup(first.runId)?.settledKind === "unconfirmed");
   expect(f.supplements(f.lead)).toHaveLength(1);
   expect(f.runner.to(f.lead)).toHaveLength(2);
   // 보완 뒤에도 마감 근거가 없으므로 원래 실행을 '보고 미확인'으로 한 번 남기고, 다시 깨우지 않는다.
@@ -121,7 +126,7 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
   expect(notices[0]!.wake).toBe(false);
   // 두 번째 보완 실행이 완료를 올리면 두 원인 모두 더 깨우지 않는다.
   await until("두 번째 보완 실행", () => !!f.pendingRun(f.worker) && f.pendingRun(f.worker)!.runId !== second.runId);
-  await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "두 일 모두 끝" });
+  await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "두 일 모두 끝", ...completion });
   f.runner.end(f.worker);
   await Bun.sleep(30);
   expect(f.supplements(f.worker)).toHaveLength(2);
@@ -154,7 +159,7 @@ test("about_report_id 는 이 프로젝트 다른 직원 보고만 받는다", a
   }
   const tool = await f.orch.handleAgentTool(f.lead, "post", { task_id: f.taskId, kind: "알림", title: "확인", about_report_id: own.id });
   expect(tool.isError).toBe(true);
-  const report = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "직원 보고" });
+  const report = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "직원 보고", ...completion });
   const ok = await f.orch.handleAgentTool(f.lead, "post", { task_id: f.taskId, kind: "알림", title: "확인", about_report_id: report.id });
   expect(ok.isError).toBeUndefined();
   const confirmation = f.store.getMessage(/#(msg_[A-Za-z0-9_]+)/.exec(ok.text)![1]!)!;
@@ -188,7 +193,7 @@ test("실행이 끝날 때 결과가 안 돌아온 보고 도구가 있으면 �
     const gate = new Promise<void>(resolve => { release = resolve; });
     const original = f.orch.recordPost.bind(f.orch);
     (f.orch as unknown as { recordPost: typeof original }).recordPost = async (member, input) => { await gate; return original(member, input); };
-    const pending = f.orch.handleAgentTool(f.worker, "post", { task_id: f.taskId, kind, title: "늦게 도착한 보고" });
+    const pending = f.orch.handleAgentTool(f.worker, "post", { task_id: f.taskId, kind, title: "늦게 도착한 보고", ...(kind === "완료" ? { contract_rev: completion.contractRev, checks: completion.checks } : {}) });
     f.runner.end(f.worker);
     await Bun.sleep(30);
     expect(f.supplements(f.worker)).toHaveLength(0);

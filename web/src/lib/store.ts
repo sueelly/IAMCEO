@@ -223,7 +223,7 @@ function applyToBootstrap(b: Bootstrap, e: WsEvent): Bootstrap {
         ...b,
         projects: b.projects.map((s) =>
           s.id === e.project.id
-            ? { ...s, name: e.project.name, cwd: e.project.cwd, now: e.project.now, runnerEnabled: e.project.runnerEnabled, connection: e.project.connection }
+            ? { ...s, name: e.project.name, cwd: e.project.cwd, now: e.project.now, runnerEnabled: e.project.runnerEnabled, maxConcurrentTurns: e.project.maxConcurrentTurns, connection: e.project.connection }
             : s,
         ),
       };

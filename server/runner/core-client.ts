@@ -26,7 +26,7 @@ export function coreSocketPath(session = process.env.HC_SESSION || "default"): s
 
 let nextId = 0;
 const MAX_RESPONSE = 16 * 1024 * 1024;
-export function coreRpc<T>(socketPath: string, method: string, params: Record<string, unknown> = {}, timeoutMs = 8000): Promise<T> {
+export function coreRpc<T>(socketPath: string, method: string, params: Record<string, unknown> = {}, timeoutMs = 8000, beforeWrite?: () => boolean): Promise<T> {
   const id = `iamceo-core-${++nextId}`;
   return new Promise((resolve, reject) => {
     let sent = false;
@@ -45,6 +45,13 @@ export function coreRpc<T>(socketPath: string, method: string, params: Record<st
     const fail = (kind: string, message: string, causeCode?: string) => finish(new CoreError(kind, `${method}: ${message}`, sent, sent ? "unknown" : "not_written", causeCode));
     const timer = setTimeout(() => fail("timeout", `no reply within ${timeoutMs}ms`), timeoutMs);
     socket.on("connect", () => {
+      // A Unix connection is asynchronous too. Recheck in this callback with no
+      // await between admission and the actual socket write.
+      try {
+        if (beforeWrite?.() === false) return finish(new CoreError("admission", "Automatic input admission changed before write", false, "not_written"));
+      } catch (error) {
+        return finish(error instanceof CoreError ? error : new CoreError("pre_write", error instanceof Error ? error.message : String(error), false, "not_written"));
+      }
       // Once a write is attempted, transport failure is ambiguous. Never retry it.
       sent = true;
       socket.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");

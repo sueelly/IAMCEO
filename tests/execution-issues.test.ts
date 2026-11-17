@@ -132,3 +132,21 @@ test("async draft refusal immediately explains the input wait without changing t
     expect(f.keys).toHaveLength(0);
   } finally { await f.stop(); }
 });
+
+test("a project cap explains its own wait while the preserved global limit stays twenty", async () => {
+  const f = await createQueueStatusFixture(20);
+  try {
+    f.store.patchProject(f.project.id, { maxConcurrentTurns: 1 });
+    await f.orch.sendUserMessage(f.project.id, { targetMemberId: f.member.id, text: "Occupy one project slot" });
+    const second = await f.orch.createMember(f.project.id, { name: "Project waiter", cli: "claude" });
+    const input = f.store.enqueue({ projectId: f.project.id, memberId: second.id, kind: "instruction", text: "Wait for this project", wake: true });
+    await f.orch.pump(second.id);
+    expect(f.store.requireMember(second.id).deliveryWait).toMatchObject({ kind: "project_capacity", active: 1, limit: 1 });
+    expect(f.store.getSettings().maxConcurrentTurns).toBe(20);
+    expect(f.store.requireDelivery(input.id)).toMatchObject({ status: "queued", attempts: 0 });
+    f.done();
+    await until(() => f.store.requireDelivery(input.id).status === "delivered");
+    expect(f.store.requireMember(second.id).deliveryWait).toBeNull();
+    expect(f.store.getSettings().maxConcurrentTurns).toBe(20);
+  } finally { await f.stop(); }
+});

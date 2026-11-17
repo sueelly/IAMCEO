@@ -40,7 +40,7 @@ test('F1: 부가 인자와 다른 작업 위치, 불분명한 셸 상태는 통�
 test('F2: 확인 전 완료는 확인 뒤에도 통과 승계되지 않고 재검사 보고 뒤에만 승계된다',async()=>{
   const f=fixture(), task=id(await f.tool(f.lead,'task',{title:'승계'}));
   await f.tool(f.worker,'task',{task_id:task,contract:ONE});
-  expect((await f.tool(f.worker,'post',{task_id:task,kind:'완료',title:'확인 전'})).isError).toBeUndefined();
+  expect((await f.tool(f.worker,'post',{task_id:task,kind:'완료',title:'확인 전'})).isError).toBe(true);
   await f.tool(f.lead,'task',{task_id:task,confirm_contract_rev:1});
   expect((await f.tool(f.lead,'post',{task_id:task,kind:'완료',title:'승계 시도'})).isError).toBe(true);
   f.ran(f.worker,'bun test behavior');

@@ -183,7 +183,7 @@ export interface NewProject {
 export type ProjectPatch = Partial<
   Pick<
     Project,
-    "name" | "cwd" | "runnerEnabled" | "now" | "herdrTabId" | "archived"
+    "name" | "cwd" | "runnerEnabled" | "maxConcurrentTurns" | "now" | "herdrTabId" | "archived"
   >
 >;
 
@@ -350,7 +350,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxAwakeWorkers: 8,
   notifyMac: false,
   boardTidyHours: 6,
-  harnessMode: "label",
+  harnessMode: "required",
   harnessRequiredSince: null,
 };
 
@@ -415,6 +415,7 @@ function toProject(r: Row, connection: ProjectConnection, legacyMemory: Readonly
     chiefCli: r.chief_cli === "codex" || r.chief_cli === "antigravity" ? r.chief_cli : "claude",
     cwd: r.cwd,
     runnerEnabled: !!r.runner_enabled,
+    maxConcurrentTurns: r.max_concurrent_turns ?? null,
     now: r.now,
     creationGoal: r.creation_goal ?? null,
     nowAt: r.now_at,
@@ -735,6 +736,7 @@ const PROJECT_COLUMNS: Record<keyof ProjectPatch, string> = {
   name: "name",
   cwd: "cwd",
   runnerEnabled: "runner_enabled",
+  maxConcurrentTurns: "max_concurrent_turns",
   now: "now",
   herdrTabId: "herdr_tab_id",
   archived: "archived",
@@ -1194,6 +1196,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const project = this.requireProject(id);
     if (patch.archived === true && patch.runnerEnabled === true) throw new ApiError(400, "보관과 실행 켜기를 함께 요청할 수 없습니다");
     if (project.isHq && patch.archived === true) throw new ApiError(400, "본사는 보관할 수 없습니다");
+    if (patch.maxConcurrentTurns !== undefined && patch.maxConcurrentTurns !== null &&
+        (!Number.isInteger(patch.maxConcurrentTurns) || patch.maxConcurrentTurns < 1 || patch.maxConcurrentTurns > 64)) {
+      throw new ApiError(400, "프로젝트 동시 실행 상한은 1부터 64까지의 정수입니다");
+    }
     if (patch.name !== undefined) {
       // trim 전에도 줄바꿈/제어문자는 거부한다.
       const problem = oneLineProblem(patch.name, Number.MAX_SAFE_INTEGER);
@@ -1247,7 +1253,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   projectSummaries(): ProjectSummary[] {
     return this.rows(
-      `SELECT p.id, p.name, p.is_hq, p.cwd, p.now, p.runner_enabled, p.archived,
+      `SELECT p.id, p.name, p.is_hq, p.cwd, p.now, p.runner_enabled, p.max_concurrent_turns, p.archived,
          (SELECT COUNT(*) FROM decisions d WHERE d.project_id = p.id AND d.status = 'open') AS decision_count,
          (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.done = 0) AS todo_count,
          (SELECT COUNT(*) FROM members m WHERE m.project_id = p.id AND m.status = 'working') AS working_count,
@@ -1262,6 +1268,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       cwd: r.cwd,
       now: r.now,
       runnerEnabled: !!r.runner_enabled,
+      maxConcurrentTurns: r.max_concurrent_turns ?? null,
       connection: this.connectionOf(r.id, !!r.runner_enabled, !!r.archived),
       decisionCount: r.decision_count,
       todoCount: r.todo_count,
@@ -2311,6 +2318,105 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return !!this.row("SELECT notice_delivery_id FROM task_watch WHERE task_id = ? AND notice_delivery_id IS NOT NULL", taskId);
   }
 
+  /** A leader cannot clear an owner escalation by merely closing or reopening
+   * the task. A scoped owner answer or verified decided-close is required. */
+  pendingTaskFailureDecision(taskId: string): Decision | null {
+    const escalations = this.rows(`SELECT e.task_id,e.decision_id,t.project_id FROM task_failure_escalations e
+      JOIN tasks t ON t.id=e.task_id JOIN decisions d ON d.id=e.decision_id
+      WHERE t.project_id=(SELECT project_id FROM tasks WHERE id=?) AND d.status NOT IN ('answered','delivered')
+      ORDER BY e.created_at,e.rowid`, taskId);
+    // The ordinary no-escalation path must not scan tasks or message history on
+    // every admission check. Only the few unresolved cards need family checks.
+    if (!escalations.length) return null;
+    const tasks = new Map(this.listTasks(escalations[0]!.project_id).map(t => [t.id, t]));
+    // A parent instruction includes its failed descendant's scope. Walking only
+    // upwards would allow the same work to restart under its parent id.
+    for (const row of escalations) {
+      if (!relatedWork(taskId, row.task_id, tasks)) continue;
+      const decision = this.getDecision(row.decision_id);
+      if (decision && !["answered", "delivered"].includes(decision.status)
+        && !(decision.status === "closed" && decision.closeKind === "decided" && decision.closeQuote
+          && this.taskFailureQuoteSource(decision.id, decision.closeQuote))) return decision;
+    }
+    return null;
+  }
+
+  isTaskFailureDecision(decisionId: string): boolean {
+    return !!this.row("SELECT 1 FROM task_failure_escalations WHERE decision_id=?", decisionId);
+  }
+
+  /** Revalidate the actual owner source, including after restart or a legacy
+   * decided-close. A project-wide or pre-failure quote cannot authorize retry. */
+  taskFailureQuoteSource(decisionId: string, rawQuote: string): Message | null {
+    const escalation = this.row(`SELECT e.*,m.rowid AS trigger_seq FROM task_failure_escalations e
+      LEFT JOIN messages m ON m.id=e.trigger_message_id WHERE e.decision_id=?`, decisionId);
+    if (!escalation) return null;
+    const task = this.getTask(escalation.task_id);
+    if (!task) return null;
+    const normalize = (value: string) => cleanText(value).replace(/\s+/g, " ").trim();
+    const quote = normalize(rawQuote).replace(/^["'“”‘’](.*)["'“”‘’]$/, "$1").trim();
+    if (quote.length < 4) return null;
+    const tasks = new Map(this.listTasks(task.projectId).map(t => [t.id, t]));
+    const relatedIds = [...tasks.keys()].filter(id => relatedWork(id, task.id, tasks));
+    const boundary = /[\s.,!?;:…·"'“”‘’()[\]{}<>~\-—–/]/;
+    const afterTrigger = escalation.trigger_seq != null ? "rowid > ? AND at >= ?" : "at > ?";
+    const bounds = escalation.trigger_seq != null ? [escalation.trigger_seq, escalation.tripped_at] : [escalation.tripped_at];
+    for (const row of this.rows(`SELECT * FROM messages WHERE project_id=? AND mine=1 AND task_id IN (${relatedIds.map(() => "?").join(",")})
+        AND ${afterTrigger} ORDER BY rowid DESC`, task.projectId, ...relatedIds, ...bounds)) {
+      const message = toMessage(row), text = normalize(message.body);
+      for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote, at + 1)) {
+        if (boundary.test(at ? text[at - 1]! : " ") && boundary.test(text[at + quote.length] ?? " ")) return message;
+      }
+    }
+    return null;
+  }
+
+  /** A reply permits retry, but only a newly delivered instruction followed by
+   * a new report starts the next episode. Keep that proof durable on restart. */
+  taskFailureRetryAt(taskId: string, trippedAt: string, report: Pick<ReportFact, "memberId" | "at">): string | null {
+    if (!report.memberId) return null;
+    const row = this.row("SELECT decision_id FROM task_failure_escalations WHERE task_id=? AND tripped_at=?", taskId, trippedAt);
+    const decision = row ? this.getDecision(row.decision_id) : null;
+    if (!decision) return null;
+    const resolvedAt = ["answered", "delivered"].includes(decision.status) ? decision.answeredAt
+      : decision.status === "closed" && decision.closeKind === "decided" && decision.closeQuote
+        && this.taskFailureQuoteSource(decision.id, decision.closeQuote) ? decision.closedAt : null;
+    if (!resolvedAt || report.at < resolvedAt || this.pendingTaskFailureDecision(taskId)) return null;
+    const inputs = this.rows(`SELECT DISTINCT task_id FROM deliveries WHERE member_id=? AND status='delivered'
+      AND kind IN ('instruction','user_message') AND task_id IS NOT NULL AND delivered_at>=? AND delivered_at<=?`,
+      report.memberId, resolvedAt, report.at);
+    if (!inputs.length) return null;
+    const tasks = new Map(this.listTasks(decision.projectId).map(t => [t.id, t]));
+    return inputs.some(input => relatedWork(input.task_id, taskId, tasks)) ? resolvedAt : null;
+  }
+
+  /** Called in the same transaction as the failure report/watch. The watch's
+   * tripped timestamp identifies its episode across repeated ticks/restarts. */
+  ensureTaskFailureDecision(taskId: string): Decision | null {
+    return this.transaction(() => {
+      const task = this.requireTask(taskId), watch = this.getTaskWatch(taskId);
+      if (!watch?.trippedAt || watch.same < 3 || this.doneMark(taskId)) return null;
+      const old = this.row("SELECT decision_id,tripped_at FROM task_failure_escalations WHERE task_id=?", taskId);
+      const pending = this.pendingTaskFailureDecision(taskId);
+      if (pending) return pending;
+      if (old?.tripped_at === watch.trippedAt) return this.getDecision(old.decision_id);
+      const conductor = this.getConductor(task.projectId), contract = this.getEffectiveContract(taskId);
+      const history = watch.history.slice(-3);
+      const conditions = contract?.acceptance ?? ["총괄이 원 지시에서 판정 가능한 완료 기준을 먼저 확정해야 합니다"];
+      const decision = this.createDecision({ projectId: task.projectId, taskId, memberId: conductor?.id ?? null, who: "업무 반복 확인",
+        title: `같은 실패 3회: ${task.title}`,
+        detail: [`같은 실패가 ${watch.same}회 이어져 자동 재배정을 멈췄습니다. 업무는 완료되지 않았습니다.`,
+          `원인: ${watch.reason ?? watch.fingerprint}`,
+          "최근 시도:", ...history.map(h => `- ${h.who} · ${h.at} · 보고 #${h.messageId}: ${h.fingerprint}`),
+          "남은 완료 기준:", ...conditions.map((criterion, i) => `${i + 1}. ${criterion}`),
+          "담당자를 바꿀지, 접근 권한·입력을 보완할지, 다른 접근으로 재시도할지 또는 보류할지 결정해 주세요. 총괄은 대표 답의 범위에서 기준과 배정을 갱신합니다."].join("\n") });
+      this.run(`INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(task_id) DO UPDATE SET decision_id=excluded.decision_id,tripped_at=excluded.tripped_at,trigger_message_id=excluded.trigger_message_id,created_at=excluded.created_at`,
+        taskId, decision.id, watch.trippedAt, history.at(-1)?.messageId ?? null, nowIso());
+      return decision;
+    });
+  }
+
   /** 아직 멈추지 않은 반복 감시(시간 경계 확인용). */
   listOpenTaskWatches(): { taskId: string; projectId: string; watch: WatchFact }[] {
     return this.rows("SELECT * FROM task_watch WHERE tripped_at IS NULL").map((r) => ({ taskId: r.task_id, projectId: r.project_id, watch: toWatch(r) }));
@@ -2742,6 +2848,18 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** 전달의 작업(없으면 null). */
   deliveryTaskId(id: string): string | null {
     return (this.row("SELECT task_id FROM deliveries WHERE id = ?", id)?.task_id as string | null | undefined) ?? null;
+  }
+
+  /** Persisted delegation proof distinguishes old agent assignments from direct
+   * owner input and legacy instructions whose provenance is unknown. Status is
+   * intentionally unrestricted: the final write guard also checks delivering rows. */
+  unconfirmedDelegatedTask(deliveryId: string): string | null {
+    const row = this.row(`SELECT d.task_id FROM deliveries d WHERE d.id=? AND d.kind='instruction' AND d.wake=1
+      AND d.task_id IS NOT NULL AND EXISTS(SELECT 1 FROM report_closures c WHERE c.kind='delegated'
+        AND c.ref_type='delivery' AND c.ref_id=d.id AND c.project_id=d.project_id)`, deliveryId);
+    if (!row) return null;
+    const task = this.resolveTask(this.requireTask(row.task_id as string));
+    return bindingContract(this.getEffectiveContract(task.id)) ? null : task.id;
   }
 
   /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */
@@ -3346,6 +3464,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     settings.ranks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...DEFAULT_RANKS[rank], ...settings.ranks[rank] }])) as Settings["ranks"];
     settings.codexRanks = Object.fromEntries((Object.keys(DEFAULT_CODEX_RANKS) as Rank[]).map((rank) => [rank, { ...DEFAULT_CODEX_RANKS[rank], ...settings.codexRanks[rank] }])) as Settings["codexRanks"];
     settings.contextWindows = { ...DEFAULT_CONTEXT_WINDOWS, ...settings.contextWindows };
+    // 옛 클라이언트의 표시 설정은 보존된 입력 형식일 뿐, 모든 실행 업무의 확정 기준을 끌 수 없다.
+    settings.harnessMode = "required";
+    settings.harnessRequiredSince = null;
     return settings;
   }
 
@@ -3354,8 +3475,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const before = this.getSettings();
       if (this.runtimeBackend !== "core" && patch.backend) this.runtimeBackend = patch.backend;
       const next: Record<string, unknown> = { ...patch };
-      // 처음 required 로 바꾸는 순간부터 새로 만드는 업무에 계약이 필요하다(옛 업무는 표시만).
-      if (patch.harnessMode === "required" && before.harnessMode !== "required" && patch.harnessRequiredSince === undefined) next.harnessRequiredSince = nowIso();
+      // 기존 label·시점 인자를 보내는 클라이언트도 같은 필수 정책으로 정규화한다.
+      if (patch.harnessMode !== undefined || patch.harnessRequiredSince !== undefined) {
+        next.harnessMode = "required";
+        next.harnessRequiredSince = null;
+      }
       if (patch.ranks) {
         next.ranks = Object.fromEntries((Object.keys(DEFAULT_RANKS) as Rank[]).map((rank) => [rank, { ...before.ranks[rank], ...patch.ranks![rank] }]));
       }

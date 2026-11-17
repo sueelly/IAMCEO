@@ -148,6 +148,13 @@ async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabl
   return { home, work, config, store, bus, orch, runner, project, call, server, base: server?.urls[0] ?? "" };
 }
 
+function verifiedReportTask(t: Awaited<ReturnType<typeof setup>>) {
+  const taskId = defaultTaskId(t.store, t.project.id);
+  if (!t.store.getTaskContract(taskId)) t.store.saveTaskContract(taskId, { kind: "other", goal: "처리 결과를 보고한다", acceptance: ["요청한 결과를 확인한다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+  const checks = [{ kind: "other" as const, name: "처리 결과", result: "pass" as const, evidence: "요청한 결과를 확인했다", criterion: 1 }];
+  return { taskId, contractRev: 1, checks };
+}
+
 const until = async (cond: () => boolean, label = "조건", ms = 4000) => {
   const end = Date.now() + ms;
   while (!cond()) {
@@ -621,7 +628,8 @@ describe("직접 친 일", () => {
     const lead = await t.orch.ensureConductor(t.project.id);
     const w = (await t.orch.addMember(t.project.id, { name: "민수", handle: "ms", role: "개발" })).member;
     t.runner.cb({ type: "status", memberId: w.id, status: "working" });
-    await t.call(w, "post", { kind: "완료", title: "칸에서 시킨 일 끝" });
+    const verified = verifiedReportTask(t);
+    await t.call(w, "post", { kind: "완료", task_id: verified.taskId, contract_rev: verified.contractRev, checks: verified.checks, title: "칸에서 시킨 일 끝" });
     t.runner.end(w.id);
     await until(() => t.runner.sent.some((s) => s.memberId === lead.id && s.text.includes("(직접) 완료")), "(직접) 보고");
     const report = t.store.listMessages(t.project.id).find((m) => m.memberId === w.id)!;
@@ -637,7 +645,8 @@ describe("직접 친 일", () => {
       return { paneId: "w1:p1", tabId: "w1:t1" };
     };
     await t.orch.recover();
-    await t.call(m, "post", { kind: "완료", title: "끝" });
+    const verified = verifiedReportTask(t);
+    await t.call(m, "post", { kind: "완료", task_id: verified.taskId, contract_rev: verified.contractRev, checks: verified.checks, title: "끝" });
     expect(t.store.listMessages(t.project.id).find((x) => x.memberId === m.id)!.title).toBe("끝");
   });
 });
@@ -672,7 +681,7 @@ describe("직접 띄운 CLI", () => {
     a2.abort();
     await hanging2;
     await Bun.sleep(100);
-    const later = await t.orch.sendUserMessage(t.project.id, { text: "끊긴 뒤 지시", targetMemberId: member.id });
+    const later = await t.orch.sendUserMessage(t.project.id, { text: "끊긴 뒤 지시", targetMemberId: member.id, taskId: msg.taskId });
     expect(t.store.requireMessage(later.id).delivery).toBe("queued");
     const next = (await (await tool(t, token, "wait", { timeout_sec: 1 })).json()) as { text: string };
     expect(next.text).toContain("끊긴 뒤 지시");
@@ -805,7 +814,8 @@ describe("일 목록·알림·자료·보관", () => {
     const w = (await t.orch.addMember(t.project.id, { name: "철수", role: "개발" })).member;
     const a = t.store.createFile({ projectId: t.project.id, title: "보고서", body: "x" });
     const b = t.store.createFile({ projectId: t.project.id, title: "캡처]위조", body: "x" });
-    await t.call(w, "post", { kind: "완료", title: "끝", body: "핵심", file_ids: [a.id, b.id] });
+    const verified = verifiedReportTask(t);
+    await t.call(w, "post", { kind: "완료", task_id: verified.taskId, contract_rev: verified.contractRev, checks: verified.checks, title: "끝", body: "핵심", file_ids: [a.id, b.id] });
     const m = t.store.listMessages(t.project.id).find((x) => x.memberId === w.id)!;
     expect(m.fileId).toBe(a.id);
     expect(m.body).toContain(`[자료: 캡처\\]위조](#/p/${t.project.id}/files/${b.id})`);
@@ -1016,8 +1026,8 @@ describe("2차 검수 회귀: 전달", () => {
     const lead = await t.orch.ensureConductor(t.project.id);
     const w = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
     const taskId = defaultTaskId(t.store, t.project.id);
-    await t.orch.recordPost(w, { kind: "완료", title: "로그인 고침", taskId });
-    await t.orch.recordPost(w, { kind: "완료", title: "나중 보고", taskId });
+    await t.orch.recordPost(w, { ...verifiedReportTask(t), kind: "완료", title: "로그인 고침", taskId });
+    await t.orch.recordPost(w, { ...verifiedReportTask(t), kind: "완료", title: "나중 보고", taskId });
     t.runner.end(lead.id, { isError: true, noOutput: true, errorText: "사용량 한도" });
     await until(() => t.runner.sent.filter(s => s.memberId === lead.id).length === 2);
     const sent = t.runner.sent.filter(s => s.memberId === lead.id);
@@ -1457,6 +1467,7 @@ describe("W5 전달 통합", () => {
     const worker = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
     const decision = t.store.createDecision({ projectId: t.project.id, memberId: worker.id, who: worker.name, title: "검토", options: [{ k: "a", label: "승인" }] });
     const taskId = defaultTaskId(t.store, t.project.id);
+    const verified = verifiedReportTask(t);
     const before = t.store.listMessages(t.project.id).length;
     const decisions = t.store.listDecisions(t.project.id).length;
     const enqueue = t.store.enqueue.bind(t.store);
@@ -1465,7 +1476,7 @@ describe("W5 전달 통합", () => {
     t.store.enqueue = () => { throw new Error("주입 outbox 실패"); };
     const action = kind === "message" ? () => t.orch.sendUserMessage(t.project.id, { id: "atomic-message", text: "원자 지시", targetMemberId: worker.id }) :
       kind === "answer" ? () => t.orch.answerDecision(decision.id, { choice: "a" }) :
-      kind === "report" ? () => t.orch.recordPost(worker, { kind: "완료", title: "원자 보고", taskId }) :
+      kind === "report" ? () => t.orch.recordPost(worker, { ...verified, kind: "완료", title: "원자 보고", taskId }) :
       () => t.orch.registerAsk(worker, { title: "원자 질문", taskId });
     try { await expect(action()).rejects.toThrow("주입 outbox 실패"); }
     finally { t.store.enqueue = enqueue; }

@@ -202,6 +202,7 @@ const PatchProjectSchema = z.strictObject({
   name: nonEmpty.optional(),
   cwd: nonEmpty.optional(),
   runnerEnabled: z.boolean().optional(),
+  maxConcurrentTurns: z.number().int().min(1).max(64).nullable().optional(),
   now: z.string().optional(),
   archived: z.boolean().optional(),
   memory: z.boolean().optional(),

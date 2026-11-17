@@ -20,6 +20,7 @@ export function memberIssueLabel(member: Pick<Member, "executionIssue" | "lastEr
 export function deliveryWaitText(wait: DeliveryWait): { label: string; reason: string } {
   switch (wait.kind) {
     case "capacity": return { label: "실행 자리 대기", reason: `전체 실행 ${wait.active ?? "?"}/${wait.limit ?? "?"}개가 사용 중입니다. 자리가 비면 전달합니다` };
+    case "project_capacity": return { label: "프로젝트 실행 자리 대기", reason: `이 프로젝트의 실행 ${wait.active ?? "?"}/${wait.limit ?? "?"}개가 사용 중입니다. 자리가 비면 전달합니다` };
     case "working": return { label: "현재 실행 대기", reason: "직원의 현재 실행이 끝나면 다음 입력을 전달합니다" };
     case "manual_control": return { label: "직접 조작 중", reason: "터미널 직접 조작이 끝나면 입력을 전달합니다" };
     case "permission": return { label: "승인 응답 대기", reason: "직원의 승인 창에서 응답을 기다립니다" };

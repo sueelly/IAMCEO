@@ -58,6 +58,12 @@ for (const [name, width, height] of [['desktop', 1440, 1000], ['narrow', 390, 84
       await page.locator('.tm-detail .tm-status').filter({ hasText: '실행 자리 대기' }).waitFor({ timeout: 15_000 });
       expect(await page.locator('.tm-detail .tm-facts').textContent()).toContain('전체 실행 1/1개가 사용 중');
       expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: 'queued', attempts: 0 });
+      f.store.patchSettings({ maxConcurrentTurns: 20 });
+      f.store.patchProject(f.project.id, { maxConcurrentTurns: 1 });
+      await f.orch.pump(second.id);
+      await page.locator('.tm-detail .tm-status').filter({ hasText: '프로젝트 실행 자리 대기' }).waitFor({ timeout: 15_000 });
+      expect(await page.locator('.tm-detail .tm-facts').textContent()).toContain('이 프로젝트의 실행 1/1개');
+      expect(f.store.getSettings().maxConcurrentTurns).toBe(20);
       const terminal = f.terminals.get(f.store.requireMember(f.member.id).paneId!)!;
       terminal.turn = (terminal.turn ?? 0) + 1;
       terminal.status = { state: 'error', app: 'claude-code', msg: "You've hit your weekly limit · resets 7am (Asia/Seoul)" };

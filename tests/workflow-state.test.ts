@@ -92,8 +92,9 @@ test("adoption enrolls pending and current work without making old delivered his
 
 test("not-run checks cannot become an automatic final completion", async () => {
   const f = fixture(), a = task(f, "검사가 남은 업무");
-  const result = await f.tool(f.worker, "post", { task_id: a.id, kind: "완료", title: "아직 확인하지 못함", checks: [{ kind: "regression", name: "남은 회귀", result: "not_run", evidence: "아직 실행하지 않음" }] });
-  expect(result.isError).toBeUndefined();
+  f.store.saveTaskContract(a.id, { kind: "other", goal: "회귀 확인", acceptance: ["남은 회귀 검사가 통과한다"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  const result = await f.tool(f.worker, "post", { task_id: a.id, kind: "완료", title: "아직 확인하지 못함", contract_rev: 1, checks: [{ kind: "regression", name: "남은 회귀", result: "not_run", evidence: "아직 실행하지 않음" }] });
+  expect(result.isError).toBe(true);
   expect(f.store.taskProgress(a.id).stage).not.toBe("done");
 });
 
@@ -134,7 +135,8 @@ test("an already-running later task owns the employee position while earlier wor
 test("a completion post cannot hide a held original input", async () => {
   const f = fixture(), a = task(f, "보호 입력이 남은 업무");
   f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: a.id, kind: "instruction", text: "확인되지 않은 입력", wake: true, status: "held", holdReason: "delivery_unknown" });
-  await f.orch.recordPost(f.worker, { kind: "완료", title: "일부만 완료", taskId: a.id });
+  f.store.saveTaskContract(a.id, { kind: "other", goal: "처리 결과 확인", acceptance: ["전달된 범위의 처리 결과가 확인된다"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  await f.orch.recordPost(f.worker, { kind: "완료", title: "일부만 완료", taskId: a.id, contractRev: 1, checks: [{ kind: "other", name: "처리 결과", result: "pass", evidence: "이미 전달된 범위만 확인함", criterion: 1 }] });
   expect(f.store.taskProgress(a.id).stage).not.toBe("done");
 });
 
