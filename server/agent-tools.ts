@@ -69,7 +69,7 @@ const contractSchema = z.strictObject({
   forbidden: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("하지 말 것"),
   evidence: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("완료 보고에 남길 증거"),
   checks: z.array(z.enum(CHECK_KINDS)).max(8).optional().describe("필수 검사 종류. 비우면 coding: behavior·typecheck·regression·real, research: source·fact·unverified, other: 없음"),
-}).describe("업무 시작 계약. 계약이 있는 업무의 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
+}).describe("업무 시작 계약. 새 실행 전 goal·inputs·outputs·scope·constraints·acceptance·exclusions를 명시한다. 미정 계약은 저장할 수 있지만 총괄이 보완하기 전에는 새 실행을 맡기지 않는다. 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
 
 const claimSchema = z.strictObject({
   text: z.string().trim().min(1).describe(`주장 한 문장(${REPORT_LENGTH_GUIDANCE.claim}자 안팎 권장). 필요한 설명은 길어도 그대로 남긴다`),
