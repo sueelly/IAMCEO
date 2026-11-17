@@ -34,6 +34,7 @@ import type {
   FileListItem,
   Member,
   Task,
+  TaskProgress,
   TaskLink,
   TaskOrigin,
   MemberLifecycleState,
@@ -62,7 +63,8 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { deriveProgress, isDone, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
+import { bindingContract, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
@@ -261,6 +263,8 @@ export interface WorkInput {
   title: string;
   detail?: string;
   who?: string;
+  /** 이 항목이 가리킬 기존 업무. 주면 항목에서 새 업무(tk_<id>)를 만들지 않는다. null 이면 연결을 푼다. 빼면 그대로. */
+  taskId?: string | null;
 }
 
 export interface NewMessage {
@@ -361,6 +365,7 @@ export const MAX_ACTIVITY_PER_MEMBER = 500;
 const MAX_ACTIVITY_TEXT = 4000;
 // 현재 세대의 마지막 생성 순서를 따른다. 이전 journal의 늦은 갱신은 새 작업을 덮지 않는다.
 const MEMBER_SELECT = `SELECT m.*, (SELECT COUNT(*) FROM deliveries d WHERE d.member_id = m.id AND d.status IN ('queued','held')) AS queued_count,
+  (SELECT COUNT(*) FROM deliveries d WHERE d.member_id = m.id AND d.status = 'held') AS held_count,
   (SELECT c.measurement_json FROM member_context_state c WHERE c.member_id = m.id AND c.generation = m.session_generation) AS measurement_json,
   (SELECT c.compaction_json FROM member_context_state c WHERE c.member_id = m.id AND c.generation = m.session_generation) AS compaction_json,
   (SELECT c.member_id FROM member_context_state c WHERE c.member_id = m.id AND c.generation = m.session_generation) AS context_member_id,
@@ -462,6 +467,7 @@ function toMember(r: Row): Member {
     subagents: r.subagents,
     parallel: !!r.parallel,
     queuedCount: r.queued_count,
+    heldCount: r.held_count ?? 0,
     lastError: r.last_error,
     lastActiveAt: r.last_active_at ?? null,
     updatedAt: r.updated_at,
@@ -590,6 +596,18 @@ function toTaskLink(r: Row): TaskLink {
 const TASK_REF_TABLES = { message: "messages", decision: "decisions", file: "files", todo: "todos" } as const;
 export type TaskRefType = keyof typeof TASK_REF_TABLES;
 
+function emptyFacts(): ProgressFacts {
+  return { reports: [], decisions: [], todos: [], held: [], queued: [], approvals: [], marks: [], watch: null, notice: null, revTimes: [] };
+}
+
+function toMark(r: Row): MarkFact {
+  return { id: r.id, stage: r.stage, at: r.at, who: r.who, evidence: r.evidence, memberId: r.member_id ?? null };
+}
+
+function toWatch(r: Row): WatchFact {
+  return { startedAt: r.started_at, attempts: r.attempts, same: r.same_count, fingerprint: r.fingerprint, lastProgressAt: r.last_progress_at, trippedAt: r.tripped_at ?? null, reason: r.trip_reason ?? null, updatedAt: r.updated_at, history: json(r.history_json) };
+}
+
 function toWork(r: Row): WorkItem {
   return {
     id: r.id,
@@ -602,6 +620,7 @@ function toWork(r: Row): WorkItem {
     doneAt: r.done_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    taskId: r.task_id ?? null,
   };
 }
 
@@ -927,6 +946,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   private emit(event: WsEvent): void {
     this.afterCommit(() => this.bus.emit(event));
+    if (event.type === "message" || event.type === "decision" || event.type === "todo" || event.type === "member") {
+      try { this.queueProgress(this.progressTargets(event)); } catch (error) { console.error("업무 단계 대상 계산 오류:", error); }
+    }
   }
 
   /** 원본과 outbox를 하나로 접수한다. pump도 최외곽 commit 이후에만 실행한다. */
@@ -1796,6 +1818,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   upsertWork(input: WorkInput): WorkItem {
     return this.transaction(() => {
       this.requireProject(input.projectId);
+      if (input.taskId) {
+        const linked = this.getTask(input.taskId);
+        if (!linked || linked.projectId !== input.projectId) throw new ApiError(404, `업무를 찾을 수 없습니다: ${input.taskId}`);
+      }
       const at = nowIso();
       const doneAt = input.sec === "done" ? at : null;
       if (input.id) {
@@ -1811,6 +1837,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
           at,
           input.id,
         );
+        if (input.taskId !== undefined) this.run("UPDATE work SET task_id = ? WHERE id = ?", input.taskId, input.id);
         const item = this.getWork(input.id)!;
         this.syncWorkTask(item);
         this.emitWork(input.projectId);
@@ -1831,6 +1858,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         at,
         at,
       );
+      if (input.taskId) this.run("UPDATE work SET task_id = ? WHERE id = ?", input.taskId, id);
       const item = this.getWork(id)!;
       this.syncWorkTask(item);
       this.emitWork(input.projectId);
@@ -1858,6 +1886,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   private syncWorkTask(item: WorkItem): void {
+    // 기존 업무를 가리키는 항목은 새 업무를 만들지 않는다(같은 일이 두 업무로 갈라지지 않게).
+    if (item.taskId) return;
     const id = Store.workTaskId(item.id);
     const existing = this.getTask(id);
     const title = item.title.trim();
@@ -1893,9 +1923,218 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return t;
   }
 
-  /** 최근 등록한 작업부터. */
+  /** 최근 등록한 작업부터. 업무 단계(progress)를 함께 싣는다(화면용). 단계가 필요 없으면 hasTasks 를 쓴다. */
   listTasks(projectId: string): Task[] {
-    return this.rows(`SELECT tasks.*, ${TASK_LAST_MESSAGE} FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`, projectId).map(toTask);
+    const tasks = this.rows(`SELECT tasks.*, ${TASK_LAST_MESSAGE} FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`, projectId).map(toTask);
+    if (!tasks.length) return tasks;
+    const facts = this.taskProgressFacts(projectId);
+    return tasks.map((t) => (t.mergedInto ? t : { ...t, progress: deriveProgress(facts.get(t.id) ?? emptyFacts()) }));
+  }
+
+  hasTasks(projectId: string): boolean {
+    return !!this.row("SELECT 1 FROM tasks WHERE project_id = ? LIMIT 1", projectId);
+  }
+
+  // ---- 업무 단계 ----
+  /** 업무 하나의 단계. 근거에서 다시 계산한다(저장하지 않는다). */
+  taskProgress(taskId: string): TaskProgress {
+    const task = this.requireTask(taskId);
+    return deriveProgress(this.taskProgressFacts(task.projectId, new Set([taskId])).get(taskId) ?? emptyFacts());
+  }
+
+  /** 단계를 실은 업무. task 이벤트로 보내 팀 목록·대화·결재함이 같은 값을 쓰게 한다. */
+  taskWithProgress(taskId: string): Task {
+    const task = this.requireTask(taskId);
+    return task.mergedInto ? task : { ...task, progress: this.taskProgress(taskId) };
+  }
+
+  /**
+   * 같은 업무 id 의 근거를 한 번에 모은다: 보고(검사 결과·지금 계약 판정), 열린 결재·할 일, 보류·대기 전달, 승인 창에 걸린 직원,
+   * 총괄 단계 표시, 반복 감시, 완료 알림. only 를 주면 그 업무만 남긴다.
+   */
+  taskProgressFacts(projectId: string, only?: Set<string>): Map<string, ProgressFacts> {
+    const out = new Map<string, ProgressFacts>();
+    const of = (taskId: string): ProgressFacts | null => {
+      if (only && !only.has(taskId)) return null;
+      let f = out.get(taskId);
+      if (!f) out.set(taskId, (f = emptyFacts()));
+      return f;
+    };
+    const filter = only ? ` AND task_id IN (${[...only].map(() => "?").join(",")})` : "";
+    const ids = only ? [...only] : [];
+    const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind,
+        (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failed,
+        (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'not_run') AS not_run,
+        (SELECT COUNT(*) FROM report_checks c WHERE c.message_id = m.id AND NOT (c.kind = 'unverified' AND c.result = 'pass')) AS checks
+      FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
+      WHERE m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
+      ORDER BY m.rowid`, projectId, ...ids);
+    // 지금 계약 판의 통과 완료(서버 판정). 계약이 묶이지 않은 업무는 완료 보고가 곧 작성자 납품이다.
+    const passed = new Map<string, Set<string> | null>();
+    const passedFor = (taskId: string): Set<string> | null => {
+      if (!passed.has(taskId)) {
+        const contract = this.getEffectiveContract(taskId);
+        passed.set(taskId, bindingContract(contract) ? new Set(this.completionEvidence(contract!.taskId, contract!.rev).filter((b) => b.eligible).map((b) => b.messageId)) : null);
+      }
+      return passed.get(taskId)!;
+    };
+    for (const r of reportRows) {
+      const f = of(r.task_id);
+      if (!f) continue;
+      const split = (v: unknown) => (typeof v === "string" && v ? v.split("\u001f") : []);
+      const set = r.kind === "완료" ? passedFor(r.task_id) : null;
+      f.reports.push({ id: r.id, seq: r.seq, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null,
+        failed: split(r.failed), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
+    }
+    for (const r of this.rows(`SELECT id, title, task_id, created_at FROM decisions WHERE project_id = ? AND status = 'open' AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.decisions.push({ id: r.id, title: r.title, at: r.created_at });
+    for (const r of this.rows(`SELECT id, title, task_id, created_at FROM todos WHERE project_id = ? AND done = 0 AND outcome IS NULL AND task_id IS NOT NULL${filter} ORDER BY created_at, rowid`, projectId, ...ids)) of(r.task_id)?.todos.push({ id: r.id, title: r.title, at: r.created_at });
+    for (const r of this.rows(`SELECT task_id, MAX(COALESCE(updated_at, created_at)) AS at FROM decisions WHERE project_id = ? AND task_id IS NOT NULL${filter} GROUP BY task_id
+        UNION ALL SELECT task_id, MAX(COALESCE(updated_at, created_at)) FROM todos WHERE project_id = ? AND task_id IS NOT NULL${filter} GROUP BY task_id
+        UNION ALL SELECT task_id, MAX(COALESCE(delivered_at, created_at)) FROM deliveries WHERE project_id = ? AND task_id IS NOT NULL${filter} GROUP BY task_id`, projectId, ...ids, projectId, ...ids, projectId, ...ids)) of(r.task_id)?.revTimes.push(r.at);
+    for (const r of this.rows(`SELECT d.id, d.task_id, d.status, d.hold_reason, d.created_at, mem.name FROM deliveries d JOIN members mem ON mem.id = d.member_id
+        WHERE d.project_id = ? AND d.task_id IS NOT NULL AND d.status IN ('queued','held')${filter.replaceAll("task_id", "d.task_id")} ORDER BY d.created_at, d.rowid`, projectId, ...ids)) {
+      const f = of(r.task_id);
+      if (!f) continue;
+      if (r.status === "held") f.held.push({ id: r.id, who: r.name, reason: r.hold_reason ?? null, at: r.created_at });
+      else f.queued.push({ id: r.id, who: r.name, at: r.created_at });
+    }
+    for (const m of this.rows("SELECT id, name, updated_at FROM members WHERE project_id = ? AND status = 'blocked'", projectId)) {
+      for (const taskId of this.openAssignedTasks(m.id)) of(taskId)?.approvals.push({ who: m.name, at: m.updated_at });
+    }
+    for (const r of this.rows(`SELECT * FROM task_stage_marks WHERE project_id = ?${filter} ORDER BY id`, projectId, ...ids)) of(r.task_id)?.marks.push(toMark(r));
+    for (const r of this.rows(`SELECT * FROM task_watch WHERE project_id = ?${filter}`, projectId, ...ids)) { const f = of(r.task_id); if (f) f.watch = toWatch(r); }
+    for (const r of this.rows(`SELECT * FROM task_notices WHERE project_id = ?${filter} ORDER BY created_at, rowid`, projectId, ...ids)) {
+      const f = of(r.task_id);
+      if (f) f.notice = { id: r.id, at: r.created_at, seenAt: r.seen_at ?? null, lines: json<string[]>(r.lines_json) };
+    }
+    return out;
+  }
+
+  /** 보고 한 건의 단계 근거(검사 결과·지금 계약 판정). 반복 감시가 쓴다. */
+  reportFact(messageId: string): ReportFact | null {
+    const m = this.getMessage(messageId);
+    if (!m?.taskId) return null;
+    return this.taskProgressFacts(m.projectId, new Set([m.taskId])).get(m.taskId)?.reports.find((r) => r.id === messageId) ?? null;
+  }
+
+  listStageMarks(taskId: string): MarkFact[] {
+    return this.rows("SELECT * FROM task_stage_marks WHERE task_id = ? ORDER BY id", taskId).map(toMark);
+  }
+
+  /** 단계 표시를 남긴다(지우지 않는다). 업무 단계 알림을 보낸다. */
+  addStageMark(input: { projectId: string; taskId: string; stage: MarkFact["stage"]; evidence: string; memberId: string | null; who: string }): MarkFact {
+    return this.transaction(() => {
+      const at = nowIso();
+      const row = this.row("INSERT INTO task_stage_marks (project_id, task_id, stage, evidence, member_id, who, at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        input.projectId, input.taskId, input.stage, input.evidence, input.memberId, input.who, at)!;
+      this.queueProgress([input.taskId]);
+      return toMark(row);
+    });
+  }
+
+  /** 지금 완료 표시(다시 열기 뒤의 마지막 완료). 없으면 null. */
+  doneMark(taskId: string): MarkFact | null {
+    return isDone(this.listStageMarks(taskId));
+  }
+
+  getTaskWatch(taskId: string): WatchFact | null {
+    const r = this.row("SELECT * FROM task_watch WHERE task_id = ?", taskId);
+    return r ? toWatch(r) : null;
+  }
+
+  /** 반복 감시를 저장한다(null 이면 끝난 반복이라 지운다). 시작 시각과 기록은 DB 에 남아 재시작에도 이어진다. */
+  saveTaskWatch(projectId: string, taskId: string, w: WatchFact | null): void {
+    this.transaction(() => {
+      if (!w) this.run("DELETE FROM task_watch WHERE task_id = ?", taskId);
+      else this.run(`INSERT INTO task_watch (task_id, project_id, started_at, attempts, same_count, fingerprint, last_progress_at, tripped_at, trip_reason, history_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET started_at = excluded.started_at, attempts = excluded.attempts, same_count = excluded.same_count, fingerprint = excluded.fingerprint,
+          last_progress_at = excluded.last_progress_at, tripped_at = excluded.tripped_at, trip_reason = excluded.trip_reason, history_json = excluded.history_json, updated_at = excluded.updated_at`,
+        taskId, projectId, w.startedAt, w.attempts, w.same, w.fingerprint, w.lastProgressAt, w.trippedAt, w.reason, JSON.stringify(w.history), w.updatedAt);
+      this.queueProgress([taskId]);
+    });
+  }
+
+  /** 멈춤 알림을 한 번만 보낸다: 이미 보낸 감시면 false. */
+  claimWatchNotice(taskId: string, deliveryId: string): boolean {
+    return this.db.query("UPDATE task_watch SET notice_delivery_id = ? WHERE task_id = ? AND notice_delivery_id IS NULL").run(deliveryId, taskId).changes === 1;
+  }
+
+  /** 다시 연 감시는 다음 멈춤에서 다시 한 번 알린다. */
+  resetWatchNotice(taskId: string): void {
+    this.run("UPDATE task_watch SET notice_delivery_id = NULL WHERE task_id = ?", taskId);
+  }
+
+  watchNoticeSent(taskId: string): boolean {
+    return !!this.row("SELECT notice_delivery_id FROM task_watch WHERE task_id = ? AND notice_delivery_id IS NOT NULL", taskId);
+  }
+
+  /** 아직 멈추지 않은 반복 감시(시간 경계 확인용). */
+  listOpenTaskWatches(): { taskId: string; projectId: string; watch: WatchFact }[] {
+    return this.rows("SELECT * FROM task_watch WHERE tripped_at IS NULL").map((r) => ({ taskId: r.task_id, projectId: r.project_id, watch: toWatch(r) }));
+  }
+
+  /** 완료 알림을 완료 표시 하나에 하나 만든다. 이미 있으면 그것을 돌려준다(재시도·두 화면·재시작에도 하나). */
+  createTaskNotice(projectId: string, taskId: string, markId: number, lines: string[]): { id: string; created: boolean } {
+    return this.transaction(() => {
+      const existing = this.row("SELECT id FROM task_notices WHERE mark_id = ?", markId);
+      if (existing) return { id: existing.id as string, created: false };
+      const id = newId("tn_");
+      this.run("INSERT INTO task_notices (id, project_id, task_id, mark_id, lines_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, projectId, taskId, markId, JSON.stringify(lines), nowIso());
+      this.queueProgress([taskId]);
+      return { id, created: true };
+    });
+  }
+
+  /** 대표가 완료 알림을 확인했다. 두 화면에서 눌러도 한 번이다. */
+  seeTaskNotice(projectId: string, noticeId: string): Task {
+    return this.transaction(() => {
+      const r = this.row("SELECT * FROM task_notices WHERE id = ? AND project_id = ?", noticeId, projectId);
+      if (!r) throw new ApiError(404, "완료 알림을 찾을 수 없습니다");
+      this.run("UPDATE task_notices SET seen_at = COALESCE(seen_at, ?) WHERE id = ?", nowIso(), noticeId);
+      this.queueProgress([r.task_id]);
+      return this.taskWithProgress(r.task_id);
+    });
+  }
+
+  private progressDirty = new Set<string>();
+  private blockedSeen = new Map<string, string>();
+  /** 커밋 뒤 한 번 다시 계산해 task 이벤트로 보낸다(같은 커밋 안의 여러 변화는 한 번). */
+  private queueProgress(taskIds: (string | null | undefined)[]): void {
+    const ids = taskIds.filter((id): id is string => !!id);
+    if (!ids.length) return;
+    for (const id of ids) this.progressDirty.add(id);
+    // 부를 때마다 커밋 뒤 비우기를 건다. 먼저 돈 것이 모두 비우고 뒤의 것은 할 일이 없다. 되돌린 거래가 남긴 id 도 다음 비우기에서 다시 계산할 뿐이다.
+    this.afterCommit(() => {
+      const ids = [...this.progressDirty];
+      this.progressDirty.clear();
+      for (const id of ids) {
+        try {
+          const task = this.getTask(id);
+          if (task && !task.mergedInto) this.bus.emit({ type: "task", task: { ...task, progress: this.taskProgress(id) } });
+        } catch (error) { console.error("업무 단계 계산 오류:", error); }
+      }
+    });
+  }
+
+  /** 단계 근거가 바뀌는 이벤트에서 다시 계산할 업무. 직원은 승인 창·보류 수가 바뀔 때만 그 직원의 업무를 다시 본다. */
+  private progressTargets(event: WsEvent): string[] {
+    switch (event.type) {
+      case "message": return event.message.mine ? [] : [event.message.taskId ?? null].filter((x): x is string => !!x);
+      case "decision": return event.decision.taskId ? [event.decision.taskId] : [];
+      case "todo": return event.todo.taskId ? [event.todo.taskId] : [];
+      case "member": {
+        const m = event.member;
+        const key = `${m.status === "blocked"}:${m.heldCount ?? 0}:${m.queuedCount}`;
+        if (this.blockedSeen.get(m.id) === key) return [];
+        const first = !this.blockedSeen.has(m.id);
+        this.blockedSeen.set(m.id, key);
+        if (first && m.status !== "blocked" && !m.heldCount) return [];
+        const held = this.rows("SELECT DISTINCT task_id FROM deliveries WHERE member_id = ? AND task_id IS NOT NULL AND status IN ('queued','held')", m.id).map((r) => r.task_id as string);
+        return [...new Set([...this.openAssignedTasks(m.id), ...held])];
+      }
+      default: return [];
+    }
   }
 
   /** 개발 기억 업로드 대기열에 넣는다. 같은 event_id 는 처음 것을 그대로 둔다(같은 사건을 두 번 만들지 않는다). */

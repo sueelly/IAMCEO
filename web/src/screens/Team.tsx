@@ -1,6 +1,6 @@
 // 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type WorkItem, type WorkSec } from "@shared/types";
+import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type Task, type WorkItem, type WorkSec } from "@shared/types";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import { PROVIDERS } from "../lib/runtime";
 import ApprovalPanel from "../components/ApprovalPanel";
@@ -15,6 +15,7 @@ import { readWriteContext, useWriteContext } from "../lib/review-context";
 import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
 import { isLocalTerminalHost, terminalCommand } from "../lib/terminal-command";
+import { SEC_LABEL, hasTaskRows, workRows, type WorkRow } from "../lib/task-list";
 import "../styles/team.css";
 
 const SCREEN_POLL_MS = 2000;
@@ -25,7 +26,6 @@ const LONG_ACTIVITY = 180;
 /** 눈이 먼저 가야 할 순서: 대표가 풀어 줘야 하는 상태가 위로 */
 const STATUS_RANK: Record<MemberStatus, number> = { blocked: 0, waiting: 1, error: 2, working: 3, idle: 4, offline: 5, asleep: 6 };
 
-const SEC_LABEL: Record<WorkSec, string> = { doing: "진행 중", next: "예정", hold: "보류", done: "완료" };
 const SECS: readonly WorkSec[] = ["doing", "next", "hold", "done"];
 
 const ACTIVITY_LABEL: Record<ActivityKind, string> = {
@@ -211,7 +211,8 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
         <Row label="지금">{m.now || <span className="ink-3">맡은 일 없음</span>}</Row>
       )}
       {m.next ? <Row label="다음">{m.next}</Row> : null}
-      {m.queuedCount > 0 ? <Row label="대기열"><span className="t-tabular">{m.queuedCount}건</span></Row> : null}
+      {/* 보류(보호·수신 불확실·보관)는 자동으로 들어가지 않는다. 실행할 입력과 나눠 센다. */}
+      {m.queuedCount > 0 ? <Row label="대기열"><span className="t-tabular">{queueText(m)}</span></Row> : null}
       {m.contextPct !== null ? (
         <Row label="문맥">
           <ContextMeter pct={m.contextPct} compactAt={compactAt} />
@@ -318,15 +319,23 @@ function AsleepRow({ m, runnerEnabled }: { m: Member; runnerEnabled: boolean }) 
 
 // ---- 일 목록 ----
 
-function WorkList({ work }: { work: WorkItem[] }) {
+/** 대기열 칸: 보류가 있으면 '대기 N · 보류 M'. 옛 서버(heldCount 없음)는 전과 같다. */
+function queueText(m: Member): string {
+  const held = m.heldCount ?? 0;
+  return held > 0 ? [m.queuedCount - held > 0 ? `대기 ${m.queuedCount - held}` : "", `보류 ${held}`].filter(Boolean).join(" · ") : `${m.queuedCount}건`;
+}
+
+/** 진행판 항목과 대화 업무를 한 목록으로(같은 업무 id 의 단계). 화면 공통 규칙은 lib/task-list. */
+function WorkList({ work, tasks }: { work: WorkItem[]; tasks: readonly Task[] }) {
   const [sec, setSec] = useState<WorkSec | "all">("all");
-  const count = (s: WorkSec) => work.filter((w) => w.sec === s).length;
+  const rows = useMemo(() => workRows(work, tasks, Date.now()), [work, tasks]);
+  const count = (s: WorkSec) => rows.filter((w) => w.sec === s).length;
   const shown = useMemo(() => {
-    const rank = (w: WorkItem) => SECS.indexOf(w.sec);
-    const list = work.filter((w) => (sec === "all" ? w.sec !== "done" : w.sec === sec));
-    if (sec === "done") return list.sort((a, b) => (b.doneAt ?? b.updatedAt).localeCompare(a.doneAt ?? a.updatedAt));
-    return list.sort((a, b) => rank(a) - rank(b) || a.order - b.order);
-  }, [work, sec]);
+    const rank = (w: WorkRow) => SECS.indexOf(w.sec);
+    const list = rows.filter((w) => (sec === "all" ? w.sec !== "done" : w.sec === sec));
+    if (sec === "done") return list.sort((a, b) => (b.doneAt ?? b.at).localeCompare(a.doneAt ?? a.at));
+    return list.sort((a, b) => rank(a) - rank(b) || a.order - b.order || b.at.localeCompare(a.at));
+  }, [rows, sec]);
   const chip = (key: WorkSec | "all", label: string, n?: number) => (
     <button key={key} type="button" className="tm-chip" aria-pressed={sec === key} onClick={() => setSec(key)}>
       {label}
@@ -341,13 +350,14 @@ function WorkList({ work }: { work: WorkItem[] }) {
       </div>
       <Glass as="ul" level="regular" tint className="tm-work__list">
         {shown.map((w) => (
-          <li key={w.id} className="tm-wi" data-sec={w.sec}>
+          <li key={w.key} className="tm-wi" data-sec={w.sec} data-stage={w.stage ?? undefined}>
             <i className="tm-wi__dot" aria-hidden="true" />
             <div className="tm-wi__main">
               <p className="tm-wi__title">{w.title}</p>
               <p className="tm-wi__sub">{[w.who, w.detail].filter(Boolean).join(" · ")}</p>
+              {w.next ? <p className="tm-wi__next">{w.next}</p> : null}
             </div>
-            <span className="tm-wi__sec">{w.sec === "done" && w.doneAt ? <Time iso={w.doneAt} relative /> : SEC_LABEL[w.sec]}</span>
+            <span className="tm-wi__sec">{w.sec === "done" && w.doneAt ? <Time iso={w.doneAt} relative /> : w.label}</span>
           </li>
         ))}
         {shown.length === 0 ? <li className="tm-note">없음</li> : null}
@@ -1044,7 +1054,7 @@ export default function Team() {
       ) : null}
 
       {asleep.length > 0 ? <AsleepGroup members={asleep} runnerEnabled={project.runnerEnabled} /> : null}
-      {work.length > 0 ? <WorkList work={work} /> : null}
+      {work.length > 0 || hasTaskRows(state.tasks ?? [], Date.now()) ? <WorkList work={work} tasks={state.tasks ?? []} /> : null}
       {!project.isHq ? <CreateMember project={project} /> : null}
       <MemberDetail memberId={route.sub} compactAt={compactAt} />
     </div>

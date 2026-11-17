@@ -33,6 +33,7 @@ import type {
   SyncSnapshot,
   StopReq,
   StopResult,
+  Task,
 } from "@shared/types";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
@@ -224,6 +225,8 @@ export const api = {
   },
   answer: (decisionId: string, req: AnswerReq) => request<Decision>("POST", `/api/decisions/${seg(decisionId)}/answer`, req, WRITE_TIMEOUT_MS, { contract: req.expectedVersion !== undefined }),
   todoDone: (todoId: string, done: boolean) => post<Todo>(`/api/todos/${seg(todoId)}/done`, { done }),
+  /** 완료 알림 확인. 결재·승인 입력이 아니다. 두 화면에서 눌러도 한 번이다. */
+  seeTaskNotice: (projectId: string, noticeId: string) => post<Task>(`/api/projects/${seg(projectId)}/task-notices/${seg(noticeId)}/seen`, {}),
   /** AI 가 닫은 결재를 다시 연다. 결재할 항목으로 돌아간다. */
   reopenDecision: (decisionId: string) => post<Decision>(`/api/decisions/${seg(decisionId)}/reopen`),
   /** 총괄에게 판 정리를 맡긴다. 총괄이 없거나 잠들었으면 띄우므로 오래 걸릴 수 있다. */

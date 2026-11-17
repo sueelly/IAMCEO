@@ -66,6 +66,15 @@
 .ibx-confirm__verb { flex:none; }
 .ibx-group > .ibx-confirm { padding:0 4px 2px 8px; }
 .ibx-error { font-size:13.5px; line-height:1.45; color:var(--danger); }
+/* 완료 알림: 읽기용(결재 아님). 확인하면 내려간다. */
+.ibx-notice { gap:8px; }
+.ibx-notice__head { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.ibx-notice__title { flex:1; min-width:0; font-size:15px; font-weight:600; line-height:1.4; overflow-wrap:anywhere; }
+.ibx-notice__at { flex:none; font-size:12.5px; color:var(--ink-2); }
+.ibx-notice__lines { display:flex; flex-direction:column; gap:2px; margin:0; padding:0; list-style:none; font-size:13.5px; line-height:1.5; color:var(--ink-2); }
+.ibx-notice__lines li { overflow-wrap:anywhere; }
+.ibx-notice__lines li[data-unverified] { color:var(--ink-1); }
+.ibx-notice__seen { align-self:flex-start; }
 .ibx-reopened { font-size:13.5px; line-height:1.45; color:var(--danger); }
 
 .ibx-flow { display:inline-flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; color:var(--ink-3); }

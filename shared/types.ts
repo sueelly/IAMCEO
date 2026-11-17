@@ -178,7 +178,9 @@ export interface Member {
   contextWindowSource: ContextWindowSource | null;
   subagents: number; // 지금 돌고 있는 서브에이전트 수
   parallel: boolean; // ultracode 켬
-  queuedCount: number; // 전달 대기 중 입력 수
+  queuedCount: number; // 전달 대기 중 입력 수(보류 포함)
+  /** queuedCount 중 보류(보호·확인 필요·보관)라 자동으로 들어가지 않는 입력 수. 옛 서버는 보내지 않는다. */
+  heldCount?: number;
   lastError: string | null;
   /** CLI가 마지막으로 일한 시각(활동 turn_start/turn_end/tool/tool_result의 최신 ISO 시각). 기록이 없으면 null. */
   lastActiveAt: string | null;
@@ -293,6 +295,41 @@ export interface Task {
   renamedBy?: string | null;
   /** 이 업무에 붙은 마지막 글의 시각. 글이 없으면 null. 이 칸이 생기기 전 응답에는 없다. */
   lastMessageAt?: string | null;
+  /** 업무 단계. 서버가 같은 근거로 계산해 팀 목록·대화·결재함이 함께 쓴다. 싣지 않은 알림이면 화면은 앞서 받은 값을 남긴다. */
+  progress?: TaskProgress;
+}
+
+/**
+ * 업무 단계(대표 2026-11-17: 목록과 대화가 맞고, 막힘·적용 없이 끝나지 않게).
+ * new 시작 전 · working 진행 중 · owner 대표 차례 · approval 승인 창 · held 전달 보류 · check 총괄 점검(반복 감시) ·
+ * fix 고칠 것 · confirm 확인 대기 · delivered 작성자 납품 · review 검토 중 · merge 합치기 대기 · merged 메인 합침(통합 뒤 확인) ·
+ * applied 대표 화면 반영 · hold 보류 · done 완료.
+ */
+export type TaskStage = "new" | "working" | "owner" | "approval" | "held" | "check" | "fix" | "confirm" | "delivered" | "review" | "merge" | "merged" | "applied" | "hold" | "done";
+/**
+ * 막힌 까닭. technical 검사 실패 · pending 실행 안 함만 남음(시험·검토·적용 대기) · dependency 소관·의존 대기(잠든 세션 등) ·
+ * owner 대표 결정·할 일 · approval 실제 터미널 승인 창 · limit 한도·수동 중단 · unknown 근거 없음·수신 불확실 · loop 반복 감시 · hold 총괄 보류.
+ */
+export type TaskBlockCause = "technical" | "pending" | "dependency" | "owner" | "approval" | "limit" | "unknown" | "loop" | "hold";
+/** 총괄이 남기는 단계 표시. reopen 은 완료·점검·보류를 푼다. */
+export type TaskStageMark = "review" | "merged" | "applied" | "done" | "hold" | "reopen";
+export interface TaskProgress {
+  stage: TaskStage;
+  cause: TaskBlockCause | null;
+  /** 다음 차례 한 줄(누가 무엇을). 아무도 할 일이 없으면 null. */
+  next: string | null;
+  /** 차례인 사람. 대표면 "대표". */
+  owner: string | null;
+  /** 이 단계를 정한 근거의 시각. */
+  since: string | null;
+  /** 근거 id(보고·결재·할 일·전달·단계 표시). */
+  basis: string[];
+  /** 계산 판: 근거 중 가장 늦은 시각. 화면은 이보다 이른 판을 버린다. */
+  rev: string;
+  /** 반복 감시: 막힘의 시작·시도 수·같은 실패 연속 수. 없으면 null. */
+  loop: { startedAt: string; attempts: number; same: number; trippedAt: string | null; reason: string | null } | null;
+  /** 완료 알림(결재함 읽기용). 완료가 아니면 null. */
+  notice: { id: string; at: string; seenAt: string | null; lines: string[] } | null;
 }
 
 /** 글·카드·자료·할 일의 업무를 바꾼 기록 한 줄. 원문은 바꾸지 않고 업무 칸만 바꾼다. */
@@ -319,6 +356,8 @@ export interface WorkItem {
   id: string;
   projectId: string;
   sec: WorkSec;
+  /** 이 일 항목이 가리키는 기존 업무(work_set task_id). 없으면 null(이 항목에서 생긴 업무 tk_<id> 를 쓴다). 옛 서버는 보내지 않는다. */
+  taskId?: string | null;
   title: string;
   detail: string;
   who: string;
@@ -813,6 +852,6 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
 export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close", "server_check", "server_backup", "task_trace", "exec_diagnose", "code_read"] as const;
-export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings"] as const;
+export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;
 export const MANUAL_TOOLS = ["wait"] as const;
