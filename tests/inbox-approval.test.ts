@@ -200,6 +200,36 @@ describe("orchestrator: 결재함 카드 귀속·영수증", () => {
     await again.shutdown();
   });
 
+  // 검토 반례(2026-11-17): 넣는 중에 같은 operationId 로 선택만 바꾼 요청이 첫 선택의 영수증을 받았다. 넣는 중에도 끝난 뒤와 같은 대조를 한다.
+  test("넣는 중에 같은 operationId 로 선택·귀속·창이 다른 요청이 오면 409 이고 더 넣지 않는다. 같은 요청은 같은 영수증이다", async () => {
+    const t = await orchSetup();
+    const variants: [string, string, Record<string, unknown>][] = [
+      ["다른 선택", t.w.id, { option: 2 }],
+      ["다른 프로젝트", t.w.id, { projectId: t.other.id }],
+      ["본문의 다른 직원", t.w.id, { memberId: t.w2.id }],
+      ["주소의 다른 직원", t.w2.id, { memberId: t.w2.id }],
+      ["다른 창", t.w.id, { promptId: "boot:0:0:2:def" }],
+      ["다른 세대", t.w.id, { generation: 1 }],
+      ["다른 실행", t.w.id, { executionId: "other-run" }],
+      ["다른 화면", t.w.id, { via: "thread" }],
+      ["직접 입력 글", t.w.id, { text: "다른 글" }],
+    ];
+    const outcome = (p: Promise<unknown>) => p.then(() => 200, (e: { status?: number; code?: string }) => `${e.status}:${e.code}`);
+    const named = async (ps: Promise<unknown>[]) => Object.fromEntries((await Promise.all(ps.map(outcome))).map((r, i) => [variants[i]![0], r]));
+    const conflict = Object.fromEntries(variants.map(([name]) => [name, "409:OPERATION_CONFLICT"]));
+    const first = t.orch.answerNativePrompt(t.w.id, ask(t));
+    const during = variants.map(([, id, extra]) => t.orch.answerNativePrompt(id, ask(t, extra)));
+    const same = t.orch.answerNativePrompt(t.w.id, ask(t));
+    const receipt = await first;
+    expect(await same).toEqual(receipt);
+    expect(await named(during)).toEqual(conflict);
+    // 끝난 뒤에도 같은 대조다(영속 영수증).
+    expect(await named(variants.map(([, id, extra]) => t.orch.answerNativePrompt(id, ask(t, extra))))).toEqual(conflict);
+    expect(receipt).toMatchObject({ status: "answered", option: 1 });
+    expect(t.runner.answers).toEqual([{ promptKey: "boot:0:0:1:abc", option: 1 }]);
+    await t.orch.shutdown();
+  });
+
   test("넣는 중 결과를 모르면 'unknown' 으로 남기고, 같은 요청을 다시 받아도 넣지 않는다", async () => {
     const t = await orchSetup();
     t.runner.throws = new Error("socket closed after write");
