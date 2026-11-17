@@ -4,6 +4,10 @@
 // 출처: 자리의 모양과 규칙(이름 읽기·줄 찾기·다시 찾는 차례)은 원래 화면의 편집기 plannotator v0.28.48(backnotprop, MIT OR Apache-2.0)의
 // diagramAnchor 규약을 따른다. 그 소스를 싣지 않고 같은 규칙을 이 화면의 짜임(그림 + 겹친 단추)에 맞게 따로 썼다.
 import type { AgentADiagramFamily, AgentAReviewDiagramAnchor } from "@shared/agent-a";
+import { diagramLabel, ORDINAL, sourceLineOf, type DiagramTarget } from "@shared/agent-a-diagram";
+
+// 도식 글에서 줄을 찾는 규칙은 서버도 쓴다(새 댓글의 자리가 문서의 도식에 이어지는지 본다). 한 곳(shared)에 둔다.
+export { sourceLineOf, type DiagramTarget };
 
 /** 그림 전체를 1 로 본 자리(왼쪽 위가 0,0). */
 export interface DiagramBox {
@@ -28,9 +32,6 @@ export interface DiagramPart {
   /** 누르는 자리들. 선은 선을 따라 잘게 나눈 자리와 선에 붙은 글의 자리다. */
   hits: DiagramBox[];
 }
-
-/** 자리에서 부분을 가리키는 칸만. */
-export type DiagramTarget = Pick<AgentAReviewDiagramAnchor, "family" | "kind"> & { id?: string; from?: string; to?: string };
 
 const FAMILIES = new Set<string>(["flowchart", "state", "class", "er", "requirement", "sequence", "other"]);
 /** 이름·글의 길이. 원래 화면도 이 길이까지만 둔다. */
@@ -93,66 +94,13 @@ export const partKey = (p: Pick<DiagramPart, "id" | "from" | "to">): string => p
 /** 그 부분을 부르는 글: 보이는 글, 없으면 선의 양 끝, 없으면 이름(원문 칸에 싣는 글과 같다). */
 export const anchorText = (a: AgentAReviewDiagramAnchor | Pick<DiagramPart, "label" | "id" | "from" | "to">): string => a.label || (a.from !== undefined && a.to !== undefined ? `${a.from} → ${a.to}` : a.id ?? "");
 
-const WORD = /[A-Za-z0-9_]/;
-/** 줄에 이름이 통째로 나오는지(D 는 DR 이 아니다). 이름은 그려진 도식에서 온 글이라 정규식으로 만들지 않고 글자 그대로 찾는다. */
-function mentions(line: string, token: string): boolean {
-  if (!token) return false;
-  for (let at = line.indexOf(token); at !== -1; at = line.indexOf(token, at + 1)) {
-    const before = at === 0 ? "" : line[at - 1]!, after = line[at + token.length] ?? "";
-    if (!WORD.test(before) && !WORD.test(after)) return true;
-  }
-  return false;
-}
-
-// 순서도(sequence)의 줄: 메시지(화살표 뒤에 받는 쪽과 쌍점) · 메모 · 틀. 그려진 차례와 글의 차례가 같다.
-const SEQ_NOTE = /^\s*note\s+(?:left\s+of|right\s+of|over)\b/i;
-const SEQ_FRAME = /^\s*(?:loop|alt|opt|par|critical|break|rect)\b/i;
-const SEQ_MESSAGE = /^\s*[^\s:][^:]*?(?:<<)?--?(?:>>|>|x|\))\s*[+-]?\s*[^:\s][^:]*:/;
-const ORDINAL = /^(msg|note|frame)-(\d+)$/;
-
-/** 도식 글에서 비어 있지 않은 첫 줄과 끝 줄(1부터). 빈 글이면 null. */
-function wholeLines(lines: readonly string[]): [number, number] | null {
-  let last = lines.length;
-  while (last > 0 && !lines[last - 1]!.trim()) last--;
-  let first = 1;
-  while (first <= last && !lines[first - 1]!.trim()) first++;
-  return last === 0 || first > last ? null : [first, last];
-}
-
-/**
- * 그 부분이 적힌 도식 글의 줄(1부터, [첫 줄, 끝 줄]). 못 찾으면 null.
- * 노드는 이름이 통째로 나오는 첫 줄, 묶음은 그 이름의 subgraph 줄, 선은 양 끝이 함께 나오는 첫 줄(번호뿐인 선은 찾지 않는다),
- * 순서도의 메시지·메모·틀은 그 차례의 줄, 도식 전체는 글 전부.
- */
-export function sourceLineOf(source: string, target: DiagramTarget): [number, number] | null {
-  const lines = source.split("\n");
-  if (target.kind === "diagram") return wholeLines(lines);
-  const ordinal = target.family === "sequence" && target.id !== undefined ? ORDINAL.exec(target.id) : null;
-  let index = -1;
-  if (ordinal) {
-    const is = (line: string) => (ordinal[1] === "note" ? SEQ_NOTE.test(line) : ordinal[1] === "frame" ? SEQ_FRAME.test(line) : SEQ_MESSAGE.test(line) && !SEQ_NOTE.test(line));
-    let seen = 0;
-    index = lines.findIndex((line) => is(line) && ++seen === Number(ordinal[2]));
-  } else if (target.kind === "edge") {
-    const { from, to } = target;
-    if (from !== undefined && to !== undefined) index = lines.findIndex((line) => mentions(line, from) && mentions(line, to));
-  } else if (target.id !== undefined) {
-    const id = target.id;
-    index = lines.findIndex((line) => (target.kind === "cluster" ? /^\s*subgraph\b/.test(line) : true) && mentions(line, id));
-  }
-  return index === -1 ? null : [index + 1, index + 1];
-}
-
 /**
  * 고른 부분의 자리를 만든다. part 가 null 이면 도식 전체다(글은 도식 글의 첫 줄).
  * fenceLine 은 ```mermaid 줄의 문서 줄 번호다: 도식 글의 k 번째 줄은 문서의 fenceLine + k 번째 줄이다.
  */
 export function anchorFor(family: Exclude<AgentADiagramFamily, "graphviz">, part: DiagramPart | null, source: string, fenceLine: number): AgentAReviewDiagramAnchor {
   const inDoc = (line: [number, number] | null): [number, number] | null => (line ? [line[0] + fenceLine, line[1] + fenceLine] : null);
-  if (!part) {
-    const first = source.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-    return { v: 1, family, kind: "diagram", label: first.length > 120 ? `${first.slice(0, 120)}…` : first, sourceLine: inDoc(sourceLineOf(source, { family, kind: "diagram" })) };
-  }
+  if (!part) return { v: 1, family, kind: "diagram", label: diagramLabel(source), sourceLine: inDoc(sourceLineOf(source, { family, kind: "diagram" })) };
   const target: DiagramTarget = { family, kind: part.kind, ...(part.id !== undefined ? { id: part.id } : {}), ...(part.from !== undefined && part.to !== undefined ? { from: part.from, to: part.to } : {}) };
   return { v: 1, ...target, label: part.label, sourceLine: inDoc(sourceLineOf(source, target)) };
 }
@@ -195,20 +143,23 @@ export interface DiagramBlockInfo {
 }
 
 /**
- * 도식 댓글이 본문의 몇 번째 도식 것인지. 자리의 문서 줄이 그 도식의 줄 안이고 그 도식에 그 부분이 있으면 그 도식이다.
- * 줄이 없거나 맞지 않으면(본문이 바뀌었으면) 그 자리를 찾는 첫 도식이다(원래 화면과 같다). 가릴 도식을 아직 그리는 중이면 기다린다(null).
+ * 도식 댓글이 본문의 몇 번째 도식 것인지. 주인은 갈래가 같은 도식뿐이다: 이름·글만 같은 다른 갈래의 도식은 주인이 아니다
+ * (Graphviz 댓글의 B 는 Mermaid 흐름도의 B 가 아니고, 상태도 댓글의 B 도 흐름도의 B 가 아니다. 원래 화면도 Graphviz 댓글을 Mermaid 도식에 대 보지 않는다).
+ * 이 화면은 Mermaid 만 그리므로 Graphviz 댓글은 늘 null 이다: 표시 없이 댓글 목록에만 남는다.
+ * 자리의 문서 줄이 그 도식의 줄 안이고 그 도식에 그 부분이 있으면 그 도식이다. 줄이 없거나 맞지 않으면(본문이 바뀌었으면)
+ * 갈래가 같고 그 자리를 찾는 첫 도식이다(원래 화면과 같다). 가릴 도식을 아직 그리는 중이면 기다린다(null).
  * 어느 도식에서도 못 찾으면 null 이다: 표시 없이 댓글 목록에만 남는다.
  */
 export function ownerOf(anchor: AgentAReviewDiagramAnchor, blocks: readonly DiagramBlockInfo[]): number | null {
-  const has = (b: DiagramBlockInfo): boolean => b.drawn != null && (anchor.kind === "diagram" ? b.drawn.family === anchor.family : findPart(b.drawn.parts, anchor) !== null);
+  const has = (b: DiagramBlockInfo): boolean => b.drawn != null && b.drawn.family === anchor.family && (anchor.kind === "diagram" || findPart(b.drawn.parts, anchor) !== null);
   if (anchor.sourceLine) {
     const [first, last] = anchor.sourceLine;
     const at = blocks.findIndex((b) => first > b.line && last <= b.line + b.lines);
     if (at !== -1) {
       const b = blocks[at]!;
       if (b.drawn === undefined) return null;
-      // 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다).
-      if (anchor.kind === "diagram") return b.drawn ? at : null;
+      // 도식 전체에 단 댓글은 줄이 가리키는 도식의 것이다(다른 도식으로 옮기지 않는다). 그 도식의 갈래가 다르면 표시하지 않는다.
+      if (anchor.kind === "diagram") return has(b) ? at : null;
       if (has(b)) return at;
     }
   }

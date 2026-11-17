@@ -37,6 +37,7 @@ import type {
   AgentAReviewVersion,
   AgentAReviewWriteResult,
 } from "../../shared/agent-a.ts";
+import { diagramLabel, mermaidBlocks, sourceLineOf } from "../../shared/agent-a-diagram.ts";
 
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ANNOTATION = /^[A-Za-z0-9_-]{1,200}$/;
@@ -144,6 +145,24 @@ function diagramAnchorIn(v: unknown): AgentAReviewDiagramAnchor {
   const named = a.id !== undefined, ends = a.from !== undefined || a.to !== undefined;
   if (a.kind === "diagram" ? named || ends : a.kind === "edge" ? ends && (a.from === undefined || a.to === undefined) : !named || ends) bad();
   return a;
+}
+
+/**
+ * 새 도식 댓글의 자리가 이 문서의 도식에 이어지는지. 모양 검사(diagramAnchorIn)와 다른 검사다: 모양이 맞아도 이 문서에 없는 자리는 쓰지 않는다.
+ * - 문서에 Mermaid 도식이 하나는 있어야 한다.
+ * - 자리에 문서 줄이 있으면 그 줄이 문서 안이어야 한다.
+ * - 도식 전체는 그 글이 문서의 어느 도식의 첫 줄 글이어야 한다(화면이 도식 전체의 글로 싣는 것).
+ * - 줄이 있는 부분은 그 이름(선은 양 끝)이 문서의 어느 도식 글에 있어야 한다(화면이 줄을 찾는 것과 같은 규칙).
+ * 가리지 않는 것(서버는 도식을 그리지 않는다): 줄이 그 부분이 적힌 바로 그 줄인지, 갈래와 보이는 글이 그려진 도식과 같은지,
+ * 줄이 없는 부분의 이름(글에서 이름을 찾을 수 없어 화면이 줄을 싣지 못한 부분이다).
+ * 읽기(parseDiagramAnchor)에는 쓰지 않는다: 이미 있는 댓글은 문서 밖 줄·다른 갈래의 자리여도 그대로 읽는다.
+ */
+export function diagramInDocument(a: AgentAReviewDiagramAnchor, markdown: string): boolean {
+  const blocks = mermaidBlocks(markdown);
+  if (!blocks.length) return false;
+  if (a.sourceLine && a.sourceLine[1] > markdown.split("\n").length) return false;
+  if (a.kind === "diagram") return blocks.some((b) => diagramLabel(b.code) === a.label);
+  return !a.sourceLine || blocks.some((b) => sourceLineOf(b.code, a) !== null);
 }
 
 /** 도식 자리의 원문 칸에 싣는 글: 그 부분에 보이는 글, 없으면 선의 양 끝, 없으면 이름(원래 화면과 같다). */
@@ -542,7 +561,19 @@ export class AgentAReview {
     const cur = await this.call(fileId, sid, "GET", "/api/draft");
     if (cur.status !== 200 && cur.status !== 404) refuse(cur.status, cur.json, "초안을 읽지 못했습니다");
     if (cur.draftRevision === null) unsupported();
-    // 2) 주석 하나만 더한다. 여기서 읽은 초안은 보내지 않는다(그사이 다른 창이 저장해도 그 저장이 남는다).
+    // 2) 새 도식 댓글이면 자리가 이 검토의 문서에 이어지는지 본다. 화면은 본문 초안이 있으면 그 글의 줄로 자리를 만드므로 정본과 초안 어느 쪽에든 이어지면 받는다.
+    //    이어지지 않으면 아무것도 쓰지 않는다. 지난 판·닫힌 검토의 거절(409)은 아래 쓰기에서 Agent-A 가 한다.
+    //    이미 초안에 있는 id 는 새 쓰기가 아니다(응답을 잃은 재전송): Agent-A 가 같은 내용이면 처음 결과를 확인하고 다르면 거절한다.
+    //    그사이 본문이 바뀌었어도 처음 결과를 확인해야 하므로 연결을 다시 보지 않는다.
+    const stored = cur.status === 200 && obj(cur.json) && Array.isArray(cur.json.annotations) && cur.json.annotations.some((a) => obj(a) && a.id === req.id);
+    if (diagram && !stored) {
+      const anchor = diagram;
+      const plan = await this.call(fileId, sid, "GET", "/api/plan");
+      if (plan.status !== 200) refuse(plan.status, plan.json, "문서를 읽지 못했습니다");
+      const texts = [obj(plan.json) ? plan.json.plan : null, cur.status === 200 && obj(cur.json) ? cur.json.editedMarkdown : null].filter((t): t is string => typeof t === "string");
+      if (!texts.some((t) => diagramInDocument(anchor, t))) throw new ApiError(400, "이 문서의 도식에서 고른 부분을 찾지 못했습니다. 화면을 새로 고친 뒤 다시 골라 주세요", "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT");
+    }
+    // 3) 주석 하나만 더한다. 여기서 읽은 초안은 보내지 않는다(그사이 다른 창이 저장해도 그 저장이 남는다).
     const saved = await this.call(fileId, sid, "POST", "/api/draft/annotations", {
       annotation: {
         id: req.id,

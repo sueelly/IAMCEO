@@ -742,6 +742,80 @@ describe("Agent-A 문서 화면", () => {
     ]);
     await page.close();
   }, 150_000);
+
+  // ---- R3 보완: 갈래가 다른 원래 댓글은 이름이 같아도 붙지 않는다. 문서에 이어지지 않는 새 자리는 받지 않는다 ----
+  test("데스크톱: Graphviz·다른 갈래의 원래 댓글은 목록에만 남고 Mermaid 도식의 같은 이름에 붙지 않는다. 문서 밖 줄의 새 도식 댓글은 받지 않는다", async () => {
+    const fileId = await newDiagramDoc("갈래가 다른 댓글 문서");
+    const doc = await review.open(fileId);
+    const fence = doc.markdown.split("\n").indexOf("```mermaid") + 1;
+    expect(fence).toBeGreaterThan(0);
+    // 원래 Agent-A 화면이 남긴 댓글 셋(IAMCEO 를 거치지 않고 Agent-A 에 직접): Graphviz 의 B(줄 없음, 지금 문서에 없는 블록 이름) · Graphviz 의 B(줄이 이 Mermaid 도식 안) · 상태도의 B
+    const foreign: { id: string; blockId: string; text: string; diagramAnchor: AgentAReviewDiagramAnchor }[] = [
+      { id: "foreign-graphviz-1", blockId: "old-graphviz-block", text: "Graphviz 의 B 에 남긴 원래 댓글", diagramAnchor: { v: 1, family: "graphviz", kind: "node", id: "B", label: "검토", sourceLine: null } },
+      { id: "foreign-graphviz-2", blockId: "", text: "줄이 이 도식 안인 Graphviz 댓글", diagramAnchor: { v: 1, family: "graphviz", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] } },
+      { id: "foreign-state-1", blockId: "block-9", text: "상태도의 B 에 남긴 원래 댓글", diagramAnchor: { v: 1, family: "state", kind: "node", id: "B", label: "검토", sourceLine: null } },
+    ];
+    for (const a of foreign) expect(await otherWindowComment(fileId, doc.sessionId, { ...a, startOffset: 0, endOffset: 0, type: "COMMENT", originalText: "검토" })).toBe(200);
+    const stored = async () => (await review.comments(fileId, doc.sessionId, null))!.annotations.filter((a) => !a.ai).map((a) => [a.text, a.diagram]);
+    const kept = foreign.map((a) => [a.text, a.diagramAnchor]);
+    await expect(stored()).resolves.toEqual(kept);
+
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await open(page, fileId);
+    const diagram = page.locator(".aar-diagram");
+    await drawn(page);
+    // 목록에는 셋 다 '도식' 댓글로 남아 있다(지우거나 숨기지 않는다)
+    for (const a of foreign) await pane(page).locator(".aar-row", { hasText: a.text }).waitFor({ timeout: 20_000 });
+    await expect(pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).count()).resolves.toBe(3);
+    // 이 도식에도 B(검토)가 있지만, 갈래가 다른 댓글의 번호 표시는 없다
+    await expect(diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').count()).resolves.toBeGreaterThan(0);
+    await page.waitForTimeout(600);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(0);
+    // 목록에서 그 댓글을 열면 읽을 수 있고, 도식에 고른 표시는 생기지 않는다
+    await pane(page).locator(".aar-row", { hasText: "Graphviz 의 B 에 남긴 원래 댓글" }).click();
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("Graphviz 의 B 에 남긴 원래 댓글");
+    await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("검토");
+    await expect(diagram.locator(".aar-diagram__mark, .aar-diagram__ring").count()).resolves.toBe(0);
+    await shot(page, "35-desk-diagram-other-family");
+
+    // 정상군: 같은 도식의 B 에 새 댓글을 달면 그것만 번호 1 로 표시된다
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first().click();
+    await pane(page).getByLabel("댓글", { exact: true }).fill("이 화면에서 단 댓글입니다");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 이 화면에서 단 댓글입니다");
+    const mine: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] };
+    await expect(stored()).resolves.toEqual([...kept, ["이 화면에서 단 댓글입니다", mine]]);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await diagram.getByRole("button", { name: "도식 댓글 1 열기" }).click();
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("이 화면에서 단 댓글입니다");
+
+    // 문서에 없는 줄·도식 글에 없는 이름의 새 댓글을 서버 길로 직접 보내면 거절하고 아무것도 쓰지 않는다(모양은 맞다)
+    const send = async (id: string, anchor: AgentAReviewDiagramAnchor) => {
+      const res = await fetch(`${base}/api/agent-a/docs/${fileId}/review/comments`, { method: "POST", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ session: await sessionOf(page), id, kind: "comment", text: "직접 보낸 도식 댓글", diagram: anchor }) });
+      return [res.status, ((await res.json()) as { code?: string }).code];
+    };
+    await expect(send("direct-unbound-1", { ...mine, sourceLine: [999_999, 999_999] })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+    await expect(send("direct-unbound-2", { ...mine, id: "없는이름", label: "없는 글" })).resolves.toEqual([400, "AGENT_A_DIAGRAM_NOT_IN_DOCUMENT"]);
+    await expect(stored()).resolves.toHaveLength(4);
+
+    // 다시 열어도(새로고침) 같다: 표시는 내 댓글 하나, 목록에는 넷
+    await page.reload();
+    await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+    await drawn(page);
+    await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 1, null, { timeout: 20_000 });
+    for (const a of foreign) await pane(page).locator(".aar-row", { hasText: a.text }).waitFor({ timeout: 20_000 });
+    await expect(pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).count()).resolves.toBe(4);
+    await page.waitForTimeout(600);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await expect(stored()).resolves.toEqual([...kept, ["이 화면에서 단 댓글입니다", mine]]);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 180_000);
 });
 
 // ---- 독립 검토 뒤에 되살린 기능(가짜 Agent-A 로만 돈다: 답 글·AI 표시가 가짜의 규칙이다) ----
@@ -752,6 +826,11 @@ async function otherWindowSaves(sessionId: string, change: Record<string, unknow
   const res = await fake!.transport("http://127.0.0.1:4999/api/draft", { method: "POST", headers: { "x-enouv-artifact": session.artifact_id, "x-enouv-review-session": sessionId, "content-type": "application/json" },
     body: JSON.stringify({ draftGeneration: session.draft_generation, annotations: session.draft?.annotations ?? [], globalAttachments: session.draft?.globalAttachments ?? [], ...change }) });
   expect(res.status).toBe(200);
+}
+/** 원래 Agent-A 의 다른 창이 초안에 댓글 하나를 직접 남기는 것을 흉내 낸다(IAMCEO 를 거치지 않는다). 가짜와 실제 Agent-A 서버 코드 둘 다에 쓴다. */
+async function otherWindowComment(fileId: string, sessionId: string, annotation: Record<string, unknown>): Promise<number> {
+  const init = { method: "POST", headers: { "x-enouv-artifact": agentA.docOf(fileId).artifactId, "x-enouv-review-session": sessionId, "content-type": "application/json" }, body: JSON.stringify({ annotation }) };
+  return (REAL ? await fetch(`${REAL}/api/draft/annotations`, init) : await fake!.transport("http://127.0.0.1:4999/api/draft/annotations", init)).status;
 }
 const banner = (page: Page, text: string) => page.locator(".aar-banner", { hasText: text }).waitFor({ timeout: 15_000 });
 const tool = (page: Page, name: string) => page.locator(".aar-seg__btn", { hasText: new RegExp(`^${name}$`) }).click();
