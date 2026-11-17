@@ -9,7 +9,7 @@ import { openDb } from "../server/db.ts";
 import { AgentAClient, AgentAService } from "../server/integrations/agent-a.ts";
 import { AgentAReview, parseRegion, toAnnotation } from "../server/integrations/agent-a-review.ts";
 import { ApiError, Store } from "../server/store.ts";
-import { buildThreads, imageFor, myTurn, outline, regionOf, splitDoc, threadRoot, wordDiff } from "../web/src/lib/agent-a-review.ts";
+import { buildThreads, imageFor, myTurn, outline, regionOf, saveRequests, splitDoc, threadRoot, wordDiff } from "../web/src/lib/agent-a-review.ts";
 import { fakeAgentAReview } from "./fixtures/fake-agent-a-review.ts";
 import { pngBase64 } from "./fixtures/png.ts";
 
@@ -282,5 +282,23 @@ describe("검토 화면의 계산", () => {
     expect(regionOf(image, { x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 })).toBeNull();
     expect(wordDiff("배경 문장 하나. 둘.", "배경 문장 하나. (고침) 둘.")).toEqual([{ kind: "same", text: "배경 문장 하나. " }, { kind: "add", text: "(고침) " }, { kind: "same", text: "둘." }]);
     expect(wordDiff("가 나", "가 다").map((p) => p.kind)).toEqual(["same", "del", "add"]);
+  });
+
+  test("초안 저장의 요청 id: 같은 초안 판·같은 값은 같은 id 로 다시 보내고, 판이나 값이 달라지거나 저장이 끝나면 새 id 다", () => {
+    let n = 0;
+    const requests = saveRequests(() => `request-${++n}`);
+    // 저장이 끝나지 않은(응답을 잃은) 같은 저장은 같은 요청이다
+    expect([requests.id(3, "글"), requests.id(3, "글")]).toEqual(["request-1", "request-1"]);
+    expect(requests.id(3, [["/a", "그림"]])).toBe("request-2");
+    expect(requests.id(3, [["/a", "그림"]])).toBe("request-2");
+    // 초안 판이나 값이 달라지면 새 요청이다. 앞 요청으로 돌아가도 새 id 다(마지막 저장만 기억한다)
+    expect(requests.id(4, [["/a", "그림"]])).toBe("request-3");
+    expect(requests.id(4, null)).toBe("request-4");
+    expect(requests.id(3, "글")).toBe("request-5");
+    // 저장이 끝난 뒤의 같은 저장은 새 요청이다
+    requests.done();
+    expect(requests.id(3, "글")).toBe("request-6");
+    // 다른 화면(다른 묶음)은 같은 판·같은 값에도 다른 id 를 쓴다
+    expect(saveRequests(() => "other-window").id(3, "글")).toBe("other-window");
   });
 });

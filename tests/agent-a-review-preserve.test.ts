@@ -201,7 +201,7 @@ describe("R1 초안 저장 뒤 응답 유실: 같은 요청은 다시 쓰지 않
     expect(await s.other("GET", "/api/draft")).toEqual(stored);
   });
 
-  test("다른 창의 저장은 계속 충돌이다: 값이 우연히 같아도, 내 저장 뒤에 덮였어도, 같은 판에 다른 내용이어도", async () => {
+  test("내 요청의 기록이 없는 저장은 충돌이다: 기록 없이 쓴 다른 창의 값이 우연히 같아도, 내 저장 뒤에 그 칸이 덮였어도, 같은 판에 다른 내용이어도", async () => {
     const s = await setup();
     const seen = await s.review.draft(s.fileId, s.sid);
     // (가) 다른 창이 먼저 저장했다. 저장된 값이 내 요청과 같아 보여도(빈 그림 목록·같은 본문) 내 요청이 저장된 것이 아니다.
@@ -254,6 +254,160 @@ describe("R1 초안 저장 뒤 응답 유실: 같은 요청은 다시 쓰지 않
     expect(first).toEqual({ revision: input.revision + 1, editedMarkdown: "겹친 요청의 본문", annotations: 0, attachments: [] });
     expect(second).toEqual(first as never);
     expect((await s.other("GET", "/api/draft")).revision).toBe(String(input.revision + 1));
+  });
+
+  // 독립 재검토(a474537): 기록을 한 자리에만 두어, 저장 뒤 다른 칸의 저장이 끼면 앞 요청의 기록이 지워지고 재전송이 409 였다.
+  for (const kind of ["body", "attachments"] as const) {
+    test(`${kind === "body" ? "본문" : "그림"} 저장의 응답을 잃은 뒤 다른 칸(${kind === "body" ? "그림" : "본문"}) 저장이 끼어도, 처음 요청은 저장된 것으로 확인한다(다시 쓰지 않는다)`, async () => {
+      const s = await setup();
+      const seen = await s.review.draft(s.fileId, s.sid);
+      const image = await s.review.upload(s.fileId, s.sid, { name: "own.png", mediaType: "image/png", base64: pngBase64(10, 10) });
+      const run = () => (kind === "body"
+        ? s.review.saveDraft(s.fileId, s.sid, { markdown: "이미 들어간 본문", revision: seen.revision, opId: "lost-save-0001" })
+        : s.review.saveAttachments(s.fileId, s.sid, { attachments: [image], revision: seen.revision, opId: "lost-save-0001" }));
+      loseOnce(s);
+      expect(await failure(run())).toEqual({ status: 502, code: "AGENT_A_UNAVAILABLE" });
+      // 새 초안 판에서 다른 칸이 저장됐다(다른 화면이거나, 초안을 다시 읽은 같은 화면)
+      const middle = kind === "body"
+        ? await s.review.saveAttachments(s.fileId, s.sid, { attachments: [image], revision: seen.revision + 1, opId: "middle-save-01" })
+        : await s.review.saveDraft(s.fileId, s.sid, { markdown: "나중 창의 본문", revision: seen.revision + 1, opId: "middle-save-01" });
+      expect(middle.revision).toBe(seen.revision + 2);
+      const stored = await s.other("GET", "/api/draft");
+      // 처음 요청을 그대로 다시 보낸다: 저장된 것으로 확인하고 지금 초안을 돌려준다. 초안도 초안 판도 그대로다.
+      expect(await run()).toEqual({ revision: seen.revision + 2, editedMarkdown: kind === "body" ? "이미 들어간 본문" : "나중 창의 본문", annotations: 0, attachments: [image] });
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 댓글과 다른 칸의 저장이 더 끼어도 같다
+      await s.review.addComment(s.fileId, s.sid, { id: "between-saves", kind: "global", text: "사이에 단 댓글" });
+      const more = kind === "body"
+        ? await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: seen.revision + 3, opId: "middle-save-02" })
+        : await s.review.saveDraft(s.fileId, s.sid, { markdown: null, revision: seen.revision + 3, opId: "middle-save-02" });
+      const later = await s.other("GET", "/api/draft");
+      expect((await run()).revision).toBe(more.revision);
+      expect(await s.other("GET", "/api/draft")).toEqual(later);
+      // 끼어든 저장도 제 기록으로 확인된다(앞 요청의 확인이 뒤 요청의 기록을 지우지 않는다)
+      const middleAgain = kind === "body"
+        ? s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: seen.revision + 3, opId: "middle-save-02" })
+        : s.review.saveDraft(s.fileId, s.sid, { markdown: null, revision: seen.revision + 3, opId: "middle-save-02" });
+      expect((await middleAgain).revision).toBe(more.revision);
+      expect(await s.other("GET", "/api/draft")).toEqual(later);
+      // 그 칸의 값이 바뀌면(앞 요청의 저장이 덮였다) 앞 요청은 충돌이고, 바뀐 값은 그대로 남는다
+      if (kind === "body") await s.review.saveDraft(s.fileId, s.sid, { markdown: "다른 화면이 고친 본문", revision: more.revision, opId: "overwrite-0001" });
+      else await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: more.revision, opId: "overwrite-0001" });
+      const overwritten = await s.other("GET", "/api/draft");
+      expect(await failure(run())).toEqual(CONFLICT);
+      expect(await s.other("GET", "/api/draft")).toEqual(overwritten);
+    });
+  }
+
+  test("요청 id 가 다르면 초안 판·값이 같아도 다른 요청이다(충돌). 같은 id·같은 내용의 재전송만 저장된 것으로 확인한다", async () => {
+    const s = await setup();
+    const seen = await s.review.draft(s.fileId, s.sid);
+    const mine = { markdown: "두 화면의 같은 글", revision: seen.revision, opId: "window-one-0001" };
+    expect((await s.review.saveDraft(s.fileId, s.sid, mine)).revision).toBe(seen.revision + 1);
+    const stored = await s.other("GET", "/api/draft");
+    // 다른 화면이 같은 초안 판에서 같은 글을 저장하려 한다. 그 화면의 요청이 저장된 적은 없다.
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { ...mine, opId: "window-two-0001" }))).toEqual(CONFLICT);
+    // 같은 id 에 다른 글, id 없이 온 같은 글도 내 요청의 재전송이 아니다
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { ...mine, markdown: "다른 글" }))).toEqual(CONFLICT);
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { markdown: mine.markdown, revision: mine.revision }))).toEqual(CONFLICT);
+    expect((await s.review.saveDraft(s.fileId, s.sid, mine)).revision).toBe(seen.revision + 1);
+    // 그림 목록도 같다
+    const list = { attachments: [], revision: seen.revision + 1, opId: "window-one-0002" };
+    expect((await s.review.saveAttachments(s.fileId, s.sid, list)).revision).toBe(seen.revision + 2);
+    expect(await failure(s.review.saveAttachments(s.fileId, s.sid, { ...list, opId: "window-two-0002" }))).toEqual(CONFLICT);
+    expect((await s.review.saveAttachments(s.fileId, s.sid, list)).revision).toBe(seen.revision + 2);
+    expect((await s.other("GET", "/api/draft")).json.editedMarkdown).toBe(stored.json.editedMarkdown);
+    expect((await s.other("GET", "/api/draft")).revision).toBe(String(seen.revision + 2));
+    // 요청 id 의 모양이 틀리면 아무것도 보내지 않는다
+    const before = s.fake.calls.length;
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, { ...mine, opId: "짧음" }))).toMatchObject({ status: 400 });
+    expect(await failure(s.review.saveAttachments(s.fileId, s.sid, { ...list, opId: "x".repeat(101) }))).toMatchObject({ status: 400 });
+    expect(s.fake.calls.length).toBe(before);
+  });
+
+  test("요청 id 없이 온 저장은 문서·검토·칸·초안 판·값이 같으면 같은 요청으로 본다(둘을 가릴 것이 없다). 다른 검토·다른 문서의 기록은 통하지 않는다", async () => {
+    const s = await setup();
+    const second = new AgentAReview(s.service);
+    const seen = await s.review.draft(s.fileId, s.sid);
+    const same = { markdown: "두 호출의 같은 값", revision: seen.revision };
+    expect((await s.review.saveDraft(s.fileId, s.sid, same)).revision).toBe(seen.revision + 1);
+    const stored = await s.other("GET", "/api/draft");
+    // 다른 호출 객체가 id 없이 같은 판·같은 값을 보낸다: 다시 쓰지 않고 200 이다. 둘을 가린 것이 아니다(가릴 값이 없다).
+    expect((await second.saveDraft(s.fileId, s.sid, same)).revision).toBe(seen.revision + 1);
+    expect(await s.other("GET", "/api/draft")).toEqual(stored);
+    // 그 초안을 기록까지 통째로 다른 문서의 검토에 옮겨 써도, 그 문서에서는 같은 요청이 아니다
+    const view = await s.service.createDoc(s.project.id, { title: "다른 문서", markdown: MARKDOWN });
+    const other = await s.review.open(view.fileId);
+    const copied = await s.fake.transport("http://127.0.0.1:4999/api/draft", { method: "POST", headers: { "x-enouv-artifact": view.artifactId, "x-enouv-review-session": other.sessionId, "content-type": "application/json" }, body: JSON.stringify({ ...stored.json, documents: undefined }) });
+    expect(copied.status).toBe(200);
+    expect(await failure(s.review.saveDraft(view.fileId, other.sessionId, same))).toEqual(CONFLICT);
+  });
+
+  test("기록까지 그대로 다시 실은 저장: 그 칸을 바꾸지 않았으면 앞 요청은 확인되고, 그 칸을 바꿨으면 충돌이다", async () => {
+    const s = await setup();
+    const mine = { markdown: "기록이 가리킨 본문", revision: (await s.review.draft(s.fileId, s.sid)).revision, opId: "copied-mark-0001" };
+    await s.review.saveDraft(s.fileId, s.sid, mine);
+    const kept = (await s.other("GET", "/api/draft")).json;
+    // 읽은 초안을 모르는 칸까지 그대로 다시 싣는 쪽이 주석만 바꿔 저장했다: 본문은 내 저장 그대로다
+    await s.other("POST", "/api/draft", { ...kept, documents: undefined, annotations: [{ id: "other-tab", type: "GLOBAL_COMMENT", text: "다른 창 댓글", originalText: "" }] });
+    const stored = await s.other("GET", "/api/draft");
+    expect(await s.review.saveDraft(s.fileId, s.sid, mine)).toMatchObject({ revision: mine.revision + 2, editedMarkdown: "기록이 가리킨 본문", annotations: 1 });
+    expect(await s.other("GET", "/api/draft")).toEqual(stored);
+    // 같은 쪽이 본문을 바꿔 저장했다: 기록은 남아 있어도 내 값이 아니다
+    await s.other("POST", "/api/draft", { ...stored.json, documents: undefined, editedMarkdown: "다른 창이 바꾼 본문" });
+    const changed = await s.other("GET", "/api/draft");
+    expect(await failure(s.review.saveDraft(s.fileId, s.sid, mine))).toEqual(CONFLICT);
+    expect(await s.other("GET", "/api/draft")).toEqual(changed);
+  });
+
+  test("같은 값을 다시 쓴 저장은 앞 기록을 잇고, 값을 바꾼 저장은 그 칸의 앞 기록을 버린다. 기록은 칸마다 네 개까지다", async () => {
+    const s = await setup();
+    const base = (await s.review.draft(s.fileId, s.sid)).revision;
+    const save = (n: number, markdown: string) => s.review.saveDraft(s.fileId, s.sid, { markdown, revision: base + n, opId: `same-value-${String(n).padStart(4, "0")}` });
+    const marks = async () => (await s.other("GET", "/api/draft")).json.iamceoSave as { v: number; body: string[]; attachments: string[] };
+    await save(0, "같은 글");
+    await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: base + 1, opId: "attach-keep-0001" });
+    // 초안을 다시 읽은 화면이 같은 글을 새 요청으로 저장했다: 앞 요청도 그대로 확인된다
+    await save(2, "같은 글");
+    expect((await marks()).body).toHaveLength(2);
+    expect((await save(0, "같은 글")).revision).toBe(base + 3);
+    // 같은 글이 네 번 더 저장되면 가장 오래된 기록부터 밀려난다(네 개까지). 밀려난 요청은 충돌이다. 다른 칸의 기록은 밀려나지 않는다.
+    for (const n of [3, 4, 5, 6]) await save(n, "같은 글");
+    const full = await marks();
+    expect([full.v, full.body.length, full.attachments.length]).toEqual([1, 4, 1]);
+    expect(await failure(save(0, "같은 글"))).toEqual(CONFLICT);
+    expect((await save(3, "같은 글")).revision).toBe(base + 7);
+    expect((await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: base + 1, opId: "attach-keep-0001" })).revision).toBe(base + 7);
+    // 값이 바뀌면 그 칸의 앞 기록을 버린다. 다시 같은 글이 돼도 앞 요청이 저장된 것으로 돌아오지 않는다.
+    await save(7, "바뀐 글");
+    expect((await marks()).body).toHaveLength(1);
+    await save(8, "같은 글");
+    expect((await marks()).body).toHaveLength(1);
+    expect(await failure(save(6, "같은 글"))).toEqual(CONFLICT);
+    expect((await s.other("GET", "/api/draft")).revision).toBe(String(base + 9));
+  });
+
+  test("모양이 다른 기록은 없는 것으로 본다: 재전송은 충돌이고, 다음 저장이 그 값을 옮겨 싣지 않는다", async () => {
+    const s = await setup();
+    const mine = { markdown: "남길 본문", revision: (await s.review.draft(s.fileId, s.sid)).revision, opId: "odd-mark-00001" };
+    await s.review.saveDraft(s.fileId, s.sid, mine);
+    const kept = (await s.other("GET", "/api/draft")).json;
+    const key = kept.iamceoSave.body[0] as string;
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    for (const mark of [{ v: 2, body: [key] }, { v: 1, key }, { v: 1, body: key }, { v: 1, body: [[key], { key }, key.toUpperCase(), 7] }, [key], "x", null]) {
+      await s.other("POST", "/api/draft", { ...kept, documents: undefined, iamceoSave: mark });
+      const stored = await s.other("GET", "/api/draft");
+      expect(await failure(s.review.saveDraft(s.fileId, s.sid, mine))).toEqual(CONFLICT);
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+    }
+    // 이상한 값이 든 기록 위에 저장하면 올바른 기록만 남는다
+    await s.other("POST", "/api/draft", { ...kept, documents: undefined, iamceoSave: { v: 1, body: ["zz", 3, key], attachments: { a: 1 }, extra: "버릴 값" } });
+    const now = Number((await s.other("GET", "/api/draft")).revision);
+    await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: now, opId: "odd-mark-00002" });
+    const after = (await s.other("GET", "/api/draft")).json.iamceoSave;
+    expect(Object.keys(after).sort()).toEqual(["attachments", "body", "v"]);
+    expect(after.body).toEqual([key]);
+    expect(after.attachments).toHaveLength(1);
   });
 
   test("닫힌 검토와 초안 규약을 모르는 Agent-A 에서는 재전송도 그대로 거절한다", async () => {

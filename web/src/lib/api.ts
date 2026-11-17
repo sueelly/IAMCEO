@@ -295,9 +295,9 @@ export const api = {
     attachmentUrl: (fileId: string, session: string, path: string) => `/api/agent-a/docs/${seg(fileId)}/review/attachment?session=${seg(session)}&path=${seg(path)}`,
     draft: (fileId: string, session: string, signal?: AbortSignal) => get<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft?session=${seg(session)}`, signal),
     /** 직접 고친 본문을 초안에 저장한다(null 이면 고친 것을 버린다). revision 은 고치기 시작할 때 본 초안 판이다. */
-    saveDraft: (fileId: string, session: string, markdown: string | null, revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft`, { session, markdown, revision }),
+    saveDraft: (fileId: string, session: string, markdown: string | null, revision: number, opId: string) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft`, { session, markdown, revision, opId }),
     /** 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). revision 은 화면이 본 초안 판이다. */
-    saveAttachments: (fileId: string, session: string, attachments: AgentAReviewAttachment[], revision: number) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft/attachments`, { session, attachments, revision }),
+    saveAttachments: (fileId: string, session: string, attachments: AgentAReviewAttachment[], revision: number, opId: string) => post<AgentAReviewDraft>(`/api/agent-a/docs/${seg(fileId)}/review/draft/attachments`, { session, attachments, revision, opId }),
     /** 검토 제출: 초안의 주석을 분기의 질문으로 넘기고 이 검토를 닫는다. */
     submit: (fileId: string, session: string, revision: number, decision: "feedback" | "approved") => post<AgentAReviewSubmitResult>(`/api/agent-a/docs/${seg(fileId)}/review/submit`, { session, revision, decision }),
     chat: (fileId: string, session: string, conversation?: string | null, signal?: AbortSignal) =>

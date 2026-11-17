@@ -399,7 +399,7 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
   }, 90_000);
 
   // 독립 재검토 R1: 실제 Agent-A 가 초안을 저장한 뒤 응답만 끊긴 경우. 같은 요청은 다시 쓰지 않고 저장된 초안을 돌려준다.
-  test("R1 초안 저장 뒤 응답 유실: 본문·검토 첨부의 같은 요청은 200 이고 초안은 한 번만 바뀐다. 다른 창의 저장은 계속 충돌이다", async () => {
+  test("R1 초안 저장 뒤 응답 유실: 본문·검토 첨부의 같은 요청은 200 이고 초안은 한 번만 바뀐다. 기록 없이 통째로 쓴 다른 창의 저장 뒤에는 충돌이다", async () => {
     for (const kind of ["body", "attachments"] as const) {
       const s = await setup(`실제: R1 ${kind}`);
       const seen = await s.review.draft(s.fileId, s.sid);
@@ -414,25 +414,71 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
       const again = await run();
       expect(again).toEqual({ revision: seen.revision + 1, editedMarkdown: kind === "body" ? "한 번 저장할 초안" : null, annotations: 0, attachments: image });
       expect(await s.other("GET", "/api/draft")).toEqual(stored);
-      // 내 저장 뒤에 댓글이 더해져 초안 판이 또 올라도 같은 요청은 저장된 것으로 확인한다(Agent-A 가 주석을 더할 때 표지를 그대로 둔다).
+      // 내 저장 뒤에 댓글이 더해져 초안 판이 또 올라도 같은 요청은 저장된 것으로 확인한다(Agent-A 가 주석을 더할 때 저장 기록을 그대로 둔다).
       await s.review.addComment(s.fileId, s.sid, { id: `r1-after-${kind}`, kind: "deletion", text: "", quote: "배경 문장 둘." });
       expect(await run()).toMatchObject({ revision: seen.revision + 2, annotations: 1 });
-      // 다른 창(원래 화면)이 통째로 저장하면 같은 요청도 충돌이고, 그 저장은 그대로 남는다.
+      // 다른 창이 저장 기록 없이 초안을 통째로 저장하면 같은 요청도 충돌이고, 그 저장은 그대로 남는다.
       await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: "다른 창 본문" });
       expect(await failure(run())).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
       expect((await s.other("GET", "/api/draft")).json!.editedMarkdown).toBe("다른 창 본문");
     }
-    // 다른 창이 먼저 저장했으면 값이 같아 보여도(빈 그림 목록·같은 본문) 내 요청의 결과가 아니다.
+    // 다른 창이 저장 기록 없이 먼저 저장했으면 값이 같아 보여도(빈 그림 목록·같은 본문) 내 요청의 결과가 아니다.
     const s = await setup("실제: R1 충돌");
     const seen = await s.review.draft(s.fileId, s.sid);
     expect((await s.other("POST", "/api/draft", { draftGeneration: 0, ifDraftRevision: seen.revision, annotations: [], globalAttachments: [], editedMarkdown: "다른 창 본문" })).status).toBe(200);
     expect(await failure(s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: seen.revision }))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
     expect(await failure(s.review.saveDraft(s.fileId, s.sid, { markdown: "다른 창 본문", revision: seen.revision }))).toEqual({ status: 409, code: "AGENT_A_DRAFT_CONFLICT" });
-    // 표지는 Agent-A 의 초안에만 남고, 제출 글·화면이 받는 초안에는 실리지 않는다.
+    // 저장 기록은 Agent-A 의 초안에만 남고, 제출 글·화면이 받는 초안에는 실리지 않는다.
     const mine = await s.review.draft(s.fileId, s.sid);
     await s.review.saveDraft(s.fileId, s.sid, { markdown: `${s.doc.canonical}\n\n덧붙임`, revision: mine.revision });
     expect(Object.keys(await s.review.draft(s.fileId, s.sid)).sort()).toEqual(["annotations", "attachments", "editedMarkdown", "revision"]);
     expect((await s.review.submit(s.fileId, s.sid, { revision: mine.revision + 1 })).ok).toBe(true);
+  }, 60_000);
+
+  // 독립 재검토(a474537)의 남은 조건: 저장 뒤 응답을 잃고, 다른 칸의 조건 저장이 끼어 초안 판이 또 오른 뒤의 재전송. 기록을 한 자리에만 둘 때는 409 였다.
+  test("R1 중간 저장: 응답을 잃은 저장 뒤 다른 칸의 저장이 끼어도 처음 요청은 저장된 것으로 확인한다. 요청 id 가 다른 같은 값과 다시 바뀐 칸은 충돌이다", async () => {
+    const CONFLICT = { status: 409, code: "AGENT_A_DRAFT_CONFLICT" };
+    for (const kind of ["body", "attachments"] as const) {
+      const s = await setup(`실제: R1 중간 ${kind}`);
+      const seen = await s.review.draft(s.fileId, s.sid);
+      const image = await s.review.upload(s.fileId, s.sid, { name: "own.png", mediaType: "image/png", base64: pngBase64(10, 10) });
+      const run = (opId = `r1-lost-${kind}-0001`) => (kind === "body"
+        ? s.review.saveDraft(s.fileId, s.sid, { markdown: "이미 들어간 본문", revision: seen.revision, opId })
+        : s.review.saveAttachments(s.fileId, s.sid, { attachments: [image], revision: seen.revision, opId }));
+      const middle = (revision: number, opId: string, clear = false) => (kind === "body"
+        ? s.review.saveAttachments(s.fileId, s.sid, { attachments: clear ? [] : [image], revision, opId })
+        : s.review.saveDraft(s.fileId, s.sid, { markdown: clear ? null : "나중 창의 본문", revision, opId }));
+      s.loseOnce((path) => path === "/api/draft");
+      expect(await failure(run())).toEqual({ status: 502, code: "AGENT_A_UNAVAILABLE" });
+      // 새 초안 판에서 다른 칸이 저장된다
+      expect((await middle(seen.revision + 1, `r1-middle-${kind}-01`)).revision).toBe(seen.revision + 2);
+      const stored = await s.other("GET", "/api/draft");
+      expect(stored.json!.iamceoSave).toMatchObject({ v: 1, body: [expect.any(String)], attachments: [expect.any(String)] });
+      // 처음 요청을 그대로 다시 보낸다: 저장된 것으로 확인하고 지금 초안을 돌려준다. 초안도 초안 판도 그대로다.
+      expect(await run()).toEqual({ revision: seen.revision + 2, editedMarkdown: kind === "body" ? "이미 들어간 본문" : "나중 창의 본문", annotations: 0, attachments: [image] });
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 끼어든 저장도 제 기록으로 확인된다
+      expect((await middle(seen.revision + 1, `r1-middle-${kind}-01`)).revision).toBe(seen.revision + 2);
+      // 다른 화면(다른 요청 id)이나 id 없는 호출이 같은 초안 판·같은 값을 보내면 충돌이고 아무것도 바뀌지 않는다
+      expect(await failure(run(`r1-other-${kind}-0001`))).toEqual(CONFLICT);
+      expect(await failure(kind === "body"
+        ? s.review.saveDraft(s.fileId, s.sid, { markdown: "이미 들어간 본문", revision: seen.revision })
+        : s.review.saveAttachments(s.fileId, s.sid, { attachments: [image], revision: seen.revision }))).toEqual(CONFLICT);
+      expect(await s.other("GET", "/api/draft")).toEqual(stored);
+      // 실제 Agent-A 가 댓글을 더할 때도, 다른 칸이 한 번 더 저장될 때도 앞 요청의 기록은 남는다
+      await s.review.addComment(s.fileId, s.sid, { id: `r1-between-${kind}`, kind: "deletion", text: "", quote: "배경 문장 둘." });
+      const more = await middle(seen.revision + 3, `r1-middle-${kind}-02`, true);
+      expect(more.revision).toBe(seen.revision + 4);
+      const later = await s.other("GET", "/api/draft");
+      expect(await run()).toMatchObject({ revision: seen.revision + 4, annotations: 1 });
+      expect(await s.other("GET", "/api/draft")).toEqual(later);
+      // 그 칸의 값이 다시 바뀌면(앞 요청의 저장이 덮였다) 앞 요청은 충돌이고 바뀐 값이 남는다
+      if (kind === "body") await s.review.saveDraft(s.fileId, s.sid, { markdown: "다른 화면이 고친 본문", revision: more.revision, opId: "r1-overwrite-body-01" });
+      else await s.review.saveAttachments(s.fileId, s.sid, { attachments: [], revision: more.revision, opId: "r1-overwrite-attach-1" });
+      const overwritten = await s.other("GET", "/api/draft");
+      expect(await failure(run())).toEqual(CONFLICT);
+      expect(await s.other("GET", "/api/draft")).toEqual(overwritten);
+    }
   }, 60_000);
 
   // 독립 재검토 R2: 문맥 판·배치 판 없이 보낸 요청이 저장된 뒤 응답을 잃고, 그사이 문맥(목표)이 바뀐 경우.

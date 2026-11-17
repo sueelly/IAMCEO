@@ -3,8 +3,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AgentAReviewDraft } from "@shared/agent-a";
 import { GlassButton } from "../../glass";
+import { saveRequests } from "../../lib/agent-a-review";
 import { ApiError, api, errorText } from "../../lib/api";
 import { applyEdit, codeBlock, heading, link, linePrefix, wrap, type MdEdit } from "../../lib/md-format";
+import { newId } from "../../lib/store";
 import { Markdown, useConfirmPress } from "../ui";
 
 type Format = (text: string, start: number, end: number) => MdEdit;
@@ -32,6 +34,8 @@ export function DraftEditor({ fileId, session, canonical, onSaved, onClose }: { 
   const [theirs, setTheirs] = useState<AgentAReviewDraft | null>(null);
   const discard = useConfirmPress();
   const input = useRef<HTMLTextAreaElement>(null);
+  /** 같은 글을 같은 초안 판에서 다시 저장하면 같은 요청 id 로 보낸다(저장은 됐는데 응답만 잃은 저장을 서버가 확인한다). */
+  const requests = useRef(saveRequests(newId));
   /** 글을 직접 바꾼 뒤(입력 명령을 받지 않는 브라우저) 다시 그려지면 고를 범위. */
   const reselect = useRef<{ value: string; from: number; to: number } | null>(null);
   useLayoutEffect(() => {
@@ -53,7 +57,8 @@ export function DraftEditor({ fileId, session, canonical, onSaved, onClose }: { 
     setBusy(true);
     setError(null);
     try {
-      await api.agentAReview.saveDraft(fileId, session, markdown, revision);
+      await api.agentAReview.saveDraft(fileId, session, markdown, revision, requests.current.id(revision, markdown));
+      requests.current.done();
       onSaved(markdown === null ? "고친 본문을 버렸습니다. 정본 본문을 다시 열었습니다." : "고친 본문을 초안으로 저장했습니다. 정본은 그대로입니다.");
     } catch (e) {
       setError(errorText(e));

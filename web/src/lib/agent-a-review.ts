@@ -288,3 +288,22 @@ export function kindLabel(a: Pick<AgentAReviewAnnotation, "kind" | "region"> & {
   if (a.region) return "그림 영역";
   return a.kind === "global" ? "전체" : a.kind === "deletion" ? "삭제 표시" : "문장";
 }
+
+/**
+ * 초안 저장(본문·검토에 붙인 그림)의 요청 id 를 정한다. 같은 저장(같은 초안 판·같은 값)을 다시 보내면 같은 id 를 쓴다:
+ * 저장은 됐는데 응답만 잃었을 때 서버가 다시 쓰지 않고 저장된 것으로 확인한다. 초안 판이나 값이 달라지면 새 요청이다.
+ * 저장이 끝나면 done 으로 버린다. 다른 화면은 다른 id 를 쓰므로 판·값이 같아도 서버가 같은 요청으로 보지 않는다.
+ */
+export function saveRequests(newId: () => string): { id: (revision: number, value: unknown) => string; done: () => void } {
+  let last: { same: string; id: string } | null = null;
+  return {
+    id(revision, value) {
+      const same = JSON.stringify([revision, value]);
+      if (last?.same !== same) last = { same, id: newId() };
+      return last.id;
+    },
+    done() {
+      last = null;
+    },
+  };
+}

@@ -651,16 +651,16 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await requireReview().upload(id!, body.session, { name: body.name, mediaType: body.mediaType, base64: body.base64 }));
     }),
     route("GET", "/api/agent-a/docs/:id/review/attachment", async (_req, url, [id]) => requireReview().attachment(id!, reviewSession(url), url.searchParams.get("path") ?? "")),
-    // 검토 초안(본문 직접 고치기)과 검토 제출
+    // 검토 초안(본문 직접 고치기)과 검토 제출. 초안 저장은 화면이 저장마다 정한 요청 id(opId)를 받는다: 같은 저장의 재전송과 다른 화면의 저장을 가린다.
     route("GET", "/api/agent-a/docs/:id/review/draft", async (_req, url, [id]) => Response.json(await requireReview().draft(id!, reviewSession(url)))),
     route("POST", "/api/agent-a/docs/:id/review/draft", async (req, _url, [id]) => {
-      const body = await parseBody(req, z.strictObject({ session: z.string(), markdown: z.string().max(500_000).nullable(), revision: z.number().int().nonnegative() }));
-      return Response.json(await requireReview().saveDraft(id!, body.session, { markdown: body.markdown, revision: body.revision }));
+      const body = await parseBody(req, z.strictObject({ session: z.string(), markdown: z.string().max(500_000).nullable(), revision: z.number().int().nonnegative(), opId: z.string().max(100) }));
+      return Response.json(await requireReview().saveDraft(id!, body.session, { markdown: body.markdown, revision: body.revision, opId: body.opId }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/draft/attachments", async (req, _url, [id]) => {
       const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
-      const body = await parseBody(req, z.strictObject({ session: z.string(), attachments: z.array(image).max(10), revision: z.number().int().nonnegative() }));
-      return Response.json(await requireReview().saveAttachments(id!, body.session, { attachments: body.attachments, revision: body.revision }));
+      const body = await parseBody(req, z.strictObject({ session: z.string(), attachments: z.array(image).max(10), revision: z.number().int().nonnegative(), opId: z.string().max(100) }));
+      return Response.json(await requireReview().saveAttachments(id!, body.session, { attachments: body.attachments, revision: body.revision, opId: body.opId }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/submit", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), revision: z.number().int().nonnegative(), decision: z.enum(["feedback", "approved"]).optional() }));

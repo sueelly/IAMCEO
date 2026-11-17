@@ -684,8 +684,11 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
   }, 150_000);
 
   // 독립 재검토 R1: Agent-A 가 초안을 저장한 뒤 응답만 끊긴 경우. 다시 누르면 다른 화면의 충돌로 보이지 않고 저장된 것으로 확인된다.
-  test("데스크톱: 초안 저장의 응답을 잃어도 '초안 저장'을 다시 누르면 저장된 것으로 확인한다(다시 쓰지 않는다)", async () => {
-    const fileId = await newDoc("응답 유실 문서");
+  // between: 응답을 잃은 뒤, 다시 누르기 전에 다른 화면이 새 초안 판에서 검토에 붙인 그림을 저장한다(초안 판이 한 번 더 오른다).
+  for (const between of [false, true]) test(between
+    ? "데스크톱: 초안 저장의 응답을 잃은 뒤 다른 화면이 그림을 붙여도, '초안 저장'을 다시 누르면 저장된 것으로 확인한다(다시 쓰지 않는다)"
+    : "데스크톱: 초안 저장의 응답을 잃어도 '초안 저장'을 다시 누르면 저장된 것으로 확인한다(다시 쓰지 않는다)", async () => {
+    const fileId = await newDoc(between ? "응답 유실 뒤 그림 저장 문서" : "응답 유실 문서");
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await open(page, fileId);
     const first = (await sessionOf(page))!;
@@ -709,13 +712,34 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
       expect(lost).toBe(true);
       // Agent-A 에는 이미 저장돼 있다. 화면은 아직 모른다(입력칸의 글은 그대로다).
       expect(session().draft.editedMarkdown).toContain("응답을 잃은 저장입니다.");
-      const revision = session().draft_revision;
+      let revision = session().draft_revision;
       await expect(input.inputValue()).resolves.toContain("응답을 잃은 저장입니다.");
+      if (between) {
+        // 다른 화면이 IAMCEO 서버 길(HTTP)로 보내는 저장. 화면과 같은 열쇠를 쓰고 요청 id 만 다르다.
+        const post = async (path: string, body: unknown) => {
+          const res = await fetch(`${base}/api/agent-a/docs/${encodeURIComponent(fileId)}/review/${path}`, { method: "POST", headers: { authorization: `Bearer ${CODE}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+          return { status: res.status, json: (await res.json().catch(() => null)) as Record<string, unknown> | null };
+        };
+        // 요청 id 가 없는 저장은 서버 길이 받지 않는다
+        expect((await post("draft/attachments", { session: first, attachments: [], revision })).status).toBe(400);
+        // 다른 화면이 같은 초안 판에서 같은 글을 보내면 충돌이다(그 화면의 요청이 저장된 것이 아니다). 아무것도 바뀌지 않는다.
+        const same = await post("draft", { session: first, markdown: session().draft.editedMarkdown, revision: revision - 1, opId: "other-screen-body-001" });
+        expect([same.status, same.json?.code]).toEqual([409, "AGENT_A_DRAFT_CONFLICT"]);
+        expect(session().draft_revision).toBe(revision);
+        // 다른 화면이 지금 초안 판에서 그림을 붙였다. 본문은 그대로 싣는다.
+        const up = await review.upload(fileId, first, { name: "other-screen.png", mediaType: "image/png", base64: pngBase64(12, 12) });
+        const saved = await post("draft/attachments", { session: first, attachments: [up], revision, opId: "other-screen-attach-01" });
+        expect([saved.status, saved.json?.revision]).toEqual([200, revision + 1]);
+        expect(session().draft_revision).toBe(revision + 1);
+        revision += 1;
+      }
       // 같은 글로 다시 누른다: 다른 화면의 초안(충돌)으로 보이지 않고 저장으로 끝난다. 초안은 다시 쓰이지 않았다.
       await page.getByRole("button", { name: "초안 저장" }).click();
       await banner(page, "고친 본문을 초안으로 저장했습니다. 정본은 그대로입니다.");
       await expect(page.locator('[aria-label="다른 화면의 초안"]').count()).resolves.toBe(0);
       expect(session().draft_revision).toBe(revision);
+      expect(session().draft.editedMarkdown).toContain("응답을 잃은 저장입니다.");
+      expect(session().draft.globalAttachments).toHaveLength(between ? 1 : 0);
       await page.waitForFunction(() => document.querySelector(".aar-doc")?.textContent?.includes("응답을 잃은 저장입니다."));
       await expect(page.locator(".aar-bar__state").innerText()).resolves.toContain("직접 편집 초안");
     } finally {

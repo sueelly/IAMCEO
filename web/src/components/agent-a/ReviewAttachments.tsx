@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentAReviewAttachment, AgentAReviewDraft } from "@shared/agent-a";
 import { GlassButton } from "../../glass";
+import { saveRequests } from "../../lib/agent-a-review";
 import { ApiError, api, errorText, fetchAttachment } from "../../lib/api";
+import { newId } from "../../lib/store";
 import { Modal } from "../ui";
 import { Thumb } from "./CommentPanel";
 import { ImageDraw } from "./ImageDraw";
@@ -38,6 +40,8 @@ export function ReviewAttachments({ fileId, session, open, onClose, onCount }: {
   const input = useRef<HTMLInputElement>(null);
   const counted = useRef(onCount);
   counted.current = onCount;
+  /** 같은 목록을 같은 초안 판에서 다시 저장하면 같은 요청 id 로 보낸다(저장은 됐는데 응답만 잃은 저장을 서버가 확인한다). */
+  const requests = useRef(saveRequests(newId));
 
   const load = useCallback(async () => {
     try {
@@ -67,7 +71,8 @@ export function ReviewAttachments({ fileId, session, open, onClose, onCount }: {
     try {
       const next = await work(draft);
       if (next) {
-        const saved = await api.agentAReview.saveAttachments(fileId, session, next, draft.revision);
+        const saved = await api.agentAReview.saveAttachments(fileId, session, next, draft.revision, requests.current.id(draft.revision, next.map((x) => [x.path, x.name])));
+        requests.current.done();
         setDraft(saved);
         counted.current(saved.attachments.length);
       }

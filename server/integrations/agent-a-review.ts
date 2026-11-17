@@ -215,19 +215,36 @@ function ranCommand(state: AState, commandId: string): Json | null {
 const revisionOr = (sent: number | null | undefined, first: unknown, current: number): number => revisionOf(sent) ?? revisionOf(first) ?? current;
 
 /**
- * 초안에 남기는 '마지막 조건 저장' 표지(독립 재검토 R1). 조건 저장이 초안과 한 번에 싣기 때문에, 저장이 들어갔으면 표지도 들어가 있다.
- * key 는 그 저장 요청(어느 검토의 무엇을·어느 초안 판에서·어떤 값으로)의 지문이다. 저장은 됐는데 응답만 잃은 같은 요청이 다시 오면
- * 초안 판이 이미 올라 있어도 이 표지로 '이미 저장됨'을 확인하고 다시 쓰지 않는다. 표지가 없거나 다르면 다른 화면의 저장이다.
- * Agent-A 는 초안의 모르는 칸을 그대로 보관하고(POST /api/draft), 주석 하나를 더할 때도 그대로 둔다. 원래 화면이 통째로 저장하면 사라진다.
+ * 초안에 남기는 조건 저장의 기록(독립 재검토 R1). 조건 저장이 초안과 한 번에 싣기 때문에, 저장이 들어갔으면 그 기록도 들어가 있다.
+ * key 는 그 저장 요청(어느 문서·어느 검토의 어느 칸을, 어느 초안 판에서, 어떤 값으로, 어떤 요청 id 로)의 지문이다.
+ * 저장은 됐는데 응답만 잃은 같은 요청이 다시 오면, 초안 판이 이미 올라 있어도 이 기록과 그 칸의 값으로 '이미 저장됨'을 확인하고 다시 쓰지 않는다.
+ * - 기록은 칸(본문·검토에 붙인 그림)마다 따로 둔다. 한 자리에만 두면 다른 칸의 저장이 앞 저장의 기록을 지워, 앞 요청의 재전송이 충돌로 보였다.
+ * - 한 칸의 기록은 '지금 그 칸의 값을 만든 요청들'이다(최근 것부터 SAVE_KEEP 개). 값을 바꾸는 저장은 그 칸의 앞 기록을 버리고, 같은 값을 다시 쓰는 저장은 앞 기록을 잇는다.
+ * - 기록이 남아 있어도 그 칸의 값이 요청한 값과 다르면 저장된 것으로 보지 않는다(기록까지 실어 그 칸을 바꾼 다른 화면).
+ * - 요청 id 는 화면이 저장마다 정해 보낸다. id 가 다르면 초안 판·값이 같아도 다른 요청이다.
+ *   id 없이 온 요청(이 클래스를 직접 부르는 쪽)은 문서·검토·칸·초안 판·값이 같으면 같은 요청으로 본다(둘을 가릴 것이 없다).
+ * Agent-A 는 초안의 모르는 칸을 그대로 보관한다(POST /api/draft, 주석 하나를 더할 때도). 기록을 싣지 않고 초안을 통째로 저장하는 쪽이 쓰면
+ * 기록이 사라지고 그 뒤의 재전송은 충돌이다. 기록을 그대로 다시 실은 저장은 그 칸의 값을 바꾸지 않은 한 앞 요청의 확인을 막지 않는다.
  */
 const SAVE_MARK = "iamceoSave";
-type SaveMark = { key: string; holds: (draft: Json) => boolean };
-const saveKey = (artifactId: string, sid: string, kind: "body" | "attachments", revision: number, value: unknown): string =>
-  createHash("sha256").update(JSON.stringify([artifactId, sid, kind, revision, value])).digest("hex");
-/** 지금 초안이 이 요청의 저장을 담고 있는가: 표지가 이 요청의 것이고, 그 칸의 값도 요청한 값 그대로다. */
-const savedAlready = (draft: Json, mark: SaveMark): boolean => {
+const SAVE_KEEP = 4;
+type SaveKind = "body" | "attachments";
+type SaveMark = { kind: SaveKind; key: string; holds: (draft: Json) => boolean };
+const saveKey = (artifactId: string, sid: string, kind: SaveKind, revision: number, value: unknown, opId: string | null): string =>
+  createHash("sha256").update(JSON.stringify([artifactId, sid, kind, revision, value, opId])).digest("hex");
+/** 초안에 남은 한 칸의 저장 기록(최근 것부터). 모양이 다르면 기록이 없는 것으로 본다(그러면 재전송은 충돌이다). */
+const savesOf = (draft: Json, kind: SaveKind): string[] => {
   const m = draft[SAVE_MARK];
-  return obj(m) && m.v === 1 && m.key === mark.key && mark.holds(draft);
+  const list = obj(m) && m.v === 1 ? m[kind] : null;
+  return Array.isArray(list) ? list.filter((k): k is string => typeof k === "string" && /^[0-9a-f]{64}$/.test(k)).slice(0, SAVE_KEEP) : [];
+};
+/** 지금 초안이 이 요청의 저장을 담고 있는가: 이 요청의 기록이 남아 있고, 그 칸의 값도 요청한 값 그대로다. */
+const savedAlready = (draft: Json, mark: SaveMark): boolean => savesOf(draft, mark.kind).includes(mark.key) && mark.holds(draft);
+/** 이 저장을 실은 뒤의 기록. 다른 칸의 기록은 그대로 싣고, 이 칸은 값이 그대로일 때만 앞 기록을 잇는다. */
+const savesWith = (draft: Json, mark: SaveMark): Json => {
+  const other: SaveKind = mark.kind === "body" ? "attachments" : "body";
+  const before = mark.holds(draft) ? savesOf(draft, mark.kind).filter((k) => k !== mark.key) : [];
+  return { v: 1, [other]: savesOf(draft, other), [mark.kind]: [mark.key, ...before].slice(0, SAVE_KEEP) };
 };
 
 const STATUSES: AgentAProposalStatus[] = ["pending", "held", "rejected", "applied", "conflict"];
@@ -615,16 +632,19 @@ export class AgentAReview {
 
   /**
    * 직접 고친 본문을 초안에 저장한다(markdown 이 null 이면 고친 것을 버린다). 정본은 바뀌지 않는다.
-   * revision 은 화면이 고치기 시작할 때 본 초안 판이다. 그 뒤 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않고 거절한다:
+   * revision 은 화면이 고치기 시작할 때 본 초안 판이다. 그 뒤 초안이 다시 저장됐으면 아무것도 바꾸지 않고 거절한다:
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision). 초안의 다른 칸(주석·첨부)은 그대로 다시 싣는다.
-   * 같은 요청(같은 초안 판·같은 본문)을 다시 보내면 다시 쓰지 않고 저장된 초안을 돌려준다(저장은 됐는데 응답만 잃은 경우).
+   * 같은 요청(같은 요청 id·같은 초안 판·같은 본문)을 다시 보내면 다시 쓰지 않고 지금 초안을 돌려준다(저장은 됐는데 응답만 잃은 경우).
+   * 그사이 그림 저장이나 댓글이 끼어 초안 판이 더 올랐어도 같다. 본문이 다시 바뀌었으면 충돌이다.
    */
-  async saveDraft(fileId: string, sessionId: string, input: { markdown: string | null; revision: number }): Promise<AgentAReviewDraft> {
+  async saveDraft(fileId: string, sessionId: string, input: { markdown: string | null; revision: number; opId?: string | null }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
     if (input.markdown !== null && (typeof input.markdown !== "string" || input.markdown.length > 500_000)) throw new ApiError(400, "본문이 너무 깁니다");
+    if (input.opId != null && !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
     const mark: SaveMark = {
-      key: saveKey(this.service.docOf(fileId).artifactId, sid, "body", input.revision, input.markdown),
+      kind: "body",
+      key: saveKey(this.service.docOf(fileId).artifactId, sid, "body", input.revision, input.markdown, input.opId ?? null),
       holds: (draft) => (input.markdown === null ? typeof draft.editedMarkdown !== "string" : draft.editedMarkdown === input.markdown),
     };
     return this.writeDraft(fileId, sid, input.revision, "지난 판의 검토에서는 본문을 고치지 않습니다. 최신 정본을 열어 주세요", mark, (kept) => {
@@ -635,16 +655,18 @@ export class AgentAReview {
 
   /**
    * 검토 전체에 붙인 그림의 목록을 초안에 저장한다(더하거나 뺀 뒤의 목록 전체). 정본은 바뀌지 않고, 검토 제출 때 함께 넘어간다.
-   * 본문 고치기와 같은 조건 저장이다: revision 뒤에 다른 화면이 초안을 저장했으면 아무것도 바꾸지 않는다. 초안의 다른 칸(주석·고친 본문)은 그대로 둔다.
-   * 같은 요청(같은 초안 판·같은 목록)을 다시 보내면 다시 쓰지 않고 저장된 초안을 돌려준다.
+   * 본문 고치기와 같은 조건 저장이다: revision 뒤에 초안이 다시 저장됐으면 아무것도 바꾸지 않는다. 초안의 다른 칸(주석·고친 본문)은 그대로 둔다.
+   * 같은 요청(같은 요청 id·같은 초안 판·같은 목록)을 다시 보내면 다시 쓰지 않고 지금 초안을 돌려준다. 그사이 본문 저장이 끼었어도 같다.
    */
-  async saveAttachments(fileId: string, sessionId: string, input: { attachments: unknown; revision: number }): Promise<AgentAReviewDraft> {
+  async saveAttachments(fileId: string, sessionId: string, input: { attachments: unknown; revision: number; opId?: string | null }): Promise<AgentAReviewDraft> {
     const sid = this.session(sessionId);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new ApiError(400, "초안 판이 올바르지 않습니다");
+    if (input.opId != null && !OP.test(input.opId)) throw new ApiError(400, "요청 id 가 올바르지 않습니다");
     const list = attachments(input.attachments);
     if (new Set(list.map((x) => x.path)).size !== list.length) throw new ApiError(400, "같은 그림이 두 번 들어 있습니다");
     const mark: SaveMark = {
-      key: saveKey(this.service.docOf(fileId).artifactId, sid, "attachments", input.revision, list.map((x) => [x.path, x.name])),
+      kind: "attachments",
+      key: saveKey(this.service.docOf(fileId).artifactId, sid, "attachments", input.revision, list.map((x) => [x.path, x.name]), input.opId ?? null),
       holds: (draft) => {
         const stored = Array.isArray(draft.globalAttachments) ? draft.globalAttachments : [];
         return stored.length === list.length && list.every((x, i) => obj(stored[i]) && stored[i].path === x.path && stored[i].name === x.name);
@@ -656,7 +678,8 @@ export class AgentAReview {
   /**
    * 초안의 한 칸만 바꿔 조건 저장한다. 읽은 초안의 다른 칸은 그대로 다시 싣고, revision(화면이 본 초안 판)이 지금 판과 다르면 아무것도 보내지 않는다.
    * 서버가 여기서 한 번 보고, Agent-A 가 쓰는 순간 다시 본다(ifDraftRevision).
-   * 판을 견주기 전에 같은 요청이 이미 저장됐는지 먼저 본다(mark). 저장됐으면 다시 쓰지 않고 지금 초안을 돌려준다. 다른 화면의 저장은 그대로 충돌이다.
+   * 초안 판이 이미 올라 있으면 이 요청이 저장된 것인지 본다(mark: 초안에 남은 이 요청의 기록과 그 칸의 값). 저장됐으면 다시 쓰지 않고 지금 초안을 돌려준다.
+   * 이 요청의 기록이 없거나 그 칸의 값이 달라졌으면 충돌이다. 쓸 때는 이 요청의 기록을 더하고 다른 칸의 기록은 그대로 싣는다(savesWith).
    */
   private async writeDraft(fileId: string, sid: string, revision: number, stale: string, mark: SaveMark, change: (kept: Json) => Json): Promise<AgentAReviewDraft> {
     const doc = this.service.docOf(fileId);
@@ -675,7 +698,7 @@ export class AgentAReview {
         annotations: Array.isArray(kept.annotations) ? kept.annotations : [],
         globalAttachments: Array.isArray(kept.globalAttachments) ? kept.globalAttachments : [],
       }),
-      [SAVE_MARK]: { v: 1, key: mark.key },
+      [SAVE_MARK]: savesWith(got.json, mark),
       draftGeneration: num(draftGeneration) ?? 0,
       ifDraftRevision: revision,
     };
@@ -684,7 +707,7 @@ export class AgentAReview {
       const refusal = obj(saved.json) ? saved.json : null;
       if (saved.status === 409 && refusal?.decided === true) throw new ApiError(409, KNOWN.already_decided!, "AGENT_A_ALREADY_DECIDED");
       if (saved.status === 409 && refusal && (refusal.code === undefined || refusal.code === "draft_conflict")) {
-        // 읽은 뒤에 초안이 바뀌었다. 앞서 보낸 같은 요청이 그사이 저장된 것이면 그 결과를 돌려주고, 아니면 다른 화면의 저장이다.
+        // 읽은 뒤에 초안이 바뀌었다. 앞서 보낸 같은 요청이 그사이 저장된 것이면 지금 초안을 돌려주고, 아니면 충돌이다.
         const now = await this.readDraft(fileId, sid);
         if (savedAlready(now.json, mark)) return this.draftView(now.revision, now.json);
         throw new ApiError(409, KNOWN.draft_conflict!, "AGENT_A_DRAFT_CONFLICT");
