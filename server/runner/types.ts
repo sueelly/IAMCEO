@@ -7,7 +7,8 @@ import type { ContextReading } from "./context.ts";
  */
 /** 질문·선택 창 답하기 결과. leased: 다른 사람이 터미널을 조작 중. already: 이 창에는 이미 답했다. needs_text: 자유 응답 줄인데 글이 없다. */
 export type NativePromptAnswer =
-  | { ok: true; prompt: NativePrompt; chosen: NativePromptOption }
+  /** terminal: 넣은 뒤 창을 다시 읽어 닫혔으면 accepted, 그대로면 unconfirmed. 확인하지 않는 실행기는 비운다. after: 그때의 CLI 상태 */
+  | { ok: true; prompt: NativePrompt; chosen: NativePromptOption; terminal?: "accepted" | "unconfirmed"; after?: "working" | "blocked" | "idle" | "gone" | null }
   | { ok: false; reason: "not_blocked" | "unrecognized" | "changed" | "no_option" | "needs_text" | "gone" | "input_busy" | "leased" | "already"; current?: NativePrompt | null };
 export type ApprovalAnswer =
   | { ok: true; prompt: ApprovalPrompt; chosen: ApprovalOption }
@@ -223,7 +224,9 @@ export interface Runner {
   /** 화면을 다시 읽어 fingerprint 가 같을 때만 고른 선택지에 맞는 키를 한 번 보내고 상태를 다시 관측한다. */
   answerApproval?(m: RunnerMember, fingerprint: string, option: number): Promise<ApprovalAnswer>;
   /** 막힌 칸의 질문·선택·승인 창과 그 창의 키(세대·턴·차례·지문). 막힘이 아니면 null. */
-  nativePrompt?(m: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string } | null>;
+  /** observedAt: 이 창(promptKey)을 처음 읽은 시각 */
+  /** answered: 이 창에는 이미 답을 넣었다. 다시 넣을 선택지로 보이지 않는다 */
+  nativePrompt?(m: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string; observedAt?: string; answered?: boolean } | null>;
   /** promptKey 가 지금 창과 같을 때만 한 번 넣는다(대표 화면 전용). */
   answerNativePrompt?(m: RunnerMember, promptKey: string, option: number, text?: string): Promise<NativePromptAnswer>;
   on(cb: (e: RunnerEvent) => void): void;
