@@ -599,3 +599,84 @@ for (const anotherProject of [false, true]) test(`explicit owner retry wakes a p
   await f.orch.pump(member.id);
   expect(f.count("terminal.send")).toBe(1);
 });
+
+test("confirmed missing Codex transcript rotates the session once while preserving queued work and history", async () => {
+  const f = await fixture();
+  const member = await f.orch.createMember(f.project.id, { name: "Missing Codex", cli: "codex" });
+  const oldSession = crypto.randomUUID();
+  const generation = f.store.memberRevisions(member.id).sessionGeneration;
+  await f.orch.shutdown();
+  f.terminals.get(member.paneId!)!.state = "finished";
+  f.store.patchMember(member.id, { sessionId: oldSession, status: "offline", now: "Preserve this report" });
+  const queued = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "instruction", text: "Preserve this input", wake: true });
+  const next = f.orchestrator();
+  await next.orch.resumeMember(member.id);
+  expect(f.store.memberRevisions(member.id).sessionGeneration).toBe(generation + 1);
+  const resumed = f.store.requireMember(member.id);
+  expect(resumed.sessionId).not.toBe(oldSession);
+  expect(resumed.now).toBe("Preserve this report");
+  expect(f.store.requireDelivery(queued.id).text).toBe("Preserve this input");
+  expect(f.db.query("SELECT session_id, reason FROM member_session_history WHERE member_id = ?").get(member.id)).toMatchObject({ session_id: oldSession, reason: "missing_session" });
+  expect(f.count("terminal.run")).toBe(2);
+  expect(f.calls.filter(c => c.method === "terminal.run").at(-1)!.params.argv).not.toContain(oldSession);
+  for (let i = 0; i < 4; i++) await next.orch.pump(member.id);
+  expect(f.count("terminal.run")).toBe(2);
+});
+
+test("daemon restart retains the nonzero-exit barrier and never relaunches queued input", async () => {
+  const f = await fixture();
+  const member = await f.orch.createMember(f.project.id, { name: "Failed CLI" });
+  const terminal = f.terminals.get(member.paneId!)!;
+  terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 1;
+  await until(() => !!f.store.requireMember(member.id).executionIssue);
+  const queued = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "instruction", text: "Keep queued across restart", wake: true });
+  await f.orch.shutdown();
+  const next = f.orchestrator();
+  await next.orch.recover();
+  for (let i = 0; i < 4; i++) await next.orch.pump(member.id);
+  expect(f.count("terminal.run")).toBe(1);
+  expect(f.count("terminal.send")).toBe(0);
+  expect(f.store.requireMember(member.id).executionIssue).toMatchObject({ kind: "startup_failed", exitCode: 1 });
+  expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: "queued", attempts: 0 });
+});
+
+test("a CLI that exits while the daemon is down is fenced before recovery can deliver queued input", async () => {
+  const f = await fixture();
+  const member = await f.orch.createMember(f.project.id, { name: "Offline exit" });
+  await f.orch.shutdown();
+  const terminal = f.terminals.get(member.paneId!)!;
+  terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 1;
+  const queued = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "instruction", text: "Preserve offline input", wake: true });
+  const next = f.orchestrator();
+  await next.orch.recover();
+  expect(f.count("terminal.run")).toBe(1);
+  expect(f.count("terminal.send")).toBe(0);
+  expect(f.store.requireMember(member.id).executionIssue).toMatchObject({ kind: "startup_failed", exitCode: 1 });
+  expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: "queued", attempts: 0 });
+});
+
+test("missing-session rotation journals the new generation and fences an ambiguous replacement across restart", async () => {
+  const f = await fixture();
+  const member = await f.orch.createMember(f.project.id, { name: "Rotating session" });
+  const generation = f.store.memberRevisions(member.id).sessionGeneration;
+  const terminal = f.terminals.get(member.paneId!)!;
+  terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 0;
+  await until(() => f.store.requireMember(member.id).status === "offline");
+  f.loseRun(true);
+  await expect(f.orch.resumeMember(member.id)).rejects.toThrow();
+  expect(f.store.memberRevisions(member.id).sessionGeneration).toBe(generation + 1);
+  const journal = f.store.listPendingLifecycleJournals().find(j => j.memberId === member.id)!;
+  expect(journal).toMatchObject({ phase: "unknown", identity: { sessionGeneration: generation + 1 } });
+  // An uncertain create may become visible later; absence now cannot authorize another create.
+  const hidden = [...f.terminals.values()].find(t => t.address !== member.paneId)!;
+  f.terminals.delete(hidden.address);
+  f.loseRun(false);
+  const queued = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "instruction", text: "No duplicate launch", wake: true });
+  await f.orch.shutdown();
+  const next = f.orchestrator();
+  await next.orch.recover();
+  for (let i = 0; i < 4; i++) await next.orch.pump(member.id);
+  expect(f.count("terminal.run")).toBe(2);
+  expect(f.count("terminal.send")).toBe(0);
+  expect(f.store.requireDelivery(queued.id)).toMatchObject({ status: "queued", attempts: 0 });
+});

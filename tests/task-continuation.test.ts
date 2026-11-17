@@ -134,6 +134,46 @@ test("no-progress retries become an actionable unresolved decision instead of in
   expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
 });
 
+test("후속 조정 결재와 총괄 입력은 업무·원문 요청·최근 보고·완료 기준을 자체적으로 설명한다", () => {
+  const f = fixture(), task = f.task("로그인 재개 오류 조사");
+  const source = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "user_message", text: "IAMCEO 로그인 재개 실패의 전달 기록을 조사하고 실패한 원본 세션을 구분해 주세요. 운영 재시작은 하지 마세요." });
+  f.store.markDelivered(source.id);
+  f.store.saveTaskContract(task.id, { kind: "research", goal: "로그인 재개 실패의 원인을 확인한다", acceptance: ["실패한 전달과 세션의 관계를 확인한다", "확인하지 못한 기록과 그 이유를 적는다"] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  const report = f.store.createMessage({ projectId: f.project.id, taskId: task.id, memberId: f.worker.id, who: f.worker.name, kind: "막힘", title: "로그인 재개 실패의 세션 기록을 찾지 못했습니다", body: "전달 ID dl_login001의 입력 수신은 확인했습니다. 원본 세션의 종료 기록에 접근하지 못해 재개 실패 원인은 아직 미확인입니다." });
+  let now = f.start;
+  for (let i = 0; i < 3; i++) {
+    const delivery = f.next.check(now, () => true)[0]!;
+    expect(delivery.text).toContain(report.title);
+    expect(delivery.text).toContain(report.body);
+    f.finish(delivery, now + 100); now += 10000;
+  }
+  f.next.check(now, () => true);
+  const decision = f.store.listDecisions(f.project.id).find(d => d.status === "open")!;
+  for (const part of [f.project.name, task.title, source.text, source.createdAt, report.title, report.body, report.at, "실패한 전달과 세션의 관계를 확인한다"]) expect(decision.detail).toContain(part);
+  expect(decision.detail).toContain("조정 요청 3회");
+  expect(decision.detail).toContain("구현이나 검사 횟수");
+  expect(decision.detail).toContain("실패 원인은 아직 미확인");
+  expect(f.store.requireMessage(report.id)).toEqual(report);
+  expect(f.store.requireDelivery(source.id).text).toBe(source.text);
+  expect(f.store.taskProgress(task.id).stage).toBe("owner");
+});
+
+test("직원이 제안한 완료 기준을 확정 기준으로 표시하지 않고 누락된 보고를 추측하지 않는다", () => {
+  const f = fixture(), task = f.task("확인 기준 정의", false);
+  f.store.saveTaskContract(task.id, { kind: "other", goal: "원인 조사", acceptance: ["세션 종료 기록 확인"] }, { author: f.worker.name, authorMemberId: f.worker.id, authorKind: "worker" });
+  let now = f.start;
+  for (let i = 0; i < 3; i++) {
+    const d = f.next.check(now, () => true)[0]!; expect(d).toBeDefined();
+    f.finish(d, now + 100); now += 10000;
+  }
+  f.next.check(now, () => true);
+  const detail = f.store.listDecisions(f.project.id).find(d => d.status === "open")!.detail;
+  expect(detail).toContain("직원 제안");
+  expect(detail).toContain("미확정");
+  expect(detail).toContain("이 업무에 연결된 보고가 없습니다");
+  expect(detail).not.toContain("확정된 완료 기준");
+});
+
 test("new completion evidence resets no-progress accounting and final done stops the cycle", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   let d = f.next.check(f.start, () => true)[0]!; expect(d).toBeDefined(); f.finish(d, f.start + 100);

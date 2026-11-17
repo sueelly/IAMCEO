@@ -218,7 +218,7 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
   };
   const quoted = option ? option.label : free ? note.trim() : undefined;
   const lastPick = decision.options.find((o) => o.k === decision.lastChoice)?.label ?? decision.lastChoice;
-  // 차례: 제목 → 권장 띠 → 선택지 → 나머지 글(표·배경). 휴대폰 첫 화면에 버튼까지 오게 한다.
+  // 결정할 질문과 권장·근거·제한을 읽은 다음 선택한다. 상세 길이로 조건을 숨기지 않는다.
   const { rec, rest } = splitDetail(decision);
   return (
     <Glass as="article" level="regular" tint className="ibx-card" data-decision={decision.id}>
@@ -231,6 +231,7 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
       ) : null}
       <h3 className="ibx-title">{decision.title}</h3>
       {rec ? <RecBand rec={rec} /> : null}
+      <Background decision={decision} detail={rest} fileTitle={fileTitle} onZoom={onZoom} />
       {free ? null : (
         <div className="ibx-opts" data-few={decision.options.length <= 3 ? "" : undefined}>
           {decision.options.map((o) => (
@@ -257,7 +258,6 @@ function DecisionCard({ decision, fileTitle, pick, locked, onPick, onKeep, onZoo
           ))}
         </div>
       )}
-      <Background decision={decision} detail={rest} fileTitle={fileTitle} onZoom={onZoom} />
       <div className="ibx-memo">
         <textarea
           ref={memoRef}

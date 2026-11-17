@@ -1,14 +1,9 @@
 // 글 검사기(경고만, 막지 않음). 직원이 post·ask·file(content)로 올린 글을 재고, 걸린 곳을 도구 결과 끝에 붙여 직원에게 돌려준다.
 // 대표 화면에는 보이지 않는다. 막으면 다듬지 않은 마지막 글이 대신 올라가므로 언제나 경고로 끝낸다.
-// 3판 검사기 시안(lint3.ts)과 2판 검사기(lint.ts)에서 오탐이 적은 검사만 옮겼다:
-//   길이(제목 45 · 요청 40 · 설명 60), 용어, 코드 무늬, 굵은 글씨 수, 짧은 답의 제목,
-//   검증 낱말 없는 '완료' 주장, '반영'의 뜻, 표시 없는 흐린 말끝, 대표 할 일이 첫 줄에 없음.
-// 규칙의 근거는 역할 글에 붙는 지침(server/roles/writing.md)이다.
-
+// 길이·강조 개수·기술 용어 때문에 대상과 근거를 지우게 하지 않는다.
+// 이 검사는 의미 판정이 아닌 비차단 안내이며 공통 작성 프롬프트를 보완한다.
 import { parseOwnerLine, parseRecLine } from "../shared/owner-lines.ts";
-import { josa } from "./roles.ts";
 
-export const LIMITS = { title: 45, askTitle: 40, req: 40, desc: 60 } as const;
 /** 도구 결과에 붙일 경고 줄 수(머리 줄 제외). */
 export const MAX_WARNING_LINES = 4;
 
@@ -19,45 +14,6 @@ export interface LintWarning {
   text: string;
 }
 
-// ---------- 용어 (writing.md '쓰지 않을 말'과 같은 짝) ----------
-const VOCAB: { pat: RegExp; use: string }[] = [
-  { pat: /\bworktrees?\b|작업\s?사본|작업\s?폴더/gi, use: "워크트리" },
-  { pat: /\bmerge[ds]?\b|(?<!나)머지|병합/gi, use: "합치기" },
-  { pat: /\bmain\b/g, use: "메인" },
-  { pat: /\bpush(?:ed|es)?\b|푸시/gi, use: "깃허브에 올리기" },
-  { pat: /풀\s?리퀘스트|pull request/gi, use: "PR" },
-  { pat: /\bbuild\b|빌드/gi, use: "앱 만들기" },
-  { pat: /테스트|\btests?\b/gi, use: "시험" },
-  { pat: /타입\s?검사|typecheck|\btsc\b/gi, use: "코드 검사" },
-  { pat: /대표\s?서버/g, use: "대표 화면" },
-  { pat: /재시작|배포|\bdeploy\b|\brestart\b/gi, use: "대표 화면에 반영" },
-  { pat: /위임/g, use: "맡김" },
-  { pat: /서브\s?에이전트|subagent/gi, use: "하위 에이전트" },
-  { pat: /(?<!하위\s?|서브\s?)에이전트|담당자/g, use: "직원·총괄" },
-  { pat: /\bartifacts?\b|아티팩트|첨부\s?자료/gi, use: "자료" },
-  { pat: /\bask\b|승인\s?요청/gi, use: "결재 카드" },
-  { pat: /승인함/g, use: "결재함" },
-  { pat: /\bpost\b/gi, use: "보고" },
-  { pat: /롤백|\brollback\b|\brevert\b/gi, use: "되돌리기" },
-  { pat: /캐시|\bcache\b|하드\s?리프레시/gi, use: "새로고침" },
-  { pat: /\bqueue\b|(?<![가-힣])큐(?![가-힣])/gi, use: "대기열" },
-  { pat: /(?<![가-힣])로그(?!인)|\blogs?\b/gi, use: "실행 기록" },
-  { pat: /진행판|판\s?정리/g, use: "(쓰지 않음)" },
-];
-
-// ---------- 코드 무늬 ----------
-const CODEISH: { name: string; pat: RegExp }[] = [
-  { name: "커밋 해시", pat: /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g },
-  { name: "색 코드", pat: /#(?:[0-9A-Fa-f]{6}|(?=\d*[A-Fa-f])[0-9A-Fa-f]{3})\b/g },
-  { name: "경로", pat: /(?<![\w\/~.])(?:~\/|\.{1,2}\/|\/)[\w.\-]+(?:\/[\w.\-]*)*|(?<![\w\/])[A-Za-z_][\w.\-]*\/[\w.\-]+\/[\w.\-\/]*/g },
-  // Next.js·Node.js 같은 제품 이름(대문자로 시작하는 낱말 + .js)은 파일 이름이 아니다.
-  { name: "파일 이름", pat: /\b(?![A-Z][a-z]+\.js\b)[\w\-]+\.(?:tsx?|jsx?|swift|json|html?|md|css|py|sh|ya?ml|plist)\b/g },
-  { name: "내부 번호", pat: /\b(?:[a-z]{1,4}_[A-Za-z0-9_\-]{8,}|msg_[A-Za-z0-9]+)\b/g },
-  { name: "포트", pat: /:\d{4,5}\b|\b\d{4,5}\s?(?:번\s?)?포트|포트\s?\d{4,5}/g },
-  // iPhone·iCloud 같은 i 제품 이름과 macOS·watchOS 같은 OS 이름은 코드 이름이 아니다.
-  { name: "코드 이름", pat: /\b(?!i[A-Z]|[a-z]+OS\b)(?:[a-z]+_[a-z_]+|[a-z]+[A-Z][A-Za-z]+)\b/g },
-];
-
 // ---------- 3판 검사 ----------
 // '완료·막힘', '완료 보고', '\'완료\''처럼 종류 이름으로 쓴 '완료'는 주장이 아니다.
 const DONE = /((?<!['‘])완료(?![·'’]|\s?보고)|끝났|끝냈|마쳤|다\s?됐|구현했|적용했|반영했|통과했)/;
@@ -66,8 +22,6 @@ const VERIFY = /(시험|확인|검사|쟀|측정|캡처|대비|열어|돌려|통
 // '아마'는 낱말일 때만 본다(아마존·아마추어는 아니다).
 const UNSURE = /(것 같|로 보입니다|듯합니다|듯하다|로 보인다|(?<![가-힣])아마(?:도)?(?=\s|$|[,.]))/;
 const UNSURE_LABEL = /(미정|가정|확인하지 못|확인 전|위험)/;
-const BOLD = /\*\*[^*\n]+\*\*/g;
-const HEADING = /^\s{0,3}#{1,6}\s|^\s*\*\*[^*\n]{1,14}\*\*\s*[:：]?\s*$/m;
 const OWNER_ASK = /(주세요|주십시오|할까요|될까요|까요)[.?!]*$/;
 
 // ---------- 글 꺼내기 ----------
@@ -116,43 +70,30 @@ function clip(value: string, max = 24): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : chars.join("");
 }
 
-function charLen(value: string): number {
-  return [...value.trim()].length;
-}
-
-// ---------- 검사 ----------
 type Bag = LintWarning[];
 
-function titleLength(bag: Bag, label: string, value: string | undefined, limit: number) {
-  if (value && charLen(value) > limit) bag.push({ code: "length-title", text: `${label} ${limit}자 넘음(${charLen(value)}자): "${clip(value)}"` });
+/** Clearly generic whole titles only; advisory, never a rewrite or a save gate. */
+function titlePurpose(bag: Bag, title: string, surface: "업무 이름" | "결재 제목" | "보고 제목" | "자료 제목") {
+  // Body normalization strips raw URLs; a URL can be the title's actual subject.
+  const plain = title.trim().replace(/^[#*_`]+\s*|\s*[*_`]+$/g, "").replace(/[.!?。？！:：]+$/u, "").trim();
+  if (!/^(?:검토|검토 중|검토 대기|확인|확인 대기|확인 요청|후속 진행|진행 상황|진행 중|완료|업무|작업|자료|보고|결과물|알림)$/.test(plain)) return;
+  const purpose = surface === "업무 이름" ? "다시 찾을 대상과 목표를 이름으로 적으세요. 변하는 진행 상태는 별도 상태에 둡니다."
+    : surface === "결재 제목" ? "어떤 업무의 무엇을 결정할 질문인지 적으세요. 상세에는 이유와 선택 후 결과를 씁니다."
+    : surface === "보고 제목" ? "어떤 업무에서 이번에 달라진 결과인지 적으세요. 본문에는 근거와 남은 조건을 씁니다."
+    : "대상과 결과물 종류를 적으세요. 요약에는 용도·핵심 내용·사용 제한을 씁니다.";
+  bag.push({ code: "title-purpose", text: `${surface}: ${purpose}` });
 }
 
-function sentenceLength(bag: Bag, plain: string) {
-  for (const s of sentences(plain)) {
-    const limit = s.kind === "req" ? LIMITS.req : LIMITS.desc;
-    if (s.len > limit) bag.push({ code: "length-sentence", text: `${s.kind === "req" ? "요청" : "설명"} 문장 ${limit}자 넘음(${s.len}자): "${clip(s.text)}"` });
+function contextReferences(bag: Bag, plain: string) {
+  if (/원\s*ID/i.test(plain) && !/(전달|메시지|보고|업무|세션|실행|자료|결재)(의)?\s*(ID|아이디|식별자|번호)/i.test(plain)) {
+    bag.push({ code: "context-reference", text: "‘원ID’가 무엇의 식별자인지 설명하세요. 업무명과 전달·메시지·세션 등 기록 종류, 필요한 값과 출처를 적고 모르면 무엇을 확인하지 못했는지 밝히세요." });
   }
-}
-
-function vocab(bag: Bag, plain: string) {
-  for (const v of VOCAB) {
-    v.pat.lastIndex = 0;
-    const hit = plain.match(v.pat);
-    if (hit?.length) bag.push({ code: "vocab", text: `용어: '${hit[0]}' 대신 '${v.use}'` });
+  if (/원\s*(지시|요청)/.test(plain) && !/(요청|지시)(?:한)?\s*(내용|원문)|[‘“「]/.test(plain)) {
+    bag.push({ code: "context-reference", text: "‘원 지시’가 가리키는 요청 내용과 출처·시점을 함께 적으세요. 앞선 대화를 다시 찾아야만 무엇을 요청했는지 알 수 있게 두지 마세요." });
   }
-}
-
-function codeish(bag: Bag, plain: string) {
-  for (const c of CODEISH) {
-    c.pat.lastIndex = 0;
-    const hit = plain.match(c.pat);
-    if (hit?.length) bag.push({ code: "codeish", text: `${josa(c.name, "은")} 본문에 쓰지 않습니다(필요하면 자료의 '세부'에): "${clip(hit[0], 30)}"` });
+  if (/^(?:현재[:：]?\s*)?(?:진행 중|처리 중|검토 중|확인 대기|검토 대기|완료)[.!]?$/u.test(plain.trim())) {
+    bag.push({ code: "context-subject", text: "업무명과 행동 대상을 적으세요. 무엇을 누가 확인하거나 처리하는지와 남은 조건이 필요합니다." });
   }
-}
-
-function boldCount(bag: Bag, md: string, max: number, where: string) {
-  const n = (md.match(BOLD) || []).length;
-  if (n > max) bag.push({ code: "bold", text: `굵은 글씨 ${n}개(${where} 한도 ${max})` });
 }
 
 function doneClaims(bag: Bag, md: string, title?: string) {
@@ -172,11 +113,6 @@ function doneClaims(bag: Bag, md: string, title?: string) {
   }
 }
 
-function reflectWord(bag: Bag, plain: string) {
-  const s = sentences(plain).find((x) => /반영/.test(x.text) && !/대표 화면/.test(x.text));
-  if (s) bag.push({ code: "reflect", text: `'반영'은 대표 화면에 보이게 한 것에만 씁니다: "${clip(s.text)}"` });
-}
-
 function hedging(bag: Bag, plain: string) {
   for (const line of plain.split("\n")) {
     if (UNSURE_LABEL.test(line)) continue;
@@ -188,7 +124,7 @@ function hedging(bag: Bag, plain: string) {
   }
 }
 
-const ORDER = ["owner-first", "length-title", "done", "bold", "codeish", "vocab", "reflect", "hedge", "heading", "length-sentence"];
+const ORDER = ["context-reference", "context-subject", "title-purpose", "owner-first", "done", "hedge"];
 
 function finish(bag: Bag): LintWarning[] {
   const seen = new Set<string>();
@@ -214,22 +150,15 @@ export function lintPost(input: { title: string; body?: string | null; ownerActi
     const parsed = parseOwnerLine(body);
     const rest = parsed ? parsed.rest : body;
     const plain = stripMd(rest);
-    titleLength(bag, "보고 제목", input.title, LIMITS.title);
-    if (owner && charLen(owner) > LIMITS.req) bag.push({ code: "length-title", text: `대표 차례 ${LIMITS.req}자 넘음(${charLen(owner)}자): "${clip(owner)}"` });
+    titlePurpose(bag, input.title, "보고 제목");
     if (!owner && !parsed) {
       const ask = sentences(plain).find((s) => OWNER_ASK.test(s.text));
       if (ask) bag.push({ code: "owner-first", text: `대표에게 부탁하는 말이 본문에 있습니다. owner_action 에 한 줄로 쓰거나, 정할 것이면 ask 로 올리세요: "${clip(ask.text)}"` });
     }
-    const lines = rest.split("\n").filter((l) => l.trim()).length;
-    if (lines <= 8 && HEADING.test(rest)) bag.push({ code: "heading", text: "짧은 보고에 제목·소제목·굵은 머리말을 붙이지 않습니다" });
-    boldCount(bag, rest, 1, "보고");
     doneClaims(bag, rest, input.title);
     const all = `${input.title}\n${plain}\n${owner}`;
-    reflectWord(bag, all);
     hedging(bag, all);
-    vocab(bag, all);
-    codeish(bag, all);
-    sentenceLength(bag, `${plain}\n${owner}`);
+    contextReferences(bag, all);
     return finish(bag);
   });
 }
@@ -242,40 +171,41 @@ export function lintAsk(input: { title: string; detail?: string | null; options?
     const rest = parsed ? parsed.rest : input.detail ?? "";
     const opts = (input.options ?? []).map((o) => `${o.label}\n${o.desc ?? ""}`).join("\n");
     const plain = stripMd(rest);
-    titleLength(bag, "카드 제목", input.title, LIMITS.askTitle);
-    if (reason && charLen(reason) > LIMITS.desc) bag.push({ code: "length-title", text: `권장 이유 ${LIMITS.desc}자 넘음(${charLen(reason)}자): "${clip(reason)}"` });
-    // 서버가 권장 줄을 그리면 본문에는 굵은 글씨를 쓰지 않는다. 손으로 쓴 권장 줄 하나만 허용한다.
-    boldCount(bag, rest, reason || parsed ? 0 : 1, "카드");
+    titlePurpose(bag, input.title, "결재 제목");
     doneClaims(bag, rest);
     const all = `${input.title}\n${plain}\n${opts}\n${reason}`;
-    reflectWord(bag, all);
     hedging(bag, all);
-    vocab(bag, all);
-    codeish(bag, all);
-    sentenceLength(bag, `${plain}\n${reason}`);
+    contextReferences(bag, all);
     return finish(bag);
   });
 }
 
 export function lintFile(input: { title: string; content?: string | null }): LintWarning[] {
   return safe(() => {
+    const bag: Bag = [], content = input.content ?? "";
+    titlePurpose(bag, input.title, "자료 제목");
+    doneClaims(bag, content);
+    const plain = stripMd(`${input.title}\n${content}`);
+    hedging(bag, plain);
+    contextReferences(bag, plain);
+    return finish(bag);
+  });
+}
+
+export function lintTask(title: string): LintWarning[] {
+  return safe(() => {
     const bag: Bag = [];
-    titleLength(bag, "자료 제목", input.title, LIMITS.title);
-    const content = input.content ?? "";
-    if (content.trim()) {
-      // 해시·경로·파일 목록은 '세부' 장에 둘 수 있다. 그 장부터는 코드 무늬를 세지 않는다.
-      const detailAt = content.search(/^\s{0,3}#{1,6}\s.*세부/m);
-      const main = detailAt < 0 ? content : content.slice(0, detailAt);
-      const plain = stripMd(content);
-      doneClaims(bag, content);
-      reflectWord(bag, plain);
-      hedging(bag, plain);
-      vocab(bag, `${input.title}\n${plain}`);
-      codeish(bag, stripMd(main));
-      sentenceLength(bag, plain);
-    } else {
-      vocab(bag, input.title);
-    }
+    titlePurpose(bag, title, "업무 이름");
+    return finish(bag);
+  });
+}
+
+/** 팀 상태도 대상이 빠진 한 단어 상태나 설명 없는 참조를 안내한다. */
+export function lintStatus(input: { now: string; next?: string | null }): LintWarning[] {
+  return safe(() => {
+    const bag: Bag = [];
+    contextReferences(bag, input.now);
+    if (input.next) contextReferences(bag, input.next);
     return finish(bag);
   });
 }

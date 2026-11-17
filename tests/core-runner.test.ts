@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CoreRunner, codexDraft, ensureCoreServer, type CoreRunnerDeps, type CoreCompactState } from "../server/runner/core.ts";
 import { CoreError, coreRpc, type CoreTerminal } from "../server/runner/core-client.ts";
 import { DEFAULT_RANKS, memberConfig } from "../shared/types.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
+import { isMissingSessionError } from "../server/runner/headless.ts";
 import { createHash } from "node:crypto";
 import type { DeliveryDispatch, RunnerRecoveryStore, TerminalLease } from "../server/service-contracts.ts";
 import type { DeliveryRepair } from "../server/runner/types.ts";
@@ -115,6 +116,88 @@ describe("core Claude missing resume preflight", () => {
       expect(store.requireDelivery(uncertain.id)).toMatchObject({ status: "held", holdReason: "delivery_unknown" });
       expect(f.calls.some(r => r.method === "terminal.send")).toBe(false);
     } finally { await orch.shutdown(); db.close(); }
+  });
+});
+describe("core Codex missing resume preflight", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const codex = () => member({ cli: "codex", sessionId });
+  test.each(["missing home", "missing roots", "unrelated sessions"])("%s refuses a confirmed missing resume before terminal.run", async layout => {
+    const f = await fixture(), runner = f.runner(10000), home = join(f.dir, "codex-home");
+    if (layout !== "missing home") mkdirSync(home);
+    if (layout === "unrelated sessions") {
+      for (const root of ["sessions", "archived_sessions"]) {
+        const directory = join(home, root, "2026/11/18"); mkdirSync(directory, { recursive: true });
+        for (const name of ["rollout-time-other.jsonl", `rollout-time-${sessionId}-other.jsonl`, `rollout-time-${sessionId}.jsonl.bak`]) {
+          writeFileSync(join(directory, name), "{}\n");
+        }
+      }
+    }
+    const error = await runner.start(codex(), { ...f.opts, resume: true }).catch(error => error);
+    expect(error).toMatchObject({ kind: "session_missing", uncertain: false, deliveryEffect: "not_written" });
+    expect(isMissingSessionError(error.message)).toBe(true);
+    expect(f.calls.some(request => request.method === "terminal.run")).toBe(false);
+  });
+  test.each(["sessions/2026/11/18", "archived_sessions", "archived_sessions/2026/11/18"])("%s retains the native ID even when the transcript has a previous cwd", async location => {
+    const f = await fixture(), runner = f.runner(10000), directory = join(f.dir, "codex-home", location);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, `rollout-2026-11-18T00-00-00-${sessionId}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd: "/previous/worktree" } }) + "\n");
+    const started = await runner.start(codex(), { ...f.opts, resume: true });
+    expect(started.sessionId).toBe(sessionId);
+    const launches = f.calls.filter(request => request.method === "terminal.run");
+    expect(launches).toHaveLength(1);
+    expect(launches[0].params.argv.slice(-2)).toEqual(["resume", sessionId]);
+    expect(launches[0].params.labels["iamceo.session"]).toBe(sessionId);
+  });
+  test("live owned terminal rejoins before its native transcript is written", async () => {
+    const f = await fixture(), first = f.runner(10000);
+    const started = await first.start(member({ cli: "codex" }), f.opts);
+    const terminal = f.terminals.get(started.paneId)!; terminal.labels["iamceo.session"] = sessionId;
+    await first.shutdown();
+    expect(await f.runner(10000).start({ ...codex(), paneId: started.paneId }, { ...f.opts, resume: true }))
+      .toMatchObject({ sessionId, paneId: started.paneId, rejoined: true });
+    expect(f.calls.filter(request => request.method === "terminal.run")).toHaveLength(1);
+  });
+  test.each(["home", "saved root", "archive root"])("a non-directory %s is inconclusive and preserves the resume", async location => {
+    const f = await fixture(), runner = f.runner(10000), home = join(f.dir, "codex-home");
+    if (location !== "home") mkdirSync(home);
+    writeFileSync(location === "home" ? home : join(home, location === "saved root" ? "sessions" : "archived_sessions"), "not a directory");
+    expect((await runner.start(codex(), { ...f.opts, resume: true })).sessionId).toBe(sessionId);
+    expect(f.calls.find(request => request.method === "terminal.run")!.params.argv.slice(-2)).toEqual(["resume", sessionId]);
+  });
+  test("an unreadable nested directory cannot authorize replacing the native session", async () => {
+    const f = await fixture(), runner = f.runner(10000), blocked = join(f.dir, "codex-home/sessions/2026/11/18");
+    mkdirSync(blocked, { recursive: true }); chmodSync(blocked, 0o000);
+    try {
+      expect((await runner.start(codex(), { ...f.opts, resume: true })).sessionId).toBe(sessionId);
+      expect(f.calls.find(request => request.method === "terminal.run")!.params.argv.slice(-2)).toEqual(["resume", sessionId]);
+    } finally { chmodSync(blocked, 0o700); }
+  });
+  test.each(["home", "sessions", "archived_sessions", "sessions/2026/11/18"])("a dangling %s symlink is inconclusive", async location => {
+    const f = await fixture(), runner = f.runner(10000), home = join(f.dir, "codex-home");
+    const link = location === "home" ? home : join(home, location);
+    mkdirSync(dirname(link), { recursive: true }); symlinkSync(join(f.dir, "unavailable-target"), link);
+    expect((await runner.start(codex(), { ...f.opts, resume: true })).sessionId).toBe(sessionId);
+    expect(f.calls.find(request => request.method === "terminal.run")!.params.argv.slice(-2)).toEqual(["resume", sessionId]);
+  });
+  test("a symlink loop cannot make an incomplete scan look empty", async () => {
+    const f = await fixture(), runner = f.runner(10000), root = join(f.dir, "codex-home/sessions");
+    mkdirSync(root, { recursive: true }); symlinkSync(root, join(root, "loop"));
+    expect((await runner.start(codex(), { ...f.opts, resume: true })).sessionId).toBe(sessionId);
+    expect(f.calls.find(request => request.method === "terminal.run")!.params.argv.slice(-2)).toEqual(["resume", sessionId]);
+  });
+  test("an over-depth tree leaves session absence unconfirmed", async () => {
+    const f = await fixture(), runner = f.runner(10000);
+    mkdirSync(join(f.dir, "codex-home/sessions", ...Array(16).fill("nested")), { recursive: true });
+    expect((await runner.start(codex(), { ...f.opts, resume: true })).sessionId).toBe(sessionId);
+    expect(f.calls.find(request => request.method === "terminal.run")!.params.argv.slice(-2)).toEqual(["resume", sessionId]);
+  });
+  test("fresh launches and resume without a known native ID keep their distinct behavior", async () => {
+    const f = await fixture(), runner = f.runner(10000);
+    await expect(runner.start(member({ cli: "codex" }), { ...f.opts, resume: true })).rejects.toMatchObject({ kind: "session_unknown" });
+    expect(f.calls.some(request => request.method === "terminal.run")).toBe(false);
+    const started = await runner.start(codex(), { ...f.opts, resume: false });
+    expect(started.sessionId).toBeNull();
+    expect(f.calls.find(request => request.method === "terminal.run")!.params.argv).not.toContain("resume");
   });
 });
 describe("core Claude folder trust approval", () => {

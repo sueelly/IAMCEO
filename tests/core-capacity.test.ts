@@ -30,7 +30,7 @@ test("core transport rechecks admission after socket connection before writing a
 
 // This peer never executes terminal.run argv or spawns a provider. Paths and provider homes
 // must still belong to its explicit runtime; no live discovery or sockets are used.
-async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>) {
+async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>, startupError?: string) {
   const terminals = new Map<string, CoreTerminal>(), calls: Array<{ method: string; params: Record<string, any>; replied: boolean }> = [];
   const sockets = new Set<Socket>();
   const replies: Array<() => void> = [];
@@ -50,8 +50,13 @@ async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>) {
         runtime.assertFakeExecutable(p.argv[0]); runtime.assertOwnedPath(p.cwd);
         expect(p.env.CLAUDE_CONFIG_DIR).toBe(runtime.paths.claudeHome); expect(p.env.CODEX_HOME).toBe(runtime.paths.codexHome);
         const terminal: CoreTerminal = { address: `t${terminals.size + 1}`, argv: p.argv, cwd: p.cwd, labels: p.labels, state: "live", turn: 0, status: { state: "idle", app: "claude-code" }, reported: true };
+        if (startupError) terminal.status = { state: "error", app: "claude-code", msg: startupError };
         terminals.set(terminal.address, terminal); result = terminal;
-      } else if (request.method === "terminal.get") result = terminals.get(p.terminal);
+      } else if (request.method === "terminal.get") {
+        const terminal = terminals.get(p.terminal);
+        if (startupError && terminal) terminal.status = { state: "idle", app: "claude-code" };
+        result = terminal;
+      }
       else if (request.method === "terminal.read") {
         result = { text: composer, complete: true, how: "screen" };
         if (holdRead) { holdRead = false; replies.push(() => reply(result)); continue; }
@@ -70,7 +75,7 @@ async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>) {
     async stop() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
-for (const scope of ["project", "global", "failure", "criteria"] as const) {
+for (const scope of ["project", "global", "failure", "criteria", "execution_issue", "legacy_limit"] as const) {
   test(`${scope} policy changed during real core preflight prevents physical input and preserves its queue`, async () => {
     const runtime = createIsolatedRuntime();
     const core = await capacityPeer(runtime);
@@ -96,6 +101,12 @@ for (const scope of ["project", "global", "failure", "criteria"] as const) {
       expect(core.count("terminal.send")).toBe(1);
       if (scope === "project") await orch.patchProject(project.id, { maxConcurrentTurns: 1 });
       else if (scope === "global") await orch.updateSettings({ maxConcurrentTurns: 1 });
+      else if (scope === "execution_issue" || scope === "legacy_limit") {
+        store.patchMember(second.id, { lastError: "weekly usage limit reached", ...(scope === "execution_issue" ? { executionIssue: {
+          kind: "usage_limit" as const, detail: "weekly usage limit reached", at: new Date().toISOString(),
+          sessionGeneration: store.memberRevisions(second.id).sessionGeneration, terminalId: second.paneId, exitCode: null,
+        } } : {}) });
+      }
       else if (scope === "criteria") {
         const pending = store.listTaskDeliveries(task!.id).find(delivery => delivery.memberId === second.id)!;
         expect(store.unconfirmedDelegatedTask(pending.id)).toBeNull();
@@ -135,3 +146,25 @@ for (const scope of ["project", "global", "failure", "criteria"] as const) {
     } finally { core.releaseReplies(); await orch.shutdown(); await core.stop(); db.close(); await runtime.stop(); }
   }, 15_000);
 }
+
+
+test("quota discovered while opening an offline worker fences its input before an attempt is prepared", async () => {
+  const runtime = createIsolatedRuntime(), core = await capacityPeer(runtime, "weekly usage limit reached");
+  const config = loadConfig({ IAMCEO_HOME: runtime.paths.iamceoHome, IAMCEO_PORT: "0", IAMCEO_CORE_SOCKET: runtime.socketPath,
+    IAMCEO_CORE_BIN: runtime.bins.coreBin, IAMCEO_CLAUDE_BIN: runtime.bins.claudeBin, IAMCEO_CODEX_BIN: runtime.bins.codexBin });
+  const db = openDb(config.dbPath), store = new Store(db, new Bus());
+  const runner = new CoreRunner(runtime.runnerOptions(runtime.providerHomes), { recoveryStore: store, pollMs: 60_000 });
+  const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), providerHomes: runtime.providerHomes,
+    timings: { tickMs: 60_000, healthMs: 60_000 } });
+  try {
+    const project = store.createProject({ name: "Startup limit", cwd: runtime.paths.work });
+    const member = store.createMember({ projectId: project.id, kind: "worker", handle: "worker", name: "Worker", cwd: project.cwd, origin: "runner", cli: "claude" });
+    store.patchMember(member.id, { status: "offline", backend: "core" });
+    const queued = store.enqueue({ projectId: project.id, memberId: member.id, kind: "instruction", text: "Preserve this queued input", wake: true });
+    await orch.pump(member.id);
+    expect(core.count("terminal.run")).toBe(1);
+    expect(core.count("terminal.send")).toBe(0);
+    expect(store.requireMember(member.id).executionIssue?.kind).toBe("usage_limit");
+    expect(store.requireDelivery(queued.id)).toMatchObject({ status: "queued", attempts: 0 });
+  } finally { await orch.shutdown(); await core.stop(); db.close(); await runtime.stop(); }
+});

@@ -1,3 +1,4 @@
+import { deliveryWaitText, memberIssueLabel } from "../shared/execution-issues.ts";
 import type { Member, Task, WorkItem } from "../shared/types.ts";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type ProjectWorkflow, type WorkflowInputBlock, type WorkflowNode } from "../shared/workflow.ts";
 import { STAGE_LABEL } from "../shared/task-stage.ts";
@@ -173,15 +174,19 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     if (p?.stage === "owner") return { ...n, state: "blocked", label: "대표 확인", reason: p.next, action: { label: "결재함 열기", tab: "inbox", sub: null } };
     if (inRun && m?.status === "blocked") {
       const realPrompt = verified && m.blockedReason && m.blockedReason !== "status_unknown";
-      return { ...n, state: realPrompt ? "blocked" : "unknown", label: realPrompt ? "입력 확인" : "실행 확인 필요",
-        reason: realPrompt ? "직원의 승인·선택 창에서 응답이 필요합니다" : "실행 상태를 확인하지 못했습니다. 직원의 연결 상태를 확인해 주세요", action: memberAction };
+      const prompt = realPrompt ? deliveryWaitText({ kind: m.blockedReason === "permission" || m.blockedReason === "selection" || m.blockedReason === "setup" ? m.blockedReason : "input", since: "" }) : null;
+      return { ...n, state: realPrompt ? "blocked" : "unknown", label: prompt?.label ?? "실행 확인 필요",
+        reason: prompt?.reason ?? "실행 상태를 확인하지 못했습니다. 직원의 연결 상태를 확인해 주세요", action: memberAction };
     }
     if (inRun && (!verified || e?.phase === "unknown")) return { ...n, state: "unknown", label: "실행 확인 필요", reason: "마지막 관측으로 현재 실행을 확정할 수 없습니다", action: memberAction };
     if (a?.protected || a?.held) {
       const block = a.inputBlocks?.find(b => !["stopped", "resolved"].includes(b.phase)) ?? a.inputBlocks?.[0];
-      const explanation = inputExplanation(block);
+      const ordinaryHold = !a.protected && block?.phase === "none";
+      const issue = ordinaryHold && m ? memberIssueLabel(m) : null;
+      const explanation = issue ? { label: issue, reason: m!.executionIssue?.detail ?? m!.lastError }
+        : ordinaryHold && m?.deliveryWait ? deliveryWaitText(m.deliveryWait) : inputExplanation(block);
       return { ...n, historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
-        ...(block ? { inputBlock: block } : {}), action: explanation.thread ? n.action : memberAction };
+        ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
     if (m?.kind === "worker" && a?.eligible && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
@@ -191,6 +196,9 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     if (w?.sec === "hold") return { ...n, state: "blocked", label: "보류", reason: w.detail || "진행판에서 보류한 업무입니다. 총괄이 재개 조건을 확인할 차례입니다" };
     if (!m || !a) return { ...n, label: p?.stage === "working" ? "담당 확인" : "배정 전", reason: p?.next ?? (w?.who ? `진행판 담당은 ‘${w.who}’입니다. 현재 직원 한 명과 일치하지 않아 담당을 확인해야 합니다` : "담당 직원이 아직 배정되지 않았습니다") };
     if (a.source === "board" && (!p || p.stage === "new")) return { ...n, label: "착수 대기", reason: "진행판에 담당이 지정되어 있습니다. 실행 지시의 전달은 아직 확인되지 않았습니다" };
+    const issue = memberIssueLabel(m);
+    if (issue) return { ...n, state: "blocked", label: issue, reason: m.executionIssue?.detail ?? m.lastError, action: memberAction };
+    if (a.queued && m.deliveryWait) return { ...n, state: "queued", ...deliveryWaitText(m.deliveryWait) };
     if (m.status === "asleep" || m.status === "offline" || m.status === "error") return { ...n, state: "blocked", label: m.status === "asleep" ? "직원 잠듦" : "연결 확인", reason: "직원 화면에서 연결 상태와 실행 가능 여부를 확인해 주세요", action: memberAction };
     if (a.queued) return { ...n, state: "queued", label: a.retryAt ? "재시도 대기" : "전달 대기", reason: a.retryAt ? `다음 전달 시각: ${a.retryAt}` : null };
     return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };

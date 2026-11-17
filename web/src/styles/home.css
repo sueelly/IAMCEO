@@ -16,9 +16,8 @@
 .hm-head__more { display:inline-flex; align-items:center; justify-content:flex-end; min-width:44px; min-height:44px; margin:-6px -4px -6px auto; padding:0 4px; font-size:13px; font-weight:500; color:var(--link); white-space:nowrap; }
 .hm-head__more:hover { text-decoration:underline; text-underline-offset:3px; }
 
-/* 지금 상황: 길면 접어 둔다 */
-.hm-now__body { max-height:calc(14.5px * 1.6 * 5); overflow:hidden; }
-.hm-now__body[data-open] { max-height:none; }
+/* 지금 상황은 현재 판단에 필요한 조건까지 읽는 요약이다. 높이로 잘라 숨기지 않는다. */
+.hm-now__body { min-width:0; overflow-wrap:anywhere; }
 .hm-now__body .md { font-size:14.5px; line-height:1.6; }
 
 .hm-more-btn { align-self:flex-start; display:inline-flex; align-items:center; gap:7px; min-height:44px; padding:0 8px 0 0; font-size:13.5px; font-weight:600; color:var(--ink-2); }

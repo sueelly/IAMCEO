@@ -4,6 +4,7 @@ import type { Store } from "./store.ts";
 import type { ProgressFacts } from "./task-progress.ts";
 import { relatedWork } from "./workflow.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
+import { describeTaskContext } from "./task-context.ts";
 import { bindingContract } from "./harness.ts";
 
 interface Followthrough {
@@ -275,7 +276,16 @@ export class TaskContinuationCoordinator {
           this.store.transaction(() => {
             const decision = this.store.createDecision({ projectId: project.id, memberId: lead.id, who: "업무 추적",
               taskId: task.id, title: `후속 조정 확인: ${task.title}`,
-              detail: `총괄의 후속 실행 ${state.round}회가 끝났지만 완료 근거가 바뀌지 않았습니다.\n현재: ${STAGE_LABEL[task.progress!.stage]}\n남은 조건: ${task.progress?.next ?? "수행·검증·최종 완료 근거"}\n원 지시와 최근 보고를 확인하고 담당자·접근 또는 외부 대기 조건을 정해 주세요. 완료로 처리하지 않았습니다.` });
+              detail: [
+                `‘${project.name}’의 ‘${task.title}’ 업무에서 다음 진행 방법을 정해야 합니다.`,
+                `결재를 만들기 직전 이 업무의 상태: ${STAGE_LABEL[task.progress!.stage]}. ${task.progress?.next ?? "아직 충족하지 못한 완료 조건을 확인해야 합니다."}`,
+                "대표님은 아래 요청과 보고를 바탕으로 이 업무를 현재 직원에게 계속 맡길지, 조사 접근을 바꿀지, 자료·권한을 보완하거나 외부 결과를 기다릴지 정해 주세요. 담당 총괄이 답변 범위에서 배정을 조정합니다.",
+                "", describeTaskContext(this.store, task, { sourceDeliveryId: state.source_delivery_id, facts: f }),
+                "", "자동 조정을 멈춘 이유:",
+                `앱이 이 업무의 총괄에게 남은 조건 확인과 다음 행동 배정을 요청한 조정 요청 ${state.round}회가 종료됐습니다. 이 수는 실제 구현이나 검사 횟수가 아닙니다.`,
+                `최근 조정 ${noProgress}회 동안 기록된 요청 범위·완료 기준·검사 결과·단계 근거에 변화가 없습니다. 코드나 외부 환경이 그대로라고 확인한 것은 아닙니다.`,
+                "이 업무는 완료 처리하지 않았으며, 대표 답을 기다리는 동안 같은 자동 조정을 반복하지 않습니다.",
+              ].join("\n") });
             this.store.db.query("UPDATE task_continuations SET attention_decision_id=?,no_progress_count=?,updated_at=? WHERE task_id=?")
               .run(decision.id, noProgress, new Date(now).toISOString(), task.id);
           });
@@ -286,7 +296,6 @@ export class TaskContinuationCoordinator {
           // a restarted coordinator sees the same durable delivery identity.
           const current = this.row(task.id)!;
           if (current.delivery_id !== state.delivery_id || current.round !== state.round) return null;
-          const source = this.store.getDelivery(state.source_delivery_id ?? "");
           const contract = this.store.getEffectiveContract(task.id);
           const criteriaStep = bindingContract(contract)
             ? `완료 기준은 현재 확정 계약 r${contract!.rev}입니다. 남은 기준을 확인하고 담당 직원에게 보완·검토를 맡기세요.`
@@ -295,7 +304,7 @@ export class TaskContinuationCoordinator {
             (["answered", "delivered"].includes(d.status) || d.closeKind === "decided" && d.closeQuote))
             .sort((a, b) => (a.answeredAt ?? a.closedAt ?? a.updatedAt).localeCompare(b.answeredAt ?? b.closedAt ?? b.updatedAt)).slice(-3);
           const ownerAnswers = decisions.map(d => `최근 대표 결재 답 #${d.id}: ${[d.options.find(o => o.k === d.choice)?.label, d.note, d.closeQuote].filter(Boolean).join(" / ")}`).join("\n");
-          const reports = (f?.reports ?? []).slice(-4).map(r => `- #${r.id} ${r.who}: ${r.kind}${r.failed.length ? ` / 실패 ${r.failed.join(", ")}` : ""}${r.notRun.length ? ` / 미확인 ${r.notRun.join(", ")}` : ""}`);
+          const context = describeTaskContext(this.store, task, { sourceDeliveryId: state.source_delivery_id, facts: f });
           const purpose = criteriaSource
             ? `대기 중인 위임의 완료 기준 확정: #${task.id} '${task.title}'\n위임 지시 #${criteriaSource.id}는 확정 기준이 없어 아직 전송하지 않고 원문 그대로 보관 중입니다.`
             : `업무 계속 진행: #${task.id} '${task.title}'\n한 번의 보고·턴은 끝났지만 완료 조건이 남아 있습니다.`;
@@ -303,7 +312,7 @@ export class TaskContinuationCoordinator {
             ? `현재 승인 범위의 완료 기준만 먼저 확정하세요. 확정 후 보관된 지시 #${criteriaSource.id}가 일반 입장 검사와 수신 확인을 거쳐 한 번 전달됩니다. 직원은 현재 업무 계약을 확인해야 합니다. 같은 원 지시를 team_assign으로 다시 만들거나 구현을 직접 시작하지 마세요.`
             : `기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인된 범위는 기존 적합한 직원에게 team_assign으로 맡기고, 검토 실패는 원 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.`;
           const d = this.store.enqueue({ projectId: project.id, memberId: lead.id, kind: "system", wake: true, urgent: false, taskId: task.id,
-            text: `[시스템] ${purpose}\n최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n${criteriaStep}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `기록된 완료 조건(최신 지시와 대조): ${contract.acceptance.join(" / ")}\n` : ""}${reports.join("\n")}\n${source?.kind === "user_message" ? "최신 대표 지시" : "최근 승인 범위의 배정 지시"} #${source?.id ?? state.source_delivery_id}:\n${source?.text ?? "업무 대화에서 최신 지시를 확인하세요"}\n${ownerAnswers}\n최신 대표 지시와 결재 답의 제한을 우선합니다. 총괄은 제작·구현·제품 설계를 직접 하지 않고 기준 정의·배정·검토 요청·상태 종합을 맡습니다.\n${nextAction}\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 같은 실패 세 번의 결재가 있으면 대표 답 전에는 reopen하거나 재배정하지 마세요. 대표가 정한 범위 안에서만 다시 열고 직원에게 맡기세요.` });
+            text: `[시스템] ${purpose}\n최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n${criteriaStep}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `기록된 완료 조건(최신 지시와 대조): ${contract.acceptance.join(" / ")}\n` : ""}${context}\n${ownerAnswers}\n최신 대표 지시와 결재 답의 제한을 우선합니다. 총괄은 제작·구현·제품 설계를 직접 하지 않고 기준 정의·배정·검토 요청·상태 종합을 맡습니다.\n${nextAction}\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 같은 실패 세 번의 결재가 있으면 대표 답 전에는 reopen하거나 재배정하지 마세요. 대표가 정한 범위 안에서만 다시 열고 직원에게 맡기세요.` });
           const stamp = new Date(now).toISOString();
           this.store.db.query("INSERT INTO task_continuation_deliveries(delivery_id,task_id,round,created_at) VALUES(?,?,?,?)").run(d.id, task.id, state.round + 1, stamp);
           this.store.db.query(`UPDATE task_continuations SET evidence_key=?,delivery_id=?,round=round+1,no_progress_count=?,next_attempt_at=?,attention_decision_id=NULL,updated_at=? WHERE task_id=?`)
