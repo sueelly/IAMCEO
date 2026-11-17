@@ -42,13 +42,27 @@ const warned = new Set<string>();
 /**
  * 종류별 역할 경계(대표 2026-11-17 "총괄은 앞으로 구현은 맡지말고 시키고 합치고 판단하고 설계하는 일 까지만 맡도록 해"):
  * 총괄은 설계·맡김·판단·검증 뒤 메인 합치기, 직원은 작업 브랜치 납품까지, 본사는 프로젝트의 구현·합치기를 떠안지 않는다.
- * 고쳐 쓴 템플릿도 기본 글 전체를 대체하지만 이 경계는 빠지지 않는다: `{{ROLE_BOUNDARY}}` 자리가 있으면 그 자리, 없으면 끝에 붙는다.
+ * 고쳐 쓴 템플릿도 기본 글 전체를 대체하지만 이 경계는 빠지지 않고 한 번만 든다: `{{ROLE_BOUNDARY}}` 자리가 있으면 첫 자리, 없으면 끝에 붙는다.
  */
 export const ROLE_BOUNDARY: Record<MemberKind, string> = { conductor: boundaryConductor, root: boundaryRoot, worker: boundaryWorker };
 
+const BOUNDARY_SLOT = "{{ROLE_BOUNDARY}}";
+/** 남는 경계 자리표시를 지운다. 줄이 통째로 자리표시면 그 줄을 지워 빈 줄을 남기지 않는다. */
+const dropSlots = (text: string): string => text.replace(/^[ \t]*\{\{ROLE_BOUNDARY\}\}[ \t]*(?:\r?\n|$)/gm, "").replaceAll(BOUNDARY_SLOT, "");
+
+/**
+ * 템플릿(값을 넣기 전)에 지금 역할 경계를 한 번만 둔다. 값 안의 `{{ROLE_BOUNDARY}}`·`{{NAME}}` 은 여기 오지 않으므로 건드리지 않는다.
+ * - 같은 경계 글이 이미 들어 있으면(완성된 역할 글을 고친 템플릿으로 다시 쓴 경우) 첫 사본만 남긴다. 지우는 것은 글자 그대로 같은 뒤 사본과 남은 자리표시뿐이다.
+ * - 자리표시가 있으면 첫 자리에 넣고 나머지 자리는 지운다.
+ * - 둘 다 없으면 끝에 붙인다.
+ */
 function withBoundary(template: string, kind: MemberKind): string {
   const text = ROLE_BOUNDARY[kind].trim();
-  return template.includes("{{ROLE_BOUNDARY}}") ? template.replaceAll("{{ROLE_BOUNDARY}}", () => text) : `${template.trimEnd()}\n\n${text}\n`;
+  const at = template.indexOf(text);
+  if (at >= 0) return `${dropSlots(template.slice(0, at))}${text}${dropSlots(template.slice(at + text.length).split(text).join(""))}`;
+  const slot = template.indexOf(BOUNDARY_SLOT);
+  if (slot >= 0) return `${template.slice(0, slot)}${text}${dropSlots(template.slice(slot + BOUNDARY_SLOT.length))}`;
+  return `${template.trimEnd()}\n\n${text}\n`;
 }
 
 /** 기본 템플릿을 고쳐 쓸 수 있게 꺼낸다. `<kind>.example.md` 는 읽히지 않고, `<kind>.md` 로 이름을 바꾸면 쓰인다. */
