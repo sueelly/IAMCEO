@@ -4,6 +4,7 @@ import { chmodSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { MIGRATIONS, openDb } from "../server/db.ts";
+import { reconcileNextCompletionFamily } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
 import { DEFAULT_PUSH_PREFERENCES, PUSH_REPORT_GROUP_WINDOW_MS } from "../shared/push.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
@@ -129,6 +130,28 @@ test("explicit execution contract migration preserves old revisions and leaves u
   expect(current.getTaskContract(task.id)).toMatchObject({ rev: 1, goal: "원문 목표", acceptance: ["원래 합격 기준"], scope: "원래 범위", forbidden: ["금지 원문"], authorKind: "worker", sourceMessageId: "msg_original", at,
     inputs: null, outputs: null, constraints: null, exclusions: null, confirmedAt: null });
   expect(current.listTaskContracts(task.id)).toHaveLength(1);
+});
+
+test("existing completion evidence is queued once and unprocessed changes survive reopening", () => {
+  const { path } = fixture("completion-changes.db");
+  const old = historicalDb(path, 48);
+  const store = new Store(old, new Bus());
+  const target = store.ensureSourceTask({ projectId: "p", sourceRef: "existing-report", title: "기존 완료 보고", origin: "owner" }).task;
+  old.query("INSERT INTO report_harness(message_id, task_id, member_id, contract_task_id, contract_rev, at) VALUES(?,?,?,?,1,?)")
+    .run("report", target.id, "m", target.id, at);
+  old.close();
+  const migrated = openDb(path);
+  expect(migrated.query("SELECT task_id FROM completion_changes").all()).toEqual([{ task_id: target.id }]);
+  migrated.close();
+  const reopened = openDb(path), next = new Store(reopened, new Bus());
+  try {
+    expect(reconcileNextCompletionFamily(next)).toBe(true);
+    expect(reconcileNextCompletionFamily(next)).toBe(false);
+    expect(reopened.query("SELECT COUNT(*) AS n FROM task_completion_reviews").get()).toEqual({ n: 0 });
+    expect(reopened.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { reopened.close(); }
+  const final = track(openDb(path));
+  expect(final.query("SELECT task_id FROM completion_changes").all()).toEqual([]);
 });
 
 test("deployed v38 continuation state survives the additive workflow receipt migration", () => {

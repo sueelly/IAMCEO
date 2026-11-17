@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
@@ -491,4 +491,18 @@ test("a stranded repair with a complete contract still goes to the conductor ins
   expect(request.text).toContain(repair.id);
   expect(f.next.canDispatch(request)).toBe(true);
   expect(f.store.requireDelivery(repair.id).attempts).toBe(0);
+});
+
+test("timed continuation checks skip ineligible projects and read each eligible project's facts once", () => {
+  const f = fixture();
+  const task = f.task("실행 대기", false);
+  contractFor(f, task);
+  const facts = spyOn(f.store, "taskProgressFacts");
+  try {
+    expect(f.next.check(f.start, () => false)).toEqual([]);
+    expect(facts.mock.calls).toHaveLength(0);
+    const [delivery] = f.next.check(f.start, m => m.id === f.worker.id);
+    expect(delivery?.taskId).toBe(task.id);
+    expect(facts.mock.calls.filter(([id, subset]) => id === f.project.id && !subset)).toHaveLength(1);
+  } finally { facts.mockRestore(); }
 });

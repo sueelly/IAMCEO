@@ -23,7 +23,7 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { currentReviewedCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
-import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, synchronizeTaskCompletion, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, reconcileNextCompletionFamily, queueExpiredCompletionAssignments, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -749,6 +749,11 @@ export class Orchestrator implements OrchestratorApi {
   private waiting = new Set<string>();
   private askWaiters = new Map<string, Set<() => void>>();
   private inboxWaiters = new Map<string, Set<() => void>>();
+  private completionClock: number | null = null;
+  private completionTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly unsubscribeCompletion: () => void;
+  private scheduledTaskCheck: Promise<void> | null = null;
+  private tickInProgress: Promise<void> | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private readonly notifier: ((title: string, body: string) => void) | null;
@@ -789,6 +794,8 @@ export class Orchestrator implements OrchestratorApi {
       this.store.setRuntimeBackend(selected && this.runners.has(selected) ? selected : this.runners.has("headless") ? "headless" : "herdr");
     }
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
+    this.unsubscribeCompletion = this.store.subscribeTransactions(() => this.scheduleCompletionChanges());
+    this.scheduleCompletionChanges();
     this.taskContinuations = new TaskContinuationCoordinator(this.store, { intervalMs: this.timings.continuationMs, sameLimit: this.timings.loopSameLimit });
     this.herdr = deps.herdr ?? null;
     this.agentTools = deps.agentTools ?? null;
@@ -1733,7 +1740,7 @@ export class Orchestrator implements OrchestratorApi {
     const ids = new Set(this.store.listUndelivered().map((d) => d.memberId));
     await Promise.all([checking, ...[...ids].map(id => this.pump(id))]);
     await this.retryOrphans();
-    this.checkTaskContinuations();
+    await this.checkScheduledTasks();
   }
 
   /** Every backend uses persisted item evidence; legacy missing envelopes stay fenced. */
@@ -1812,7 +1819,9 @@ export class Orchestrator implements OrchestratorApi {
 
   private startTick(): void {
     if (this.tick) return;
-    this.tick = setInterval(() => this.onTick(), this.timings.tickMs);
+    this.tick = setInterval(() => {
+      void this.onTick().catch(e => console.warn("주기 점검 실패:", (e as Error).message));
+    }, this.timings.tickMs);
     this.tick.unref?.();
     this.healthTimer = setInterval(() => void this.refreshConnection().catch((e) => console.warn("실행기 상태 확인 실패:", (e as Error).message)), this.timings.healthMs);
     this.healthTimer.unref?.();
@@ -1867,11 +1876,18 @@ export class Orchestrator implements OrchestratorApi {
     void this.retryOrphans().catch((e) => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
   }
 
-  private onTick(): void {
+  private onTick(): Promise<void> {
+    this.tickInProgress ??= this.runTick().finally(() => { this.tickInProgress = null; });
+    return this.tickInProgress;
+  }
+
+  private async runTick(): Promise<void> {
+    if (this.closed) return;
+    const membersToPump = new Set<string>();
     for (const member of this.store.listAllMembers()) {
       if (this.backendOf(member) !== "core") continue;
       this.reconcileCoreCompact(member);
-      if (this.store.getContextState(member.id)?.compaction?.phase === "queued") void this.pump(member.id);
+      if (this.store.getContextState(member.id)?.compaction?.phase === "queued") membersToPump.add(member.id);
     }
     void this.settleInFlight().catch(e => console.warn("전달 확인 실패:", e));
     for (const id of [...this.unattached]) {
@@ -1882,24 +1898,23 @@ export class Orchestrator implements OrchestratorApi {
     this.checkManualMembers();
     // 입력칸을 못 찾았거나(선택 창 등) 소켓이 끊겨 못 맞춘 새 설정을 다시 시도한다.
     for (const m of this.store.listAllMembers()) {
-      if ((m.status === "idle" || m.status === "waiting") && this.configPending(m)) void this.pump(m.id);
+      if ((m.status === "idle" || m.status === "waiting") && this.configPending(m)) membersToPump.add(m.id);
     }
-    void this.retryOrphans().catch((e) => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
     void this.broadcastHerdr();
     // Quiet notices remain pending until a real wake. Check before pumping them:
     // otherwise their short-lived pump would suppress this same tick every time.
-    try {
-      this.checkTaskContinuations();
-    } catch (e) {
-      console.warn("미완료 업무 재개 확인 실패:", (e as Error).message);
+    await this.checkScheduledTasks().catch(e => console.warn("미완료 업무 재개 확인 실패:", (e as Error).message));
+    if (this.closed) return;
+    for (const d of this.store.listUndelivered()) {
+      if (d.status !== "held" || d.holdReason !== "asleep" && d.holdReason !== "runner_disabled") membersToPump.add(d.memberId);
     }
-    const ids = new Set(
-      this.store
-        .listUndelivered()
-        .filter((d) => !(d.status === "held" && (d.holdReason === "asleep" || d.holdReason === "runner_disabled")))
-        .map((d) => d.memberId),
-    );
-    for (const id of ids) void this.pump(id);
+    await this.retryOrphans(membersToPump).catch(e => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
+    for (const id of membersToPump) {
+      if (this.closed) return;
+      void this.pump(id);
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+    if (this.closed) return;
     try {
       this.checkBoardTidy();
     } catch (e) {
@@ -2003,6 +2018,9 @@ export class Orchestrator implements OrchestratorApi {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.unsubscribeCompletion();
+    if (this.completionTimer) clearTimeout(this.completionTimer);
+    await Promise.allSettled([this.tickInProgress, this.scheduledTaskCheck]);
     this.devMemory?.stop();
     await Promise.all([this.memoryArchive?.stop(), this.memoryFeedback?.stop(), this.devMemory?.drain()]);
     if (this.memoryReconcileTimer) clearInterval(this.memoryReconcileTimer);
@@ -2508,14 +2526,18 @@ export class Orchestrator implements OrchestratorApi {
     });
   }
 
-  private async retryOrphans(): Promise<void> {
+  private async retryOrphans(membersToPump?: Set<string>): Promise<void> {
     if (this.closed) return;
     for (const project of this.store.listProjects()) {
+      if (this.closed) return;
       if (!project.runnerEnabled) continue;
       this.repairSourceIntents(project.id);
       if (this.store.getConductor(project.id)) {
         await this.adoptOrphans(project.id);
-        for (const id of new Set(this.store.listUndelivered(project.id).map(d => d.memberId))) void this.pump(id);
+        for (const id of new Set(this.store.listUndelivered(project.id).map(d => d.memberId))) {
+          if (membersToPump) membersToPump.add(id);
+          else void this.pump(id);
+        }
         continue;
       }
       // 편입은 세션 하나를 넘겨준 것이다. 대표가 시키지 않은 총괄을 띄워 옛 지시를 실행하지 않는다.
@@ -4849,18 +4871,62 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
+  private completionChecksAllowed(): boolean {
+    return !this.closed && !this.recovering && !this.switching && !this.settingsWriting;
+  }
+
+  private scheduleCompletionChanges(): void {
+    if (this.completionTimer || this.scheduledTaskCheck || !this.completionChecksAllowed()) return;
+    this.completionTimer = setTimeout(() => {
+      this.completionTimer = null;
+      if (!this.completionChecksAllowed() || this.scheduledTaskCheck) return;
+      try {
+        if (reconcileNextCompletionFamily(this.store)) this.scheduleCompletionChanges();
+      } catch (error) { console.warn("변경된 완료 근거 확인 실패:", (error as Error).message); }
+    }, 0);
+    this.completionTimer.unref?.();
+  }
+
+  private updateCompletionClock(): void {
+    const now = Date.now();
+    if (now === this.completionClock) return;
+    queueExpiredCompletionAssignments(this.store, this.completionClock, now);
+    this.completionClock = now;
+  }
+
+  private checkScheduledTasks(): Promise<void> {
+    this.scheduledTaskCheck ??= (async () => {
+      if (!this.completionChecksAllowed()) return;
+      this.updateCompletionClock();
+      // Give HTTP a turn between independent families during migration or a bulk edit.
+      while (this.completionChecksAllowed() && reconcileNextCompletionFamily(this.store)) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+      if (this.completionChecksAllowed()) this.checkDueTaskContinuations(Date.now());
+    })().finally(() => {
+      this.scheduledTaskCheck = null;
+      this.scheduleCompletionChanges();
+    });
+    return this.scheduledTaskCheck;
+  }
+
   /** 미완료 업무는 담당 직원에게, 예외와 최종 검수는 총괄 대기열에 잇는다. 실행 중·승인·수동 조작·수신 불확실 상태는 깨우지 않는다. */
   checkTaskContinuations(now = Date.now()): Delivery[] {
-    if (this.closed || this.recovering || this.switching || this.settingsWriting) return [];
-    for (const project of this.store.listProjects()) {
-      if (project.archived || !project.runnerEnabled) continue;
-      for (const row of this.store.db.query<{ id: string }, [string]>("SELECT DISTINCT t.id FROM tasks t JOIN report_harness h ON h.contract_task_id=t.id WHERE t.project_id=? AND t.merged_into IS NULL").all(project.id)) synchronizeTaskCompletion(this.store, row.id);
-    }
+    if (!this.completionChecksAllowed()) return [];
+    this.updateCompletionClock();
+    // An explicit synchronous check also sees edits made outside the event bus.
+    while (reconcileNextCompletionFamily(this.store)) { /* drain committed changes */ }
+    return this.checkDueTaskContinuations(now);
+  }
+
+  private checkDueTaskContinuations(now: number): Delivery[] {
+    const available = (member: Member) => member.origin === "runner" && !!(member.sessionId || member.paneId)
+      && (member.status === "idle" || member.status === "waiting");
     const reviews = checkCompletionReviews(this.store, now, this.timings.continuationMs);
     const deliveries = this.taskContinuations.check(now, member => {
       const project = this.store.requireProject(member.projectId);
       if (project.archived || !project.runnerEnabled || !project.connection.ok || this.archiving.has(project.id)) return false;
-      if (member.origin !== "runner" || (!member.sessionId && !member.paneId) || !["idle", "waiting"].includes(member.status)) return false;
+      if (!available(member)) return false;
       const rt = this.runtime(member.id);
       if (rt.closing || rt.starting || rt.reopening || rt.pumping || rt.background || rt.stopRequest || this.isBusy(member)) return false;
       if (this.configWrites.has(member.id) || this.terminalMutations.has(member.id) || this.pendingLifecycle(member.id)) return false;
@@ -4870,7 +4936,7 @@ export class Orchestrator implements OrchestratorApi {
       const observation = member.statusObservation;
       if (this.backendOf(member) === "core" && observation && (observation.ownership !== "verified" || observation.freshness !== "fresh")) return false;
       return true;
-    });
+    }, available);
     for (const memberId of new Set([...deliveries, ...reviews].map(d => d.memberId))) void this.pump(memberId);
     return [...deliveries, ...reviews];
   }
@@ -5296,6 +5362,12 @@ export class Orchestrator implements OrchestratorApi {
       return;
     }
     const project = this.store.requireProject(member.projectId);
+    // Admission can itself retire a stale reminder. Reuse this synchronous read
+    // only if that check and recovery left both SQLite write versions unchanged.
+    const version = this.store.db.query<{ local: number; external: number }, []>(
+      "SELECT total_changes() AS local, data_version AS external FROM pragma_data_version",
+    );
+    const before = version.get()!;
     let pending = this.pendingInputs(memberId);
     if (this.runners.has("core") && member.backend && member.backend !== "core" && (member.sessionId || member.paneId)) {
       for (const d of pending) this.hold(d, "legacy_session");
@@ -5303,7 +5375,8 @@ export class Orchestrator implements OrchestratorApi {
     }
     // Previously attempted entries must be inspected, including legacy held rows.
     for (const d of pending) if (d.attempts > 0 && !this.deliveryRecovery.requeueRejected(d.id) && this.store.getDeliveryRecovery(d.id)?.phase === "none") this.deliveryRecovery.beginRecovery(d.id);
-    pending = this.pendingInputs(memberId);
+    const after = version.get()!;
+    if (before.local !== after.local || before.external !== after.external) pending = this.pendingInputs(memberId);
     if (this.recovering || this.configWrites.has(memberId) || this.terminalMutations.has(memberId) || this.pendingLifecycle(memberId)) { wait("lifecycle"); return; }
     if (this.store.inputState(memberId).lease) { wait("manual_control"); this.deferCoreCompact(member, "manual_control"); return; }
     // Expiry/replacement can be discovered by the runner/store before the socket timer.

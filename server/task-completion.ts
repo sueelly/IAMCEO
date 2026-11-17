@@ -1,6 +1,6 @@
 import type { Delivery, Member } from "../shared/types.ts";
 import { bindingContract, missingExecutionContractFields } from "./harness.ts";
-import { ApiError, type Store } from "./store.ts";
+import { ApiError, ASSIGNMENT_HISTORY_MS, type Store } from "./store.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
 import { latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 
@@ -66,6 +66,46 @@ export function synchronizeTaskCompletion(store: Store, taskId: string, visiting
     store.createTaskNotice(task.projectId, taskId, mark.id, [task.title + " 수행 완료", `계약 r${contract!.rev}의 완료 조건을 통과했습니다`, "최종 검수 직원이 확인할 예정입니다. 일반 후속 업무는 진행합니다"]);
     return true;
   });
+}
+
+/** A blocked worker without an active execution falls back to recent received
+ * assignments. Only rows crossing that time boundary can change without a write. */
+export function queueExpiredCompletionAssignments(store: Store, previous: number | null, now: number): void {
+  const cutoff = (time: number) => new Date(time - ASSIGNMENT_HISTORY_MS).toISOString();
+  const from = previous === null ? "" : cutoff(Math.min(previous, now));
+  const to = cutoff(previous === null ? now : Math.max(previous, now));
+  store.db.query(`INSERT INTO completion_changes(task_id)
+    SELECT DISTINCT t.id FROM deliveries d JOIN members m ON m.id=d.member_id JOIN tasks t ON t.id=d.task_id
+    WHERE d.kind IN ('instruction','user_message') AND d.status='delivered' AND d.task_id IS NOT NULL
+      AND d.created_at>=? AND d.created_at<? AND m.status='blocked' AND m.blocked_reason IN ('permission','selection','setup')
+    ON CONFLICT(task_id) DO NOTHING`).run(from, to);
+}
+
+/** Consume one affected family atomically. A crash rolls back the acknowledgement
+ * along with its marks. A reparent records both parents, so the old family is
+ * also reconsidered. Unrelated contracts never enter this reconciliation. */
+export function reconcileNextCompletionFamily(store: Store): boolean {
+  const first = store.db.query<{ task_id: string }, []>(
+    "SELECT task_id FROM completion_changes ORDER BY rowid LIMIT 1",
+  ).get();
+  if (!first) return false;
+  store.transaction(() => {
+    const family = store.db.query<{ id: string; candidate: number }, [string]>(`
+      WITH RECURSIVE family(id) AS (
+        SELECT ? UNION SELECT t.parent_task_id FROM tasks t JOIN family f ON t.id=f.id WHERE t.parent_task_id IS NOT NULL
+        UNION SELECT t.id FROM tasks t JOIN family f ON t.parent_task_id=f.id
+      )
+      SELECT t.id, p.archived=0 AND p.runner_enabled=1 AND t.merged_into IS NULL AND
+        (EXISTS(SELECT 1 FROM report_harness h WHERE h.contract_task_id=t.id)
+         OR EXISTS(SELECT 1 FROM task_completion_reviews r WHERE r.task_id=t.id)) AS candidate
+      FROM family f JOIN tasks t ON t.id=f.id JOIN projects p ON p.id=t.project_id
+    `).all(first.task_id);
+    const remove = store.db.query("DELETE FROM completion_changes WHERE task_id=?");
+    const visited = new Set<string>();
+    for (const row of family) remove.run(row.id);
+    for (const row of family) if (row.candidate) synchronizeTaskCompletion(store, row.id, visited);
+  });
+  return true;
 }
 
 /** An inherited report can release its original obligation in the same event. */

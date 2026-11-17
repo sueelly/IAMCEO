@@ -866,10 +866,13 @@ export interface DeliveryRetryState {
   correctionRevision: number | null;
 }
 
+export const ASSIGNMENT_HISTORY_MS = 14 * 86_400_000;
+
 export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecoveryStore {
   readonly db: Database;
   private readonly sqlTransaction: Database["transaction"];
   private commitFrames: (() => void)[][] = [];
+  private readonly commitListeners = new Set<() => void>();
   private lastMessageMs = 0;
   private readonly deliveryWaits = new Map<string, NonNullable<Member["deliveryWait"]>>();
   private runnerHealth = new Map<Backend, RunnerHealth>();
@@ -950,7 +953,16 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       // commit은 이미 성공했다. 알림 실패를 쓰기 실패로 오인해 재실행하지 않는다.
       try { effect(); } catch (error) { console.error("Store afterCommit 오류:", error); }
     }
+    if (!parent) for (const listener of this.commitListeners) {
+      try { listener(); } catch (error) { console.error("Store commit 알림 오류:", error); }
+    }
     return result;
+  }
+
+  /** Also announces committed writes with no UI event (for example a continuation pause). */
+  subscribeTransactions(listener: () => void): () => void {
+    this.commitListeners.add(listener);
+    return () => this.commitListeners.delete(listener);
   }
 
   afterCommit(effect: () => void): void {
@@ -2047,10 +2059,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 최근 등록한 작업부터. 업무 단계(progress)를 함께 싣는다(화면용). 단계가 필요 없으면 hasTasks 를 쓴다. */
-  listTasks(projectId: string): Task[] {
+  listTasks(projectId: string, suppliedFacts?: Map<string, ProgressFacts>): Task[] {
     const tasks = this.rows(`SELECT tasks.*, ${TASK_LAST_MESSAGE} FROM tasks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`, projectId).map(toTask);
     if (!tasks.length) return tasks;
-    const facts = this.taskProgressFacts(projectId);
+    const facts = suppliedFacts ?? this.taskProgressFacts(projectId);
     return tasks.map((t) => (t.mergedInto ? t : { ...t, progress: deriveProgress(facts.get(t.id) ?? emptyFacts()) }));
   }
 
@@ -2145,8 +2157,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** Read once per synchronous admission/context batch. Never retain across writes. */
-  taskSequenceSnapshot(projectId: string, memberId?: string) {
-    const facts = this.taskProgressFacts(projectId);
+  taskSequenceSnapshot(projectId: string, memberId?: string, facts = this.taskProgressFacts(projectId)) {
     const tasks = this.rows(`SELECT t.id,t.title,t.parent_task_id,t.merged_into FROM tasks t WHERE t.project_id=?`, projectId);
     const byId = new Map(tasks.map(t => [t.id as string, { title: t.title as string, done: deriveProgress(facts.get(t.id) ?? emptyFacts()).stage === "done",
       merged_into: t.merged_into as string | null, parentTaskId: t.parent_task_id as string | null }]));
@@ -4199,7 +4210,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    * 다음 턴에 계약 없는 다른 업무로 완료를 올려 받은 계약을 비켜 가지 못하게 한다.
    */
   openAssignedTasks(memberId: string, isUnder: (taskId: string, root: string) => boolean = (a, b) => a === b): string[] {
-    const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+    const since = new Date(Date.now() - ASSIGNMENT_HISTORY_MS).toISOString();
     const received = this.rows(`SELECT d.task_id AS task_id, MAX(d.created_at) AS at FROM deliveries d
       WHERE d.member_id = ? AND d.task_id IS NOT NULL AND d.kind IN ('instruction','user_message') AND d.status = 'delivered' AND d.created_at >= ?
       GROUP BY d.task_id ORDER BY at DESC LIMIT 20`, memberId, since).map(r => ({ taskId: r.task_id as string, at: r.at as string }));

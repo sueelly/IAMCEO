@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { checkCompletionReviews, completionReviewAllowsDelivery, synchronizeTaskCompletion } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
-import { fixture } from "./fixtures/harness-fixture.ts";
+import { fixture, until } from "./fixtures/harness-fixture.ts";
 
 const contract = {
   kind: "other" as const, goal: "담당자가 사용할 인계 내용을 확정한다", scope: "이 업무의 인계 내용",
@@ -180,4 +180,98 @@ test("child contract changes invalidate the completed parent in the same save ev
  expect(f.store.doneMark(parent.id)).not.toBeNull();
  f.orch.saveTask(f.lead,{taskId:child.id,contract:{...contract,acceptance:[...contract.acceptance,"추가 승인 확인"]}});
  expect(f.store.doneMark(parent.id)).toBeNull();
+});
+
+test("a committed blocker revokes only its task without waiting for a periodic check", async () => {
+  const f = fixture();
+  const tasks: { id: string }[] = [];
+  for (const title of ["변경할 인계", "별도 인계"]) {
+    const task = f.orch.saveTask(f.lead, { title, contract }).task;
+    const report = await f.tool(f.worker, "post", { task_id: task.id, kind: "완료", title: "확인", contract_rev: 1, checks });
+    expect(report.isError, report.text).toBeUndefined();
+    tasks.push(task);
+  }
+  // Let initial report events settle, then open a blocker while no scheduler is running.
+  await until("초기 변경 처리", () => !f.store.db.query("SELECT 1 FROM completion_changes LIMIT 1").get());
+  const evidence = spyOn(f.store, "hasUnsettledTaskInput");
+  try {
+    expect(() => f.store.transaction(() => {
+      f.store.createDecision({ projectId: f.project.id, taskId: tasks[1]!.id, who: "대표", title: "취소할 결재" });
+      throw new Error("rollback");
+    })).toThrow("rollback");
+    f.store.createDecision({ projectId: f.project.id, taskId: tasks[0]!.id, who: "대표", title: "새 차단 결재" });
+    await until("변경된 완료 판정", () => f.store.doneMark(tasks[0]!.id) === null);
+    expect(f.store.doneMark(tasks[1]!.id)).not.toBeNull();
+    expect(evidence.mock.calls.some(([taskId]) => taskId === tasks[1]!.id)).toBe(false);
+  } finally { evidence.mockRestore(); }
+});
+
+test("periodic checks do not revalidate unchanged completion evidence", async () => {
+  const f = fixture();
+  const task = f.orch.saveTask(f.lead, { title: "완료 근거", contract }).task;
+  await f.tool(f.worker, "post", { task_id: task.id, kind: "완료", title: "확인", contract_rev: 1, checks });
+  expect(f.store.doneMark(task.id)).not.toBeNull();
+  f.orch.checkTaskContinuations();
+  const evidence = spyOn(f.store, "completionEvidence");
+  try {
+    f.orch.checkTaskContinuations();
+    f.orch.checkTaskContinuations();
+    expect(evidence.mock.calls).toHaveLength(0);
+  } finally { evidence.mockRestore(); }
+});
+
+test("an inferred approval assignment expires after fourteen days even without a new task event", async () => {
+  const f = fixture(), task = f.orch.saveTask(f.lead, { title: "승인 귀속 만료", contract }).task;
+  const assigned = f.store.enqueue({ projectId: f.project.id, memberId: f.worker2.id, taskId: task.id,
+    kind: "instruction", text: "검증" });
+  f.store.markDelivered(assigned.id);
+  const now = Date.now(), received = new Date(now - 14 * 86400000 + 60000).toISOString();
+  f.store.db.query("UPDATE deliveries SET created_at=? WHERE id=?").run(received, assigned.id);
+  f.store.patchMember(f.worker2.id, { status: "blocked", blockedReason: "permission" });
+  const posted = await f.tool(f.worker, "post", { task_id: task.id, kind: "완료", title: "확인", contract_rev: 1, checks });
+  expect(posted.isError, posted.text).toBeUndefined();
+  f.orch.checkTaskContinuations(now);
+  expect(f.store.doneMark(task.id)).toBeNull();
+  const clock = spyOn(Date, "now").mockReturnValue(now + 61000);
+  try {
+    f.orch.checkTaskContinuations();
+    expect(f.store.doneMark(task.id)).not.toBeNull();
+    expect(f.store.requireMember(f.worker2.id).status).toBe("blocked");
+  } finally { clock.mockRestore(); }
+});
+
+test("a busy worker's unchanged queue is classified once per pump", async () => {
+  const f = fixture(), task = f.orch.saveTask(f.lead, { title: "차례 대기", contract }).task;
+  const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id,
+    kind: "instruction", text: "다음 차례" });
+  f.runner.busy.add(f.worker.id);
+  const sequence = spyOn(f.store, "taskSequenceSnapshot");
+  try {
+    await f.orch.pump(f.worker.id);
+    expect(f.store.requireDelivery(delivery.id).status).toBe("queued");
+    expect(sequence.mock.calls.filter(([, member]) => member === f.worker.id)).toHaveLength(1);
+  } finally { sequence.mockRestore(); }
+});
+
+test("one maintenance tick gives HTTP a turn between distinct queued workers", async () => {
+  const f = fixture(), workers = [f.worker, f.worker2];
+  for (const worker of workers) {
+    f.runner.busy.add(worker.id);
+    f.store.enqueue({ projectId: f.project.id, memberId: worker.id, kind: "system", text: "대기" });
+  }
+  let yielded = false;
+  const seen: boolean[] = [];
+  const run = f.orch.pump.bind(f.orch);
+  const pump = spyOn(f.orch, "pump").mockImplementation(id => {
+    if (workers.some(worker => worker.id === id)) {
+      if (!seen.length) setTimeout(() => { yielded = true; }, 0);
+      seen.push(yielded);
+    }
+    return run(id);
+  });
+  try {
+    await (f.orch as unknown as { onTick(): Promise<void> }).onTick();
+    await until("두 직원의 대기열 확인", () => seen.length >= 2);
+    expect(seen).toEqual([false, true]);
+  } finally { pump.mockRestore(); }
 });

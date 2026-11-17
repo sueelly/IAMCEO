@@ -119,8 +119,8 @@ export class TaskContinuationCoordinator {
   }
 
   private context(projectId: string): Context {
-    const tasks = new Map(this.store.listTasks(projectId).filter(t => !t.mergedInto).map(t => [t.id, t]));
     const facts = this.store.taskProgressFacts(projectId);
+    const tasks = new Map(this.store.listTasks(projectId, facts).filter(t => !t.mergedInto).map(t => [t.id, t]));
     const sources = new Map<string, Source[]>();
     for (const source of this.store.db.query(`SELECT d.id,d.task_id,d.member_id,d.kind,d.status,d.scope_seq AS seq,d.created_at,
       COALESCE(r.phase,'none') AS phase,r.reason AS recovery_reason
@@ -174,7 +174,7 @@ export class TaskContinuationCoordinator {
       });
       if (awaiting) criteriaSources.set(taskId, awaiting);
     }
-    const sequence = this.store.taskSequenceSnapshot(projectId);
+    const sequence = this.store.taskSequenceSnapshot(projectId, undefined, facts);
     const sequenceSources = new Map<string, { source: Source; blocker: { taskId: string; title: string } }>();
     for (const [taskId, list] of sources) {
       const source = list.at(-1), delivery = source && this.store.getDelivery(source.id);
@@ -326,10 +326,11 @@ export class TaskContinuationCoordinator {
     return true;
   }
 
-  check(now: number, eligible: (member: Member) => boolean): Delivery[] {
+  check(now: number, eligible: (member: Member) => boolean, available = eligible): Delivery[] {
     const queued: Delivery[] = [];
     for (const project of this.store.listProjects()) {
       if (project.archived || !project.runnerEnabled || !project.connection.ok) continue;
+      if (!this.store.listMembers(project.id).some(available)) continue;
       const ctx = this.context(project.id);
       const candidates = [...ctx.tasks.values()].filter(t => this.authorized(t, ctx))
         .sort((a, b) => (this.row(a.id)?.next_attempt_at ?? a.createdAt).localeCompare(this.row(b.id)?.next_attempt_at ?? b.createdAt));

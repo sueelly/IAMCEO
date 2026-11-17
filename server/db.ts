@@ -1,3 +1,4 @@
+import { COMPLETION_CHANGE_SCHEMA } from "./completion-change-schema.ts";
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, statSync } from "node:fs";
@@ -1037,6 +1038,7 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE members ADD COLUMN final_reviewer INTEGER NOT NULL DEFAULT 0 CHECK (final_reviewer IN (0, 1));
    CREATE UNIQUE INDEX members_project_final_reviewer ON members(project_id) WHERE final_reviewer = 1;
    ALTER TABLE task_completion_reviews ADD COLUMN evidence_reader_id TEXT;`,
+  COMPLETION_CHANGE_SCHEMA,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
