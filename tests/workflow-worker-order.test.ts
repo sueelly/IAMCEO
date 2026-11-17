@@ -22,7 +22,7 @@ async function until(read: () => boolean) {
   expect(read()).toBe(true);
 }
 
-test("a worker starts the next task only after the earlier task is done, not merely when its turn ends", async () => {
+test("a worker starts independent work after verified delivery without marking the whole task done", async () => {
   const f = await createQueueStatusFixture();
   try {
     const a = task(f, "first"), b = task(f, "second");
@@ -37,9 +37,6 @@ test("a worker starts the next task only after the earlier task is done, not mer
     await until(() => f.store.listActivity(f.member.id).some(a => a.kind === "turn_end"));
     await f.orch.pump(f.member.id);
     expect(f.store.taskProgress(a.id).stage).not.toBe("done");
-    expect(f.store.requireDelivery(second.id)).toMatchObject({ status: "queued", attempts: 0 });
-    done(f, a.id);
-    await f.orch.pump(f.member.id);
     expect(f.store.requireDelivery(second.id).status).toBe("delivered");
     expect(f.writes).toHaveLength(2);
   } finally { await f.stop(); }

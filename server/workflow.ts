@@ -18,6 +18,8 @@ export interface WorkflowAssignment {
   source?: WorkflowNode["assignmentSource"];
   inputBlocks?: WorkflowInputBlock[];
   continuation?: boolean;
+  blocksSequence?: boolean;
+  suspendedBy?: { taskId: string; title: string } | null;
 }
 export interface WorkflowReport { taskId: string; memberId: string | null; kind: string; title: string; at: string; participatedAt?: string | null }
 
@@ -188,7 +190,8 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
       return { ...n, historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
-    if (m?.kind === "worker" && a?.eligible && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
+    if (a?.suspendedBy) return { ...n, current: inRun, state: "blocked", label: "보류", reason: `‘${a.suspendedBy.title}’의 보류·중단 범위에 포함됩니다` };
+    if (m?.kind === "worker" && a?.eligible && a.blocksSequence !== false && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
     if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
@@ -208,18 +211,18 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     const inferred = (a: WorkflowAssignment) => a.source === "report" || a.source === "board";
     const row = [...orderAssignments(originalRow.filter(a => !inferred(a)), taskMap),
       ...orderAssignments(originalRow.filter(inferred), taskMap)].map((a, order) => ({ ...a, order }));
-    const first = row.find(a => a.eligible && taskMap.get(a.taskId)?.progress?.stage !== "done");
+    const first = row.find(a => a.eligible && a.blocksSequence !== false && taskMap.get(a.taskId)?.progress?.stage !== "done");
     let prev: WorkflowNode | undefined;
     for (const a of row) {
       const t = taskMap.get(a.taskId)!;
       const node = make(t, a, memberMap.get(memberId), first);
-      if (first && memberMap.get(memberId)?.kind === "worker" && a.eligible && !pausedTasks.has(t.id) && node.state !== "running" && node.state !== "starting" && node.state !== "done") {
-        const predecessor = row.find(x => x.order < a.order && x.eligible && taskMap.get(x.taskId)?.progress?.stage !== "done" && relatedWork(first.taskId, x.taskId, taskMap) && !relatedWork(x.taskId, a.taskId, taskMap));
+      if (first && memberMap.get(memberId)?.kind === "worker" && a.eligible && a.blocksSequence !== false && !pausedTasks.has(t.id) && node.state !== "running" && node.state !== "starting" && node.state !== "done") {
+        const predecessor = row.find(x => x.order < a.order && x.eligible && x.blocksSequence !== false && taskMap.get(x.taskId)?.progress?.stage !== "done" && relatedWork(first.taskId, x.taskId, taskMap) && !relatedWork(x.taskId, a.taskId, taskMap));
         if (predecessor) { node.state = "waiting"; node.label = "선행 업무 대기"; node.reason = `‘${taskMap.get(predecessor.taskId)!.title}’ 완료 후 시작합니다`; }
       }
       assigned.add(t.id); nodes.push(node);
-      if (prev && a.eligible && memberMap.get(memberId)?.kind === "worker" && !relatedWork(prev.taskId, t.id, taskMap)) edges.push({ id: `seq:${prev.id}:${node.id}`, from: prev.id, to: node.id, kind: "sequence" });
-      if (a.eligible) prev = node;
+      if (prev && a.eligible && a.blocksSequence !== false && memberMap.get(memberId)?.kind === "worker" && !relatedWork(prev.taskId, t.id, taskMap)) edges.push({ id: `seq:${prev.id}:${node.id}`, from: prev.id, to: node.id, kind: "sequence" });
+      if (a.eligible && a.blocksSequence !== false) prev = node;
     }
   }
   for (const t of taskMap.values()) if (!assigned.has(t.id)) nodes.push(make(t, null, undefined, undefined));
