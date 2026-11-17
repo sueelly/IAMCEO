@@ -430,8 +430,9 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const context = useWriteContext();
+  const acceptedSnapshotVersion = useStore(state => state.acceptedSnapshotVersion);
   const [review, setReview] = useState<ReturnType<typeof startSettingsReview> | null>(null);
-  const [conflict, setConflict] = useState<{ settings: SettingsT } | null>(null);
+  const [conflict, setConflict] = useState<{ snapshotVersion: number } | null>(null);
   const shown = review?.base ?? settings;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -477,11 +478,12 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
     try {
       const submittedDraft = draft;
       const settingsAtSubmit = getState().bootstrap?.settings;
+      const snapshotAtSubmit = getState().acceptedSnapshotVersion;
       const next = await executeReviewedWrite(review.write, readWriteContext(),
         revision => api.putSettingsV2(patch, Number(revision)).then(result => result.settings),
         () => api.putSettings(patch));
       if (!reviewStillCurrent(review.write, readWriteContext())) return;
-      if (getState().bootstrap?.settings === settingsAtSubmit) applyLocal({ type: "settings", settings: next });
+      if (getState().acceptedSnapshotVersion === snapshotAtSubmit && getState().bootstrap?.settings === settingsAtSubmit) applyLocal({ type: "settings", settings: next });
       if (draftRef.current === submittedDraft) {
         draftRef.current = EMPTY_DRAFT;
         setDraft(EMPTY_DRAFT);
@@ -492,7 +494,7 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
     } catch (err) {
       setError(errorText(err));
       if (err instanceof ReviewRequiredError || err instanceof ApiError && (err.status === 409 || err.status === 0)) {
-        setConflict({ settings: getState().bootstrap?.settings ?? settings });
+        setConflict({ snapshotVersion: getState().acceptedSnapshotVersion });
         void refresh();
       }
     } finally {
@@ -571,7 +573,7 @@ function SettingsForm({ settings, overrides, projects, version, urls }: { settin
         <Glass as="section" level="regular" tint className="st-panel" aria-label="바뀐 설정 검토">
           <p role="status">입력한 값은 남겨 두었습니다. 현재 서버 값과 비교한 뒤 다시 저장해 주세요.</p>
           <SettingsComparison settings={settings} patch={patch} />
-          <GlassButton variant="glass" size="m" disabled={busy || settings === conflict.settings || context.capabilities?.capabilities.operations !== false && !context.syncRevisions} onClick={() => {
+          <GlassButton variant="glass" size="m" disabled={busy || acceptedSnapshotVersion === conflict.snapshotVersion || context.capabilities?.capabilities.operations !== false && !context.syncRevisions} onClick={() => {
             setReview(startSettingsReview(settings, context));
             setConflict(null);
             setError(null);

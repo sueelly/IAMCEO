@@ -11,6 +11,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { z } from "zod";
 import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type FileKind, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
 import { compressJsonRead, compressWebAssetRead } from "./http-compression.ts";
+import { SyncSnapshotCache } from "./sync-snapshot-cache.ts";
 import type { OperationReceipt, ServerCapabilities } from "../shared/operations.ts";
 import type { DeliveryRecoveryService } from "./service-contracts.ts";
 import { ARTIFACT_CSP } from "../shared/artifact-kit.ts";
@@ -495,9 +496,10 @@ async function artifactHtml({ config, store }: ServerContext, id: string): Promi
   return source.text();
 }
 
-function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, readHerdr: () => Promise<HerdrInfo>, currentHerdr: () => HerdrInfo, serverPort: () => number): Route[] {
+function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, readHerdr: () => Promise<HerdrInfo>, currentHerdr: () => HerdrInfo, serverPort: () => number, authGeneration: () => number): Route[] {
   const { config, store, orch, bus } = ctx;
   const models = new ModelCatalogReader(config);
+  const syncCache = new SyncSnapshotCache();
   const folders = new Folders(ctx.folderHome);
   const github = new GitHub(folders, { ...process.env }, 600_000, { stateHome: config.home, freeBytes: ctx.githubFreeBytes });
   const legacyProjectPatches = new Set<string>();
@@ -663,6 +665,16 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       await readHerdr();
       // 이 뒤 직렬화까지 await가 없다. 도메인 쓰기는 이 데몬의 Store가 소유한다.
       const herdr = currentHerdr();
+      const cli = orch.cliCommand?.() ?? "iamceo";
+      const currentUrls = urls();
+      const connection = connectionInfo(config, req.headers.get("host") ?? url.host, cli, serverPort());
+      // total_changes covers this connection's writes; data_version covers other connections.
+      // Runtime events, managed addresses and auth rotation can change without a DB write.
+      const cacheKey = compact ? JSON.stringify([requestedProjectId, bus.cursor,
+        store.db.query("SELECT total_changes() AS n").get(), store.db.query("PRAGMA data_version").get(),
+        req.headers.get("host") ?? url.host, currentUrls, connection, herdr, authGeneration()]) : null;
+      const cached = cacheKey === null ? undefined : syncCache.get(cacheKey);
+      if (cached !== undefined) return new Response(cached, { headers: { "Content-Type": "application/json" } });
       const project = requestedProjectId === null ? null : store.getProject(requestedProjectId);
       const projectStatus = requestedProjectId === null ? "none" : !project ? "not_found" : project.archived ? "archived" : "ok";
       const rankOverrides = { manager: 0, lead: 0 };
@@ -670,13 +682,15 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const body: SyncSnapshot = {
         protocol: 2, requestedProjectId, projectStatus,
         bootstrap: { version: VERSION, settings: store.getSettings(), projects: store.projectSummaries(), herdr,
-          home: config.home, urls: urls(), cli: orch.cliCommand?.() ?? "iamceo", rankOverrides,
-          connection: connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()) },
+          home: config.home, urls: currentUrls, cli, rankOverrides, connection },
         state: projectStatus === "ok" ? { ...store.projectState(requestedProjectId!, { compact }), ...(ctx.delivery ? { deliveryNotices: ctx.delivery.notices(requestedProjectId!) } : {}) } : null,
         revisions: projectStatus === "ok" ? store.syncRevisions(requestedProjectId!) : { settings: store.settingsRevision(), members: {}, todos: {} },
         cursor: bus.cursor,
       };
-      return Response.json(body);
+      if (cacheKey === null || projectStatus !== "ok") return Response.json(body);
+      const serialized = JSON.stringify(body);
+      syncCache.set(cacheKey, serialized);
+      return new Response(serialized, { headers: { "Content-Type": "application/json" } });
     }),
     route("GET", "/api/bootstrap", async (req, url) => {
       await orch.refreshConnection?.();
@@ -1252,7 +1266,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     if (herdrCache) return Promise.resolve(herdrCache);
     return herdrPending ??= ctx.orch.herdrInfo().then((info) => herdrCache ??= info).finally(() => { herdrPending = undefined; });
   };
-  const routes = apiRoutes(ctx, () => reachableUrls(hosts, boundPort), pairing, readHerdr, () => herdrCache!, () => boundPort);
+  const routes = apiRoutes(ctx, () => reachableUrls(hosts, boundPort), pairing, readHerdr, () => herdrCache!, () => boundPort, () => authGeneration);
   const pushHandler = ctx.push ? createPushHandler(ctx.push) : null;
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const v2Sockets = new Set<ServerWebSocket<SocketData>>();

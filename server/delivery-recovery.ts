@@ -7,6 +7,7 @@ import type { DeliveryBaseline, DeliveryInspection, DeliveryRepair, Runner, Runn
 
 /** SQL, cursors and transactions belong exclusively to Store. */
 export type DeliveryRecoveryStore = Pick<Store,
+  "withDeliveryRead" | "deliveryNoticePreviews" | "listUnlinkedFailedMessages" |
   "transaction" | "afterCommit" | "requireProject" | "listProjects" | "requireMember" | "getMember" | "listMembers" | "memberRevisions" | "getSettings" |
   "listDeliveries" | "requireDelivery" | "getDelivery" | "enqueue" | "getDeliveryRecovery" | "updateDeliveryRecovery" | "listDeliveryRecoveries" |
   "getDeliveryRetry" | "patchDeliveryRetry" | "saveDispatch" | "getDispatch" | "listDispatches" | "listDeliveryDispatches" | "physicalDeliveryIds" | "hasLogicalDeliveryFence" | "updateDispatch" | "inputState" |
@@ -594,13 +595,13 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     const r = this.record(d.id);
     return ["not_received", "retry_exhausted"].includes(r.reason ?? "") || r.phase === "none" && ["queued", "held"].includes(d.status) && d.holdReason !== "delivery_unknown";
   }
-  private item(d: Delivery): DeliveryNoticeItem | null {
+  private item(d: Delivery, previews: Map<string, string>): DeliveryNoticeItem | null {
     const r = this.record(d.id);
     if (r.phase === "resolved" && !(r.reason === "not_received" && ["queued", "held"].includes(d.status)) || r.phase === "stopped" || d.status === "delivered" && r.reason !== "duplicate_draft") return null;
-    const m = d.refType === "message" && d.refId ? this.store.getMessage(d.refId) : null;
-    const preview = m?.body ?? (d.refType === "decision" && d.refId ? this.store.getDecision(d.refId)?.title : d.refType === "todo" && d.refId ? this.store.getTodo(d.refId)?.title : null) ?? ({ user_message: "대표 메시지", answer: "결재 답변", todo_done: "업무 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" }[d.kind]);
+    const key = `${d.refType}:${d.refId}`;
+    const preview = previews.get(key) ?? ({ user_message: "대표 메시지", answer: "결재 답변", todo_done: "업무 완료 알림", instruction: "업무 지시", report: "보고 전달", system: "시스템 지시", compact: "문맥 정리" }[d.kind]);
     const ownerRetryable = this.ownerRetryable(d, r);
-    return { id: d.id, deliveryId: d.id, messageId: m?.id ?? null, memberId: d.memberId, projectId: d.projectId, kind: d.kind, status: d.status,
+    return { id: d.id, deliveryId: d.id, messageId: d.refType === "message" && previews.has(key) ? d.refId : null, memberId: d.memberId, projectId: d.projectId, kind: d.kind, status: d.status,
       phase: ownerRetryable ? "needs_owner" : r.phase === "resolved" ? "none" : r.phase, holdReason: d.holdReason, reason: r.reason, note: this.store.getDeliveryRetry(d.id).retryReason === "rejected_limit" ? "입력 전에 5회 거절되어 자동 전달을 보류했습니다. 터미널의 입력칸과 승인 창을 확인한 뒤 '다시 확인'을 누르면 같은 지시를 한 번 더 보냅니다" : r.phase === "none" ? d.status === "failed" ? note("legacy_unknown") : "전달 대기" : note(r.reason, r.evidence),
       version: r.version, createdAt: d.createdAt, lastCheckedAt: r.lastCheckedAt, nextCheckAt: r.nextCheckAt, autoAttempts: r.autoAttempts, evidence: r.evidence,
       recommendation: r.phase === "needs_owner" ? { code: r.reason ?? "unknown", text: note(r.reason, r.evidence) } : null, allowedActions: ownerRetryable ? ["recheck"] : this.actions(d, r),
@@ -608,6 +609,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
   }
   private items(projectId: string): DeliveryNoticeItem[] {
     const deliveries = this.store.listDeliveries(projectId);
+    const previews = this.store.deliveryNoticePreviews(projectId);
     const last = new Map<string, string>();
     const keys = new Map<string, string | null>();
     const key = (d: Delivery) => {
@@ -622,16 +624,10 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     for (const d of deliveries) {
       const k = key(d);
       if (d.status === "failed" && this.definitelyAbsent(d) && k && last.get(k) !== d.id) continue;
-      const item = this.item(d);
+      const item = this.item(d, previews);
       if (item) items.push(item);
     }
-    const linked = new Set(deliveries.filter(d => d.refType === "message").map(d => d.refId));
-    let cursor: string | undefined;
-    do {
-      const page = this.store.listMessagePage(projectId, { limit: 500, cursor });
-      for (const m of page.items) if (m.mine && m.delivery === "failed" && !linked.has(m.id)) items.push(this.virtual(m));
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
+    for (const m of this.store.listUnlinkedFailedMessages(projectId)) items.push(this.virtual(m));
     return items;
   }
   private virtual(m: Message): DeliveryNoticeItem {
@@ -665,35 +661,37 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     return summary;
   }
   notices(projectId: string): DeliveryNotices {
-    return this.store.transaction(() => {
+    return this.store.transaction(() => this.store.withDeliveryRead(projectId, () => {
       this.activeProject(projectId);
       const items = this.items(projectId);
       const unassigned = this.summarize("", items);
       return { version: 2, members: this.store.listMembers(projectId).map(m => this.summarize(m.id, items)), unassigned: { undeliveredCount: unassigned.undeliveredCount, unknownCount: unassigned.unknownCount, needsOwnerCount: unassigned.needsOwnerCount } };
-    });
+    }));
   }
   memberNotices(memberId: string, opts: DeliveryNoticePageOptions = {}): DeliveryNoticePage {
     return this.store.transaction(() => {
       const member = this.store.requireMember(memberId);
-      this.activeProject(member.projectId);
-      const limit = opts.limit ?? 50;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "조회 개수가 올바르지 않습니다");
-      let before: { createdAt: string; id: string } | null = null;
-      if (opts.before !== undefined) {
-        try {
-          if (!opts.before || opts.before.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(opts.before)) throw new Error("cursor");
-          const bytes = Buffer.from(opts.before, "base64url");
-          if (bytes.toString("base64url") !== opts.before) throw new Error("cursor");
-          const cursor = z.strictObject({ v: z.literal(1), memberId: z.literal(memberId), createdAt: z.string().min(1).max(128), id: z.string().min(1).max(512) }).parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-          before = cursor;
-        } catch { throw new ApiError(400, "전달 조회 위치가 올바르지 않습니다"); }
-      }
-      const all = this.items(member.projectId);
-      const sorted = all.filter(item => item.memberId === memberId).sort((a, b) => compare(b.createdAt, a.createdAt) || compare(b.id, a.id));
-      const page = sorted.filter(item => !before || compare(item.createdAt, before.createdAt) < 0 || item.createdAt === before.createdAt && compare(item.id, before.id) < 0).slice(0, limit + 1);
-      const items = page.slice(0, limit);
-      const tail = items.at(-1);
-      return { memberId, summary: this.summarize(memberId, all), items, nextBefore: page.length > limit && tail ? Buffer.from(JSON.stringify({ v: 1, memberId, createdAt: tail.createdAt, id: tail.id })).toString("base64url") : null };
+      return this.store.withDeliveryRead(member.projectId, () => {
+        this.activeProject(member.projectId);
+        const limit = opts.limit ?? 50;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "조회 개수가 올바르지 않습니다");
+        let before: { createdAt: string; id: string } | null = null;
+        if (opts.before !== undefined) {
+          try {
+            if (!opts.before || opts.before.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(opts.before)) throw new Error("cursor");
+            const bytes = Buffer.from(opts.before, "base64url");
+            if (bytes.toString("base64url") !== opts.before) throw new Error("cursor");
+            const cursor = z.strictObject({ v: z.literal(1), memberId: z.literal(memberId), createdAt: z.string().min(1).max(128), id: z.string().min(1).max(512) }).parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+            before = cursor;
+          } catch { throw new ApiError(400, "전달 조회 위치가 올바르지 않습니다"); }
+        }
+        const all = this.items(member.projectId);
+        const sorted = all.filter(item => item.memberId === memberId).sort((a, b) => compare(b.createdAt, a.createdAt) || compare(b.id, a.id));
+        const page = sorted.filter(item => !before || compare(item.createdAt, before.createdAt) < 0 || item.createdAt === before.createdAt && compare(item.id, before.id) < 0).slice(0, limit + 1);
+        const items = page.slice(0, limit);
+        const tail = items.at(-1);
+        return { memberId, summary: this.summarize(memberId, all), items, nextBefore: page.length > limit && tail ? Buffer.from(JSON.stringify({ v: 1, memberId, createdAt: tail.createdAt, id: tail.id })).toString("base64url") : null };
+      });
     });
   }
   async shutdown(): Promise<void> { this.closed = true; await this.running; }

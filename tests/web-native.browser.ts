@@ -24,7 +24,7 @@ const artifactRoot = process.env.IAMCEO_WEB_PARITY_ARTIFACTS ?? root;
 beforeAll(async () => {
   const home = join(root, "home"); mkdirSync(home);
   const projectPath = join(root, "project"); mkdirSync(projectPath);
-  const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0", IAMCEO_CORE_BIN: "/usr/bin/false", IAMCEO_CODEX_BIN: "/usr/bin/false", IAMCEO_CLAUDE_BIN: "/usr/bin/false", IAMCEO_CORE_SOCKET: join(root, "core.sock"), IAMCEO_HERDR_SOCKET: join(root, "herdr.sock") };
+  const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0", CLAUDE_CONFIG_DIR: home, CODEX_HOME: home, IAMCEO_CORE_BIN: "/usr/bin/false", IAMCEO_CODEX_BIN: "/usr/bin/false", IAMCEO_CLAUDE_BIN: "/usr/bin/false", IAMCEO_CORE_SOCKET: join(root, "core.sock"), IAMCEO_HERDR_SOCKET: join(root, "herdr.sock") };
   updateConfigFile({ accessCode: code, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env); bus = new Bus(); store = new Store(openDb(config.dbPath), bus);
   projectId = store.createProject({ name: "웹 동작 검증", cwd: projectPath }).id;
@@ -190,6 +190,104 @@ test("settings save keeps its reviewed revision and preserves edits on another-d
   await context.close(); contexts.splice(contexts.indexOf(context), 1);
 }, 30000);
 
+test("member conflict can be reviewed after an equal snapshot without discarding the model edit", async () => {
+  const { page, context } = await pageFor();
+  const member = store.getConductor(projectId)!;
+  await page.goto(`${base}/#/p/${projectId}/team/${member.id}`);
+  const input = page.getByLabel("모델", { exact: true });
+  await input.fill("gpt-6.1-sol");
+  const reviewed = store.memberRevisions(member.id).configRevision;
+  store.patchMemberCas(member.id, { effortOverride: "medium" }, reviewed);
+  await page.waitForFunction(() => (document.querySelector('[aria-label="effort"]') as HTMLSelectElement)?.value === "medium");
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sync" && response.ok());
+  await page.getByRole("button", { name: "모델 저장", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: /변경|검토/ }).first().waitFor({ state: "visible" });
+  await refreshed;
+  await page.getByRole("button", { name: "현재 값 확인했습니다", exact: true }).click({ timeout: 2000 });
+  expect(await input.inputValue()).toBe("gpt-6.1-sol");
+  await page.getByRole("button", { name: "검토한 변경 저장", exact: true }).click();
+  await until(() => store.requireMember(member.id).modelOverride === "gpt-6.1-sol");
+  expect(store.requireMember(member.id).effortOverride).toBe("medium");
+  expect(errors).toEqual([]);
+  await context.close(); contexts.splice(contexts.indexOf(context), 1);
+}, 15000);
+
+test("an accepted equal todo snapshot owns its row before an older request fails", async () => {
+  const todo = store.createTodo({ projectId, title: "확인된 할 일은 되돌리지 않기" });
+  const marker = { ...todo, id: "snapshot-marker", title: "동일한 할 일 스냅샷 적용" };
+  const { page, context } = await pageFor();
+  await page.goto(`${base}/#/p/${projectId}/home`);
+  const checkbox = page.getByRole("checkbox", { name: `${todo.title} 했음`, exact: true });
+  await checkbox.waitFor({ state: "visible" });
+  let fail!: () => void;
+  await page.route(`**/api/todos/${todo.id}/done`, async route => {
+    await new Promise<void>(resolve => { fail = resolve; });
+    await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"earlier request failed"}' });
+  });
+  const requested = page.waitForRequest(request => new URL(request.url()).pathname === `/api/todos/${todo.id}/done`);
+  await checkbox.click();
+  await requested;
+  await page.route("**/api/sync?*", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    // A server-confirmed row can equal the optimistic payload. The extra row is an
+    // observable marker that the snapshot was accepted before the delayed failure.
+    body.state.todos = [{ ...todo, done: true }, marker];
+    await route.fulfill({ response, json: body });
+  });
+  await visible(page, false); await visible(page, true);
+  await page.getByRole("checkbox", { name: `${marker.title} 했음`, exact: true }).waitFor({ state: "visible" });
+  fail();
+  await page.getByRole("alert").filter({ hasText: "earlier request failed" }).waitFor({ state: "visible" });
+  expect(await checkbox.getAttribute("aria-checked")).toBe("true");
+  expect(errors).toEqual([]);
+  await context.close(); contexts.splice(contexts.indexOf(context), 1);
+}, 15000);
+
+test("a snapshot captured before a todo toggle cannot keep a failed optimistic change", async () => {
+  const todo = store.createTodo({ projectId, title: "실패한 낙관적 변경은 다시 확인" });
+  const marker = { ...todo, id: "pre-toggle-marker", title: "변경 전 읽기 적용" };
+  const { page, context } = await pageFor();
+  await page.goto(`${base}/#/p/${projectId}/home`);
+  const checkbox = page.getByRole("checkbox", { name: `${todo.title} 했음`, exact: true });
+  await checkbox.waitFor({ state: "visible" });
+  // Let startup's hello-triggered reconciliation drain before this deliberately
+  // delayed read, so a second startup read cannot hide the missing failure refresh.
+  await Bun.sleep(600);
+  let releaseSnapshot!: () => void, captured!: () => void, fail!: () => void;
+  const snapshotCaptured = new Promise<void>(resolve => { captured = resolve; });
+  let hold = true;
+  await page.route("**/api/sync?*", async route => {
+    const response = await route.fetch();
+    if (!hold) return route.fulfill({ response });
+    hold = false;
+    const body = await response.json();
+    body.state.todos.push(marker);
+    captured();
+    await new Promise<void>(resolve => { releaseSnapshot = resolve; });
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(`**/api/todos/${todo.id}/done`, async route => {
+    await new Promise<void>(resolve => { fail = resolve; });
+    await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"toggle was never accepted"}' });
+  });
+  store.patchMember(store.getConductor(projectId)!.id, { now: "낙관적 변경 전 읽기 유발" });
+  await snapshotCaptured;
+  const requested = page.waitForRequest(request => new URL(request.url()).pathname === `/api/todos/${todo.id}/done`);
+  await checkbox.click(); await requested;
+  releaseSnapshot();
+  await page.getByRole("checkbox", { name: `${marker.title} 했음`, exact: true }).waitFor({ state: "visible" });
+  expect(await checkbox.getAttribute("aria-checked")).toBe("true");
+  const rechecked = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sync" && response.ok(), { timeout: 2500 });
+  fail();
+  await page.getByRole("alert").filter({ hasText: "toggle was never accepted" }).waitFor({ state: "visible" });
+  await rechecked;
+  await page.locator(`[data-todo="${todo.id}"] [role="checkbox"][aria-checked="false"]`).waitFor({ state: "visible", timeout: 3000 });
+  expect(store.requireTodo(todo.id).done).toBe(false);
+  expect(errors).toEqual([]);
+  await context.close(); contexts.splice(contexts.indexOf(context), 1);
+}, 10000);
+
 test("another tab cannot erase an uncertain transmission while editing its own draft", async () => {
   const { page, context } = await pageFor();
   const other = await context.newPage();
@@ -249,6 +347,28 @@ test("employee-detail direct send survives lost acknowledgement and reload with 
   await form.getByRole("button", { name: "같은 내용 재시도", exact: true }).waitFor({ state: "detached" });
   expect(posts.length).toBe(before + 1);
   expect(await restored.inputValue()).toBe("다음 직접 지시는 그대로 유지");
+  expect(errors).toEqual([]);
+  await context.close(); contexts.splice(contexts.indexOf(context), 1);
+}, 30000);
+
+test("foreground snapshot applies runtime status without a configuration revision change or losing the draft", async () => {
+  const { page, context } = await pageFor();
+  const member = store.getConductor(projectId)!;
+  await page.goto(`${base}/#/p/${projectId}/team/${member.id}`);
+  const form = page.locator("form.tm-send");
+  const input = form.getByRole("textbox", { name: /직접 지시/ });
+  await input.waitFor({ state: "visible" });
+  await input.fill("상태 갱신 뒤에도 남을 직접 지시");
+  const revision = store.memberRevisions(member.id).configRevision;
+  await visible(page, false);
+  await Bun.sleep(100);
+  store.patchMember(member.id, { status: "working", now: "스냅샷으로 받은 작업 상태" });
+  expect(store.memberRevisions(member.id).configRevision).toBe(revision);
+  const snapshot = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sync" && response.ok());
+  await visible(page, true);
+  await snapshot;
+  await page.getByText("스냅샷으로 받은 작업 상태", { exact: true }).first().waitFor({ state: "visible" });
+  expect(await input.inputValue()).toBe("상태 갱신 뒤에도 남을 직접 지시");
   expect(errors).toEqual([]);
   await context.close(); contexts.splice(contexts.indexOf(context), 1);
 }, 30000);
