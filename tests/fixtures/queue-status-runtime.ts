@@ -25,6 +25,7 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const writes: { terminal: string; text: string }[] = [];
   let screen = composer();
   let complete = true;
+  let readFailure = false;
   const server = createServer(socket => {
     sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.setEncoding('utf8');
     let buffer = '';
@@ -40,6 +41,10 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
           terminals.set((result as CoreTerminal).address, result as CoreTerminal);
         }
         if (req.method === 'terminal.get') result = terminals.get(p.terminal);
+        if (req.method === 'terminal.read' && readFailure) {
+          socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'Isolated read failure' } })+'\n');
+          continue;
+        }
         if (req.method === 'terminal.read') result = { text: screen, complete, how: 'screen' };
         if (req.method === 'terminal.send') {
           const terminal = terminals.get(p.terminal)!;
@@ -58,5 +63,6 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const stop = async () => { await Bun.sleep(50); await orch.shutdown(); for (const socket of sockets) socket.destroy(); await new Promise<void>(done => server.close(() => done())); db.close(); };
   const member = await orch.createMember(project.id, { name: 'Fixture worker', cli: 'claude' });
   return { dir, config, bus, store, orch, project, runner, member, terminals, writes, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
+    setReadFailure(value: boolean) { readFailure = value; },
     done() { const t = terminals.get(store.requireMember(member.id).paneId!)!; t.turn = (t.turn ?? 0)+1; t.status = { state: 'done', app: 'claude-code' }; } };
 }
