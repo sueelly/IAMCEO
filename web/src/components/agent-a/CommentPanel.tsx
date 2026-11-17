@@ -1,10 +1,11 @@
 // Agent-A 댓글 칸: 내 차례 · 댓글 목록 · 댓글 하나(대화·수정안·답글) · 새 댓글 쓰기. IAMCEO 공통 버튼·배지·마크다운을 쓴다.
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAnnotation, AgentAReviewAttachment, AgentAReviewImageRegion, AgentAReviewProposal } from "@shared/agent-a";
+import type { AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAnnotation, AgentAReviewAttachment, AgentAReviewDiagramAnchor, AgentAReviewImageRegion, AgentAReviewProposal } from "@shared/agent-a";
 import { GlassButton } from "../../glass";
 import { fetchAttachment } from "../../lib/api";
 import { AiPicker } from "./AiPicker";
-import { labelOf, type QuickLabel } from "../../lib/agent-a-labels";
+import { anchorText } from "../../lib/agent-a-diagram";
+import { THUMBS_UP, labelOf, type QuickLabel } from "../../lib/agent-a-labels";
 import { PROPOSAL_LABEL, kindLabel, oneLine, wordDiff, type ReviewThread, type TurnItem } from "../../lib/agent-a-review";
 import { enterSends, isComposing, useAutoGrow } from "../Composer";
 import { Badge, Markdown, useConfirmPress } from "../ui";
@@ -13,11 +14,13 @@ export type PanelView =
   | { kind: "list" }
   | { kind: "chat" }
   | { kind: "thread"; id: string }
-  | { kind: "new"; target: { kind: "quote"; quote: string } | { kind: "global" } | { kind: "region"; region: AgentAReviewImageRegion } };
+  | { kind: "new"; target: { kind: "quote"; quote: string } | { kind: "global" } | { kind: "region"; region: AgentAReviewImageRegion }
+    /** 도식의 한 부분(또는 도식 전체). line 은 그 도식의 ```mermaid 줄이다. */
+    | { kind: "diagram"; anchor: AgentAReviewDiagramAnchor; line: number } };
 
 /** 글 쓰는 칸. Enter 로 보낸다(터치 기기는 단추). 보내는 동안 다시 눌리지 않는다. */
-function Compose({ label, placeholder, value, onChange, onSend, busy, send = "보내기", autoFocus }: {
-  label: string; placeholder: string; value: string; onChange: (v: string) => void; onSend: () => void; busy: boolean; send?: string; autoFocus?: boolean;
+function Compose({ label, placeholder, value, onChange, onSend, busy, send = "보내기", autoFocus, extra }: {
+  label: string; placeholder: string; value: string; onChange: (v: string) => void; onSend: () => void; busy: boolean; send?: string; autoFocus?: boolean; /** 보내기 단추 앞에 두는 단추. */ extra?: ReactNode;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(ref, value);
@@ -32,6 +35,7 @@ function Compose({ label, placeholder, value, onChange, onSend, busy, send = "�
   return (
     <div className="aar-compose">
       <textarea ref={ref} className="aar-compose__input" aria-label={label} placeholder={placeholder} rows={2} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={onKey} />
+      {extra}
       <GlassButton variant="primary" size="s" disabled={busy || !value.trim()} onClick={onSend}>
         {busy ? "보내는 중" : send}
       </GlassButton>
@@ -197,6 +201,8 @@ export interface CommentPanelProps {
   /** 빠른 라벨 목록(라벨 댓글의 색을 맞추는 데 쓴다). */
   labels: readonly QuickLabel[];
   onCreate: (target: Extract<PanelView, { kind: "new" }>["target"], text: string) => void;
+  /** 고른 그림 영역에 '좋아요' 라벨을 바로 붙인다(원래 Agent-A 화면의 그림 영역 빠른 라벨). */
+  onRegionGood: (region: AgentAReviewImageRegion) => void;
   onReply: (threadId: string, text: string) => void;
   onResolve: (threadId: string, resolved: boolean) => void;
   onRemove: (id: string) => void;
@@ -211,16 +217,25 @@ export function CommentPanel(p: CommentPanelProps) {
   const { view } = p;
 
   if (view.kind === "new") {
-    const key = view.target.kind === "global" ? "new:global" : view.target.kind === "region" ? "new:region" : "new:quote";
+    const { target } = view;
+    const key = target.kind === "global" ? "new:global" : target.kind === "region" ? "new:region" : target.kind === "diagram" ? "new:diagram" : "new:quote";
     const text = p.draftOf(key);
+    const head = target.kind === "global" ? "문서 전체에 댓글" : target.kind === "region" ? "그림 영역에 질문" : target.kind === "diagram" ? (target.anchor.kind === "diagram" ? "도식 전체에 댓글" : "도식 부분에 댓글") : "고른 글에 댓글";
+    // 그림 영역: '좋아요' 한 번으로 라벨을 붙인다. 글을 쓰거나 그림을 붙였으면 눌리지 않는다(쓰던 것을 버리지 않는다).
+    const good = target.kind === "region" ? (
+      <button type="button" className="aar-good" aria-label={`${THUMBS_UP.text} 라벨 붙이기`} title={THUMBS_UP.text} disabled={p.busy || Boolean(text.trim()) || p.images.length > 0} onClick={() => p.onRegionGood(target.region)}>
+        {THUMBS_UP.emoji}
+      </button>
+    ) : undefined;
     return (
       <section className="aar-pane" aria-label="새 댓글">
         <header className="aar-pane__head">
           <button type="button" className="aar-back" aria-label="댓글 목록으로" onClick={() => p.onView({ kind: "list" })}>←</button>
-          <strong>{view.target.kind === "global" ? "문서 전체에 댓글" : view.target.kind === "region" ? "그림 영역에 질문" : "고른 글에 댓글"}</strong>
+          <strong>{head}</strong>
         </header>
         <div className="aar-pane__body">
           {view.target.kind === "quote" ? <blockquote className="aar-quote">{view.target.quote}</blockquote> : null}
+          {target.kind === "diagram" ? <blockquote className="aar-quote">{anchorText(target.anchor)}</blockquote> : null}
           {view.target.kind === "region" ? <p className="aar-note">그림에 표시한 영역과 함께 Agent-A 에 보냅니다.</p> : null}
           {p.blocked ? <p className="aar-note" role="status">{p.blocked}</p> : null}
           {p.error ? <p className="aar-error" role="alert">{p.error}</p> : null}
@@ -229,7 +244,7 @@ export function CommentPanel(p: CommentPanelProps) {
           <div className="aar-pane__foot">
             <Attach images={p.images} url={p.imageUrl} preview={p.imagePreview} busy={p.busy} onAdd={p.onAttach} onRemove={p.onDetach} onDraw={p.onDrawImage} />
             <AiPicker catalog={p.catalog} value={p.ai} onChange={p.onAi} disabled={p.busy} />
-            <Compose label="댓글" placeholder="묻거나 고쳐 달라고 적어 주세요" value={text} onChange={(v) => p.setDraft(key, v)} busy={p.busy} autoFocus
+            <Compose label="댓글" placeholder="묻거나 고쳐 달라고 적어 주세요" value={text} onChange={(v) => p.setDraft(key, v)} busy={p.busy} autoFocus extra={good}
               onSend={() => p.onCreate(view.target, text)} />
           </div>
         )}

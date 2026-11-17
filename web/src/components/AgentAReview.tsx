@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentAProjectInfo, AgentAReviewAiCatalog, AgentAReviewAiSettings, AgentAReviewAttachment, AgentAReviewComments, AgentAReviewDoc, AgentAReviewDraft, AgentAReviewImageRegion, AgentAReviewProposal, AgentAReviewVersion } from "@shared/agent-a";
 import { GlassButton } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
-import { labelText, loadLabels, saveLabels, type QuickLabel } from "../lib/agent-a-labels";
+import { THUMBS_UP, labelText, loadLabels, saveLabels, type QuickLabel } from "../lib/agent-a-labels";
 import { buildThreads, myTurn, outline } from "../lib/agent-a-review";
 import { newId } from "../lib/store";
 import { AgentAManage } from "./agent-a/AgentAManage";
@@ -16,7 +16,7 @@ import { DraftEditor } from "./agent-a/DraftEditor";
 import { ImageDraw } from "./agent-a/ImageDraw";
 import { LabelEditor } from "./agent-a/LabelEditor";
 import { ReviewAttachments, uploadImage } from "./agent-a/ReviewAttachments";
-import { ReviewDocument, type ReviewInput, type ReviewMode } from "./agent-a/ReviewDocument";
+import { ReviewDocument, type DiagramDraft, type ReviewInput, type ReviewMode } from "./agent-a/ReviewDocument";
 import { Badge, MQ_DESKTOP, Modal, Sheet, Time, useMediaQuery } from "./ui";
 import "../styles/agent-a.css";
 
@@ -283,6 +283,7 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
     setReload((n) => n + 1);
   };
   const regionDraft: AgentAReviewImageRegion | null = view.kind === "new" && view.target.kind === "region" && panelOpen ? view.target.region : null;
+  const diagramDraft: DiagramDraft | null = view.kind === "new" && view.target.kind === "diagram" && panelOpen ? view.target : null;
 
   if (!info.ui) return <p className="aa-warn" role="status">{info.uiBlocked ?? "Agent-A 문서를 열 수 없습니다"}</p>;
   if (loadError && !doc) {
@@ -351,12 +352,12 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
       labels={labels}
       onDetach={(path) => setImages((cur) => cur.filter((x) => x.path !== path))}
       onCreate={(target, text) => void act(async () => {
-        const key = target.kind === "global" ? "new:global" : target.kind === "region" ? "new:region" : "new:quote";
-        // 같은 글·같은 그림·같은 AI 설정이면 같은 id 로 다시 보낸다(내용이 달라지면 새 댓글이다).
-        const same = `${key}\n${text}\n${images.map((x) => x.path).join(",")}\n${JSON.stringify(ai)}`;
+        const key = target.kind === "global" ? "new:global" : target.kind === "region" ? "new:region" : target.kind === "diagram" ? "new:diagram" : "new:quote";
+        // 같은 글·같은 그림·같은 AI 설정이면 같은 id 로 다시 보낸다(내용이 달라지면 새 댓글이다). 도식 댓글은 고른 자리도 같아야 한다.
+        const same = `${key}\n${text}\n${images.map((x) => x.path).join(",")}\n${JSON.stringify(ai)}${target.kind === "diagram" ? `\n${JSON.stringify(target.anchor)}` : ""}`;
         if (pendingId.current?.key !== same) pendingId.current = { key: same, id: newId() };
         const id = pendingId.current.id;
-        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null, images, ai });
+        await api.agentAReview.addComment(fileId, sessionId, { id, kind: target.kind === "global" ? "global" : "comment", text, quote: target.kind === "quote" ? target.quote : "", region: target.kind === "region" ? target.region : null, diagram: target.kind === "diagram" ? target.anchor : null, images, ai });
         pendingId.current = null;
         setImages([]);
         setDraft(key, "");
@@ -364,6 +365,7 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
         setView({ kind: "thread", id });
         poke.current();
       })}
+      onRegionGood={(region) => markRegionGood(region)}
       onReply={(threadId, text) => void act(async () => {
         await api.agentAReview.reply(fileId, sessionId, threadId, text, ai);
         setDraft(`reply:${threadId}`, "");
@@ -412,6 +414,18 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
     const id = pendingId.current.id;
     await api.agentAReview.addComment(fileId, sessionId, { id, kind: "comment", text, quote, quickLabel: { tip: label.tip ?? null } });
     pendingId.current = null;
+    setNotice(`라벨 ‘${text}’을(를) 붙였습니다. ‘검토 제출’ 때 함께 넘어갑니다.`);
+    poke.current();
+  });
+  // 그림 영역에 '좋아요' 라벨: 영역만 싣고 글은 라벨 글이다(원래 화면의 그림 영역 빠른 라벨과 같다).
+  const markRegionGood = (region: AgentAReviewImageRegion) => void act(async () => {
+    const text = labelText(THUMBS_UP);
+    const key = `label-region\n${JSON.stringify(region)}\n${text}`;
+    if (pendingId.current?.key !== key) pendingId.current = { key, id: newId() };
+    const id = pendingId.current.id;
+    await api.agentAReview.addComment(fileId, sessionId, { id, kind: "comment", text, quote: "", region, quickLabel: { tip: null } });
+    pendingId.current = null;
+    setView({ kind: "list" });
     setNotice(`라벨 ‘${text}’을(를) 붙였습니다. ‘검토 제출’ 때 함께 넘어갑니다.`);
     poke.current();
   });
@@ -504,12 +518,14 @@ export function AgentAReview({ fileId, projectId, title, info }: { fileId: strin
               activeThread={openThread}
               canComment={canWrite}
               regionDraft={regionDraft}
+              diagramDraft={diagramDraft}
               mode={tool.mode}
               input={tool.input}
               onQuote={(quote) => show({ kind: "new", target: { kind: "quote", quote } })}
               onDelete={markDeletion}
               onAsk={(quote) => { setChatQuote(quote); show({ kind: "chat" }); }}
               onRegion={(region) => show({ kind: "new", target: { kind: "region", region } })}
+              onDiagram={(draft) => show({ kind: "new", target: { kind: "diagram", ...draft } })}
               onOpenThread={(id) => show({ kind: "thread", id })}
               labels={labels}
               onLabel={markLabel}

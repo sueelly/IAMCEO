@@ -142,7 +142,28 @@
 .aar-diagram { margin:12px 0; padding:10px 12px; border-radius:12px; background:var(--field); box-shadow:var(--field-ring); }
 .aar-diagram__cap { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0 10px; margin-bottom:6px; font-size:12px; font-weight:600; color:var(--ink-3); }
 .aar-diagram__cap .aa-link { min-height:28px; font-size:12px; }
+.aar-diagram__frame { position:relative; width:fit-content; max-width:100%; margin:0 auto; }
 .aar-diagram__img { display:block; max-width:100%; height:auto; margin:0 auto; border-radius:8px; background:#fff; user-select:none; -webkit-user-select:none; }
+/* 도식의 부분에 댓글: 그림 위에 겹친 투명한 단추(부분)와 번호 표시. 모양은 그림 영역의 표시와 같다. */
+.aar-diagram__layer { position:absolute; inset:0; }
+.aar-diagram__layer[data-pick] { cursor:pointer; }
+.aar-diagram__part { position:absolute; padding:0; border-radius:6px; cursor:pointer; }
+.aar-diagram__part::before { content:""; position:absolute; inset:-4px; }
+.aar-diagram__part[data-kind="edge"] { border-radius:999px; }
+.aar-diagram__part:hover, .aar-diagram__part:focus-visible { background:rgb(var(--violet-rgb) / .14); box-shadow:inset 0 0 0 2px var(--focus); outline:none; }
+.aar-diagram__part[data-kind="cluster"]:hover, .aar-diagram__part[data-kind="cluster"]:focus-visible { background:rgb(var(--violet-rgb) / .06); }
+.aar-diagram__ring { position:absolute; border-radius:6px; background:rgb(var(--violet-rgb) / .12); box-shadow:inset 0 0 0 2px var(--focus); pointer-events:none; }
+.aar-diagram__ring[data-done] { background:rgb(var(--ink-rgb) / .06); box-shadow:inset 0 0 0 2px rgb(var(--ink-rgb) / .4); }
+.aar-diagram__ring[data-active] { background:rgb(var(--violet-rgb) / .28); box-shadow:inset 0 0 0 3px var(--link); }
+.aar-diagram__ring[data-whole] { border-radius:8px; background:none; }
+.aar-diagram__mark { position:absolute; left:calc(-2px + var(--nth, 0) * 24px); top:-2px; min-width:22px; height:22px; padding:0 5px; border-radius:6px 0 6px 0; font-size:12px; font-weight:700; line-height:22px; text-align:center; color:#fff; background:var(--focus); pointer-events:auto; cursor:pointer; }
+.aar-diagram__mark::before { content:""; position:absolute; inset:-5px; }
+.aar-diagram__mark[data-done] { background:rgb(var(--ink-rgb) / .55); }
+.aar-diagram__mark[data-active] { background:var(--link); }
+.aar-diagram__mark:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+@media (pointer:coarse) { .aar-diagram__mark::before { inset:-11px; } .aar-diagram__part::before { inset:-6px; } }
+.aar-diagram__draft { position:absolute; border-radius:6px; background:rgb(var(--violet-rgb) / .2); box-shadow:inset 0 0 0 2px var(--link), 0 0 0 1px #fff; pointer-events:none; }
+.aar-diagram__draft[data-whole] { border-radius:8px; background:none; }
 .aar-diagram__code { margin:0; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; line-height:1.55; white-space:pre; }
 
 /* ── 그림과 영역 ── */
@@ -225,6 +246,12 @@ p.aar-pane__foot { margin:0 12px 12px; }
 .dialog__body .aar-compose { padding-inline:2px; }
 .aar-compose__input { flex:1; min-width:0; min-height:44px; max-height:160px; padding:10px 12px; border-radius:14px; font:inherit; font-size:15px; line-height:1.5; color:var(--ink-1); background:var(--field); box-shadow:var(--field-ring); resize:none; }
 .aar-compose__input:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+/* 그림 영역에 '좋아요' 라벨을 한 번에 붙이는 단추(보내기 옆). */
+.aar-good { flex:none; display:grid; place-items:center; width:36px; height:36px; border-radius:50%; font-size:18px; line-height:1; background:var(--field); box-shadow:var(--field-ring); }
+.aar-good:hover:not(:disabled) { background:var(--hover); }
+.aar-good:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+.aar-good:disabled { opacity:.4; cursor:default; }
+@media (pointer:coarse) { .aar-good { width:44px; height:44px; } }
 
 /* ── 문서 관리·판 ── */
 .aar-manage { display:flex; flex-direction:column; gap:10px; min-width:0; }

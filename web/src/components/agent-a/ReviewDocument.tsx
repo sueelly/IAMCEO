@@ -2,12 +2,13 @@
 // 고른 뒤의 동작은 모드가 정한다: 표시(댓글·삭제 표시·묻기 중 고름) · 댓글(바로 댓글 쓰기) · 삭제 표시(바로 삭제 표시).
 // 댓글·삭제 표시가 달린 문장은 CSS 강조(Highlight)로만 칠한다: 본문 DOM 을 바꾸지 않으므로 고르기·복사가 그대로다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { AgentAReviewImage, AgentAReviewImageRegion } from "@shared/agent-a";
+import type { AgentAReviewDiagramAnchor, AgentAReviewImage, AgentAReviewImageRegion } from "@shared/agent-a";
 import { api, fetchAttachment } from "../../lib/api";
+import { ownerOf, type DiagramBlockInfo } from "../../lib/agent-a-diagram";
 import { THUMBS_UP, labelText, type QuickLabel } from "../../lib/agent-a-labels";
 import { imageFor, regionOf, regionStyle, splitDoc, squash, type ReviewThread } from "../../lib/agent-a-review";
 import { Markdown } from "../ui";
-import { MermaidBlock } from "./MermaidBlock";
+import { MermaidBlock, type DiagramDrawn, type DiagramMark } from "./MermaidBlock";
 
 /** 고른 뒤의 동작. 표시: 뜨는 단추에서 고름 · 댓글: 바로 댓글 쓰기 · 삭제 표시: 바로 삭제 표시를 남김 · 라벨: 바로 라벨 목록을 띄움. */
 export type ReviewMode = "markup" | "comment" | "redline" | "label";
@@ -181,6 +182,31 @@ const Chunk = memo(function Chunk({ text }: { text: string }) {
   return <Markdown text={text} className="aar-md" />;
 });
 
+/** 지금 댓글을 쓰고 있는 도식 자리. line 은 그 도식의 ```mermaid 줄(어느 도식에서 골랐는지)이다. */
+export interface DiagramDraft {
+  anchor: AgentAReviewDiagramAnchor;
+  line: number;
+}
+
+/** 본문의 도식 하나. 그려진 결과를 본문에 알려, 댓글이 어느 도식의 것인지 가리게 한다. */
+const Diagram = memo(function Diagram({ index, code, line, marks, active, draft, canComment, onPick, onOpen, onDrawn }: {
+  index: number;
+  code: string;
+  line: number;
+  marks: DiagramMark[];
+  active: string | null;
+  draft: AgentAReviewDiagramAnchor | null;
+  canComment: boolean;
+  onPick: (draft: DiagramDraft) => void;
+  onOpen: (threadId: string) => void;
+  onDrawn: (index: number, drawn: DiagramDrawn | null | undefined) => void;
+}) {
+  const pick = useCallback((anchor: AgentAReviewDiagramAnchor) => onPick({ anchor, line }), [onPick, line]);
+  const drawn = useCallback((d: DiagramDrawn | null | undefined) => onDrawn(index, d), [onDrawn, index]);
+  return <MermaidBlock code={code} line={line} marks={marks} active={active} draft={draft} canComment={canComment} onPick={pick} onOpen={onOpen} onDrawn={drawn} />;
+});
+const NO_MARKS: DiagramMark[] = [];
+
 export interface ReviewDocumentProps {
   fileId: string;
   session: string;
@@ -191,6 +217,8 @@ export interface ReviewDocumentProps {
   /** 새 댓글을 달 수 있는지(과거 판 보기·닫힌 검토에서는 false). */
   canComment: boolean;
   regionDraft: AgentAReviewImageRegion | null;
+  /** 지금 댓글을 쓰고 있는 도식 자리. */
+  diagramDraft: DiagramDraft | null;
   mode: ReviewMode;
   input: ReviewInput;
   onQuote: (quote: string) => void;
@@ -199,6 +227,8 @@ export interface ReviewDocumentProps {
   /** 고른 글과 함께 문서에 묻는다(문서 대화). 없으면 '묻기' 단추를 보이지 않는다. */
   onAsk?: (quote: string) => void;
   onRegion: (region: AgentAReviewImageRegion) => void;
+  /** 도식의 한 부분(또는 도식 전체)을 골랐다. */
+  onDiagram: (draft: DiagramDraft) => void;
   onOpenThread: (threadId: string) => void;
   /** 빠른 라벨 목록과 붙이기. 없으면 라벨 단추를 보이지 않는다. */
   labels?: readonly QuickLabel[];
@@ -206,14 +236,15 @@ export interface ReviewDocumentProps {
   onEditLabels?: () => void;
 }
 
-export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onOpenThread, labels, onLabel, onEditLabels }: ReviewDocumentProps) {
+export function ReviewDocument({ fileId, session, markdown, images, threads, activeThread, canComment, regionDraft, diagramDraft, mode, input, onQuote, onDelete, onAsk, onRegion, onDiagram, onOpenThread, labels, onLabel, onEditLabels }: ReviewDocumentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ranges = useRef(new Map<string, Range>());
   /** 고른 글과 뜨는 단추의 자리. menu 면 단추 대신 라벨 목록을 보인다. */
   const [pick, setPick] = useState<{ quote: string; left: number; top: number; menu?: boolean } | null>(null);
   const labelList = useMemo(() => (onLabel ? [THUMBS_UP, ...(labels ?? [])] : []), [labels, onLabel]);
   const parts = useMemo(() => splitDoc(markdown), [markdown]);
-  const quoteThreads = useMemo(() => threads.filter((t) => t.root.quote && !t.root.region && t.root.kind !== "global"), [threads]);
+  // 도식 댓글의 원문 칸에는 그 부분의 글이 실린다. 본문의 문장이 아니므로 문장 강조에서 뺀다.
+  const quoteThreads = useMemo(() => threads.filter((t) => t.root.quote && !t.root.region && !t.root.diagram && t.root.kind !== "global"), [threads]);
   /** 고른 글로 할 일. 표시 모드는 단추를 띄우고, 나머지 모드는 바로 한다(pointer 로 고른 때만. 자판으로 고르는 중에는 단추를 띄운다). */
   const act = useCallback((quote: string, at: { left: number; top: number }, direct: boolean) => {
     if (direct && mode === "comment") return onQuote(quote);
@@ -252,6 +283,29 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
     }
     return by;
   }, [threads]);
+
+  // 도식 댓글을 도식별로 가른다. 도식이 그려져야(부분을 알아야) 어느 도식의 것인지 안다.
+  const [drawnBy, setDrawnBy] = useState<Record<number, DiagramDrawn | null | undefined>>({});
+  const onDrawn = useCallback((index: number, drawn: DiagramDrawn | null | undefined) => setDrawnBy((old) => (old[index] === drawn ? old : { ...old, [index]: drawn })), []);
+  const diagramMarks = useMemo(() => {
+    const by = new Map<number, DiagramMark[]>();
+    const at: number[] = [];
+    const blocks: DiagramBlockInfo[] = [];
+    parts.forEach((part, i) => {
+      if (part.kind !== "mermaid") return;
+      at.push(i);
+      blocks.push({ line: part.line, lines: part.code.split("\n").length, drawn: drawnBy[i] });
+    });
+    if (!blocks.length) return by;
+    for (const t of threads) {
+      const anchor = t.root.diagram;
+      const owner = anchor ? ownerOf(anchor, blocks) : null;
+      if (!anchor || owner === null) continue;
+      const index = at[owner]!;
+      by.set(index, [...(by.get(index) ?? []), { threadId: t.root.id, anchor, done: t.done }]);
+    }
+    return by;
+  }, [threads, parts, drawnBy]);
 
   // 댓글이 달린 문장을 칠한다. 본문이나 댓글 목록이 바뀔 때만 다시 찾는다.
   const quoteKey = quoteThreads.map((t) => `${t.root.id}:${t.done ? 1 : 0}:${t.root.kind}:${t.root.quote.length}`).join("|");
@@ -339,7 +393,7 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
   // 뜨는 단추 묶음의 반 폭(가운데 맞춤이라 화면 밖으로 나가지 않게 자리를 잡는 데 쓴다). 단추 수는 모드가 정한다.
   const pickHalf = pick?.menu ? 118 : mode === "markup" ? (onAsk ? 118 : 86) + (onLabel ? 30 : 0) : mode === "redline" ? 56 : 44;
   const onClick = (e: { clientX: number; clientY: number; target: EventTarget }) => {
-    if (!(e.target instanceof Element) || e.target.closest("a, button, .aar-fig")) return;
+    if (!(e.target instanceof Element) || e.target.closest("a, button, .aar-fig, .aar-diagram")) return;
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;
     const caret = caretAt(e.clientX, e.clientY);
@@ -369,7 +423,10 @@ export function ReviewDocument({ fileId, session, markdown, images, threads, act
     <div ref={rootRef} className="aar-doc" data-input={canComment ? input : undefined} data-mode={mode} onPointerDown={() => { dragging.current = true; setPick(null); }} onClick={onClick}>
       {parts.map((part, i) => {
         if (part.kind === "markdown") return <Chunk key={`m${i}`} text={part.text} />;
-        if (part.kind === "mermaid") return <MermaidBlock key={`d${i}`} code={part.code} />;
+        if (part.kind === "mermaid") {
+          return <Diagram key={`d${i}`} index={i} code={part.code} line={part.line} marks={diagramMarks.get(i) ?? NO_MARKS} active={activeThread} draft={diagramDraft && diagramDraft.line === part.line ? diagramDraft.anchor : null}
+            canComment={canComment} onPick={onDiagram} onOpen={onOpenThread} onDrawn={onDrawn} />;
+        }
         const image = imageFor(images, part.src, part.line);
         if (!image) return <p key={`i${i}`} className="aar-fig__wait">그림 정보를 찾지 못했습니다: {part.alt}</p>;
         const marks = marksBy.get(`${image.src}\n${image.sourceLine}`) ?? marksBy.get(`${image.src}\n`) ?? [];

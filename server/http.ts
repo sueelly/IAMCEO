@@ -634,11 +634,14 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("POST", "/api/agent-a/docs/:id/review/comments", async (req, _url, [id]) => {
       const box = z.strictObject({ x: z.number().int(), y: z.number().int(), w: z.number().int(), h: z.number().int() });
       const region = z.strictObject({ v: z.literal(1), src: z.string().max(2048), sourceLine: z.number().int().nullable(), naturalWidth: z.number().int(), naturalHeight: z.number().int(), box });
+      // 도식 자리의 겉모양만 본다. 갈래·종류별 규칙은 addComment 가 본다(틀리면 AGENT_A_INVALID_DIAGRAM_ANCHOR).
+      const diagram = z.strictObject({ v: z.literal(1), family: z.enum(["flowchart", "state", "class", "er", "requirement", "sequence", "other", "graphviz"]), kind: z.enum(["node", "edge", "cluster", "diagram"]), id: z.string().max(400).optional(), from: z.string().max(400).optional(), to: z.string().max(400).optional(), label: z.string().max(400),
+        sourceLine: z.tuple([z.number().int(), z.number().int()]).nullable() });
       const ai = reviewAi;
       const image = z.strictObject({ path: z.string().max(200), name: z.string().max(200) });
-      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(),
+      const body = await parseBody(req, z.strictObject({ session: z.string(), id: z.string().max(200), kind: z.enum(["comment", "global", "deletion"]), text: z.string().max(30_000), quote: z.string().max(60_000).optional(), region: region.nullable().optional(), diagram: diagram.nullable().optional(),
         images: z.array(image).max(10).optional(), ai: ai.nullable().optional(), quickLabel: z.strictObject({ tip: z.string().max(2_000).nullable().optional() }).nullable().optional() }));
-      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, images: body.images, ai: body.ai ?? null, quickLabel: body.quickLabel ?? null }));
+      return Response.json(await requireReview().addComment(id!, body.session, { id: body.id, kind: body.kind, text: body.text, quote: body.quote, region: body.region ?? null, diagram: body.diagram ?? null, images: body.images, ai: body.ai ?? null, quickLabel: body.quickLabel ?? null }));
     }),
     route("POST", "/api/agent-a/docs/:id/review/replies", async (req, _url, [id]) => {
       const body = await parseBody(req, z.strictObject({ session: z.string(), inReplyTo: z.string().max(200), text: z.string().max(30_000), ai: reviewAi.nullable().optional() }));

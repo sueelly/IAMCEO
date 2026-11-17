@@ -167,7 +167,7 @@ describe("검토 길: 댓글", () => {
 
   test("Agent-A 가 준 모양에서 화면이 쓰는 칸만 옮긴다", () => {
     expect(toAnnotation({ id: "a", type: "GLOBAL_COMMENT", text: "글", originalText: "", createdA: 5, secret: "x", implementationProposal: "앱 수정" })).toEqual({
-      id: "a", kind: "global", text: "글", quote: "", inReplyTo: null, ai: false, author: null, createdAt: 5, updatedAt: null, resolved: false, region: null, writing: false, error: null, canRetry: false, branchOf: null, extra: true, images: [], aiSettings: null, label: false, labelTip: null,
+      id: "a", kind: "global", text: "글", quote: "", inReplyTo: null, ai: false, author: null, createdAt: 5, updatedAt: null, resolved: false, region: null, diagram: null, writing: false, error: null, canRetry: false, branchOf: null, extra: true, images: [], aiSettings: null, label: false, labelTip: null,
     });
     // 빠른 라벨: 표시와 지침을 옮긴다(AI 답에는 싣지 않는다)
     expect(toAnnotation({ id: "l", type: "COMMENT", text: "❓ 더 설명해 주세요", originalText: "고른 글", isQuickLabel: true, quickLabelTip: "예를 들어 설명" })).toMatchObject({ kind: "comment", label: true, labelTip: "예를 들어 설명" });

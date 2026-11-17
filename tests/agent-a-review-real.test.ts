@@ -10,8 +10,11 @@ import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { openDb } from "../server/db.ts";
 import { AgentAClient, AgentAService } from "../server/integrations/agent-a.ts";
+import type { AgentAImageInput, AgentAReviewDiagramAnchor } from "../shared/agent-a.ts";
 import { AgentAReview } from "../server/integrations/agent-a-review.ts";
 import { ApiError, Store } from "../server/store.ts";
+import { anchorFor, type DiagramPart } from "../web/src/lib/agent-a-diagram.ts";
+import { splitDoc } from "../web/src/lib/agent-a-review.ts";
 import { pngBase64 } from "./fixtures/png.ts";
 
 const REAL = process.env.IAMCEO_AGENT_A_REAL_URL ?? null;
@@ -19,7 +22,7 @@ const ORIGINAL = process.env.IAMCEO_AGENT_A_REAL_PROTOCOL === "1";
 const MARKDOWN = "머리 문단입니다.\n\n## 배경\n\n배경 문장 하나. 배경 문장 둘.\n\n## 계획\n\n계획은 세 단계입니다.";
 
 type Hook = (input: string, init: RequestInit, res: Response) => void | Promise<void>;
-async function setup(title: string) {
+async function setup(title: string, content: { markdown?: string; images?: AgentAImageInput[] } = {}) {
   const store = new Store(openDb(join(mkdtempSync(join(tmpdir(), "iamceo-aa-real-")), "iamceo.db")), new Bus());
   const project = store.createProject({ name: "실제 규약 시험", cwd: tmpdir() });
   // 실제 Agent-A 가 응답한 뒤에 끼어드는 고리. 저장은 됐는데 응답만 잃는 경우를 만든다(던지면 서버는 응답을 받지 못한 것이 된다).
@@ -31,7 +34,7 @@ async function setup(title: string) {
   };
   const service = new AgentAService(store, new AgentAClient({ baseUrl: REAL!, appToken: null, agentToken: null }, transport));
   const review = new AgentAReview(service);
-  const view = await service.createDoc(project.id, { title, markdown: MARKDOWN });
+  const view = await service.createDoc(project.id, { title, markdown: content.markdown ?? MARKDOWN, images: content.images });
   const doc = await review.open(view.fileId);
   // 다른 창(원래 Agent-A 화면)이 직접 Agent-A 에 쓴다. IAMCEO 를 거치지 않는다.
   const other = async (method: string, path: string, body?: unknown) => {
@@ -350,6 +353,67 @@ describe.skipIf(!REAL || ORIGINAL)("실제 Agent-A(초안 규약 2): 검토 길"
     expect(full).toContain("(review attachments: 1)");
   }, 90_000);
 
+  test("R3 도식 부분 댓글과 그림 영역의 '좋아요' 라벨: 자리와 라벨이 실제 규약의 초안에 그대로 남고 다시 읽힌다. 틀린 자리와 닫힌 검토에는 쓰지 않는다", async () => {
+    const flow = ["graph TD", "  A[시작] --> B[검토]", "  B -->|통과| C[끝]"];
+    const s = await setup("실제: 도식 댓글", { markdown: ["도식이 있는 문서입니다.", "", "```mermaid", ...flow, "```", "", "끝 문장입니다."].join("\n"), images: [{ title: "구성도", name: "map.png", mediaType: "image/png", base64: pngBase64(400, 200) }] });
+    await s.other("POST", "/api/draft", { draftGeneration: 0, annotations: [], globalAttachments: [], editedMarkdown: `${s.doc.canonical}\n\n다른 창의 편집` });
+    // 화면이 하는 대로: 본문에서 도식 조각을 찾아(```mermaid 줄 번호) 그리는 칸이 돌려준 부분으로 자리를 만든다.
+    const diagram = splitDoc(s.doc.markdown).find((p) => p.kind === "mermaid")!;
+    if (diagram.kind !== "mermaid") throw new Error("도식 조각이 없습니다");
+    expect([diagram.code, s.doc.markdown.split("\n")[diagram.line - 1]]).toEqual([flow.join("\n"), "```mermaid"]);
+    const box = { x: 0.1, y: 0.1, w: 0.2, h: 0.2 };
+    const partB: DiagramPart = { kind: "node", id: "B", label: "검토", box, hits: [box] };
+    const partBC: DiagramPart = { kind: "edge", from: "B", to: "C", label: "통과", box, hits: [box] };
+    const node = anchorFor("flowchart", partB, diagram.code, diagram.line);
+    const edge = anchorFor("flowchart", partBC, diagram.code, diagram.line);
+    const whole = anchorFor("flowchart", null, diagram.code, diagram.line);
+    expect([node.sourceLine, edge.sourceLine, whole.sourceLine]).toEqual([[diagram.line + 2, diagram.line + 2], [diagram.line + 3, diagram.line + 3], [diagram.line + 1, diagram.line + 3]]);
+    await s.review.addComment(s.fileId, s.sid, { id: "real-dg-node", kind: "comment", text: "이 단계는 누가 하나요?", diagram: node });
+    await s.review.addComment(s.fileId, s.sid, { id: "real-dg-edge", kind: "comment", text: "통과 기준이 뭔가요?", diagram: edge });
+    await s.review.addComment(s.fileId, s.sid, { id: "real-dg-whole", kind: "comment", text: "도식이 너무 단순합니다", diagram: whole });
+    // 같은 요청의 재전송은 처음 결과, 틀린 자리는 보내지 않는다
+    expect((await failure(s.review.addComment(s.fileId, s.sid, { id: "real-dg-node", kind: "comment", text: "이 단계는 누가 하나요?", diagram: node }))).status).toBe(200);
+    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-dg-bad", kind: "comment", text: "틀린 자리", diagram: { ...node, family: "pie" } as never }))).toEqual({ status: 400, code: "AGENT_A_INVALID_DIAGRAM_ANCHOR" });
+    // 그림 영역에 '좋아요' 라벨 한 번
+    const image = s.doc.images[0]!;
+    const region = { v: 1 as const, src: image.src, sourceLine: image.sourceLine, naturalWidth: image.width, naturalHeight: image.height, box: { x: 40, y: 40, w: 160, h: 100 } };
+    await s.review.addComment(s.fileId, s.sid, { id: "real-rg-good", kind: "comment", text: "👍 좋아요", quote: "", region, quickLabel: { tip: null } });
+    // 실제 Agent-A 의 초안: 다른 창의 편집은 그대로이고, 자리·영역·라벨 표시가 원래 화면과 같은 칸에 남았다
+    const raw = (await s.other("GET", "/api/draft")).json!;
+    expect(raw.editedMarkdown).toContain("다른 창의 편집");
+    expect(raw.annotations.map((a: Record<string, unknown>) => [a.id, a.type, a.originalText, a.diagramAnchor ?? null, a.imageRegion ?? null, a.isQuickLabel ?? null, "quickLabelTip" in a])).toEqual([
+      ["real-dg-node", "COMMENT", "검토", node, null, null, false],
+      ["real-dg-edge", "COMMENT", "통과", edge, null, null, false],
+      ["real-dg-whole", "COMMENT", "graph TD", whole, null, null, false],
+      ["real-rg-good", "COMMENT", "", null, region, true, false],
+    ]);
+    // 실제 Agent-A 가 그 영역을 원본 그림의 바뀌지 않는 자리로 풀어 두었다
+    const session = (await s.other("GET", `/api/plannotator/sessions/${s.sid}`)).json!;
+    expect(session.image_region_targets["real-rg-good"]).toMatchObject({ kind: "region", bbox: { x: 0.1, y: 0.2, width: 0.4, height: 0.5 } });
+    // 다시 읽기: 댓글마다 답이 시작됐고, 자리·영역·라벨이 돌아온다
+    const list = await until(() => s.review.comments(s.fileId, s.sid, null), (c) => (c?.annotations.filter((a) => a.ai && !a.writing).length ?? 0) >= 4, "도식 댓글과 라벨의 답");
+    const mine = list!.annotations.filter((a) => !a.ai);
+    expect(mine.map((a) => [a.id, a.quote, a.diagram, a.region, a.label])).toEqual([
+      ["real-dg-node", "검토", node, null, false],
+      ["real-dg-edge", "통과", edge, null, false],
+      ["real-dg-whole", "graph TD", whole, null, false],
+      ["real-rg-good", "", null, region, true],
+    ]);
+    expect(list!.annotations.filter((a) => a.ai).map((a) => a.text)).toContain("시험 답: 이 단계는 누가 하나요?");
+    // 제출하면 자리 한 줄과 라벨이 함께 넘어가고, 닫힌 검토에는 새 도식 댓글을 받지 않는다
+    const draft = await s.review.draft(s.fileId, s.sid);
+    await s.review.submit(s.fileId, s.sid, { revision: draft.revision, decision: "feedback" });
+    const full = (await s.review.manage(s.fileId)).feedback.map((f) => f.message).find((text) => text.includes("# Plan Feedback"))!;
+    expect(full).toContain(`(diagram: node 검토 (B), line ${diagram.line + 2})`);
+    expect(full).toContain(`(diagram: edge 통과 (B → C), line ${diagram.line + 3})`);
+    expect(full).toContain(`(diagram: whole flowchart, lines ${diagram.line + 1}–${diagram.line + 3})`);
+    expect(full).toContain("[👍 좋아요] General feedback");
+    expect(full).toContain(`(image region: ${image.src})`);
+    expect(await failure(s.review.addComment(s.fileId, s.sid, { id: "real-dg-late", kind: "comment", text: "제출 뒤", diagram: node }))).toEqual({ status: 409, code: "AGENT_A_ALREADY_DECIDED" });
+    // 거절된 댓글은 남지 않았다: 닫힌 검토를 다시 읽으면 넷 그대로다(실제 서버는 제출 뒤 초안 길을 닫으므로 검토 댓글 길로 읽는다)
+    expect((await s.review.comments(s.fileId, s.sid, null))!.annotations.filter((a) => !a.ai).map((a) => a.id)).toEqual(["real-dg-node", "real-dg-edge", "real-dg-whole", "real-rg-good"]);
+  }, 90_000);
+
   test("문서 대화 가르기와 AI 의 권한 요청: 허용·거절·멈춤", async () => {
     const s = await setup("실제: 가르기와 권한");
     for (const [id, prompt] of [["real-f-0001", "첫 질문"], ["real-f-0002", "둘째 질문"]] as const) await lines(await s.review.chatAsk(s.fileId, s.sid, { id, prompt }));
@@ -601,6 +665,7 @@ describe.skipIf(!REAL || !ORIGINAL)("실제 원래 Agent-A(c559881): 안전하�
     const up = await s.review.upload(s.fileId, s.sid, { name: "a.png", mediaType: "image/png", base64: pngBase64(20, 10) });
     for (const attempt of [
       () => s.review.addComment(s.fileId, s.sid, { id: "orig-label-1", kind: "comment", text: "👍 좋아요", quote: "배경 문장 하나.", quickLabel: {} }),
+      () => s.review.addComment(s.fileId, s.sid, { id: "orig-diagram-1", kind: "comment", text: "도식 댓글", diagram: { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: null } }),
       () => s.review.saveAttachments(s.fileId, s.sid, { attachments: [up], revision: 0 }),
     ]) expect(await failure(attempt())).toEqual({ status: 409, code: "AGENT_A_UNSUPPORTED" });
     const draft = (await s.other("GET", "/api/draft")).json!;

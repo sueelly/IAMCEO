@@ -27,6 +27,7 @@ import type {
   AgentAReviewAnnotation,
   AgentAReviewCommentReq,
   AgentAReviewComments,
+  AgentAReviewDiagramAnchor,
   AgentAReviewDoc,
   AgentAReviewImage,
   AgentAReviewImageRegion,
@@ -95,6 +96,69 @@ export function parseRegion(v: unknown): AgentAReviewImageRegion | null {
   return { v: 1, src, sourceLine: (line as number | null | undefined) ?? null, naturalWidth: NW!, naturalHeight: NH!, box: { x: X!, y: Y!, w: W!, h: H! } };
 }
 
+const DIAGRAM_FAMILIES = new Set<string>(["flowchart", "state", "class", "er", "requirement", "sequence", "other", "graphviz"]);
+const DIAGRAM_KINDS = new Set<string>(["node", "edge", "cluster", "diagram"]);
+const DIAGRAM_KEYS = new Set<string>(["v", "family", "kind", "id", "from", "to", "label", "sourceLine"]);
+/** 자리에 싣는 이름·글의 길이. 원래 화면도 이 길이까지만 둔다. */
+const DIAGRAM_TEXT = 400;
+
+/**
+ * 도식 자리(원래 Agent-A 화면이 주석에 싣는 diagramAnchor)를 읽는다. 원래 화면이 읽는 규칙과 같다:
+ * 판 번호·갈래·종류가 틀리거나 부분의 이름이 없으면 null(댓글은 자리 없는 댓글로 남는다), 긴 글은 줄이고, 줄 번호만 틀리면 줄만 버린다.
+ */
+export function parseDiagramAnchor(v: unknown): AgentAReviewDiagramAnchor | null {
+  if (!obj(v) || v.v !== 1 || typeof v.family !== "string" || !DIAGRAM_FAMILIES.has(v.family) || typeof v.kind !== "string" || !DIAGRAM_KINDS.has(v.kind)) return null;
+  const text = (x: unknown): string | undefined => (typeof x === "string" ? x.slice(0, DIAGRAM_TEXT) : undefined);
+  const id = text(v.id), from = text(v.from), to = text(v.to);
+  if (v.kind !== "diagram" && id === undefined && (from === undefined || to === undefined)) return null;
+  const line = v.sourceLine;
+  const sourceLine = Array.isArray(line) && line.length === 2 && line.every((n) => Number.isSafeInteger(n) && (n as number) > 0) ? ([line[0], line[1]] as [number, number]) : null;
+  return {
+    v: 1,
+    family: v.family as AgentAReviewDiagramAnchor["family"],
+    kind: v.kind as AgentAReviewDiagramAnchor["kind"],
+    ...(id !== undefined ? { id } : {}),
+    ...(from !== undefined ? { from } : {}),
+    ...(to !== undefined ? { to } : {}),
+    label: text(v.label) ?? "",
+    sourceLine,
+  };
+}
+
+/**
+ * 화면이 보낸 도식 자리. 쓸 때는 조금이라도 틀리면 받지 않는다(줄이거나 고쳐서 싣지 않는다).
+ * 이 화면은 Mermaid 도식만 그리므로 그 갈래만 받는다. 노드·묶음은 이름(id), 선은 양 끝(from·to)이나 번호(id), 도식 전체는 이름 없이.
+ */
+function diagramAnchorIn(v: unknown): AgentAReviewDiagramAnchor {
+  const bad = (): never => {
+    throw new ApiError(400, "도식에서 고른 자리가 올바르지 않습니다. 부분을 다시 골라 주세요", "AGENT_A_INVALID_DIAGRAM_ANCHOR");
+  };
+  const a = parseDiagramAnchor(v);
+  if (!a || !obj(v) || a.family === "graphviz" || Object.keys(v).some((k) => !DIAGRAM_KEYS.has(k))) return bad();
+  for (const key of ["id", "from", "to"] as const) {
+    const x = v[key];
+    if (x !== undefined && (typeof x !== "string" || !x || x.length > DIAGRAM_TEXT)) bad();
+  }
+  if (typeof v.label !== "string" || v.label.length > DIAGRAM_TEXT) bad();
+  if (v.sourceLine !== null && (a.sourceLine === null || a.sourceLine[0] > a.sourceLine[1] || a.sourceLine[1] > 1_000_000)) bad();
+  const named = a.id !== undefined, ends = a.from !== undefined || a.to !== undefined;
+  if (a.kind === "diagram" ? named || ends : a.kind === "edge" ? ends && (a.from === undefined || a.to === undefined) : !named || ends) bad();
+  return a;
+}
+
+/** 도식 자리의 원문 칸에 싣는 글: 그 부분에 보이는 글, 없으면 선의 양 끝, 없으면 이름(원래 화면과 같다). */
+const diagramText = (a: AgentAReviewDiagramAnchor): string => a.label || (a.from !== undefined && a.to !== undefined ? `${a.from} → ${a.to}` : a.id ?? "");
+
+/** 검토 제출 글에 싣는 도식 자리 한 줄: 종류 · 보이는 글 · (이름) · 문서 줄. */
+function diagramWhere(a: AgentAReviewDiagramAnchor): string {
+  const line = a.sourceLine ? (a.sourceLine[1] > a.sourceLine[0] ? `, lines ${a.sourceLine[0]}–${a.sourceLine[1]}` : `, line ${a.sourceLine[0]}`) : "";
+  if (a.kind === "diagram") return `whole ${a.family}${line}`;
+  const flat = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
+  const ref = flat(a.id ?? (a.from !== undefined && a.to !== undefined ? `${a.from} → ${a.to}` : ""));
+  const label = flat(a.label) || ref;
+  return `${a.kind} ${label}${ref && ref !== label ? ` (${ref})` : ""}${line}`;
+}
+
 /** Agent-A 의 댓글 한 줄을 화면 모양으로. 모양이 맞지 않으면 null. */
 export function toAnnotation(raw: unknown): AgentAReviewAnnotation | null {
   if (!obj(raw) || typeof raw.id !== "string" || !raw.id) return null;
@@ -115,6 +179,7 @@ export function toAnnotation(raw: unknown): AgentAReviewAnnotation | null {
     updatedAt: num(raw.updatedAt),
     resolved: raw.resolved === true,
     region: ai ? null : parseRegion(raw.imageRegion),
+    diagram: ai ? null : parseDiagramAnchor(raw.diagramAnchor),
     writing: ai && !err && (!text.trim() || WRITING.has(text.trim())),
     error: err,
     canRetry: raw.canRetry === true,
@@ -182,6 +247,8 @@ export function feedbackText(markdown: string, annotations: Json[], edited: stri
       if (str(a.quickLabelTip)) parts.push(`> ${str(a.quickLabelTip).replace(/\s+/g, " ")}`);
     } else if (text) parts.push(...text.split("\n").map((l) => `> ${l}`));
     if (obj(a.imageRegion)) parts.push(`(image region: ${str(a.imageRegion.src)})`);
+    const anchor = parseDiagramAnchor(a.diagramAnchor);
+    if (anchor) parts.push(`(diagram: ${diagramWhere(anchor)})`);
     if (Array.isArray(a.images) && a.images.length) parts.push(`(attachments: ${a.images.length})`);
     parts.push("");
   });
@@ -433,7 +500,7 @@ export class AgentAReview {
   }
 
   /**
-   * 새 댓글(문장·전체·그림 영역·삭제 표시). 검토 초안에 주석 하나만 더한다. 그때 Agent-A 가 답을 시작한다(삭제 표시는 답이 없다).
+   * 새 댓글(문장·전체·그림 영역·도식의 부분·삭제 표시). 검토 초안에 주석 하나만 더한다. 그때 Agent-A 가 답을 시작한다(삭제 표시는 답이 없다).
    * - 초안을 읽어 통째로 다시 쓰지 않으므로 다른 창이 그사이 저장한 직접 편집·첨부·주석이 그대로 남는다.
    * - 같은 id·같은 내용으로 다시 보내면 Agent-A 가 처음 결과를 확인해 준다(댓글은 하나). 같은 id 로 다른 내용이면 거절한다.
    * - 지난 판의 검토·제출로 닫힌 검토에는 새 댓글을 받지 않는다. 그 확인은 Agent-A 가 쓰기와 같은 트랜잭션에서 한다.
@@ -444,7 +511,14 @@ export class AgentAReview {
     if (!ANNOTATION.test(req.id)) throw new ApiError(400, "댓글 id 가 올바르지 않습니다");
     if (req.kind !== "comment" && req.kind !== "global" && req.kind !== "deletion") throw new ApiError(400, "댓글 종류가 올바르지 않습니다");
     const text = (req.text ?? "").trim();
-    const quote = req.kind === "global" ? "" : (req.quote ?? "");
+    // 도식의 한 부분(또는 도식 전체)에 다는 댓글: 원래 화면처럼 자리(diagramAnchor)를 싣고, 원문 칸에는 그 부분의 글을 둔다.
+    // 삭제 표시·전체 댓글·그림 영역·라벨과 함께 쓰는 길은 원래 화면에도 없다.
+    let diagram: AgentAReviewDiagramAnchor | null = null;
+    if (req.diagram != null) {
+      if (req.kind !== "comment" || req.region != null || req.quickLabel != null) throw new ApiError(400, "도식의 부분에는 댓글만 답니다");
+      diagram = diagramAnchorIn(req.diagram);
+    }
+    const quote = diagram ? diagramText(diagram) : req.kind === "global" ? "" : (req.quote ?? "");
     if (req.kind === "deletion" ? !quote.trim() : !text) throw new ApiError(400, req.kind === "deletion" ? "지울 글을 골라 주세요" : "댓글은 1~30000자입니다");
     if (text.length > MAX_TEXT) throw new ApiError(400, "댓글은 1~30000자입니다");
     if (quote.length > MAX_QUOTE) throw new ApiError(400, "고른 글이 너무 깁니다");
@@ -479,6 +553,7 @@ export class AgentAReview {
         ...(text ? { text } : {}),
         originalText: quote,
         ...(region ? { imageRegion: region } : {}),
+        ...(diagram ? { diagramAnchor: diagram } : {}),
         ...(images.length ? { images } : {}),
         ...(ai ? { aiSettings: ai } : {}),
         ...(label ? { isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) } : {}),

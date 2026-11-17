@@ -212,6 +212,27 @@ export interface AgentAReviewImageRegion {
   box: { x: number; y: number; w: number; h: number };
 }
 
+/** 도식의 갈래. 그려진 도식이 스스로 밝히는 종류다. graphviz 는 원래 Agent-A 화면이 남긴 자리를 읽을 때만 나온다(이 화면은 Mermaid 만 그린다). */
+export type AgentADiagramFamily = "flowchart" | "state" | "class" | "er" | "requirement" | "sequence" | "other" | "graphviz";
+/** 도식에서 댓글을 다는 자리의 종류. diagram 은 도식 전체다. */
+export type AgentADiagramKind = "node" | "edge" | "cluster" | "diagram";
+
+/**
+ * 도식의 한 부분에 단 댓글의 자리. 원래 Agent-A 화면이 주석에 싣는 diagramAnchor 와 같은 모양이라 두 화면이 서로의 댓글을 읽는다.
+ * 자리는 도식 글에 적힌 이름이다(노드·묶음은 id, 선은 양 끝 from·to 나 번호 id). 그려진 좌표는 싣지 않는다(다시 그리면 달라진다).
+ * label 은 쓴 때에 그 부분에 보이던 글, sourceLine 은 그 부분이 적힌 문서 줄(1부터, [첫 줄, 끝 줄])이고 못 찾았으면 null 이다.
+ */
+export interface AgentAReviewDiagramAnchor {
+  v: 1;
+  family: AgentADiagramFamily;
+  kind: AgentADiagramKind;
+  id?: string;
+  from?: string;
+  to?: string;
+  label: string;
+  sourceLine: [number, number] | null;
+}
+
 /** 본문에 든 그림. src 는 Agent-A 안의 경로이고, 화면은 IAMCEO 서버의 그림 길로 받는다. */
 export interface AgentAReviewImage {
   src: string;
@@ -270,6 +291,8 @@ export interface AgentAReviewAnnotation {
   updatedAt: number | null;
   resolved: boolean;
   region: AgentAReviewImageRegion | null;
+  /** 도식의 한 부분(또는 도식 전체)에 단 댓글이면 그 자리. 아니거나 자리의 모양이 틀리면 null. */
+  diagram: AgentAReviewDiagramAnchor | null;
   /** 답을 아직 쓰는 중인지(대기·준비). */
   writing: boolean;
   error: { code: string; message: string } | null;
@@ -452,6 +475,8 @@ export interface AgentAReviewCommentReq {
   text: string;
   quote?: string;
   region?: AgentAReviewImageRegion | null;
+  /** 도식의 한 부분(또는 도식 전체)에 다는 댓글이면 그 자리. kind 는 comment 여야 하고, 고른 글(quote)·그림 영역·라벨과 함께 쓰지 않는다. */
+  diagram?: AgentAReviewDiagramAnchor | null;
   images?: AgentAReviewAttachment[];
   ai?: AgentAReviewAiSettings | null;
   /** 빠른 라벨로 남기는 댓글이면 준다. 글(text)은 '이모지 이름' 한 줄이고, tip 은 그 라벨에 딸린 지침이다. 고른 글이나 그림 영역이 있어야 한다. */

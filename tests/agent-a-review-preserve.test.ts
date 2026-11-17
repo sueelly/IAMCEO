@@ -922,7 +922,7 @@ describe("도식 블록", () => {
   test("mermaid 울타리는 도식 조각으로 따로 나누고, 다른 코드 울타리와 닫히지 않은 울타리는 글로 둔다", () => {
     const parts = splitDoc("앞 글\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n```js\nconst a = '```mermaid';\n```\n\n뒤 글\n\n```mermaid\n닫히지 않음");
     expect(parts.map((p) => p.kind)).toEqual(["markdown", "mermaid", "markdown"]);
-    expect(parts[1]).toEqual({ kind: "mermaid", code: "graph TD\n  A-->B" });
+    expect(parts[1]).toEqual({ kind: "mermaid", code: "graph TD\n  A-->B", line: 3 });
     expect((parts[2] as { text: string }).text).toContain("```js");
     expect((parts[2] as { text: string }).text).toContain("```mermaid\n닫히지 않음");
   });

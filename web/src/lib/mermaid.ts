@@ -2,6 +2,10 @@
 // 보이지 않는 격리된 칸(iframe, 출처 없음)에 서버의 '/vendor/diagram-frame' 을 열고, 도식 글을 메시지로 보내 그림(SVG 글)만 돌려받는다.
 // 칸은 문서에 도식이 있을 때 처음 만든다. 돌려받은 SVG 는 화면에 직접 끼우지 않고 <img> 로만 보인다:
 // 그림으로 열린 SVG 는 스크립트가 돌지 않고, 바깥 주소를 부르지 못하고, 페이지의 다른 곳을 덮거나 꾸밀 수 없다.
+// 칸은 그림과 함께 누를 수 있는 부분(노드·선·묶음)의 이름·글·자리도 돌려준다. 이 값도 믿지 않고 다듬어 쓴다(cleanParts):
+// 화면은 그 자리에 투명한 단추를 놓을 뿐이고, 이름과 글은 글자로만 다룬다.
+import type { AgentADiagramFamily } from "@shared/agent-a";
+import { cleanFamily, cleanParts, type DiagramPart } from "./agent-a-diagram";
 
 const FRAME_SRC = "/vendor/diagram-frame";
 const READY_MS = 45_000;
@@ -26,6 +30,10 @@ export interface DiagramImage {
   svg: string;
   width: number;
   height: number;
+  /** 도식의 갈래. 부분을 가르지 않는 도식은 other 다. */
+  family: Exclude<AgentADiagramFamily, "graphviz">;
+  /** 누를 수 있는 부분들. 자리는 그림 전체를 1 로 본 비율이다. */
+  parts: DiagramPart[];
 }
 
 interface Frame {
@@ -36,12 +44,12 @@ interface Frame {
 let frame: Promise<Frame> | null = null;
 let seq = 0;
 
-function toImage(svg: unknown): DiagramImage {
+function toImage(svg: unknown, family: unknown, parts: unknown): DiagramImage {
   if (typeof svg !== "string" || !/^\s*<svg[\s>]/i.test(svg) || svg.length > 4_000_000) throw new Error("그림을 만들지 못했습니다");
   const box = /viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/.exec(svg);
   const width = box ? Math.ceil(Number(box[1])) : 0, height = box ? Math.ceil(Number(box[2])) : 0;
   if (!width || !height) throw new Error("그림을 만들지 못했습니다");
-  return { svg, width, height };
+  return { svg, width, height, family: cleanFamily(family), parts: cleanParts(parts) };
 }
 
 /** 격리된 칸을 한 번만 만든다. 열지 못하면 다음 부름에서 다시 만든다. */
@@ -70,7 +78,7 @@ function openFrame(): Promise<Frame> {
     const timer = setTimeout(() => drop(new Error("도식 부품을 받지 못했습니다")), READY_MS);
     const onMessage = (event: MessageEvent) => {
       if (event.source !== el.contentWindow) return;
-      const m = event.data as { kind?: unknown; ok?: unknown; id?: unknown; svg?: unknown; error?: unknown } | null;
+      const m = event.data as { kind?: unknown; ok?: unknown; id?: unknown; svg?: unknown; family?: unknown; parts?: unknown; error?: unknown } | null;
       if (!m || typeof m !== "object") return;
       if (m.kind === "aar-diagram-ready") {
         clearTimeout(timer);
@@ -84,7 +92,7 @@ function openFrame(): Promise<Frame> {
         clearTimeout(w.timer);
         if (typeof m.error === "string") return w.reject(new Error(m.error.slice(0, 200) || "도식을 그리지 못했습니다"));
         try {
-          w.resolve(toImage(m.svg));
+          w.resolve(toImage(m.svg, m.family, m.parts));
         } catch (e) {
           w.reject(e instanceof Error ? e : new Error("그림을 만들지 못했습니다"));
         }

@@ -16,6 +16,7 @@ import { AgentAReview } from "../server/integrations/agent-a-review.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import type { Runner, RunnerEvent, SendResult } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
+import type { AgentAReviewDiagramAnchor } from "../shared/agent-a.ts";
 import type { Backend, FileDoc, Project } from "../shared/types.ts";
 import { fakeAgentAReview } from "./fixtures/fake-agent-a-review.ts";
 import { pngBase64 } from "./fixtures/png.ts";
@@ -176,6 +177,20 @@ async function dragSelect(page: Page, text: string) {
   await page.mouse.down();
   await page.mouse.move(box.x1, box.y, { steps: 10 });
   await page.mouse.up();
+}
+const DIAGRAM_MARKDOWN = ["도식이 있는 문서입니다.", "", "## 흐름", "", "```mermaid", "graph TD", "  A[시작] --> B[검토]", "  B -->|통과| C[끝]", "```", "", "끝 문장입니다. 검토와 통과는 본문에도 나오는 낱말입니다."].join("\n");
+/** 도식(노드 셋·선 둘)과 그림 하나가 든 문서. */
+async function newDiagramDoc(title: string): Promise<string> {
+  return (await agentA.createDoc(project.id, { title, markdown: DIAGRAM_MARKDOWN, images: [{ title: "구성도", name: "map.png", mediaType: "image/png", base64: pngBase64(400, 200) }] })).fileId;
+}
+/** 문서의 도식이 모두 그려져(그림이 실제 크기로 열려) 누를 수 있을 때까지 기다린다. */
+async function drawn(page: Page) {
+  try {
+    await page.waitForFunction(() => {
+      const list = [...document.querySelectorAll(".aar-diagram")];
+      return list.length > 0 && list.every((d) => d.getAttribute("data-state") === "drawn" && [...d.querySelectorAll("img")].every((img) => img.complete && img.naturalWidth > 20));
+    }, null, { timeout: 60_000 });
+  } catch (e) { await shot(page, "fail-diagram"); console.log(await page.locator(".aar-diagram").allInnerTexts()); throw e; }
 }
 const pane = (page: Page) => page.locator(".aar-pane");
 /** 고른 글에 댓글을 달고 그 댓글을 연 채로 둔다. */
@@ -526,6 +541,205 @@ describe("Agent-A 문서 화면", () => {
     await page.locator(".fl-row", { hasText: "폰 문서" }).waitFor();
     await page.close();
   }, 120_000);
+
+  // ---- R3: 도식의 한 부분에 댓글, 그림 영역의 '좋아요' 라벨(원래 Agent-A 화면의 두 기능) ----
+  test("데스크톱: 도식의 한 부분을 눌러 댓글을 달고 번호 표시로 다시 연다. 선과 도식 전체에도 달고, 다시 열어도 남는다", async () => {
+    const fileId = await newDiagramDoc("도식 댓글 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await open(page, fileId);
+    const fence = (await review.open(fileId)).markdown.split("\n").indexOf("```mermaid") + 1;
+    expect(fence).toBeGreaterThan(0);
+    const diagram = page.locator(".aar-diagram");
+    await drawn(page);
+    // 그려진 도식에서 누를 수 있는 부분: 노드 셋과 선 둘
+    const partsOf = () => diagram.locator(".aar-diagram__part").evaluateAll((list) => [...new Set(list.map((b) => `${b.getAttribute("data-kind")}:${b.getAttribute("data-part")}`))].sort());
+    await expect(partsOf()).resolves.toEqual(["edge:A→B", "edge:B→C", "node:A", "node:B", "node:C"]);
+    const stored = async () => (await review.comments(fileId, (await review.open(fileId)).sessionId, null))!.annotations.filter((a) => !a.ai).map((a) => [a.text, a.quote, a.diagram]);
+
+    // 노드: 누르면 그 부분에 댓글을 쓰는 칸이 열리고, 고른 부분이 도식 위에 표시된다
+    await diagram.locator('.aar-diagram__part[data-kind="node"][data-part="B"]').first().click();
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 부분에 댓글");
+    await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("검토");
+    await expect(diagram.locator(".aar-diagram__draft").count()).resolves.toBe(1);
+    await shot(page, "27-desk-diagram-part");
+    await pane(page).getByLabel("댓글", { exact: true }).fill("이 단계는 누가 하나요?");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 이 단계는 누가 하나요?");
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 댓글");
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    await expect(diagram.locator(".aar-diagram__draft").count()).resolves.toBe(0);
+    const node: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "node", id: "B", label: "검토", sourceLine: [fence + 2, fence + 2] };
+    await expect(stored()).resolves.toEqual([["이 단계는 누가 하나요?", "검토", node]]);
+    // 번호 표시는 그 노드 위에 있다(노드 단추와 겹친다)
+    const overlap = await diagram.evaluate((root) => {
+      const mark = root.querySelector(".aar-diagram__mark")!.getBoundingClientRect();
+      const part = root.querySelector('.aar-diagram__part[data-kind="node"][data-part="B"]')!.getBoundingClientRect();
+      return mark.left < part.right && mark.right > part.left && mark.top < part.bottom && mark.bottom > part.top;
+    });
+    expect(overlap).toBe(true);
+    // 목록으로 갔다가 번호 표시를 누르면 그 댓글이 열린다
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await pane(page).locator(".aar-row .aa-tag", { hasText: "도식" }).waitFor();
+    await diagram.getByRole("button", { name: "도식 댓글 1 열기" }).click();
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 댓글");
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("이 단계는 누가 하나요?");
+    await expect(diagram.locator(".aar-diagram__mark[data-active]").count()).resolves.toBe(1);
+
+    // 선: 선에 붙은 글(통과)을 눌러도 그 선이다
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await diagram.locator('.aar-diagram__part[data-kind="edge"][data-part="B→C"]').first().click();
+    await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("통과");
+    await pane(page).getByLabel("댓글", { exact: true }).fill("통과 기준이 뭔가요?");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 통과 기준이 뭔가요?");
+    // 도식 전체: 부분이 없는 자리를 누른다
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    const layer = (await diagram.locator(".aar-diagram__layer").boundingBox())!;
+    await page.mouse.click(layer.x + 3, layer.y + 3);
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 전체에 댓글");
+    await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("graph TD");
+    await pane(page).getByLabel("댓글", { exact: true }).fill("도식이 너무 단순합니다");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 도식이 너무 단순합니다");
+    const edge: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "edge", from: "B", to: "C", label: "통과", sourceLine: [fence + 3, fence + 3] };
+    const whole: AgentAReviewDiagramAnchor = { v: 1, family: "flowchart", kind: "diagram", label: "graph TD", sourceLine: [fence + 1, fence + 3] };
+    await expect(stored()).resolves.toEqual([["이 단계는 누가 하나요?", "검토", node], ["통과 기준이 뭔가요?", "통과", edge], ["도식이 너무 단순합니다", "graph TD", whole]]);
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(3);
+    await shot(page, "28-desk-diagram-marks");
+    // 도식 댓글은 본문의 같은 낱말(검토·통과)을 칠하지 않는다: 원문 칸의 글은 도식 부분의 글이지 본문 문장이 아니다
+    await expect(page.evaluate(() => ["aa-quote", "aa-quote-done", "aa-quote-active"].reduce((n, name) => n + (CSS.highlights.get(name)?.size ?? 0), 0))).resolves.toBe(0);
+    // 틀린 자리(이름 없는 노드)를 서버 길로 직접 보내면 거절하고 아무것도 쓰지 않는다
+    const direct = await fetch(`${base}/api/agent-a/docs/${fileId}/review/comments`, { method: "POST", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ session: await sessionOf(page), id: "direct-diagram-1", kind: "comment", text: "직접 보낸 도식 댓글", diagram: { v: 1, family: "flowchart", kind: "node", label: "검토", sourceLine: null } }) });
+    expect([direct.status, ((await direct.json()) as { code?: string }).code]).toEqual([400, "AGENT_A_INVALID_DIAGRAM_ANCHOR"]);
+    await expect(stored()).resolves.toHaveLength(3);
+
+    // 원문을 보는 동안에는 표시가 없고, 그림으로 돌아오면 다시 보인다
+    await diagram.getByRole("button", { name: "원문 보기" }).click();
+    await expect(diagram.locator(".aar-diagram__mark, .aar-diagram__part").count()).resolves.toBe(0);
+    await diagram.getByRole("button", { name: "그림 보기" }).click();
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(3);
+    // 다시 열어도(새로고침) 표시 셋이 제자리에 남고, 눌러 다시 읽는다
+    await page.reload();
+    await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+    await drawn(page);
+    await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 3, null, { timeout: 20_000 });
+    await diagram.getByRole("button", { name: "도식 댓글 2 열기" }).click();
+    await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("통과 기준이 뭔가요?");
+    await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("통과");
+    // 도식은 여전히 그림으로만 보인다: 본문에 svg·칸·스크립트를 끼우지 않고, 그리는 칸은 격리된 하나뿐이다
+    await expect(page.locator(".aar-doc svg, .aar-doc iframe, .aar-doc script, .aar-doc foreignObject").count()).resolves.toBe(0);
+    await expect(page.locator("iframe").evaluateAll((list) => list.map((f) => [f.getAttribute("src"), f.getAttribute("sandbox")]))).resolves.toEqual([["/vendor/diagram-frame", "allow-scripts"]]);
+    await expect(page.evaluate(() => "mermaid" in window)).resolves.toBe(false);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 180_000);
+
+  test("데스크톱: 그림 영역에 '좋아요' 라벨을 한 번 눌러 붙인다. 글을 쓰면 눌리지 않고, 다시 열어도 영역과 라벨이 남는다", async () => {
+    const fileId = await newDoc("영역 라벨 문서");
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page, fileId);
+    await page.locator(".aar-fig__img").waitFor();
+    await page.locator(".aar-fig").scrollIntoViewIfNeeded();
+    const draw = async () => {
+      await page.getByRole("button", { name: "영역 골라 질문" }).click();
+      const box = (await page.locator(".aar-fig__layer").boundingBox())!;
+      await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.7, { steps: 8 });
+      await page.mouse.up();
+      await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("그림 영역에 질문");
+    };
+    await draw();
+    const good = pane(page).getByRole("button", { name: "좋아요 라벨 붙이기" });
+    await expect(good.innerText()).resolves.toBe("👍");
+    // 글을 쓰면 눌리지 않는다(쓰던 글을 버리지 않는다). 지우면 다시 눌린다.
+    await pane(page).getByLabel("댓글", { exact: true }).fill("쓰던 질문");
+    await expect(good.isDisabled()).resolves.toBe(true);
+    await pane(page).getByLabel("댓글", { exact: true }).fill("");
+    await expect(good.isDisabled()).resolves.toBe(false);
+    await shot(page, "29-desk-region-label");
+    await good.click();
+    await page.locator(".aar-banner", { hasText: "라벨 ‘👍 좋아요’을(를) 붙였습니다." }).waitFor({ timeout: 15_000 });
+    // 영역이 그림 위에 번호로 남고, 댓글 목록에는 라벨로 보인다
+    await page.waitForFunction(() => document.querySelectorAll(".aar-fig__mark").length === 1 && !document.querySelector(".aar-fig__draft"), null, { timeout: 15_000 });
+    await pane(page).locator(".aar-row .aar-label", { hasText: "👍 좋아요" }).waitFor({ timeout: 15_000 });
+    const sessionId = (await review.open(fileId)).sessionId;
+    const saved = (await review.comments(fileId, sessionId, null))!.annotations.filter((a) => !a.ai);
+    expect(saved.map((a) => [a.text, a.label, a.labelTip, a.quote, a.diagram])).toEqual([["👍 좋아요", true, null, "", null]]);
+    expect(saved[0]!.region).toMatchObject({ naturalWidth: 400, naturalHeight: 200 });
+    expect(Math.abs(saved[0]!.region!.box.x - 40)).toBeLessThanOrEqual(3);
+    expect(Math.abs(saved[0]!.region!.box.w - 160)).toBeLessThanOrEqual(5);
+    // 다시 열어도 남는다: 영역 표시를 누르면 라벨 댓글이 열린다
+    await page.reload();
+    await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+    await page.locator(".aar-fig__mark").waitFor({ timeout: 20_000 });
+    await page.locator(".aar-fig__mark").click();
+    await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("라벨 댓글");
+    await expect(pane(page).locator(".aar-msg .aar-label").first().innerText()).resolves.toBe("👍 좋아요");
+    // 보통 질문은 그대로 된다(라벨이 질문 길을 바꾸지 않았다)
+    await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+    await draw();
+    await pane(page).getByLabel("댓글", { exact: true }).fill("이 영역은 무엇을 뜻하나요?");
+    await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+    await answered(page, 1, "시험 답: 이 영역은 무엇을 뜻하나요?");
+    const after = (await review.comments(fileId, sessionId, null))!.annotations.filter((a) => !a.ai);
+    expect(after.map((a) => [a.text, a.label, Boolean(a.region)])).toEqual([["👍 좋아요", true, true], ["이 영역은 무엇을 뜻하나요?", false, true]]);
+    await page.close();
+  }, 150_000);
+
+  test("폰 폭: 도식 부분 댓글과 그림 영역의 '좋아요' 라벨이 댓글 판에서 돌고, 넘치지 않는다", async () => {
+    const fileId = await newDiagramDoc("폰 도식 문서");
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await open(page, fileId);
+    const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    const fence = (await review.open(fileId)).markdown.split("\n").indexOf("```mermaid") + 1;
+    await drawn(page);
+    await expect(fits()).resolves.toBe(true);
+    const diagram = page.locator(".aar-diagram");
+    await diagram.scrollIntoViewIfNeeded();
+    // 도식의 노드를 손끝으로 누르면 댓글 판이 열린다
+    await diagram.locator('.aar-diagram__part[data-kind="node"][data-part="C"]').first().tap();
+    const sheet = page.locator("dialog[open]");
+    await expect(sheet.locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 부분에 댓글");
+    await expect(sheet.locator(".aar-quote").innerText()).resolves.toBe("끝");
+    await sheet.getByLabel("댓글", { exact: true }).fill("폰에서 도식에 묻습니다");
+    await shot(page, "30-phone-diagram-compose");
+    await sheet.getByRole("button", { name: "보내기" }).tap();
+    await answered(page, 1, "시험 답: 폰에서 도식에 묻습니다");
+    await expect(fits()).resolves.toBe(true);
+    await sheet.getByRole("button", { name: "닫기" }).tap();
+    await expect(diagram.locator(".aar-diagram__mark").count()).resolves.toBe(1);
+    const mark = (await diagram.locator(".aar-diagram__mark").boundingBox())!;
+    expect(mark.x).toBeGreaterThanOrEqual(0);
+    expect(mark.x + mark.width).toBeLessThanOrEqual(390);
+    await shot(page, "31-phone-diagram-mark");
+    // 그림 영역: 끌어 고른 뒤 '좋아요' 한 번
+    await page.locator(".aar-fig").scrollIntoViewIfNeeded();
+    await page.getByRole("button", { name: "영역 골라 질문" }).tap();
+    const box = (await page.locator(".aar-fig__layer").boundingBox())!;
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.8, { steps: 8 });
+    await page.mouse.up();
+    await expect(sheet.locator(".aar-pane__head strong").innerText()).resolves.toBe("그림 영역에 질문");
+    const good = sheet.getByRole("button", { name: "좋아요 라벨 붙이기" });
+    const at = (await good.boundingBox())!;
+    expect(Math.min(at.width, at.height)).toBeGreaterThanOrEqual(44);
+    expect(at.x + at.width).toBeLessThanOrEqual(390);
+    await shot(page, "32-phone-region-label");
+    await good.tap();
+    await page.waitForFunction(() => document.querySelectorAll(".aar-fig__mark").length === 1, null, { timeout: 15_000 });
+    await expect(fits()).resolves.toBe(true);
+    const saved = (await review.comments(fileId, (await review.open(fileId)).sessionId, null))!.annotations.filter((a) => !a.ai);
+    expect(saved.map((a) => [a.text, a.label, Boolean(a.region), a.diagram])).toEqual([
+      ["폰에서 도식에 묻습니다", false, false, { v: 1, family: "flowchart", kind: "node", id: "C", label: "끝", sourceLine: [fence + 3, fence + 3] }],
+      ["👍 좋아요", true, true, null],
+    ]);
+    await page.close();
+  }, 150_000);
 });
 
 // ---- 독립 검토 뒤에 되살린 기능(가짜 Agent-A 로만 돈다: 답 글·AI 표시가 가짜의 규칙이다) ----
@@ -1390,4 +1604,87 @@ describe.skipIf(Boolean(REAL))("Agent-A 문서 화면: 되살린 기능", () => 
     await shot(page, "19-phone-chat");
     await page.close();
   }, 120_000);
+
+  test("데스크톱: 도식 갈래별로 누를 부분을 찾는다(흐름도의 묶음 · 순서도 · 상태도 · 클래스도 · 관계도). 새 댓글이 막힌 때에는 누를 부분이 없다", async () => {
+    const markdown = [
+      "갈래별 도식입니다.", "",
+      "```mermaid", "graph LR", "  subgraph G1 [묶음]", "    A[시작] --> B[끝]", "  end", "  user_login --> check_auth", "```", "",
+      "```mermaid", "sequenceDiagram", "  participant U as 대표", "  participant S as 서버", "  U->>S: 요청", "  Note over U,S: 확인 메모", "  loop 반복", "    S-->>U: 응답", "  end", "```", "",
+      "```mermaid", "stateDiagram-v2", "  [*] --> Idle", "  Idle --> Busy: 시작", "  Busy --> [*]", "```", "",
+      "```mermaid", "classDiagram", "  class Animal", "  class Dog", "  Animal <|-- Dog", "```", "",
+      "```mermaid", "erDiagram", "  CUSTOMER ||--o{ ORDER : places", "```", "",
+      "```mermaid", "pie title 비율", "  \"가\" : 40", "  \"나\" : 60", "```", "", "끝 문장.",
+    ].join("\n");
+    const fileId = (await agentA.createDoc(project.id, { title: "도식 갈래 문서", markdown })).fileId;
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    try {
+      await open(page, fileId);
+      await drawn(page);
+      const diagrams = page.locator(".aar-diagram");
+      await expect(diagrams.count()).resolves.toBe(6);
+      const partsOf = (i: number) => diagrams.nth(i).locator(".aar-diagram__part").evaluateAll((list) => [...new Set(list.map((b) => `${b.getAttribute("data-kind")}:${b.getAttribute("data-part")}:${b.getAttribute("title")}`))].sort());
+      // 흐름도: 노드·선·묶음. 밑줄이 든 이름의 선도 양 끝으로 가른다.
+      await expect(partsOf(0)).resolves.toEqual(["cluster:G1:묶음", "edge:A→B:A → B", "edge:user_login→check_auth:user_login → check_auth", "node:A:시작", "node:B:끝", "node:check_auth:check_auth", "node:user_login:user_login"]);
+      // 순서도: 참여자는 이름, 메시지·메모·틀은 차례 번호
+      await expect(partsOf(1)).resolves.toEqual(["cluster:frame-1:loop [반복]", "edge:msg-1:요청", "edge:msg-2:응답", "node:S:서버", "node:U:대표", "node:note-1:확인 메모"]);
+      // 상태도: 상태와 전이(시작·끝 점은 부분이 아니다)
+      const state = await partsOf(2);
+      expect(state.filter((p) => p.startsWith("node:"))).toEqual(["node:Busy:Busy", "node:Idle:Idle"]);
+      expect(state.filter((p) => p.startsWith("edge:")).length).toBe(3);
+      expect(state.some((p) => p.endsWith(":시작"))).toBe(true);
+      // 클래스도와 관계도
+      await expect(partsOf(3)).resolves.toEqual(["edge:Animal→Dog:Animal → Dog", "node:Animal:Animal", "node:Dog:Dog"]);
+      await expect(partsOf(4)).resolves.toEqual(["edge:CUSTOMER→ORDER:places", "node:CUSTOMER:CUSTOMER", "node:ORDER:ORDER"]);
+      // 부분을 가르지 않는 도식(원그래프)은 도식 전체에만 단다
+      await expect(partsOf(5)).resolves.toEqual([]);
+      await diagrams.nth(5).scrollIntoViewIfNeeded();
+      const layer = (await diagrams.nth(5).locator(".aar-diagram__layer").boundingBox())!;
+      await page.mouse.click(layer.x + layer.width / 2, layer.y + layer.height / 2);
+      await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.toBe("도식 전체에 댓글");
+      await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("pie title 비율");
+      await pane(page).getByRole("button", { name: "댓글 목록으로" }).click();
+      // 순서도의 메시지에 단 댓글: 자리는 차례 번호와 글, 문서 줄은 그 메시지 줄이다
+      await diagrams.nth(1).scrollIntoViewIfNeeded();
+      await diagrams.nth(1).locator('.aar-diagram__part[data-kind="edge"][data-part="msg-2"]').first().click();
+      await expect(pane(page).locator(".aar-quote").innerText()).resolves.toBe("응답");
+      await pane(page).getByLabel("댓글", { exact: true }).fill("응답은 언제 오나요?");
+      await pane(page).getByLabel("댓글", { exact: true }).press("Enter");
+      await answered(page, 1, "시험 답: 응답은 언제 오나요?");
+      const state2 = fake!.artifacts.get(agentA.docOf(fileId).artifactId)!;
+      const stored = fake!.sessions.filter((x) => x.artifact_id === state2.id).flatMap((x) => (x.draft?.annotations ?? []) as { originalText: string; diagramAnchor?: unknown }[]);
+      // 문서 줄은 Agent-A 가 돌려준 본문(블록 사이에 빈 줄을 둔다)에서 센다
+      const line = (await review.open(fileId)).markdown.split("\n").indexOf("    S-->>U: 응답") + 1;
+      expect(line).toBeGreaterThan(0);
+      expect(stored.map((a) => [a.originalText, a.diagramAnchor])).toEqual([["응답", { v: 1, family: "sequence", kind: "edge", id: "msg-2", from: "S", to: "U", label: "응답", sourceLine: [line, line] }]]);
+      await expect(diagrams.nth(1).locator(".aar-diagram__mark").count()).resolves.toBe(1);
+      await shot(page, "33-desk-diagram-families");
+      // 원래 화면(다른 창)이 남긴 자리도 그 부분에 표시한다. 이름이 바뀌어 못 찾는 자리는 목록에만 남는다.
+      await otherWindowSaves((await sessionOf(page))!, { annotations: [...stored,
+        { id: "native-dg-1", blockId: "block-9", type: "COMMENT", text: "원래 화면의 도식 댓글", originalText: "끝", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "B", label: "끝", sourceLine: [6, 6] } },
+        { id: "native-dg-2", blockId: "block-9", type: "COMMENT", text: "사라진 부분의 댓글", originalText: "옛 노드", createdA: Date.now(), diagramAnchor: { v: 1, family: "flowchart", kind: "node", id: "Z", label: "옛 노드", sourceLine: null } }] });
+      await page.reload();
+      await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+      await drawn(page);
+      await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 2, null, { timeout: 20_000 });
+      await expect(diagrams.nth(0).locator(".aar-diagram__mark").count()).resolves.toBe(1);
+      await pane(page).locator(".aar-row", { hasText: "사라진 부분의 댓글" }).waitFor();
+      await diagrams.nth(0).locator(".aar-diagram__mark").click();
+      await expect(pane(page).locator(".aar-msg").first().innerText()).resolves.toContain("원래 화면의 도식 댓글");
+      // 새 댓글이 막힌 때(초안 보존 규약을 모르는 Agent-A): 누를 부분이 없고, 남은 표시는 읽을 수 있다
+      fake!.setDraftProtocol(1);
+      await page.reload();
+      await page.locator(".aar-doc").waitFor({ timeout: 25_000 });
+      await drawn(page);
+      await page.waitForFunction(() => document.querySelectorAll(".aar-diagram__mark").length === 2, null, { timeout: 20_000 });
+      await expect(page.locator(".aar-diagram__part").count()).resolves.toBe(0);
+      const blockedLayer = (await diagrams.nth(5).locator(".aar-diagram__img").boundingBox())!;
+      await diagrams.nth(5).scrollIntoViewIfNeeded();
+      await page.mouse.click(blockedLayer.x + 5, blockedLayer.y + 5);
+      await page.waitForTimeout(300);
+      await expect(pane(page).locator(".aar-pane__head strong").innerText()).resolves.not.toContain("도식 전체에 댓글");
+    } finally {
+      fake!.setDraftProtocol(2);
+      await page.close();
+    }
+  }, 240_000);
 });

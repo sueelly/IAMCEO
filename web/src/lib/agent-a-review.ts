@@ -126,13 +126,13 @@ export function outline(markdown: string): OutlineItem[] {
   return out;
 }
 
-export type DocPart = { kind: "markdown"; text: string } | { kind: "image"; src: string; alt: string; line: number } | { kind: "mermaid"; code: string };
+export type DocPart = { kind: "markdown"; text: string } | { kind: "image"; src: string; alt: string; line: number } | { kind: "mermaid"; code: string; line: number };
 
 const IMAGE_LINE = /^!\[((?:[^\]\\]|\\.)*)\]\((\/assets\/(?:user\/[a-f0-9]{64}\/1|workbench-flow\.svg))\)\s*$/;
 
 /**
  * 본문을 글 조각과 그림으로 나눈다. Agent-A 는 그림 블록을 한 줄(![제목](경로))로 싣는다. 그 줄만 그림으로 떼고 나머지는 글이다.
- * line 은 그림 줄의 줄 번호(1부터). 코드 울타리 안은 떼지 않는다.
+ * line 은 그림 줄의 줄 번호(1부터). 코드 울타리 안은 떼지 않는다. 도식의 line 은 ```mermaid 줄의 줄 번호다(도식 댓글의 자리에 문서 줄을 적는 데 쓴다).
  */
 export function splitDoc(markdown: string): DocPart[] {
   const parts: DocPart[] = [];
@@ -140,6 +140,7 @@ export function splitDoc(markdown: string): DocPart[] {
   let fence: string | null = null;
   /** mermaid 울타리 안이면 그 코드 줄들(울타리 줄은 뺀다). */
   let diagram: string[] | null = null;
+  let diagramLine = 0;
   const flush = () => {
     if (buf.join("\n").trim()) parts.push({ kind: "markdown", text: buf.join("\n") });
     buf = [];
@@ -154,12 +155,13 @@ export function splitDoc(markdown: string): DocPart[] {
         if (f[2]!.trim().toLowerCase() === "mermaid") {
           flush();
           diagram = [];
+          diagramLine = i + 1;
           return;
         }
       } else if (mark[0] === fence[0] && mark.length >= fence.length && !f[2]!.trim()) {
         fence = null;
         if (diagram) {
-          parts.push({ kind: "mermaid", code: diagram.join("\n") });
+          parts.push({ kind: "mermaid", code: diagram.join("\n"), line: diagramLine });
           diagram = null;
           return;
         }
@@ -283,9 +285,10 @@ export const PROPOSAL_LABEL: Record<AgentAReviewProposal["status"], string> = {
 };
 
 /** 댓글 종류의 화면 글. */
-export function kindLabel(a: Pick<AgentAReviewAnnotation, "kind" | "region"> & { label?: boolean }): string {
+export function kindLabel(a: Pick<AgentAReviewAnnotation, "kind" | "region"> & { label?: boolean; diagram?: unknown }): string {
   if (a.label) return "라벨";
   if (a.region) return "그림 영역";
+  if (a.diagram) return "도식";
   return a.kind === "global" ? "전체" : a.kind === "deletion" ? "삭제 표시" : "문장";
 }
 
