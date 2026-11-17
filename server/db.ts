@@ -1001,6 +1001,11 @@ export const MIGRATIONS: string[] = [
    );`,
   // v41: persistent CLI failure prevents automatic restart loops.
   `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
+  // 옛 계약의 미정 항목은 NULL로 보존한다. 빈 배열은 작성자가 명시한 해당 없음이다.
+  `ALTER TABLE task_contracts ADD COLUMN inputs TEXT;
+   ALTER TABLE task_contracts ADD COLUMN outputs TEXT;
+   ALTER TABLE task_contracts ADD COLUMN constraints_json TEXT;
+   ALTER TABLE task_contracts ADD COLUMN exclusions TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

@@ -57,7 +57,8 @@ export interface WorkflowAssignmentPreview {
   projectId: string;
   task: { id: string; title: string; branch: string | null; worktree: string | null; parentTaskId: string | null };
   member: { id: string; name: string };
-  contract: { taskId: string; rev: number; goal: string; scope: string | null; acceptance: string[]; forbidden: string[]; evidence: string[]; checks: string[]; confirmed: boolean } | null;
+  contract: { taskId: string; rev: number; goal: string; scope: string | null; inputs?: string[] | null; outputs?: string[] | null; constraints?: string[] | null; exclusions?: string[] | null;
+    acceptance: string[]; forbidden: string[]; evidence: string[]; checks: string[]; confirmed: boolean } | null;
   originals: { id: string; taskId: string | null; who: string; at: string; body: string }[];
   reports: { id: string; taskId: string | null; who: string; at: string; kind: string; title: string; body: string; harness: WorkflowReportHarness | null; correctsMessageId: string | null; correctedBy: string[] }[];
   files: { id: string; taskId: string | null; title: string; summary: string }[];

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type WorkflowAssignmentPreview, type WorkflowAssignmentRequest, type WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { canonicalAgentRequest } from "./agent-receipts.ts";
-import { bindingContract } from "./harness.ts";
+import { bindingContract, EXECUTION_CONTRACT_LABEL, missingExecutionContractFields } from "./harness.ts";
 import { redactHarnessText } from "./harness-redaction.ts";
 import { ApiError, type Store } from "./store.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
@@ -27,6 +27,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (context.assigned || flow.nodes.some(n => n.taskId === taskId && n.memberId)) blockers.push("이미 배정된 업무입니다. 기존 담당과 전달을 먼저 확인해 주세요");
   if (pauses.length) blockers.push("대표가 중단한 업무입니다. 같은 업무의 새 지시나 다시 열기 근거를 먼저 확인해 주세요");
   if (!bindingContract(contract) || !contract?.goal.trim() || !contract.acceptance.length) blockers.push("업무의 목표와 완료 조건이 아직 확정되지 않았습니다");
+  const missing = missingExecutionContractFields(contract);
+  if (missing.length) blockers.push(`새 실행 전에 총괄이 업무 계약을 보완해야 합니다: ${missing.map(field => EXECUTION_CONTRACT_LABEL[field]).join(", ")}`);
   if (context.omitted.originals) blockers.push("원래 지시가 100건을 넘습니다. 업무 범위를 정리한 뒤 배정해 주세요");
   if (!context.originals.length && !bindingContract(contract)) blockers.push("확정된 지시를 확인할 수 없습니다");
   const lineage = new Set(context.lineage.map(t => t.id));
@@ -49,7 +51,9 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   const preview: Omit<WorkflowAssignmentPreview, "revision"> = {
     projectId, task: { id: task.id, title: task.title, branch: task.branch, worktree: task.worktree, parentTaskId: task.parentTaskId ?? null },
     member: { id: member.id, name: member.name },
-    contract: contract ? { taskId: contract.taskId, rev: contract.rev, goal: safe(contract.goal), scope: contract.scope ? safe(contract.scope) : null, acceptance: contract.acceptance.map(safe), forbidden: contract.forbidden.map(safe), evidence: contract.evidence.map(safe), checks: contract.checks, confirmed: bindingContract(contract) } : null,
+    contract: contract ? { taskId: contract.taskId, rev: contract.rev, goal: safe(contract.goal), scope: contract.scope ? safe(contract.scope) : null,
+      inputs: contract.inputs?.map(safe) ?? null, outputs: contract.outputs?.map(safe) ?? null, constraints: contract.constraints?.map(safe) ?? null, exclusions: contract.exclusions?.map(safe) ?? null,
+      acceptance: contract.acceptance.map(safe), forbidden: contract.forbidden.map(safe), evidence: contract.evidence.map(safe), checks: contract.checks, confirmed: bindingContract(contract) } : null,
     originals: context.originals.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, body: safe(m.body) })),
     reports: context.reports.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, kind: m.kind, title: safe(m.title), body: safe(m.body), harness: m.harness, correctsMessageId: m.correctsMessageId, correctedBy: m.correctedBy })),
     files: context.files.map(({ fingerprint, ...file }) => ({ ...file, title: safe(file.title), summary: safe(file.summary) })),
@@ -74,6 +78,11 @@ export function workflowHandoffText(p: WorkflowAssignmentPreview): string {
     `대표가 업무 흐름에서 ${p.member.name}에게 이 범위의 실행을 배정했습니다.`,
     `작업 #${p.task.id}: ${p.task.title}`, p.task.parentTaskId ? `부모 업무 #${p.task.parentTaskId}` : "",
     `계약 r${c.rev} · 계약 업무 #${c.taskId}`, `목표: ${c.goal}`, c.scope ? `범위: ${c.scope}` : "",
+    ...(["inputs", "outputs", "constraints", "exclusions"] as const).flatMap(field => {
+      const values = c[field];
+      return values?.length ? values.map(s => `${EXECUTION_CONTRACT_LABEL[field]}: ${s}`)
+        : [`${EXECUTION_CONTRACT_LABEL[field]}: ${values && (field === "constraints" || field === "exclusions") ? "없음" : "미정"}`];
+    }),
     "완료 조건:", ...c.acceptance.map((s,i) => `${i+1}. ${s}`),
     "지켜야 할 조건:", ...c.forbidden.map(s => `- ${s}`),
     "- 기존 승인·중단 보호·선행 업무 조건을 유지합니다. 이 배정은 승인 창 응답이나 반복 감시 해제를 허용하지 않습니다.",
