@@ -1,8 +1,8 @@
 // 서버가 붙이는 새 업무 이름(임시). 글에서 목적 문장을 골라 만든다. 이름은 칩·목록·전달 글의 '작업 #' 줄에 그대로 보이므로
 // 주소·내부 번호·해시·비밀값을 남기지 않는다. 브라우저·DB 를 쓰지 않는 순수 함수다.
 
-/** 이름 길이(빈칸 포함). 칩에 한 줄로 보이게 짧게 둔다. */
-export const TASK_TITLE_MAX = 40;
+/** 자동 임시 이름도 task 도구의 120자 범위에서 목적을 보존한다. 화면 폭으로 저장 내용을 자르지 않는다. */
+export const TASK_TITLE_MAX = 120;
 
 const URL = /\b(?:https?|ftp|file):\/\/\S+|\bwww\.\S+/gi;
 /** 이 서버의 내부 id(msg_·tk_·f_·d_·dl_·m_·w_·p_·mc_·op_ 등)와 기억 id. */
@@ -79,7 +79,7 @@ function sentences(lines: string[]): string[] {
 /**
  * 글에서 새 업무 이름을 만든다. 첫 줄이 아니라 부탁·지시가 든 첫 문장을 목적으로 보고, 앞 군말과 끝의 부탁 말을 뗀다
  * (예: "… 모든 것에 업무가 붙도록 해줘" → "모든 것에 업무가 붙도록"). 그런 문장이 없으면 첫 문장을 쓴다.
- * 주소·내부 번호·해시·비밀값은 지우고 40자로 자른다. 남는 글자가 없으면(주소·첨부만 보낸 글 등) fallback 을 쓴다.
+ * 주소·내부 번호·해시·비밀값은 지우고 도구의 이름 범위까지 보존한다. 남는 글자가 없으면 fallback 을 쓴다.
  * 이 이름은 임시다. 총괄·직원이 대화로 목적을 알게 되면 task 도구로 목적 이름으로 바꾼다(formatTaskLine 의 안내).
  */
 export function taskTitleFrom(text: string, fallback: string): string {
@@ -90,9 +90,9 @@ export function taskTitleFrom(text: string, fallback: string): string {
   return cut(meaningful(core) >= 4 ? core : sentence.replace(/[.!?。？！]+$/, ""), TASK_TITLE_MAX);
 }
 
-/** 대표가 직접 붙인 새 업무 이름. 대표의 말이라 낱말을 지우지 않고 빈칸만 정리해 60자까지 둔다. */
+/** 대표가 직접 붙인 이름은 기존 HTTP 입력 범위(200자)까지 보존한다. */
 export function ownerTaskTitle(text: string): string {
-  return cut(text.replace(/\s+/g, " ").trim(), 60);
+  return cut(text.replace(/\s+/g, " ").trim(), 200);
 }
 
 /** 이름을 못 만들 때 쓰는 이름: '대표 글 11월 13일 20:15'(서울 시각). 내부 번호를 쓰지 않는다. */

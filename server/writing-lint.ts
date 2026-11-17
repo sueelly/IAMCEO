@@ -72,6 +72,17 @@ function clip(value: string, max = 24): string {
 
 type Bag = LintWarning[];
 
+/** Clearly generic whole titles only; advisory, never a rewrite or a save gate. */
+function titlePurpose(bag: Bag, title: string, surface: "업무 이름" | "결재 제목" | "보고 제목" | "자료 제목") {
+  const plain = stripMd(title).replace(/[.!?。？！:：]+$/u, "").trim();
+  if (!/^(?:검토|확인|확인 요청|후속 진행|진행 상황|진행 중|완료|업무|작업|자료|보고|결과물|알림)$/.test(plain)) return;
+  const purpose = surface === "업무 이름" ? "다시 찾을 대상과 목표를 이름으로 적으세요. 변하는 진행 상태는 별도 상태에 둡니다."
+    : surface === "결재 제목" ? "어떤 업무의 무엇을 결정할 질문인지 적으세요. 상세에는 이유와 선택 후 결과를 씁니다."
+    : surface === "보고 제목" ? "어떤 업무에서 이번에 달라진 결과인지 적으세요. 본문에는 근거와 남은 조건을 씁니다."
+    : "대상과 결과물 종류를 적으세요. 요약에는 용도·핵심 내용·사용 제한을 씁니다.";
+  bag.push({ code: "title-purpose", text: `${surface}: ${purpose}` });
+}
+
 function contextReferences(bag: Bag, plain: string) {
   if (/원\s*ID/i.test(plain) && !/(전달|메시지|보고|업무|세션|실행|자료|결재)(의)?\s*(ID|아이디|식별자|번호)/i.test(plain)) {
     bag.push({ code: "context-reference", text: "‘원ID’가 무엇의 식별자인지 설명하세요. 업무명과 전달·메시지·세션 등 기록 종류, 필요한 값과 출처를 적고 모르면 무엇을 확인하지 못했는지 밝히세요." });
@@ -112,7 +123,7 @@ function hedging(bag: Bag, plain: string) {
   }
 }
 
-const ORDER = ["context-reference", "context-subject", "owner-first", "done", "hedge"];
+const ORDER = ["context-reference", "context-subject", "title-purpose", "owner-first", "done", "hedge"];
 
 function finish(bag: Bag): LintWarning[] {
   const seen = new Set<string>();
@@ -138,6 +149,7 @@ export function lintPost(input: { title: string; body?: string | null; ownerActi
     const parsed = parseOwnerLine(body);
     const rest = parsed ? parsed.rest : body;
     const plain = stripMd(rest);
+    titlePurpose(bag, input.title, "보고 제목");
     if (!owner && !parsed) {
       const ask = sentences(plain).find((s) => OWNER_ASK.test(s.text));
       if (ask) bag.push({ code: "owner-first", text: `대표에게 부탁하는 말이 본문에 있습니다. owner_action 에 한 줄로 쓰거나, 정할 것이면 ask 로 올리세요: "${clip(ask.text)}"` });
@@ -158,6 +170,7 @@ export function lintAsk(input: { title: string; detail?: string | null; options?
     const rest = parsed ? parsed.rest : input.detail ?? "";
     const opts = (input.options ?? []).map((o) => `${o.label}\n${o.desc ?? ""}`).join("\n");
     const plain = stripMd(rest);
+    titlePurpose(bag, input.title, "결재 제목");
     doneClaims(bag, rest);
     const all = `${input.title}\n${plain}\n${opts}\n${reason}`;
     hedging(bag, all);
@@ -169,10 +182,19 @@ export function lintAsk(input: { title: string; detail?: string | null; options?
 export function lintFile(input: { title: string; content?: string | null }): LintWarning[] {
   return safe(() => {
     const bag: Bag = [], content = input.content ?? "";
+    titlePurpose(bag, input.title, "자료 제목");
     doneClaims(bag, content);
     const plain = stripMd(`${input.title}\n${content}`);
     hedging(bag, plain);
     contextReferences(bag, plain);
+    return finish(bag);
+  });
+}
+
+export function lintTask(title: string): LintWarning[] {
+  return safe(() => {
+    const bag: Bag = [];
+    titlePurpose(bag, title, "업무 이름");
     return finish(bag);
   });
 }
