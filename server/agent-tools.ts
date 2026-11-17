@@ -22,6 +22,7 @@ import { MemoryError, stableEventId, clip, findSensitive, memoryKindLabel } from
 import { oneLineProblem } from "./text.ts";
 import { formatLintWarnings, lintAsk, lintFile, lintPost, lintStatus, lintTask, withLint } from "./writing-lint.ts";
 import { canonicalPath as realOrSelf, isInside, isSecretPath, rejectHardLink, SECRET_DIRS } from "./secret-paths.ts";
+import { listCompletionReviews, queueCompletionReviewRepair } from "./task-completion.ts";
 
 /** 개발 기억 도구. 서버에 연결이 설정되고 그 프로젝트가 켜져 있을 때만 보인다. */
 export const MEMORY_TOOLS = ["memory_search", "memory_get", "memory_record", "memory_feedback"] as const;
@@ -833,15 +834,26 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_followup: tool(
-    "확정 검수 뒤 통합 또는 확인한 문제의 수정 업무를 예정 대기열에 올린다. 같은 근거로 다시 부르면 기존 항목을 돌려준다.",
+    "통합이나 수정 업무를 예정에 올린다. integration은 검수한 커밋의 통합, repair는 원래 완료 조건이나 통합 과정의 문제를 고친다. review_repair는 유효한 완료의 사후 검수에서 발견한 새 결함을 별도 업무로 올리고 기존 완료를 보존한다. 같은 근거는 기존 항목을 반환한다.",
     z.strictObject({
-      kind: z.enum(["integration", "repair"]), task_id: text, reviewed_commit: z.string().regex(fullCommit).optional(),
-      report_id: text.optional(), title: oneLine(120).optional(), detail: z.string().optional(),
+      kind: z.enum(["integration", "repair", "review_repair"]), task_id: text, reviewed_commit: z.string().regex(fullCommit).optional(),
+      report_id: text.optional().describe("문제 보고 ID. review_repair는 다른 직원이 별도 사후 검수 업무에서 about_report_id로 원 완료를 연결한 보고"),
+      completion_report_id: oneLine(64).optional().describe("review_repair에서 유지할 현재 완료 보고 ID"),
+      title: oneLine(120).optional(), detail: z.string().optional().describe("수정의 재현 조건, 기대 결과, 범위와 회귀 검사"),
     }),
     (orch, member, a) => {
       const source = orch.store.requireTask(a.task_id);
       if (source.projectId !== member.projectId || source.mergedInto || orch.store.requireProject(source.projectId).archived) {
         throw new ApiError(404, "이 프로젝트의 현재 원 업무를 찾아 연결해 주세요");
+      }
+      if (a.kind === "review_repair") {
+        if (!a.completion_report_id || !a.report_id || !a.title || !a.detail?.trim() || a.detail.length > 4000) {
+          throw new ApiError(400, "현재 완료 보고와 결함 보고, 수정 업무 이름과 재현·검증 범위를 적어 주세요");
+        }
+        const item = queueCompletionReviewRepair(orch.store, source, {
+          completionReportId: a.completion_report_id, findingReportId: a.report_id, title: a.title, detail: a.detail.trim(),
+        });
+        return reply(`예정에 놓았습니다 · ${item.title} · 일 항목 #${item.id} · 업무 #${item.taskId}`);
       }
       if (a.kind === "integration" && !a.reviewed_commit) throw new ApiError(400, "검수 커밋의 전체 SHA를 적어 주세요");
       if (a.kind === "repair" && (!a.report_id || !a.title)) throw new ApiError(400, "문제 보고와 수정 업무 이름을 적어 주세요");
@@ -850,6 +862,12 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         : queueIntegrationRepair(orch.store, source, a.report_id!, a.title!, a.detail);
       return reply(`예정에 놓았습니다 · ${item.title} · 일 항목 #${item.id} · 업무 #${item.taskId}`);
     },
+  ),
+
+  completion_reviews: tool(
+    "같은 프로젝트에서 현재 계약의 완료 조건을 통과한 업무 중 사후 검수 대상을 오래된 순서로 조회한다. 원 업무·보고·작성자·계약 판을 확인하고 작성자가 아닌 기존 직원에게 별도 검수를 맡긴다. 다음 쪽은 응답의 next를 after로 준다.",
+    z.strictObject({ after: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(50).default(20) }),
+    (orch, member, a) => reply(JSON.stringify(listCompletionReviews(orch.store, member.projectId, a.after, a.limit))),
   ),
 
   project_create: tool(
@@ -920,7 +938,7 @@ function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly Too
 export const CONDUCTOR_ALLOWED_TOOLS = [
   "status", "task", "ask", "post", "todo", "ask_close", "todo_close", "server_check", "task_trace", "exec_diagnose", "code_read",
   "team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_config", "terminal_read",
-  "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage", "task_followup",
+  "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage", "task_followup", "completion_reviews",
 ] as const satisfies readonly ToolName[];
 
 export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
