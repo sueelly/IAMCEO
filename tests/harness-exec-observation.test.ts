@@ -122,7 +122,7 @@ test("공통 요청 보관: 거절된 임의 입력은 기존대로 보관하되
   const response = await s.orch.handleAgentOperation(s.member, "exec_diagnose", args, { operationId: "remediation-rejected-request" });
   expect(response.isError).toBe(true); expect(JSON.stringify(response)).not.toContain(marker);
   const rows = s.store.db.query("SELECT request_json, result_json FROM agent_operation_receipts").all() as { request_json: string; result_json: string }[];
-  expect(rows).toHaveLength(2); expect(rows.every(r => r.request_json.includes(marker))).toBe(true);
+  expect(rows).toHaveLength(1); expect(rows.every(r => r.request_json.includes(marker))).toBe(true);
   expect(rows.every(r => !r.result_json.includes(marker))).toBe(true);
   observations.push({ label: "preexisting-request-retention", args, response, rawRequestRetained: true });
 });

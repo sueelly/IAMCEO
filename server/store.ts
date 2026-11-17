@@ -1,4 +1,6 @@
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
+import { canonicalAgentRequest as stableJson, agentRequestHash, encodeAgentResult, decodeAgentResult, type AgentReceiptState } from "./agent-receipts.ts";
+import { encodeStoredText, decodeStoredText } from "./stored-text.ts";
 import { claimObservation } from "./harness-evidence.ts";
 import { CODE_READ_KIND, validCodeRead, type CodeReadScope, type CodeReadObservation } from "./harness-source-read.ts";
 import type { Database, SQLQueryBindings } from "bun:sqlite";
@@ -377,12 +379,8 @@ const MEMBER_SELECT = `SELECT m.*, (SELECT COUNT(*) FROM deliveries d WHERE d.me
 // SQL 행은 컬럼 이름이 곧 스키마(db.ts)다. 아래 toX 함수가 타입 경계다.
 type Row = Record<string, any>;
 
-function json<T>(raw: string): T {
-  return JSON.parse(raw) as T;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
+function json<T>(raw: unknown): T {
+  return JSON.parse(decodeStoredText(raw)) as T;
 }
 
 export function attachmentUrl(id: string, name: string): string {
@@ -637,15 +635,16 @@ function deriveFileKind(body: string, attachments: { name: string; mime: string 
 
 function toFile(r: Row): FileDoc {
   const attachments = json<Attachment[]>(r.attachments);
+  const body = decodeStoredText(r.body);
   return {
     id: r.id,
-    kind: r.kind ?? deriveFileKind(r.body, attachments),
+    kind: r.kind ?? deriveFileKind(body, attachments),
     projectId: r.project_id,
     title: r.title,
     who: r.who,
     memberId: r.member_id,
     summary: r.summary,
-    body: r.body,
+    body,
     path: r.path,
     attachments,
     createdAt: r.created_at,
@@ -2440,7 +2439,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 아티팩트 원본. 예전 자료는 첨부에 들어 있어 호출하는 쪽이 첨부에서 읽는다. */
   getFileHtml(id: string): string | null {
-    return (this.row("SELECT html FROM files WHERE id = ?", id)?.html as string | null | undefined) ?? null;
+    const html: unknown = this.row("SELECT html FROM files WHERE id = ?", id)?.html;
+    return html === null || html === undefined ? null : decodeStoredText(html);
   }
 
   listFiles(projectId: string): FileDoc[] {
@@ -2458,7 +2458,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.fileBodies.set(id, cached);
       return cached.body;
     }
-    const body = (this.row("SELECT body FROM files WHERE id = ?", id)?.body as string | undefined) ?? "";
+    const value: unknown = this.row("SELECT body FROM files WHERE id = ?", id)?.body;
+    const body = value === undefined ? "" : decodeStoredText(value);
     // Count UTF-16 storage conservatively, and bound empty-body/key overhead too.
     const bytes = body.length * 2;
     const budget = 16 * 1024 * 1024;
@@ -2487,13 +2488,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.who ?? "",
         input.memberId ?? null,
         input.summary ?? "",
-        input.body ?? "",
+        encodeStoredText(input.body ?? ""),
         input.path ?? null,
         JSON.stringify(input.attachments ?? []),
         nowIso(),
         order,
         input.kind ?? null,
-        input.html ?? null,
+        input.html === null || input.html === undefined ? null : encodeStoredText(input.html),
         this.taskRef(input.projectId, input.taskId),
       );
       const file = this.getFile(id)!;
@@ -2936,20 +2937,59 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const member = this.requireMember(memberId);
       const r = this.row("SELECT * FROM agent_operation_receipts WHERE operation_id = ?", operationId);
       if (r) {
-        if (r.member_id !== memberId || r.project_id !== member.projectId || r.tool_name !== toolName || r.request_json !== stableJson(request)) throw new ApiError(409, "다른 요청에 사용된 operationId입니다", "OPERATION_CONFLICT");
-        return json<T>(r.result_json);
+        this.checkAgentRequest(r, memberId, member.projectId, toolName, request);
+        return decodeAgentResult<T>(this.db, member.projectId, r.result_kind, r.result_json);
       }
       const result = execute();
       if (result instanceof Promise) throw new Error("agentOperation requires synchronous Store writes");
-      this.run("INSERT INTO agent_operation_receipts (operation_id, member_id, project_id, tool_name, request_json, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", operationId, memberId, member.projectId, toolName, stableJson(request), JSON.stringify(result), nowIso());
+      this.insertAgentReceipt(memberId, member.projectId, toolName, operationId, request, result, "completed");
+      return result;
+    });
+  }
+
+  private checkAgentRequest(row: Row, memberId: string, projectId: string, tool: string, request: unknown): void {
+    if (row.member_id !== memberId || row.project_id !== projectId || row.tool_name !== tool || decodeStoredText(row.request_json) !== stableJson(request)) {
+      throw new ApiError(409, "다른 요청에 사용된 operationId입니다", "OPERATION_CONFLICT");
+    }
+  }
+
+  private insertAgentReceipt(memberId: string, projectId: string, tool: string, operationId: string, request: unknown, result: unknown, state: AgentReceiptState): void {
+    const canonical = stableJson(request), at = nowIso();
+    const encoded = encodeAgentResult(this.db, projectId, tool, request, result);
+    this.run("INSERT INTO agent_operation_receipts (operation_id,member_id,project_id,tool_name,request_json,request_sha256,result_json,result_kind,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      operationId, memberId, projectId, tool, encodeStoredText(canonical), agentRequestHash(canonical), encoded.value, encoded.kind, state, at, at);
+  }
+
+  reserveAgentOperation<T>(memberId: string, tool: string, operationId: string, request: unknown, pending: T): { created: boolean; state: AgentReceiptState; result: T } {
+    return this.transaction(() => {
+      const member = this.requireMember(memberId);
+      const row = this.row("SELECT * FROM agent_operation_receipts WHERE operation_id = ?", operationId);
+      if (row) {
+        this.checkAgentRequest(row, memberId, member.projectId, tool, request);
+        return { created: false, state: row.state, result: decodeAgentResult<T>(this.db, member.projectId, row.result_kind, row.result_json) };
+      }
+      this.insertAgentReceipt(memberId, member.projectId, tool, operationId, request, pending, "reserved");
+      return { created: true, state: "reserved", result: pending };
+    });
+  }
+
+  completeAgentOperation<T>(memberId: string, tool: string, operationId: string, request: unknown, result: T): T {
+    return this.transaction(() => {
+      const member = this.requireMember(memberId);
+      const row = this.row("SELECT * FROM agent_operation_receipts WHERE operation_id = ?", operationId);
+      if (!row) throw new ApiError(409, "도구 실행 예약을 찾을 수 없습니다");
+      this.checkAgentRequest(row, memberId, member.projectId, tool, request);
+      if (row.state === "completed") return decodeAgentResult<T>(this.db, member.projectId, row.result_kind, row.result_json);
+      const encoded = encodeAgentResult(this.db, member.projectId, tool, request, result);
+      this.run("UPDATE agent_operation_receipts SET result_json = ?, result_kind = ?, state = 'completed', updated_at = ? WHERE operation_id = ? AND state = 'reserved'", encoded.value, encoded.kind, nowIso(), operationId);
       return result;
     });
   }
 
   /** 외부 operation ID에는 ':'가 없어 이 서버 소유 관찰 namespace를 만들 수 없다. */
   codeReads(scope: CodeReadScope): CodeReadObservation[] {
-    return this.rows("SELECT operation_id, result_json FROM agent_operation_receipts WHERE project_id = ? AND member_id = ? AND tool_name = ? AND request_json = ? AND operation_id LIKE 'code-read:%' ORDER BY rowid DESC LIMIT 129",
-      scope.projectId, scope.memberId, CODE_READ_KIND, stableJson(scope)).flatMap(r => {
+    return this.rows("SELECT operation_id, result_json FROM agent_operation_receipts WHERE project_id = ? AND member_id = ? AND tool_name = ? AND request_sha256 = ? AND operation_id LIKE 'code-read:%' ORDER BY rowid DESC LIMIT 129",
+      scope.projectId, scope.memberId, CODE_READ_KIND, agentRequestHash(stableJson(scope))).flatMap(r => {
         try {
           const value = json<unknown>(r.result_json);
           return validCodeRead(value, scope) && value.id === r.operation_id ? [value] : [];

@@ -141,7 +141,7 @@ test("MCP operation의 새 성공/재요청과 공통 거절 요청 보관을 �
   writeFileSync(join(s.project.cwd,s.sources[0]!),"changed\n");
   const again=await s.orch.handleAgentOperation(s.member,"code_read",args,{operationId:"source-read-one"});expect(again).toEqual(first);expect(s.store.db.query("SELECT count(*) n FROM agent_operation_receipts").get()).toEqual(before);
   const marker="FAKE_REJECTED_REQUEST_ONLY",bad={...args,path:marker};const rejected=await s.orch.handleAgentOperation(s.member,"code_read",bad,{operationId:"source-read-reject"});expect(rejected.isError).toBe(true);expect(rejected.text).not.toContain(marker);
-  const receipt=s.store.db.query("SELECT request_json,result_json FROM agent_operation_receipts WHERE operation_id='agent-result:source-read-reject'").get() as any;expect(receipt.request_json).toContain(marker);expect(receipt.result_json).not.toContain(marker);
+  const receipt=s.store.db.query("SELECT request_json,result_json,state FROM agent_operation_receipts WHERE operation_id='source-read-reject'").get() as any;expect(receipt.state).toBe("completed");expect(receipt.request_json).toContain(marker);expect(receipt.result_json).not.toContain(marker);
   observations.push({label:"operation",args,first,again,rejected,requestRetained:true});
 });
 
