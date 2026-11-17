@@ -126,6 +126,8 @@ class PolicyRunner implements Runner {
   starts: { id: string; resume: boolean; sessionId: string | null; rules: string }[] = [];
   stops: string[] = [];
   failStop = false;
+  interrupts: string[] = [];
+  beforeStopCheck: (() => void) | null = null;
   sent: { id: string; text: string }[] = [];
   callback: (event: RunnerEvent) => void = () => {};
   async available() { return { ok: true }; }
@@ -139,7 +141,8 @@ class PolicyRunner implements Runner {
   isBusy(id: string) { return this.busy.has(id); }
   async compact(): Promise<SendResult> { return { ok: true }; }
   async setParallel(): Promise<SendResult> { return { ok: true }; }
-  async interrupt() {}
+  async interrupt(member: RunnerMember) { this.interrupts.push(member.id); }
+  async checkStop() { this.beforeStopCheck?.(); }
   async stop(member: RunnerMember) { this.stops.push(member.id); if (this.failStop) throw new Error("fixture stop failed"); this.busy.delete(member.id); }
   async screen() { return ""; }
   async shutdown() {}
@@ -260,4 +263,36 @@ test("옛 권한으로 일하는 총괄은 긴급 입력도 갱신 뒤까지 보
   expect(f.runner.sent).toHaveLength(0);
   expect(f.runner.stops).toHaveLength(0);
   expect(f.store.listPending(f.lead.id).map(d => d.id)).toContain(delivery.id);
+});
+
+test("총괄은 뒤 작업·하위 에이전트·승인 대기가 남은 직원을 해제하지 않는다", async () => {
+  const f = fixture();
+  for (const state of ["background", "subagents", "blocked"] as const) {
+    const worker = f.store.createMember({ projectId: f.project.id, handle: state, name: state, kind: "worker", backend: "core", status: "idle", sessionId: `session-${state}`, paneId: `pane-${state}` });
+    if (state === "background") {
+      f.runner.callback({ type: "background", memberId: worker.id, label: "1 dynamic workflow" });
+      await Bun.sleep(10);
+    } else if (state === "subagents") f.store.patchMember(worker.id, { subagents: 1 });
+    else f.store.patchMember(worker.id, { status: "blocked", blockedReason: "permission" });
+    const result = await agentTools.handleAgentTool(f.orch, f.lead, "team_sleep", { member: worker.handle });
+    expect(result.isError, `${state}: ${result.text}`).toBe(true);
+    expect(f.runner.stops).not.toContain(worker.id);
+    expect(f.store.requireMember(worker.id).status).not.toBe("asleep");
+  }
+});
+
+test("총괄 중단은 승인 창과 사전 확인 중 새로 뜬 승인 창을 보존하고 대표 중단은 유지한다", async () => {
+  const f = fixture();
+  const worker = f.store.createMember({ projectId: f.project.id, handle: "approval", name: "승인 대기", kind: "worker", backend: "core", status: "blocked", sessionId: "approval-session", paneId: "approval-pane" });
+  const blocked = await agentTools.handleAgentTool(f.orch, f.lead, "team_stop", { member: worker.handle });
+  expect(blocked.isError).toBe(true);
+  expect(f.runner.interrupts).toHaveLength(0);
+  f.store.patchMember(worker.id, { status: "working" });
+  f.runner.beforeStopCheck = () => { f.store.patchMember(worker.id, { status: "blocked", blockedReason: "permission" }); };
+  const raced = await agentTools.handleAgentTool(f.orch, f.lead, "team_stop", { member: worker.handle });
+  expect(raced.isError).toBe(true);
+  expect(f.runner.interrupts).toHaveLength(0);
+  const owner = await f.orch.stopMember(worker.id, { by: "user" });
+  expect(owner.outcome).toBe("stopped");
+  expect(f.runner.interrupts).toEqual([worker.id]);
 });
