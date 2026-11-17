@@ -60,4 +60,3 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   return { dir, config, bus, store, orch, project, runner, member, terminals, writes, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
     done() { const t = terminals.get(store.requireMember(member.id).paneId!)!; t.turn = (t.turn ?? 0)+1; t.status = { state: 'done', app: 'claude-code' }; } };
 }
-
