@@ -1198,9 +1198,12 @@ describe("2차 검수 회귀: 전달", () => {
     t.runner.busy.add(w.id);
     await t.orch.setTodoDone(todo.id, true);
     await t.orch.assign(t.project.id, "cs", { text: "결제 모듈 고쳐라" });
-    const r = await t.call(lead, "team_close", { member: "cs" });
-    expect(r.text).toContain("나가지 않은 지시 1건");
-    expect(r.text).toContain("결제 모듈 고쳐라");
+    const denied = await t.call(lead, "team_close", { member: "cs" });
+    expect(denied.isError).toBe(true);
+    // Closing from the owner surface keeps its original handoff behavior.
+    const dropped = await t.orch.closeMember(w.id);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("결제 모듈 고쳐라");
     const handed = t.store.db.query("SELECT member_id FROM deliveries WHERE ref_id = ?").get(todo.id) as { member_id: string };
     expect(handed.member_id).toBe(lead.id);
   });

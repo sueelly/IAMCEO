@@ -8,6 +8,7 @@ import { adoptRefusal, type ApprovalPrompt, type Backend, type HerdrInfo, type L
 import { HerdrError, isForbiddenTestSocket, rpc, subscribe, type HerdrEvent, type Subscription } from "./herdr-client.ts";
 import { cleanText, SESSION_ID_RE } from "../text.ts";
 import { subagentEnv } from "./headless.ts";
+import { claudeRoleArgs } from "./role-policy.ts";
 import { readTranscriptTail, transcriptPath } from "./transcript.ts";
 import { parseApproval } from "./approval.ts";
 import type { ApprovalAnswer, DeliveryInspection, DeliveryProbe, DeliveryRepair, Runner, RunnerEvent, RunnerMember, RunnerTerminalIdentity, SendResult, StartOpts } from "./types.ts";
@@ -326,7 +327,7 @@ export function isBypassDialog(screen: string): boolean {
 
 /** 칸 환경. 서브에이전트 모델은 agent.start 에 넘길 곳이 없어 칸을 만들 때 준다(pane.split·workspace.create 의 env). */
 function paneEnv(m: RunnerMember): { env?: Record<string, string> } {
-  return m.subagentModel ? { env: subagentEnv(m.subagentModel) } : {};
+  return m.kind !== "conductor" && m.subagentModel ? { env: subagentEnv(m.subagentModel) } : {};
 }
 
 /**
@@ -745,8 +746,7 @@ export class HerdrRunner implements Runner {
       // herdr 는 여러 줄 인자를 invalid_agent_argument 로 거부한다. 규칙은 파일로만 넘긴다.
       "--append-system-prompt-file", o.systemPromptFile,
       "--mcp-config", o.mcpConfigFile,
-      "--permission-mode", m.permissionMode,
-      "--allowedTools", "mcp__iamceo",
+      ...claudeRoleArgs(m),
       // 긴 글·첨부는 이 직원의 폴더에 있다. 없으면 default 모드에서 읽을 때마다 승인 창이 뜬다. ~/.iamceo 와 다른 프로젝트의 첨부는 열지 않는다.
       "--add-dir", inbox,
       ...(m.model ? ["--model", m.model] : []),

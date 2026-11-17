@@ -324,7 +324,7 @@ describe("자료 종류", () => {
 
   test("file 도구: html·경로별 종류, 표·코드는 본문에도 싣고 원본 html 은 상태에 싣지 않는다", async () => {
     const t = await setup();
-    const lead = await t.orch.ensureConductor(t.project.id);
+    const writer = t.store.createMember({ projectId: t.project.id, handle: "writer", name: "자료 작성", kind: "worker", cwd: t.work });
     const dir = join(t.work, "o");
     mkdirSync(dir);
     const write = (name: string, body: string | Buffer) => writeFileSync(join(dir, name), body);
@@ -341,7 +341,7 @@ describe("자료 종류", () => {
     write("s.mp3", "s");
     write("z.zip", "z");
     const id = (r: { text: string }) => /#(f_\S+?)\./.exec(r.text)![1]!;
-    const up = async (args: Record<string, unknown>) => t.store.getFile(id(await t.call(lead, "file", { title: "자료", ...args })))!;
+    const up = async (args: Record<string, unknown>) => t.store.getFile(id(await t.call(writer, "file", { title: "자료", ...args })))!;
 
     const art = await up({ html: "<h1>글</h1><script>1</script>" });
     expect(art).toMatchObject({ kind: "artifact", body: "", attachments: [] });
@@ -374,23 +374,23 @@ describe("자료 종류", () => {
 
   test("file 도구: 크기·개수·비밀 파일 검사는 html 경로에도 그대로다", async () => {
     const t = await setup();
-    const lead = await t.orch.ensureConductor(t.project.id);
+    const writer = t.store.createMember({ projectId: t.project.id, handle: "writer", name: "자료 작성", kind: "worker", cwd: t.work });
     const big = "가".repeat(Math.ceil(MAX_ARTIFACT_BYTES / 3) + 1);
-    expect(await t.call(lead, "file", { title: "큼", html: big })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "큼", html: big })).toMatchObject({ isError: true });
     writeFileSync(join(t.work, "big.html"), big);
-    expect(await t.call(lead, "file", { title: "큼", path: "big.html" })).toMatchObject({ isError: true });
-    expect((await t.call(lead, "file", { title: "딱 맞음", html: "x".repeat(MAX_ARTIFACT_BYTES) })).isError).toBeUndefined();
-    expect(await t.call(lead, "file", { title: "둘", html: "<p>", content: "x" })).toMatchObject({ isError: true });
-    expect(await t.call(lead, "file", { title: "둘", html: "<p>", path: "big.html" })).toMatchObject({ isError: true });
-    expect(await t.call(lead, "file", { title: "빔", html: "  " })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "큼", path: "big.html" })).toMatchObject({ isError: true });
+    expect((await t.call(writer, "file", { title: "딱 맞음", html: "x".repeat(MAX_ARTIFACT_BYTES) })).isError).toBeUndefined();
+    expect(await t.call(writer, "file", { title: "둘", html: "<p>", content: "x" })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "둘", html: "<p>", path: "big.html" })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "빔", html: "  " })).toMatchObject({ isError: true });
 
     // 작업 폴더 밖, 비밀 이름, 하드 링크는 html 로도 못 읽는다.
     const outside = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-out-")));
     writeFileSync(join(outside, "x.html"), "비밀");
-    expect(await t.call(lead, "file", { title: "밖", path: join(outside, "x.html") })).toMatchObject({ isError: true });
-    expect(await t.call(lead, "file", { title: "데이터", path: join(t.home, "config.json") })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "밖", path: join(outside, "x.html") })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "데이터", path: join(t.home, "config.json") })).toMatchObject({ isError: true });
     linkSync(join(outside, "x.html"), join(t.work, "link.html"));
-    expect(await t.call(lead, "file", { title: "링크", path: "link.html" })).toMatchObject({ isError: true });
+    expect(await t.call(writer, "file", { title: "링크", path: "link.html" })).toMatchObject({ isError: true });
   });
 
   test("예전 자료: kind 없는 행은 첨부·본문으로 정하고, .html 첨부는 아티팩트로 읽는다. 올린 html 은 sandbox 로만 나간다", async () => {
