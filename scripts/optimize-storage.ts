@@ -30,14 +30,23 @@ export function inspectStorage(home: string): StorageInspection {
   } finally { db.close(); }
 }
 
-function unaffectedContentDigest(db: Database): string {
-  const hash = createHash("sha256"), quote = (name: string) => '"' + name.replaceAll('"', '""') + '"';
-  const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT IN ('files','agent_operation_receipts') ORDER BY name").all();
-  for (const { name } of tables) {
+const quote = (name: string) => '"' + name.replaceAll('"', '""') + '"';
+type TableShape = { name: string; columns: string[]; order: string }[];
+
+/** 최적화 전 DB 의 표·칸. 뒤 마이그레이션이 더한 표·칸(새 빈 표, 기존 행의 새 null 칸)은 '바뀐 데이터'가 아니므로 이 모양만 대조한다. */
+function tableShape(db: Database): TableShape {
+  return db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT IN ('files','agent_operation_receipts') ORDER BY name").all().map(({ name }) => {
+    const info = db.query<{ name: string; pk: number }, []>(`PRAGMA table_info(${quote(name)})`).all();
+    const primary = info.filter(c => c.pk).sort((a,b) => a.pk - b.pk);
+    return { name, columns: info.map(c => c.name), order: primary.length ? primary.map(c => quote(c.name)).join(",") : "rowid" };
+  });
+}
+
+function unaffectedContentDigest(db: Database, shape: TableShape = tableShape(db)): string {
+  const hash = createHash("sha256");
+  for (const { name, columns, order } of shape) {
     hash.update(name + "\n");
-    const primary = db.query<{ name: string; pk: number }, []>(`PRAGMA table_info(${quote(name)})`).all().filter(c => c.pk).sort((a,b) => a.pk - b.pk);
-    const order = primary.length ? primary.map(c => quote(c.name)).join(",") : "rowid";
-    for (const row of db.query<Record<string, unknown>, []>(`SELECT * FROM ${quote(name)} ORDER BY ${order}`).iterate()) hash.update(canonicalAgentRequest(row) + "\n");
+    for (const row of db.query<Record<string, unknown>, []>(`SELECT ${columns.map(quote).join(",")} FROM ${quote(name)} ORDER BY ${order}`).iterate()) hash.update(canonicalAgentRequest(row) + "\n");
   }
   return hash.digest("hex");
 }
@@ -54,17 +63,18 @@ export function optimizeStorage(home: string, options: { vacuum?: boolean } = {}
     const path = databasePath(owner.home), before = inspectStorage(owner.home);
     if (before.schemaVersion < 33 || before.schemaVersion > MIGRATIONS.length) throw new Error("이 최적화는 지원하는 v33 이상 DB에서만 실행할 수 있습니다");
     const probe = new Database(path, { readonly: true });
-    let original: ReturnType<typeof storageContentDigest>, unaffected: string;
+    let original: ReturnType<typeof storageContentDigest>, unaffected: string, shape: TableShape;
     try {
       verifyIntegrity(probe);
       original = storageContentDigest(probe, before.schemaVersion < STORAGE_OPTIMIZATION_VERSION);
-      unaffected = unaffectedContentDigest(probe);
+      shape = tableShape(probe);
+      unaffected = unaffectedContentDigest(probe, shape);
     } finally { probe.close(); }
     const db = openDb(path, { migrationBackup: false });
     try {
       const verify = () => {
         verifyIntegrity(db);
-        if (canonicalAgentRequest(storageContentDigest(db)) !== canonicalAgentRequest(original) || unaffectedContentDigest(db) !== unaffected) throw new Error("최적화 전후의 논리 데이터가 다릅니다");
+        if (canonicalAgentRequest(storageContentDigest(db)) !== canonicalAgentRequest(original) || unaffectedContentDigest(db, shape) !== unaffected) throw new Error("최적화 전후의 논리 데이터가 다릅니다");
       };
       verify();
       if (options.vacuum) { db.exec("VACUUM"); verify(); }

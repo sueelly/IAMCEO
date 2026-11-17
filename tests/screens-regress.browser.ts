@@ -1282,7 +1282,7 @@ describe("2차 검수 회귀", () => {
     await page.close();
   }, 25_000);
 
-  test("쉬는 직원의 지금 줄은 '마지막 일'이다", async () => {
+  test("쉬는 직원의 자기 보고는 '마지막 보고'로 표시한다", async () => {
     const p = await newProject();
     const w = await joinWorker(p.id, "철수");
     await tool(w.token, "status", { now: "결제 버그 고치는 중" });
@@ -1293,7 +1293,7 @@ describe("2차 검수 회귀", () => {
     const page = await open(desktop, `#/p/${p.id}/team`);
     const card = page.locator(".tm-card", { hasText: "결제 버그 고치는 중" });
     await card.waitFor();
-    expect(await card.locator("dt").first().innerText()).toBe("마지막 일");
+    expect(await card.locator("dt").first().innerText()).toBe("마지막 보고");
     await page.close();
   }, 20_000);
 

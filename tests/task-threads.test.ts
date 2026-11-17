@@ -3,7 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Backend, Member, MessagePage, Task } from "../shared/types.ts";
+import type { Backend, Delivery, Member, MessagePage, Task } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -97,7 +97,14 @@ async function setup() {
     return store.requireTask(id);
   };
   const sentTo = (m: Member) => runner.sent.filter((s) => s.memberId === m.id).map((s) => s.text);
-  return { home, url, store, orch, runner, project, lead, call, api, worker, register, sentTo };
+  // 이 파일은 출처 이음을 검사한다. 다음 작업으로 넘어가는 시험은
+  // 앞 작업의 합침·검증 완료를 명시적으로 준비하며 대화 글은 추가하지 않는다.
+  const completeFixtureTask = (taskId: string) => {
+    const task = store.requireTask(taskId);
+    if (task.branch || task.worktree) store.addStageMark({ projectId: project.id, taskId, stage: "merged", evidence: "격리 시험에서 앞 작업의 합침을 확인함", memberId: lead.id, who: lead.name });
+    store.addStageMark({ projectId: project.id, taskId, stage: "done", evidence: "격리 시험에서 앞 작업의 검증·완료를 확인함", memberId: lead.id, who: lead.name });
+  };
+  return { home, url, store, orch, runner, project, lead, call, api, worker, register, sentTo, completeFixtureTask };
 }
 
 describe("작업 등록", () => {
@@ -198,6 +205,7 @@ describe("작업별 대화", () => {
     // 직원은 받은 글의 작업 줄대로 작업을 밝힌다
     await t.call(a, "post", { kind: "완료", title: "결제 테스트 붙임", task_id: ta.id });
     await t.call(b, "post", { kind: "완료", title: "검색 속도 개선", task_id: tb.id });
+    t.completeFixtureTask(ta.id);
     t.runner.end(a.id);
     await settle();
     // 업무 없이 보낸 글은 서버가 만든 새 업무 줄과 함께 간다
@@ -282,6 +290,7 @@ describe("작업별 대화", () => {
     expect(res.isError).toBeFalsy();
     await settle();
     expect(t.sentTo(a).find((s) => s.includes("결제 실패 문구"))).toContain(`작업 #${ta.id} '결제 연동'`);
+    t.completeFixtureTask(ta.id);
     t.runner.end(a.id);
     await settle();
     // 작업을 빼거나 null 이면 거절한다(말없이 전체로 가 칩이 비지 않게). 새 일은 task 로 새 업무를 만들어 맡긴다.
@@ -349,6 +358,7 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     await t.send("환불 붙여 주세요", t.A.id);
     await settle();
     await t.call(t.w, "post", { kind: "완료", title: "환불 끝", task_id: t.A.id });
+    t.completeFixtureTask(t.A.id);
     t.runner.end(t.w.id);
     await settle();
     await t.send("정산도 봐 주세요", t.B.id);
@@ -388,7 +398,7 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     expect(t.inTask(t.B.id).messages).toBe(beforeB.messages + 1);
   });
 
-  test("자동 보고(턴 마지막 글)는 그 턴에 받은 전달이 한 작업이면 그 작업, A·B 가 한 묶음이면 어느 쪽에도 복사하지 않고 직원의 '여러 업무 결과'에 한 번 남긴다(총괄 보고도 한 번)", async () => {
+  test("자동 보고는 한 작업을 받았으면 그 작업에, 이미 A·B 를 함께 받은 옛 실행을 복원하면 직원의 '여러 업무 결과'에 한 번 남긴다(총괄 보고도 한 번)", async () => {
     const t = await twoTasks();
     // B 하나만 받은 턴: post 없이 끝나면 자동 보고가 B
     await t.send("정산도 봐 주세요", t.B.id);
@@ -396,16 +406,32 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     t.runner.end(t.w.id, "정산은 보는 중입니다");
     await settle();
     expect(t.store.listMessages(t.project.id).find((m) => m.body === "정산은 보는 중입니다")!.taskId).toBe(t.B.id);
-    // 일하는 동안 A·B 가 쌓여 한 묶음으로 들어간다
+    t.completeFixtureTask(t.B.id);
+    // 새 전달은 작업 순서를 지킨다. 아래에서는 과거에 A·B 를 이미
+    // 함께 받은 실행을 복원해 마지막 글의 출처 판정만 검사한다.
     const first = await t.send("먼저 받을 일", null);
     const firstTask = t.store.requireMessage(first.body.id).taskId!;
     await settle();
-    await t.send("환불 붙여 주세요", t.A.id);
-    await t.send("정산 마저 해 주세요", t.B.id);
+    const a = await t.send("환불 붙여 주세요", t.A.id);
+    const b = await t.send("정산 마저 해 주세요", t.B.id);
     await t.call(t.w, "post", { kind: "완료", title: "먼저 받은 일 끝", task_id: firstTask });
+    t.completeFixtureTask(firstTask);
     t.runner.end(t.w.id);
     await settle();
-    const bundle = t.sentTo(t.w).find((s) => s.includes("환불 붙여 주세요"))!;
+    const received = [a, b].map(response => t.store.listDeliveries(t.project.id).find(d => d.memberId === t.w.id && d.refId === response.body.id)!);
+    expect(received.map(d => t.store.deliveryTaskId(d.id))).toEqual([t.A.id, t.B.id]);
+    for (const delivery of received) t.store.markDelivered(delivery.id);
+    const run = t.store.listPendingExecutions().find(r => r.memberId === t.w.id)!;
+    expect(run).toBeDefined();
+    t.store.saveExecutionJournal({ ...run, deliveryIds: received.map(d => d.id) });
+    // headless 시험 실행기의 실제 턴도 같은 수신 문맥으로 복원한다.
+    // 새 mixed dispatch를 만들거나 운영 입력 허가를 우회하는 호출은 없다.
+    const runtime = (t.orch as unknown as { runtimes: Map<string, { turn: { text: string; deliveries?: Delivery[] } | null }> }).runtimes.get(t.w.id)!;
+    expect(runtime.turn).not.toBeNull();
+    const bundle = received.map(d => d.text).join("\n\n");
+    runtime.turn!.deliveries = received;
+    runtime.turn!.text = bundle;
+    expect(bundle).toContain("환불 붙여 주세요");
     expect(bundle).toContain("정산 마저 해 주세요");
     const reportsBefore = t.store.listDeliveries(t.project.id).filter((d) => d.memberId === t.lead.id && d.kind === "report").length;
     t.runner.end(t.w.id, "환불은 됐고 정산은 보는 중");

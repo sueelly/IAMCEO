@@ -169,7 +169,7 @@ test("검토 반례 1: 갈래 업무는 위 업무의 계약을 따르고, 직�
   expect((await f.tool(f.lead, "post", { task_id: gated, kind: "완료", title: "끝" })).isError).toBeUndefined();
 });
 
-test("검토 반례 1: 계약 업무와 계약 없는 업무를 한 턴에 함께 받으면 둘 다 제 판정으로 완료할 수 있다", async () => {
+test("검토 반례 1: 이미 여러 업무를 받은 옛 실행을 복원해도 계약 업무와 계약 없는 업무를 각각 판정해 완료할 수 있다", async () => {
   const f = fixture();
   const gated = (await f.tool(f.lead, "task", { title: "계약 업무" })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
   const free = (await f.tool(f.lead, "task", { title: "계약 없는 업무" })).text.match(/#(tk_[A-Za-z0-9_-]+)/)![1]!;
@@ -177,9 +177,15 @@ test("검토 반례 1: 계약 업무와 계약 없는 업무를 한 턴에 함�
   await until("첫 지시", () => f.runner.to(f.worker).length === 1);
   await f.tool(f.lead, "team_assign", { member: "w1", text: "계약 일", task_id: gated, contract: { ...CODING, checks: ["behavior"], acceptance: ["동작한다"] } });
   await f.tool(f.lead, "team_assign", { member: "w1", text: "이것도", task_id: free });
-  f.runner.end(f.worker);
-  await until("묶음 지시", () => f.runner.to(f.worker).some(t => t.includes("업무 계약 r1")));
-  const batch = f.runner.to(f.worker).find(t => t.includes("업무 계약 r1"))!;
+  // 새 전달은 업무 순서를 지킨다. 이미 두 업무를 받았던 옛 실행의
+  // 영수증·실행 기록을 복원해, 진행 중인 실행의 완료 판정을 검증한다.
+  const run = f.store.listPendingExecutions().find(r => r.memberId === f.worker.id)!;
+  const received = f.store.listPending(f.worker.id).filter(d => d.kind === "instruction");
+  expect(received).toHaveLength(2);
+  for (const delivery of received) f.store.markDelivered(delivery.id);
+  f.store.saveExecutionJournal({ ...run, deliveryIds: [...run.deliveryIds, ...received.map(d => d.id)] });
+  const batch = received.map(d => d.text).join("\n\n");
+  expect(batch).toContain("업무 계약 r1");
   expect(batch).toContain(`작업 #${free}`);
   expect((await f.tool(f.worker, "post", { task_id: free, kind: "완료", title: "계약 없는 일 끝" })).isError).toBeUndefined();
   f.ran(f.worker, "bun test behavior");

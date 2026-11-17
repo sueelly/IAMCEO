@@ -17,6 +17,8 @@ export type DeliveryRecoveryStore = Pick<Store,
 export interface DeliveryRecoveryOptions {
   store: DeliveryRecoveryStore;
   runner: (member: Member) => Pick<Runner, "inspectDelivery" | "repairDelivery"> | null;
+  /** Admission for another write; receipt inspection and reconciliation remain available. */
+  canRepair?: (member: Member, deliveries: Delivery[]) => boolean;
   now?: () => number;
   random?: () => number;
 }
@@ -314,6 +316,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     if (this.store.inputState(memberId).unresolvedDispatches.some(other => other.dispatchId !== dispatch.dispatchId && ["prepared", "write_started", "unknown"].includes(other.transportState))) return null;
     // Multiple unknown envelopes must never be bypassed by a repair of one envelope.
     if (this.store.listDeliveries(member.projectId).some(d => d.memberId === memberId && !dispatch.items.some(item => item.deliveryId === d.id) && this.logicalFence(d))) return null;
+    if (this.options.canRepair?.(member, dispatch.items.map(item => this.store.requireDelivery(item.deliveryId))) === false) return null;
     return dispatch;
   }
 
@@ -524,6 +527,9 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       const r = this.record(d.id);
       return action === "resend" ? r.phase !== "retry_wait" || !this.store.getDeliveryRetry(d.id).nextAttemptAt || Date.parse(this.store.getDeliveryRetry(d.id).nextAttemptAt!) > this.now() : r.phase !== "checking" || r.reason !== "draft_pending";
     })) return;
+    // Decide before reserving a new envelope: a queued successor must not create a
+    // new physical fence that prevents its predecessor from making progress.
+    if (this.options.canRepair?.(this.store.requireMember(original.memberId), unresolved) === false) return;
     let dispatch = original;
     if (action === "submit_only" && unresolved.length !== original.items.length) return;
     if (action === "resend") {
@@ -551,7 +557,13 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       catch { result = { ok: false, reason: "error", retryable: false, deliveryEffect: "unknown" }; }
       // A supported adapter must have durably prepared the write under its input mutex.
       const after = this.store.getDispatch(dispatch.dispatchId)!;
-      if (after.transportState === "write_started") this.recordResult(dispatch.dispatchId, result);
+      if (dispatch.dispatchId !== original.dispatchId && after.transportState === "prepared" && !result.ok && result.deliveryEffect === "not_written" &&
+          this.options.canRepair?.(this.store.requireMember(dispatch.memberId), unresolved) === false) {
+        // Admission changed during the adapter's final read. Only this newly
+        // reserved, definitely unwritten attempt is rejected; original unknown
+        // writes keep their own evidence and fence.
+        this.recordResult(dispatch.dispatchId, result);
+      } else if (after.transportState === "write_started") this.recordResult(dispatch.dispatchId, result);
       else if (!result.ok && result.retryable) {
         for (const d of unresolved) this.wait(d.id, "busy");
       } else if (!result.ok) {

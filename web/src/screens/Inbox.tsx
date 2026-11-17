@@ -12,6 +12,7 @@ import { ApiError, api, errorText, fileUrl, saveAttachment } from "../lib/api";
 import { useRecentAnswers } from "../lib/nativeAnswers";
 import { splitDetail, type RecBandText } from "../lib/decision-view";
 import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute } from "../lib/store";
+import { noticeTasks } from "../lib/task-list";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, sameDecisionReview, type WriteReview } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
 import "../styles/inbox.css";
@@ -534,6 +535,52 @@ function BlockedList({ members, projectName, tasks }: { members: Member[]; proje
   );
 }
 
+/**
+ * 완료 알림(대표 2026-11-17): 실제 완료로 옮긴 업무를 읽기용으로 한 번 알린다. 결재가 아니라 세지 않고, '확인'은 알림만 내린다.
+ * 확인은 서버에 남아 다른 화면에서도 같이 내려간다.
+ */
+function NoticeList({ tasks }: { tasks: readonly Task[] }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const see = (t: Task) => {
+    const notice = t.progress!.notice!;
+    setBusy(notice.id);
+    setError(null);
+    void api.seeTaskNotice(t.projectId, notice.id)
+      .then((task) => applyLocal({ type: "task", task }))
+      .catch((e: unknown) => setError(errorText(e)))
+      .finally(() => setBusy(null));
+  };
+  return (
+    <section className="ibx-sec" aria-label="완료 알림">
+      <h2 className="ibx-sec__head">
+        완료 <Count n={tasks.length} />
+      </h2>
+      {tasks.map((t) => {
+        const notice = t.progress!.notice!;
+        const [head, ...lines] = notice.lines;
+        return (
+          <Glass key={notice.id} as="article" level="regular" tint className="ibx-card ibx-notice" aria-label={head}>
+            <div className="ibx-notice__head">
+              <p className="ibx-notice__title">{head}</p>
+              <Time iso={notice.at} relative className="ibx-notice__at" />
+            </div>
+            {lines.length ? (
+              <ul className="ibx-notice__lines">
+                {lines.map((line, i) => <li key={i} data-unverified={line.startsWith("미검증") ? "" : undefined}>{line}</li>)}
+              </ul>
+            ) : null}
+            <GlassButton variant="ghost" size="m" className="ibx-notice__seen" disabled={busy === notice.id} onClick={() => see(t)}>
+              확인
+            </GlassButton>
+          </Glass>
+        );
+      })}
+      {error ? <p className="ibx-error" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
 /** 본사에는 팀 탭이 없다. 본사 AI 의 상태와 상세(활동·화면·중단)로 가는 길을 여기 둔다. */
 export function HqLeadStrip({ lead }: { lead: Member }) {
   return (
@@ -708,6 +755,7 @@ export default function Inbox() {
   const recentAnswers = useRecentAnswers();
   const blocked = state.members.filter((m) => m.status === "blocked" || (recentAnswers.has(m.id) && m.origin !== "manual"));
   const hqLead = state.project.isHq ? state.members.find((m) => m.kind === "root") : null;
+  const notices = noticeTasks(state.tasks ?? []);
   const moreAvailable = moreDone && doneDecisions.length < doneCount;
   const loadMore = () => {
     setLoadingMore(true);
@@ -732,6 +780,7 @@ export default function Inbox() {
 
       {view === "open" ? (
         <>
+          {notices.length > 0 ? <NoticeList tasks={notices} /> : null}
           {blocked.length > 0 ? <BlockedList members={blocked} projectName={state.project.name} tasks={state.tasks ?? []} /> : null}
           {live.length === 0 && blocked.length === 0 ? (
             <Glass level="regular" tint className="ibx-empty">

@@ -871,6 +871,11 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       await requireReachable(id!, null);
       return Response.json(await once(`tidy:${id}`, () => orch.tidyBoard!(id!)));
     }),
+    // 완료 알림 확인(읽기용 알림을 내리는 것뿐, 결재·승인 입력이 아니다). 두 화면에서 눌러도 한 번이다.
+    route("POST", "/api/projects/:id/task-notices/:notice/seen", (_req, _url, [id, notice]) => {
+      store.requireProject(id!);
+      return Response.json(store.seeTaskNotice(id!, notice!));
+    }),
     route("POST", "/api/todos/:id/done", async (req, _url, [id]) => {
       const todo = store.requireTodo(id!);
       if (contractV2(req)) {

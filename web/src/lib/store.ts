@@ -20,6 +20,7 @@ import type {
   WsEvent,
 } from "@shared/types";
 import type { ServerCapabilities, SyncRevisions } from "@shared/operations";
+import { newerProgress } from "@shared/task-stage";
 import { CursorHistory, compareMessages, mergeHistoryMessages } from "./history";
 import { BrowserSyncCoordinator, type SyncContext, type SyncSocket } from "./sync";
 import { shareJSON } from "./structural-sharing";
@@ -201,7 +202,10 @@ export function applyToProject(p: ProjectState, e: WsEvent): ProjectState {
       if (e.task.projectId !== id) return p;
       // 마지막 글 시각을 싣지 않은 알림이면 앞서 받은 값을 남긴다(업무 이름만 바뀌어도 칩이 사라지지 않게).
       const before = (p.tasks ?? []).find((t) => t.id === e.task.id);
-      const task = e.task.lastMessageAt === undefined && before?.lastMessageAt !== undefined ? { ...e.task, lastMessageAt: before.lastMessageAt } : e.task;
+      const kept = e.task.lastMessageAt === undefined && before?.lastMessageAt !== undefined ? { ...e.task, lastMessageAt: before.lastMessageAt } : e.task;
+      // 업무 단계는 판(rev)이 낮으면 버린다. 단계를 싣지 않은 알림(이름만 바뀜 등)은 앞서 받은 단계를 남긴다.
+      const progress = newerProgress(before?.progress, kept.progress);
+      const task = progress ? { ...kept, progress } : kept;
       const tasks = upsertNewer(p.tasks ?? [], task);
       return { ...p, tasks: [...tasks].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
     }

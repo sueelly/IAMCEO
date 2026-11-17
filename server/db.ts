@@ -868,6 +868,75 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE agent_operation_receipts ADD COLUMN result_kind TEXT NOT NULL DEFAULT 'json';
    ALTER TABLE agent_operation_receipts ADD COLUMN request_sha256 TEXT NOT NULL DEFAULT '';
    ALTER TABLE agent_operation_receipts ADD COLUMN updated_at TEXT;`,
+  // v36: 업무 단계(대표 2026-11-17). 총괄의 단계 표시(검토 맡김·메인 합침·반영·완료·보류·다시 열기), 막힘 반복 감시(시작 시각·시도·지문은 재시작에도 남는다),
+  // 완료 알림(완료 표시 하나에 하나), 진행판 항목이 가리키는 기존 업무. 단계 자체는 저장하지 않고 근거에서 다시 계산한다.
+  `CREATE TABLE task_stage_marks (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL,
+     stage TEXT NOT NULL CHECK (stage IN ('review','merged','applied','done','hold','reopen')),
+     evidence TEXT NOT NULL,
+     member_id TEXT,
+     who TEXT NOT NULL,
+     at TEXT NOT NULL
+   );
+   CREATE INDEX task_stage_marks_task ON task_stage_marks(task_id, id);
+   CREATE TABLE task_watch (
+     task_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     started_at TEXT NOT NULL,
+     attempts INTEGER NOT NULL,
+     same_count INTEGER NOT NULL,
+     fingerprint TEXT NOT NULL,
+     last_progress_at TEXT NOT NULL,
+     tripped_at TEXT,
+     trip_reason TEXT,
+     notice_delivery_id TEXT,
+     history_json TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX task_watch_project ON task_watch(project_id);
+   CREATE TABLE task_notices (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL,
+     mark_id INTEGER NOT NULL UNIQUE,
+     lines_json TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     seen_at TEXT
+   );
+   CREATE INDEX task_notices_task ON task_notices(task_id, created_at);
+   ALTER TABLE work ADD COLUMN task_id TEXT;`,
+  // v37: adopt current queued/in-flight work, never turn all historical deliveries into prerequisites.
+  `CREATE TABLE task_sequence (
+     member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     entered_at TEXT NOT NULL,
+     PRIMARY KEY (member_id, task_id)
+   );
+   INSERT OR IGNORE INTO task_sequence(member_id, task_id, entered_at)
+     SELECT d.member_id, d.task_id, MIN(d.created_at)
+     FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+     WHERE d.task_id IS NOT NULL AND d.wake = 1 AND d.kind IN ('instruction','user_message')
+       AND d.status IN ('queued','held','delivering')
+       AND (COALESCE(r.phase,'none') NOT IN ('stopped','resolved') OR
+         (r.phase = 'resolved' AND r.reason = 'not_received' AND
+           (SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id
+             WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
+     GROUP BY d.member_id, d.task_id;
+   INSERT OR IGNORE INTO task_sequence(member_id, task_id, entered_at)
+     SELECT e.member_id, d.task_id, MIN(d.created_at)
+     FROM execution_journal e JOIN members m ON m.id = e.member_id
+       JOIN json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id = j.value
+       LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+     WHERE e.generation = m.session_generation AND e.ended_at IS NULL
+       AND e.phase NOT IN ('ended','interrupted') AND d.task_id IS NOT NULL
+       AND (d.status = 'delivered' OR COALESCE(r.phase,'none') NOT IN ('stopped','resolved') OR
+         (r.phase = 'resolved' AND r.reason = 'not_received' AND
+           (SELECT x.transport_state FROM delivery_dispatches x JOIN delivery_dispatch_items i ON i.dispatch_id = x.id
+             WHERE i.delivery_id = d.id ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) = 'rejected'))
+       AND e.rowid = (SELECT MAX(x.rowid) FROM execution_journal x WHERE x.member_id = e.member_id AND x.generation = e.generation)
+     GROUP BY e.member_id, d.task_id;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

@@ -5,6 +5,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import { STAGE_LABEL } from "../shared/task-stage.ts";
 import { CLI_PROVIDERS, CONDUCTOR_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
@@ -762,7 +763,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   work_list: tool(
     "일 항목(진행 중·예정·보류·완료)을 id 와 함께 본다. 압축 뒤 항목을 옮기거나 지울 때 먼저 부른다.",
     z.strictObject({}),
-    (orch, member) => reply(JSON.stringify(orch.store.listWork(member.projectId).map((w) => ({ id: w.id, sec: w.sec, title: w.title, detail: w.detail, who: w.who })))),
+    (orch, member) => reply(JSON.stringify(orch.store.listWork(member.projectId).map((w) => ({ id: w.id, sec: w.sec, title: w.title, detail: w.detail, who: w.who,
+      ...(w.taskId ? { task_id: w.taskId, stage: STAGE_LABEL[orch.store.taskProgress(w.taskId).stage] } : {}) })))),
   ),
 
   work_remove: tool(
@@ -787,12 +789,29 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   work_set: tool(
-    "일 항목을 만들거나(id 없음) 고친다(id 있음). sec: doing 진행 중 · next 예정 · hold 보류 · done 완료. 완료가 아닌 항목은 대표 대화 화면에 작업 칩으로 바로 생기고, 제목·담당을 고치면 따라 바뀌며, 완료하거나 지우면 칩이 사라진다.",
-    z.strictObject({ id: z.string().optional(), sec: z.enum(["doing", "next", "hold", "done"]), title: text, detail: z.string().optional(), who: z.string().optional() }),
+    "일 항목을 만들거나(id 없음) 고친다(id 있음). sec: doing 진행 중 · next 예정 · hold 보류 · done 완료. 이미 있는 업무의 일이면 task_id 로 그 업무를 가리킨다: 새 작업 칩을 만들지 않고, 팀 목록이 그 업무의 단계(보고·결재·검토·합치기·완료)를 그대로 보인다. task_id 가 없으면 완료가 아닌 항목은 대표 대화 화면에 작업 칩으로 바로 생기고, 제목·담당을 고치면 따라 바뀌며, 완료하거나 지우면 칩이 사라진다.",
+    z.strictObject({ id: z.string().optional(), sec: z.enum(["doing", "next", "hold", "done"]), title: text, detail: z.string().optional(), who: z.string().optional(),
+      task_id: z.string().nullable().optional().describe("이 항목이 가리킬 기존 업무(tk_...). null 이면 연결을 푼다") }),
     (orch, member, a) => {
-      const item = orch.setWork(member.projectId, a);
+      const { task_id, ...rest } = a;
+      const item = orch.setWork(member.projectId, { ...rest, ...(task_id !== undefined ? { taskId: task_id } : {}) });
+      if (item.taskId) {
+        const progress = orch.store.taskProgress(item.taskId);
+        const warn = item.sec === "done" && progress.stage !== "done" ? ` 업무 단계는 아직 '${STAGE_LABEL[progress.stage]}'입니다. 팀 목록은 업무 단계를 보입니다. 끝났으면 task_stage(done)로 근거를 남기세요` : "";
+        return reply(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`);
+      }
       const task = orch.store.getTask(Store.workTaskId(item.id));
       return reply(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`);
+    },
+  ),
+
+  task_stage: tool(
+    "업무 단계를 남긴다(총괄만). 업무 단계는 보고·결재·전달에서 서버가 계산하고, 납품 뒤 단계만 네가 남긴다: review 독립 검토를 맡김 · merged 메인에 합침(evidence 에 커밋 id) · applied 대표 화면에 반영(merged 뒤) · done 실제 완료(열린 결재·할 일·고칠 것이 없고, 묶이는 계약이면 지금 판의 통과 완료, 코딩 계약·브랜치 업무는 merged 뒤) · hold 접거나 미룸(까닭) · reopen 완료·보류·반복 감시 멈춤을 다시 연다(바꾼 원인·접근). done 은 대표 결재함에 읽기용 완료 알림을 한 번 만든다(새 결재가 아니다). 같은 done 을 다시 불러도 알림은 하나다.",
+    z.strictObject({ task_id: text, stage: z.enum(["review", "merged", "applied", "done", "hold", "reopen"]), evidence: text.describe("근거 한 줄: 보고 id·커밋 id·확인한 화면·까닭") }),
+    (orch, member, a) => {
+      const r = orch.markTaskStage(member, { taskId: a.task_id, stage: a.stage, evidence: a.evidence });
+      const p = r.progress;
+      return reply(`${r.repeated ? "이미 완료로 남아 있습니다" : "남겼습니다"} · 업무 #${a.task_id} 단계 ${STAGE_LABEL[p.stage]}${p.next ? ` · 다음: ${p.next}` : ""}${r.noticeId ? ` · 완료 알림 #${r.noticeId}` : ""}`);
     },
   ),
 

@@ -102,6 +102,11 @@
 .tm-wi__sub { margin-top:1px; font-size:13px; line-height:1.45; color:var(--ink-2); }
 .tm-wi__sub:empty { display:none; }
 .tm-wi__sec { flex:none; font-size:12.5px; line-height:1.7; color:var(--ink-2); white-space:nowrap; }
+.tm-wi__next { margin-top:3px; font-size:13px; line-height:1.45; color:var(--ink-1); overflow-wrap:anywhere; }
+/* 업무 단계를 따르는 줄: 누가 무엇을 해야 하는 단계는 점 색으로 가른다(대표 차례·승인 창은 경고, 고칠 것·점검·보류 전달은 위험). */
+.tm-wi[data-stage="owner"] .tm-wi__dot, .tm-wi[data-stage="approval"] .tm-wi__dot, .tm-wi[data-stage="confirm"] .tm-wi__dot { background:var(--warn-dot); box-shadow:none; }
+.tm-wi[data-stage="fix"] .tm-wi__dot, .tm-wi[data-stage="check"] .tm-wi__dot, .tm-wi[data-stage="held"] .tm-wi__dot { background:var(--danger-dot); box-shadow:none; }
+.tm-wi[data-stage="owner"] .tm-wi__sec, .tm-wi[data-stage="approval"] .tm-wi__sec, .tm-wi[data-stage="fix"] .tm-wi__sec, .tm-wi[data-stage="check"] .tm-wi__sec, .tm-wi[data-stage="held"] .tm-wi__sec, .tm-wi[data-stage="confirm"] .tm-wi__sec { color:var(--ink-1); font-weight:600; }
 
 /* ── 편입 양식 ── */
 .tm-adopt__list { display:flex; flex-direction:column; gap:8px; }

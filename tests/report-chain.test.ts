@@ -106,7 +106,7 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
   await f.orch.assign(f.project.id, f.worker.handle, { taskId: f.taskId, text: "첫 일" });
   await until("첫 실행", () => !!f.pendingRun(f.worker));
   const first = f.pendingRun(f.worker)!;
-  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "[총괄] 철수에게\n할 일: 두 번째 일" });
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "[총괄] 철수에게\n할 일: 두 번째 일", taskId: f.taskId });
   f.runner.end(f.worker);
   await until("보완 실행", () => !!f.pendingRun(f.worker) && f.pendingRun(f.worker)!.runId !== first.runId);
   const second = f.pendingRun(f.worker)!;
@@ -170,7 +170,7 @@ test("기다리는 자기 결재를 밝힌 알림은 마감하고, 남의 결재
     const owner = variant === "other" ? f.worker : f.lead;
     const decision = f.store.createDecision({ projectId: f.project.id, taskId: f.taskId, memberId: owner.id, who: owner.name, title: "합칠까요" });
     if (variant === "closed") f.store.closeDecision(decision.id, { kind: "obsolete", reason: "필요 없어짐", by: f.lead.name, quote: null });
-    await f.orch.sendUserMessage(f.project.id, { text: "합치는 일은 어떻게 됐나요" });
+    await f.orch.sendUserMessage(f.project.id, { text: "합치는 일은 어떻게 됐나요", taskId: f.taskId });
     await until("총괄 실행", () => !!f.pendingRun(f.lead));
     await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "대표님 결재를 기다립니다", decisionId: decision.id });
     f.runner.end(f.lead);
@@ -222,7 +222,7 @@ test("재시작해도 같은 원인 실행의 보완·보고 미확인은 한 �
 
 test("질문·위임은 마감 근거로 남고, 결재가 바로 닫혀도 보완을 만들지 않는다", async () => {
   const f = fixture();
-  await f.orch.sendUserMessage(f.project.id, { text: "정해 주세요" });
+  await f.orch.sendUserMessage(f.project.id, { text: "정해 주세요", taskId: f.taskId });
   await until("총괄 실행", () => !!f.pendingRun(f.lead));
   const ask = await f.orch.registerAsk(f.lead, { taskId: f.taskId, title: "A안으로 할까요", options: [{ k: "a", label: "A안" }, { k: "b", label: "B안" }] });
   f.store.closeDecision(ask.decision.id, { kind: "obsolete", reason: "스스로 풀었음", by: f.lead.name, quote: null });

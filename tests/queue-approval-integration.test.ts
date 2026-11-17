@@ -43,7 +43,7 @@ test('approved foreground ends with background before turn_end, one receipt, and
   expect(f.store.requireMember(f.member.id).status).toBe('working');
   expect(await f.orch.answerNativePrompt(f.member.id, f.req)).toEqual(receipt);
   expect(f.keys).toHaveLength(1); expect(f.writes).toHaveLength(1); expect(reportCount(f)).toBe(0);
-  writeFileSync('evidence/integration-cross.json', JSON.stringify({ originalId: f.original.id, run: f.store.getExecutionJournal(f.run.runId), receipt, events, originalInputs: f.writes.length, approvalInputs: f.keys.length, reportFollowups: reportCount(f), memberStatus: f.store.requireMember(f.member.id).status }, null, 2));
+  writeFileSync(join(f.dir, 'integration-cross.json'), JSON.stringify({ originalId: f.original.id, run: f.store.getExecutionJournal(f.run.runId), receipt, events, originalInputs: f.writes.length, approvalInputs: f.keys.length, reportFollowups: reportCount(f), memberStatus: f.store.requireMember(f.member.id).status }, null, 2));
   f.setScreen(composer('  ⏵⏵ bypass permissions on · 0 shells, 0 monitors'));
   await until(() => f.store.requireMember(f.member.id).status === 'idle');
   expect(f.writes).toHaveLength(1); expect(f.keys).toHaveLength(1);
@@ -63,7 +63,7 @@ test('approval release admits the queued next original once without consuming a 
   expect(f.writes.filter(w => w.text.includes('CROSS_ORIGINAL'))).toHaveLength(1);
   expect(f.writes.filter(w => w.text.includes('CROSS_NEXT'))).toHaveLength(1);
   expect(f.keys).toHaveLength(1); expect(reportCount(f)).toBe(0);
-  writeFileSync('evidence/integration-next.json', JSON.stringify({ before, after: { at: new Date().toISOString(), delivery: f.store.requireDelivery(next.id) }, writes: f.writes, keys: f.keys }, null, 2));
+  writeFileSync(join(f.dir, 'integration-next.json'), JSON.stringify({ before, after: { at: new Date().toISOString(), delivery: f.store.requireDelivery(next.id) }, writes: f.writes, keys: f.keys }, null, 2));
 }, 15000);
 
 test('approved plain prose produces one report followup rather than a duplicate original or fake background wait', async () => {
@@ -76,7 +76,7 @@ test('approved plain prose produces one report followup rather than a duplicate 
   expect(f.writes.filter(w => w.text.includes('CROSS_ORIGINAL'))).toHaveLength(1);
   expect(await f.orch.answerNativePrompt(f.member.id, f.req)).toEqual(receipt);
   expect(f.keys).toHaveLength(1); expect(f.writes).toHaveLength(2);
-  writeFileSync('evidence/integration-report.json', JSON.stringify({ originalId: f.original.id, originalRun: f.store.getExecutionJournal(f.run.runId), reports: reportCount(f), writes: f.writes, keys: f.keys, receipt }, null, 2));
+  writeFileSync(join(f.dir, 'integration-report.json'), JSON.stringify({ originalId: f.original.id, originalRun: f.store.getExecutionJournal(f.run.runId), reports: reportCount(f), writes: f.writes, keys: f.keys, receipt }, null, 2));
 }, 15000);
 
 test('pending and completed approval requests share one receipt but reject changed content before another key', async () => {
