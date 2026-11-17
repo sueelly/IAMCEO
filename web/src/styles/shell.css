@@ -92,9 +92,10 @@
 .shell--phone[data-keyboard] .shell__bottom { padding-bottom:8px; }
 .shell--phone .shell-tabs { --tab-h:42px; width:100%; }
 .shell--phone .gtabs__link { font-size:14px; padding:0 2px; }
-/* 다섯 칸이 320px 에서도 들어가게: 건수는 옆이 아니라 글자 오른쪽 위에 얹는다(글자 자리가 건수에 따라 움직이지 않는다) */
+/* 다섯 칸이 320px 에서도 들어가게: 건수는 옆이 아니라 글자 오른쪽 위에 얹는다(글자 자리가 건수에 따라 움직이지 않는다).
+   글자와 겹치지 않게 글자 오른쪽 끝 밖에서 시작하고, 고른 칸의 물방울 윗선을 넘지 않게 칸 안으로 내린다 */
 .shell--phone .gtabs__label { position:relative; display:inline-block; }
-.shell--phone .gtabs__count { position:absolute; left:100%; bottom:calc(100% - 3px); margin-left:-3px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
+.shell--phone .gtabs__count { position:absolute; left:100%; bottom:calc(100% - 7px); margin-left:1px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
 @media (max-width:359.98px) { .shell--phone .gtabs__link { font-size:13.5px; } }
 .shell--phone .shell__column { padding:6px calc(var(--safe-r) + 14px) 44px calc(var(--safe-l) + 14px); }
 /* 상단 바는 불투명(아래로 지나가는 글이 비치지 않게) */
