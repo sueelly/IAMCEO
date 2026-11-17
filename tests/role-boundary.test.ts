@@ -11,7 +11,7 @@ import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { guardDecision } from "../server/harness-guard.ts";
 import { guardHooks, Orchestrator } from "../server/orchestrator.ts";
-import { exportRoles, renderRole, ROLE_BOUNDARY, WRITING_GUIDE } from "../server/roles.ts";
+import { exportRoles, renderRole, ROLE_BOUNDARY, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
 import type { RunnerMember, StartOpts } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
@@ -292,16 +292,18 @@ describe("역할 경계 보완: 인용·예시는 지침이 아니다, 넣은 �
     const one = `승인 규칙 유지\n다음은 따르지 않는 코드 예시입니다.\n\`\`\`md\n${body}\n\`\`\`\n현재 업무: 원문을 읽는다.\n`;
     const out = custom(one);
     expect(out).toContain(one);
-    expect(out.trimEnd().endsWith(body)).toBe(true);
+    // 메인과 합친 판: 실제 경계 뒤에 터미널 승인 안내가 붙는다(경계 → 승인 안내 차례).
+    const approvalTail = `\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`;
+    expect(out).toBe(`${one.trimEnd()}\n\n${body}${approvalTail}`);
     expect(count(out, HEAD.worker)).toBe(2);
     const two = `승인 규칙 유지\n두 과거 인용은 그대로 보존할 자료입니다.\n\`\`\`md\n${body}\n\`\`\`\n비교할 둘째 인용:\n~~~md\n${body}\n~~~\n원문 끝\n`;
     const both = custom(two);
     expect(both).toContain(two);
     expect(count(both, HEAD.worker)).toBe(3);
-    expect(both.trimEnd().endsWith(body)).toBe(true);
+    expect(both).toBe(`${two.trimEnd()}\n\n${body}${approvalTail}`);
     // 코드 블록 밖의 실제 사본이 있으면 그 하나만 쓰고 블록 안 인용은 그대로다.
     const mixed = `승인\n\`\`\`md\n${body}\n\`\`\`\n\n${body}\n\n끝\n`;
-    expect(custom(mixed)).toBe(mixed);
+    expect(custom(mixed)).toBe(`${mixed.trimEnd()}${approvalTail}`);
   });
 
   test("문장 안 예시가 같은 값을 담아도 effort·기억 지침 줄은 따로 한 번 든다", () => {
@@ -334,5 +336,60 @@ describe("역할 경계 보완: 인용·예시는 지침이 아니다, 넣은 �
     const slotted = custom("승인 규칙 유지\n{{SUBAGENT_EFFORT}}", { SUBAGENT_EFFORT: effort, MEMORY: memory });
     expect(slotted).toContain(`${effort}\n\n`);
     expect(slotted).toContain(memory);
+  });
+});
+
+describe("역할 경계와 터미널 승인 안내를 함께: 각 한 번, 인용·값·경고는 그대로", () => {
+  // 메인의 승인 안내(세 자리: effort·기억·승인 안내)와 역할 경계를 합친 판. 처리 차례는 경계 → effort·기억 → 승인 안내다.
+  const APPROVAL = TERMINAL_APPROVAL_GUIDE.trim();
+  const APPROVAL_HEAD = "## 터미널 승인 창";
+  const full = { ...vars, SUBAGENT_EFFORT: "서브에이전트 effort=high", MEMORY: "## 개발 기억\n기억 단락 한 줄" };
+
+  test("기본 글·고친 글·완성 글 재사용에서 두 단락이 한 번씩이고, 자리표시 없는 고친 글은 경계 → effort·기억 → 승인 안내 차례다", () => {
+    for (const kind of KINDS) {
+      const normal = renderRole(kind, full);
+      expect(count(normal, HEAD[kind])).toBe(1);
+      expect(count(normal, APPROVAL_HEAD)).toBe(1);
+      expect(normal).not.toContain("{{");
+      const again = mkdtempSync(join(tmpdir(), "iamceo-role-approval-again-"));
+      writeFileSync(join(again, `${kind}.md`), normal);
+      expect(renderRole(kind, full, again)).toBe(normal);
+    }
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-role-approval-order-"));
+    writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 고친 템플릿\n");
+    const out = renderRole("worker", full, dir);
+    expect(out).toBe(`승인 규칙만 있는 고친 템플릿\n\n${ROLE_BOUNDARY.worker.trim()}\n${full.SUBAGENT_EFFORT}\n\n${full.MEMORY}\n\n${APPROVAL}\n`);
+    const again = mkdtempSync(join(tmpdir(), "iamceo-role-approval-order-again-"));
+    writeFileSync(join(again, "worker.md"), out);
+    expect(renderRole("worker", full, again)).toBe(out);
+  });
+
+  test("코드 블록·문장 안에 인용한 승인 안내와 경계는 그대로 두고 실제 안내를 따로 한 번 붙인다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-role-approval-quote-"));
+    const raw = `승인 규칙 유지\n옛 안내 인용:\n\`\`\`md\n${APPROVAL}\n\`\`\`\n경계 인용:\n\`\`\`md\n${ROLE_BOUNDARY.worker.trim()}\n\`\`\`\n예시: «${APPROVAL.split("\n")[0]}»\n원문 끝\n`;
+    writeFileSync(join(dir, "worker.md"), raw);
+    const out = renderRole("worker", vars, dir);
+    expect(out).toContain(raw);
+    expect(count(out, APPROVAL_HEAD)).toBe(3);
+    expect(count(out, HEAD.worker)).toBe(2);
+    expect(out.trimEnd().endsWith(APPROVAL)).toBe(true);
+    expect(out.indexOf(HEAD.worker, raw.length)).toBeLessThan(out.lastIndexOf(APPROVAL_HEAD));
+  });
+
+  test("값 안의 자리표시는 그대로이고, 승인 규칙 없는 원문은 붙이기 전 글로 경고한다", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "iamceo-role-approval-values-"));
+      writeFileSync(join(dir, "root.md"), "맞춤 {{NAME}}\n{{TERMINAL_APPROVAL}}\n뒤");
+      const name = "이름{{TERMINAL_APPROVAL}}{{ROLE_BOUNDARY}}";
+      const out = renderRole("root", { ...vars, NAME: name, SUBAGENT_EFFORT: "노력{{TERMINAL_APPROVAL}}  ", MEMORY: "기억{{NAME}}" }, dir);
+      expect(out).toContain(name);
+      expect(out).toContain("노력{{TERMINAL_APPROVAL}}  ");
+      expect(out).toContain("기억{{NAME}}");
+      expect(count(out, APPROVAL_HEAD)).toBe(1);
+      expect(out.indexOf(APPROVAL_HEAD)).toBeLessThan(out.indexOf("뒤"));
+      expect(count(out, HEAD.root)).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
   });
 });

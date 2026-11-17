@@ -1,0 +1,75 @@
+import { expect, test } from 'bun:test';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { startServer } from '../server/http.ts';
+import { composer, createQueueStatusFixture } from './fixtures/queue-status-runtime.ts';
+import type { AnswerNativePromptReq, SyncSnapshot } from '../shared/types.ts';
+
+test('latest snapshot history and authenticated trace stay read-only while one native answer is pending', async () => {
+  const f = await createQueueStatusFixture(1);
+  const server = await startServer({ config:f.config, bus:f.bus, store:f.store, orch:f.orch, delivery:f.orch.deliveryRecovery });
+  const base = `http://127.0.0.1:${server.port}`; f.orch.setServerUrl(base);
+  const headers = { Authorization:`Bearer ${f.config.accessCode}`, 'content-type':'application/json' };
+  let release = () => {};
+  let answer: Promise<Response> | null = null;
+  try {
+    const task = f.orch.saveTask(f.member,{title:'Combined read with pending native receipt'}).task;
+    const original=f.store.enqueue({projectId:f.project.id,memberId:f.member.id,taskId:task.id,kind:'instruction',text:'LATEST_ORIGINAL_PRIVATE',wake:true});
+    await f.orch.pump(f.member.id);
+    const terminal=f.terminals.get(f.store.requireMember(f.member.id).paneId!)!;
+    terminal.status={state:'blocked',kind:'permission',app:'claude-code'};
+    f.setScreen(readFileSync(join(import.meta.dir,'fixtures/native-prompts/claude-bash-permission.txt'),'utf8'));
+    for(let i=0;i<200&&f.store.requireMember(f.member.id).status!=='blocked';i++)await Bun.sleep(5);
+    const card=await f.orch.memberNativePrompt(f.member.id);expect(card.context).not.toBeNull();
+    const {projectId,memberId,promptId,executionId,generation}=card.context!;
+    const request:AnswerNativePromptReq={projectId,memberId,promptId,executionId,generation,operationId:crypto.randomUUID(),option:1,via:'inbox'};
+    const orphan=f.store.enqueue({projectId:f.project.id,memberId:f.member.id,taskId:task.id,kind:'system',text:'LATEST_NOTICE_PRIVATE',wake:false});
+    f.store.markDelivered(orphan.id);
+    for(let i=0;i<61;i++)f.store.createMessage({projectId:f.project.id,taskId:task.id,kind:'진행',body:`latest row ${i}`});
+    f.setKeyGate(new Promise<void>(r=>{release=r;}));
+    f.setOnKeys(()=>{f.setScreen(composer('  ⏵⏵ bypass permissions on · 1 shell, 2 monitors'));f.done();});
+    const path=`${base}/api/members/${f.member.id}/prompt/answer`;
+    answer=fetch(path,{method:'POST',headers,body:JSON.stringify(request)});
+    for(let i=0;i<100&&f.keyRequests()!==1;i++)await Bun.sleep(5);
+    if(f.keyRequests()!==1)throw new Error('Pending answer was not sent: '+JSON.stringify(await answer.then(async r=>({status:r.status,body:await r.json()}))));
+    expect(f.keyRequests()).toBe(1);
+    const changes=()=>f.store.db.query<{n:number},[]>('SELECT total_changes() AS n').get()!.n;
+    const before=changes(), cursor=f.bus.cursor;
+    const sync=`${base}/api/sync?projectId=${f.project.id}&view=compact`;
+    expect((await fetch(sync+'&history=50')).status).toBe(401);
+    expect((await fetch(sync,{headers}).then(r=>r.json())).history).toBeUndefined();
+    const response=await fetch(sync+'&history=50',{headers});expect(response.status).toBe(200);
+    const snap:SyncSnapshot=await response.json();expect(snap.history!.items).toHaveLength(50);
+    expect(snap.history!.items.at(-1)!.body).toBe('latest row 60');expect(snap.cursor).toEqual(cursor);
+    const cached=await fetch(sync+'&history=50',{headers}).then(r=>r.json());expect(cached).toEqual(snap);
+    expect((await fetch(sync,{headers}).then(r=>r.json())).history).toBeUndefined();
+    const workerHeaders={...headers,Authorization:`Bearer ${f.store.getMemberToken(f.member.id)}`};
+    const traceReply=await fetch(base+'/agent/tool',{method:'POST',headers:workerHeaders,body:JSON.stringify({name:'task_trace',args:{task_id:task.id}})}).then(r=>r.json());
+    const trace=JSON.parse(traceReply.text);
+    expect(traceReply.isError).not.toBe(true);expect(trace.deliveryCoverage.total).toBe(2);
+    expect(trace.recentDeliveries.find((d:{id:string})=>d.id===orphan.id).execution).toBeNull();
+    expect(trace.recentDeliveries.find((d:{id:string})=>d.id===original.id).id).toBe(original.id);
+    expect(JSON.stringify(trace)).not.toContain('LATEST_');
+    // The existing HTTP agent wrapper touches updated_at once for every tool.
+    // The trace itself must perform no writes, ACKs, native input or receipt changes.
+    expect(changes()).toBe(before+1);const wrapperChanges=changes()-before;
+    const beforeDirect=changes();expect(f.orch.taskTrace(f.member,task.id)).toMatchObject({recentDeliveries:trace.recentDeliveries,unsettledDeliveries:trace.unsettledDeliveries});
+    expect(changes()).toBe(beforeDirect);const readChanges=changes()-beforeDirect;
+    expect(f.store.requireDelivery(orphan.id).status).toBe('delivered');
+    expect(f.store.getNativeAnswer({operationId:request.operationId,projectId:f.project.id,memberId:f.member.id,request})?.pending).toBe(true);
+    const other=f.store.createProject({name:'Other isolated project',cwd:f.dir});
+    const outsider=f.store.createMember({projectId:other.id,name:'Outside',handle:'outside',kind:'worker',origin:'manual',status:'idle'});
+    const rejected=await fetch(base+'/agent/tool',{method:'POST',headers:{...headers,Authorization:`Bearer ${f.store.getMemberToken(outsider.id)}`},body:JSON.stringify({name:'task_trace',args:{task_id:task.id}})}).then(r=>r.json());
+    expect(rejected.isError).toBe(true);
+    const changed=await fetch(path,{method:'POST',headers,body:JSON.stringify({...request,option:4})});expect(changed.status).toBe(409);
+    expect(f.keys).toHaveLength(0);expect(f.writes).toHaveLength(1);
+    release();const receipt=await answer.then(r=>r.json());expect(receipt.terminal).toBe('accepted');
+    expect(await fetch(path,{method:'POST',headers,body:JSON.stringify(request)}).then(r=>r.json())).toEqual(receipt);
+    for(let i=0;i<200&&f.store.requireMember(f.member.id).executionState?.phase!=='ended';i++)await Bun.sleep(5);
+    expect(f.store.requireMember(f.member.id)).toMatchObject({status:'working',executionState:{phase:'ended'}});
+    expect(f.keys).toHaveLength(1);expect(f.writes).toHaveLength(1);
+    f.store.createMessage({projectId:f.project.id,taskId:task.id,kind:'진행',body:'after pending read'});
+    const next=await fetch(sync+'&history=50',{headers}).then(r=>r.json());expect(next.history.items.at(-1).body).toBe('after pending read');expect(next.cursor).toEqual(f.bus.cursor);
+    writeFileSync('evidence/latest-main-20261117/http-cross.json',JSON.stringify({originalId:original.id,orphanId:orphan.id,trace,snapshot:{cursor:snap.cursor,history:snap.history},receipt,changedStatus:changed.status,approvalInputs:f.keys.length,originalInputs:f.writes.length,wrapperChanges,readChanges,readBoundaryUnchanged:true},null,2));
+  } finally {release();await answer?.catch(()=>{});await server.stop();await f.stop();}
+},15000);

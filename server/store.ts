@@ -3082,6 +3082,36 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
+  // ---- 대표가 직원 CLI 창에 낸 답의 영수증(결재함·대화 카드) ----
+  // 서버 소유 namespace 'native-answer:' 로 agent_operation_receipts 에 둔다(외부 operationId 에는 ':'가 없다). 새 표·판 올림 없이
+  // 서버를 다시 띄운 뒤에도 같은 operationId 는 처음 결과만 돌려준다. 넣기 전에 대기 행을 먼저 적어, 결과를 모르는 행은 '모름'으로 남긴다.
+  private static readonly NATIVE_ANSWER = "owner_native_answer";
+
+  /** 같은 operationId 의 영수증. 다른 직원·프로젝트·요청에 쓴 id 면 409. 처음이면 null. pending 은 결과를 적기 전에 멈춘 행이다. */
+  getNativeAnswer(input: { operationId: string; projectId: string; memberId: string; request: unknown }): { pending: true } | { pending: false; receipt: unknown } | null {
+    const r = this.row("SELECT * FROM agent_operation_receipts WHERE operation_id = ?", `native-answer:${input.operationId}`);
+    if (!r) return null;
+    if (r.tool_name !== Store.NATIVE_ANSWER || r.member_id !== input.memberId || r.project_id !== input.projectId || r.request_json !== stableJson(input.request)) {
+      throw new ApiError(409, "다른 요청에 쓴 operationId 입니다", "OPERATION_CONFLICT");
+    }
+    const value = json<{ pending?: boolean; receipt?: unknown }>(r.result_json);
+    return value.pending ? { pending: true } : { pending: false, receipt: value.receipt };
+  }
+
+  /** 넣기 전에 대기 행을 적는다. 이미 있으면 false(먼저 getNativeAnswer 로 본다). */
+  beginNativeAnswer(input: { operationId: string; projectId: string; memberId: string; request: unknown }): boolean {
+    return this.transaction(() => {
+      if (this.row("SELECT 1 FROM agent_operation_receipts WHERE operation_id = ?", `native-answer:${input.operationId}`)) return false;
+      this.run("INSERT INTO agent_operation_receipts (operation_id, member_id, project_id, tool_name, request_json, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        `native-answer:${input.operationId}`, input.memberId, input.projectId, Store.NATIVE_ANSWER, stableJson(input.request), JSON.stringify({ pending: true }), nowIso());
+      return true;
+    });
+  }
+
+  finishNativeAnswer(operationId: string, receipt: unknown): void {
+    this.run("UPDATE agent_operation_receipts SET result_json = ? WHERE operation_id = ? AND tool_name = ?", JSON.stringify({ pending: false, receipt }), `native-answer:${operationId}`, Store.NATIVE_ANSWER);
+  }
+
   /** 외부 operation ID에는 ':'가 없어 이 서버 소유 관찰 namespace를 만들 수 없다. */
   codeReads(scope: CodeReadScope): CodeReadObservation[] {
     return this.rows("SELECT operation_id, result_json FROM agent_operation_receipts WHERE project_id = ? AND member_id = ? AND tool_name = ? AND request_sha256 = ? AND operation_id LIKE 'code-read:%' ORDER BY rowid DESC LIMIT 129",
@@ -3378,6 +3408,46 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   listTaskDeliveries(taskId: string, limit = 60): { id: string; memberId: string; kind: string; status: string; createdAt: string; deliveredAt: string | null }[] {
     return this.rows("SELECT id, member_id, kind, status, created_at, delivered_at FROM deliveries WHERE task_id = ? ORDER BY created_at, rowid LIMIT ?", taskId, limit)
       .map(r => ({ id: r.id as string, memberId: r.member_id as string, kind: r.kind as string, status: r.status as string, createdAt: r.created_at as string, deliveredAt: (r.delivered_at as string | null) ?? null }));
+  }
+
+  /** Bounded metadata only. Counts cover the whole task; samples never imply an empty queue. */
+  taskDeliveryTrace(taskId: string) {
+    return this.transaction(() => {
+      const limit = 60;
+      const pending = "d.status IN ('queued','held','delivering')";
+      const count = this.row(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN ${pending} THEN 1 ELSE 0 END) AS unsettled,
+        SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 1 THEN 1 ELSE 0 END) AS pending_wake,
+        SUM(CASE WHEN d.status IN ('queued','held') AND d.wake = 0 THEN 1 ELSE 0 END) AS pending_notice
+        FROM deliveries d WHERE d.task_id = ?`, taskId)!;
+      const sample = (where: string, order: string) => this.rows(`SELECT d.id, d.member_id, d.kind, d.status, d.wake,
+        d.hold_reason, d.attempts, d.created_at, d.delivered_at, d.next_attempt_at, d.retry_reason,
+        r.phase AS recovery_phase, r.reason AS recovery_reason
+        FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
+        WHERE d.task_id = ? ${where} ORDER BY ${order} LIMIT ?`, taskId, limit).map(r => {
+          const latest = this.row(`SELECT e.run_id FROM execution_journal e
+            JOIN delivery_dispatch_items i ON i.dispatch_id = e.run_id
+            WHERE i.delivery_id = ? ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`, r.id);
+          const run = latest ? this.getExecutionJournal(latest.run_id) : null;
+          return { id: r.id as string, memberId: r.member_id as string, kind: r.kind as string,
+            status: r.status as DeliveryStatus, wake: !!r.wake, holdReason: (r.hold_reason as string | null) ?? null,
+            attempts: r.attempts as number, createdAt: r.created_at as string, deliveredAt: (r.delivered_at as string | null) ?? null,
+            nextAttemptAt: (r.next_attempt_at as string | null) ?? null, retryReason: (r.retry_reason as string | null) ?? null,
+            recovery: r.recovery_phase ? { phase: r.recovery_phase as string, reason: (r.recovery_reason as string | null) ?? null } : null,
+            // Receipt time is journal evidence, never guessed from delivered_at or status.
+            execution: run ? { runId: run.runId, sessionGeneration: run.identity.sessionGeneration, turn: run.turn,
+              deliveryIds: run.deliveryIds, phase: run.phase, inputReceivedAt: run.inputReceivedAt, startedAt: run.startedAt,
+              lastProgressAt: run.lastProgressAt, endedAt: run.endedAt, result: run.result, exitCode: run.exitCode } : null };
+        });
+      const recent = sample("", "d.created_at DESC, d.rowid DESC").reverse();
+      const unsettled = sample(`AND ${pending}`, "d.created_at, d.rowid");
+      const byStatus = Object.fromEntries(this.rows("SELECT status, COUNT(*) AS n FROM deliveries WHERE task_id = ? GROUP BY status", taskId).map(r => [r.status, r.n]));
+      return { history: this.listTaskDeliveries(taskId), recent, unsettled, coverage: { scope: "task", observedAt: nowIso(), limit, total: Number(count.total), returned: recent.length,
+        truncated: Number(count.total) > recent.length, historyOrder: "oldest_first", recentOrder: "latest_sixty_chronological",
+        unsettledStatuses: ["queued", "held", "delivering"], unsettledTotal: Number(count.unsettled ?? 0),
+        unsettledReturned: unsettled.length, unsettledTruncated: Number(count.unsettled ?? 0) > unsettled.length,
+        pendingWake: Number(count.pending_wake ?? 0), pendingNotice: Number(count.pending_notice ?? 0), byStatus } };
+    });
   }
 
   /** 이 실행 표지를 이미 증거로 쓴 업무(계약이 붙은 업무). 없으면 null. */

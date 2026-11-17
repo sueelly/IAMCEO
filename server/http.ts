@@ -214,11 +214,14 @@ const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().opt
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
 const AnswerNativePromptSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  projectId: z.string().min(1).max(100),
+  memberId: z.string().min(1).max(100),
   promptId: z.string().min(1).max(200),
   generation: z.number().int().min(0),
   executionId: z.string().min(1).max(200).nullable(),
   option: z.number().int().min(1).max(99),
   text: z.string().min(1).max(4000).optional(),
+  via: z.enum(["inbox", "thread"]).optional(),
 });
 const TerminalSendSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
@@ -636,7 +639,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
     route("GET", "/api/capabilities", (_req, url) => {
       strictQuery(url, []);
       const body: ServerCapabilities = { contractVersion: 2, capabilities: {
-        paging: true, compactState: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
+        paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: !!ctx.delivery, push: !!ctx.push,
         // 네이티브는 이 값으로 엄격 쓰기를 켠다. 결과 조회와 모든 쓰기 포트가 있어야 한다.
         operations: (["operation", "updateSettingsV2", "patchMemberConfigV2", "setTodoDoneV2", "freshMemberSessionV2", "terminalControlV2"] as const)
           .every(port => port in orch && !!orch[port]),
@@ -657,9 +660,11 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()));
     }),
     route("GET", "/api/sync", async (req, url) => {
-      strictQuery(url, ["projectId", "view"]);
+      strictQuery(url, ["projectId", "view", "history"]);
       const compact = url.searchParams.get("view") === "compact";
       if (url.searchParams.has("view") && !compact) throw new ApiError(400, "조회 조건이 잘못되었습니다");
+      const withHistory = url.searchParams.has("history");
+      if (withHistory && (!compact || url.searchParams.get("history") !== "50")) throw new ApiError(400, "대화 조회 조건이 잘못되었습니다");
       const requestedProjectId = url.searchParams.get("projectId");
       if (requestedProjectId !== null && (!requestedProjectId.trim() || Buffer.byteLength(requestedProjectId) > 256)) throw new ApiError(400, "프로젝트 ID가 잘못되었습니다");
       await readHerdr();
@@ -670,7 +675,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const connection = connectionInfo(config, req.headers.get("host") ?? url.host, cli, serverPort());
       // total_changes covers this connection's writes; data_version covers other connections.
       // Runtime events, managed addresses and auth rotation can change without a DB write.
-      const cacheKey = compact ? JSON.stringify([requestedProjectId, bus.cursor,
+      const cacheKey = compact ? JSON.stringify([requestedProjectId, withHistory, bus.cursor,
         store.db.query("SELECT total_changes() AS n").get(), store.db.query("PRAGMA data_version").get(),
         req.headers.get("host") ?? url.host, currentUrls, connection, herdr, authGeneration()]) : null;
       const cached = cacheKey === null ? undefined : syncCache.get(cacheKey);
@@ -685,6 +690,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
           home: config.home, urls: currentUrls, cli, rankOverrides, connection },
         state: projectStatus === "ok" ? { ...store.projectState(requestedProjectId!, { compact }), ...(ctx.delivery ? { deliveryNotices: ctx.delivery.notices(requestedProjectId!) } : {}) } : null,
         revisions: projectStatus === "ok" ? store.syncRevisions(requestedProjectId!) : { settings: store.settingsRevision(), members: {}, todos: {} },
+        ...(withHistory && projectStatus === "ok" ? { history: store.listMessagePage(requestedProjectId!, { limit: 50, scope: { kind: "project" } }) } : {}),
         cursor: bus.cursor,
       };
       if (cacheKey === null || projectStatus !== "ok") return Response.json(body);

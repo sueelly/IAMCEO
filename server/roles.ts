@@ -6,6 +6,7 @@ import boundaryRoot from "./roles/boundary-root.md" with { type: "text" };
 import boundaryWorker from "./roles/boundary-worker.md" with { type: "text" };
 import conductor from "./roles/conductor.md" with { type: "text" };
 import root from "./roles/root.md" with { type: "text" };
+import terminalApproval from "./roles/terminal-approval.md" with { type: "text" };
 import worker from "./roles/worker.md" with { type: "text" };
 import writing from "./roles/writing.md" with { type: "text" };
 
@@ -22,6 +23,12 @@ export interface RoleVars {
 
 /** 대표에게 보이는 글 지침. 모든 직원 종류와 CLI(Claude·Codex·Antigravity)의 역할 글 끝에 한 번 붙는다. */
 export const WRITING_GUIDE: string = writing;
+
+/**
+ * 터미널 승인 창 안내(대표 2026-11-17 "전체에 적용해. 프롬프트에 적용해서 앞으로도 그렇게 하도록").
+ * 모든 직원 종류와 세 CLI 에 들어간다. 고쳐 쓴 템플릿에 `{{TERMINAL_APPROVAL}}` 자리가 없어도 끝에 붙어 빠지지 않는다.
+ */
+export const TERMINAL_APPROVAL_GUIDE: string = terminalApproval;
 
 /** 기본 역할 글 = 종류별 글 + 공통 글 지침. 세 CLI 모두 이 글을 시스템 프롬프트 파일로 받는다. */
 function withGuide(role: string): string {
@@ -118,7 +125,8 @@ export function exportRoles(rolesDir: string): string[] {
 
 /**
  * `<rolesDir>/<kind>.md` 가 있으면 그것을 쓴다(spec §8). 값 안의 {{...}} 는 다시 치환하지 않는다.
- * 고쳐 쓴 템플릿은 기본 규칙 전체를 대체하므로 글 지침도 붙이지 않는다. `iamceo roles export` 로 꺼낸 예시에는 지침이 들어 있다.
+ * 고쳐 쓴 템플릿은 기본 규칙 전체를 대체하므로 글 지침도 붙이지 않는다. 터미널 승인 안내는 빠지지 않게 끝에 붙인다(자리표시가 있으면 그 자리).
+ * `iamceo roles export` 로 꺼낸 예시에는 지침이 들어 있다.
  */
 export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string): string {
   const custom = rolesDir ? join(rolesDir, `${kind}.md`) : null;
@@ -130,15 +138,20 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
     console.warn(`역할 템플릿 ${custom} 에 승인 규칙이 없습니다. 기본 규칙 전체를 대체하므로 직원이 승인 없이 일할 수 있습니다. 'iamceo roles export' 로 기본 규칙을 꺼내 고치세요`);
   }
   const template = withBoundary(raw, kind);
-  const appended: ["SUBAGENT_EFFORT" | "MEMORY", string, string][] = [["SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"], ["MEMORY", vars.MEMORY ?? "", "\n\n"]];
+  const approval = TERMINAL_APPROVAL_GUIDE.trim();
+  // 경계 → effort·기억 → 터미널 승인 안내 차례로 둔다. 셋 다 자리표시가 있으면 그 자리, 없으면 끝에 붙인다.
+  const appended: ["SUBAGENT_EFFORT" | "MEMORY" | "TERMINAL_APPROVAL", string, string][] = [
+    ["SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"], ["MEMORY", vars.MEMORY ?? "", "\n\n"], ["TERMINAL_APPROVAL", approval, "\n\n"],
+  ];
   // 줄이 통째로 자리표시인데 값이 비었으면 빈 줄을 남기지 않는다.
   let text = template;
   for (const [key, value] of appended) if (!value) text = text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "");
   // 자리표시는 템플릿에서만 한 번 바꾼다. 값 안의 {{...}} 는 다시 읽지 않는다.
-  const fill = (part: string): string => part.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY)\}\}/g, (_, key: keyof RoleVars) => vars[key] ?? "");
+  const values: Record<string, string | undefined> = { ...vars, TERMINAL_APPROVAL: approval };
+  const fill = (part: string): string => part.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY|TERMINAL_APPROVAL)\}\}/g, (_, key: string) => values[key] ?? "");
   const filled = fill(text);
   // 자리표시가 없는 고친 템플릿에도 규칙이 빠지지 않게 끝에 붙인다. 바꾼 뒤에 붙여 값 안의 자리표시를 그대로 둔다.
-  // 같은 값이 이미 실제 지침으로(줄 단위·코드 블록 밖) 있으면(완성된 역할 글을 다시 쓴 경우) 다시 붙이지 않는다. 문장 안 예시·인용은 치지 않는다.
+  // 같은 글이 이미 실제 지침으로(줄 단위·코드 블록 밖) 있으면(완성된 역할 글을 다시 쓴 경우) 다시 붙이지 않는다. 문장 안 예시·인용은 치지 않는다.
   let tail = "";
   for (const [key, value, gap] of appended) {
     if (!value || template.includes(`{{${key}}}`) || standalone(filled + tail, value).length) continue;

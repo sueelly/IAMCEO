@@ -259,7 +259,7 @@ test("보관 장벽은 HTTP 경합을 거부하고 보관 읽기/꺼내기는 �
 
 test("실제 v2 포트가 모두 연결될 때만 operations/delivery/push를 광고한다", async () => {
   const f = await fixture();
-  const expected = { contractVersion: 2, capabilities: { paging: true, compactState: true, archive: true, realtime: true, browserRealtime: true, delivery: true, push: false, operations: true } };
+  const expected = { contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: true, push: false, operations: true } };
   const seq = f.bus.seq;
   const diagnostics = spyOn(f.orch, "runtimeInfo");
   try {

@@ -18,6 +18,7 @@ import {
 } from "../lib/store";
 import Composer from "./Composer";
 import NewProject from "./NewProject";
+import { tabCountText } from "../lib/tab-count";
 import Files from "../screens/Files";
 import Home from "../screens/Home";
 import Inbox from "../screens/Inbox";
@@ -49,12 +50,24 @@ function ProjectTabs({ refract }: { refract: boolean }) {
     label: (
       <span className="gtabs__label">
         {TAB_LABEL[t]}
-        {counts[t] ? <span className="gtabs__count t-tabular">{counts[t]}</span> : null}
+        {counts[t] ? <TabCount n={counts[t]!} /> : null}
       </span>
     ),
   }));
   // key: 칸 수가 바뀌면(본사 4 · 프로젝트 5) 물방울 크기가 달라져 굴절 맵을 새로 만들어야 한다
   return <GlassTabs key={tabs.length} tabs={tabs} active={route.tab} ariaLabel="화면" refract={refract} className="shell-tabs" />;
+}
+
+/** 탭 건수. 100 이상은 '99+'로 보이고 정확한 수는 읽어 주는 글로 둔다(칸이 좁은 폰에서도 넘치지 않게) */
+function TabCount({ n }: { n: number }) {
+  const { shown, exact } = tabCountText(n);
+  if (!exact) return <span className="gtabs__count t-tabular">{shown}</span>;
+  return (
+    <>
+      <span className="gtabs__count t-tabular" data-capped="" aria-hidden="true">{shown}</span>
+      <span className="sr-only">{exact}</span>
+    </>
+  );
 }
 
 function ProjectList({ onPicked, onAdd }: { onPicked?: () => void; onAdd: () => void }) {

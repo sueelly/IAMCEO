@@ -361,9 +361,16 @@ test("a write whose reply was lost settles from log receipt once a later turn is
   const terminal = f.terminals.get(member.paneId!)!; terminal.turn = 1; terminal.status = { state: "done" };
   const next = f.orchestrator(); await next.orch.recover(); await next.orch.refreshConnection();
   expect(f.store.getExecutionJournal(run.runId)).toMatchObject({ phase: "ended", result: "success" });
-  expect(f.store.listPendingExecutions()).toHaveLength(0);
-  expect(f.store.listPending(member.id).some(d => d.kind === "system" && d.text.includes("보고 보완"))).toBe(true);
-  expect(f.count("terminal.send")).toBe(1); expect(f.count("terminal.interrupt")).toBe(0);
+  // The followup may already be admitted by the automatic pump. Check the
+  // original execution and original input, not a race-dependent empty roster.
+  const followup = f.store.getReportFollowup(run.runId)!;
+  expect(followup).toBeTruthy();
+  const followups = f.store.listDeliveries().filter(d => d.text.includes("보고 보완"));
+  expect(followups).toHaveLength(1);
+  expect(followups[0].id).toBe(followup.deliveryId);
+  expect(f.store.listPendingExecutions().every(r => r.runId !== run.runId && r.deliveryIds.every(id => id === followup.deliveryId))).toBe(true);
+  expect(f.calls.filter(c => c.method === "terminal.send" && c.params.text?.includes("Crash-window task"))).toHaveLength(1);
+  expect(f.count("terminal.interrupt")).toBe(0);
 });
 
 test("a recovered start with no later turn stays received and fenced; time alone never ends it", async () => {

@@ -1,13 +1,15 @@
 // 결재함: 결재할 항목 · 결재된 항목 두 쪽. 선택지를 눌러도 바로 가지 않고, 카드 아래 확인 버튼을 눌러야 보낸다.
 // 이번 방문에 답한 카드는 결재할 항목 쪽 제자리에 남아 '보냄 → 받음'을 보여 주고, 쪽을 옮기거나 다시 들어오면 결재된 항목으로 간다.
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { Attachment, Decision, Member } from "@shared/types";
+import type { Attachment, Decision, Member, Task } from "@shared/types";
 import ApprovalPanel from "../components/ApprovalPanel";
+import NativePromptCard from "../components/NativePromptCard";
 import { enterSends, isComposing, useAutoGrow } from "../components/Composer";
 import { useGate } from "../components/ConnectGate";
 import { Badge, CONFIRM_MIN_MS, Empty, Markdown, Modal, StatusDot, Time } from "../components/ui";
 import { Glass, GlassButton, glassClass } from "../glass";
 import { ApiError, api, errorText, fileUrl, saveAttachment } from "../lib/api";
+import { useRecentAnswers } from "../lib/nativeAnswers";
 import { splitDetail, type RecBandText } from "../lib/decision-view";
 import { applyLocal, loadDecision, loadOlderDecisions, refresh, routeHash, useProject, useRoute } from "../lib/store";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, sameDecisionReview, type WriteReview } from "../lib/reviewed-writes";
@@ -504,12 +506,14 @@ function DecisionGroup({ name, decisions, picks, locked, render, onKeep, single 
 }
 
 /** 승인 창 앞에서 멈춘 세션은 결재 카드가 없어도 대표가 풀어 줘야 한다. 결재함이 비었다고 말하면 할 일이 없는 줄 안다.
- *  승인 창을 읽을 수 있으면 여기서 고르고 확인해 승인·거절한다. 못 읽으면 터미널에서 풀라고 안내한다. */
-function BlockedList({ members, projectName }: { members: Member[]; projectName: string }) {
+ *  승인 창을 읽을 수 있으면 여기서 고르고 확인해 승인·거절한다. 못 읽으면 터미널에서 풀라고 안내한다.
+ *  core 직원(대표 2026-11-17 "터미널 승인하는 거 결재함에서 클릭할 수 있도록 해")은 대화의 '답을 기다림'과 같은 카드로 그 창에 한 번 넣는다.
+ *  herdr 칸은 예전 승인 판 그대로다. 막 답한 직원은 단계(접수·결과)를 볼 수 있게 잠시 남긴다. */
+function BlockedList({ members, projectName, tasks }: { members: Member[]; projectName: string; tasks: readonly Task[] }) {
   return (
     <section className="ibx-sec" aria-label="승인 대기">
       <h2 className="ibx-sec__head">
-        승인 대기 <Count n={members.length} />
+        승인 대기 <Count n={members.filter((m) => m.status === "blocked").length} />
       </h2>
       {members.map((m) => (
         <Glass key={m.id} as="article" level="regular" tint className="ibx-card ibx-approval" aria-label={`${m.name} 승인 창`}>
@@ -519,7 +523,11 @@ function BlockedList({ members, projectName }: { members: Member[]; projectName:
             <span className="ibx-blocked__where">{[m.role && m.role !== m.name ? m.role : null, projectName].filter(Boolean).join(" · ")}</span>
             <span className="ibx-blocked__more">화면 보기</span>
           </a>
-          <ApprovalPanel member={m} justShifted={justShifted} fallback={<p className="ibx-blocked__hint">여기서 답할 수 없는 창입니다. 화면을 보고 터미널에서 승인하거나 거절하세요.</p>} />
+          {m.backend === "herdr" || m.origin === "manual" ? (
+            <ApprovalPanel member={m} justShifted={justShifted} fallback={<p className="ibx-blocked__hint">여기서 답할 수 없는 창입니다. 화면을 보고 터미널에서 승인하거나 거절하세요.</p>} />
+          ) : (
+            <NativePromptCard member={m} tasks={tasks} place="inbox" justShifted={justShifted} />
+          )}
         </Glass>
       ))}
     </section>
@@ -697,7 +705,8 @@ export default function Inbox() {
   });
 
   const working = state.members.some((m) => m.status === "working");
-  const blocked = state.members.filter((m) => m.status === "blocked");
+  const recentAnswers = useRecentAnswers();
+  const blocked = state.members.filter((m) => m.status === "blocked" || (recentAnswers.has(m.id) && m.origin !== "manual"));
   const hqLead = state.project.isHq ? state.members.find((m) => m.kind === "root") : null;
   const moreAvailable = moreDone && doneDecisions.length < doneCount;
   const loadMore = () => {
@@ -723,7 +732,7 @@ export default function Inbox() {
 
       {view === "open" ? (
         <>
-          {blocked.length > 0 ? <BlockedList members={blocked} projectName={state.project.name} /> : null}
+          {blocked.length > 0 ? <BlockedList members={blocked} projectName={state.project.name} tasks={state.tasks ?? []} /> : null}
           {live.length === 0 && blocked.length === 0 ? (
             <Glass level="regular" tint className="ibx-empty">
               <Empty title="결재할 항목이 없습니다">{working ? (state.project.isHq ? "본사 AI 가 일하는 중입니다. 대화에서 상황을 볼 수 있습니다." : "직원들이 일하는 중입니다. 대화나 팀에서 상황을 볼 수 있습니다.") : "새 결재가 오면 여기에 나타납니다."}</Empty>

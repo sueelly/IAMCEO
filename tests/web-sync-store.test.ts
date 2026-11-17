@@ -49,9 +49,12 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
   let delayHistory = false;
   let finishHistory: ((response: Response) => void) | null = null;
   let activityResponse!: (response: Response) => void;
+  let holdCookie = true;
+  const cookies: ((response: Response) => void)[] = [];
   install("fetch", async (input: string, init?: RequestInit) => {
     const path = String(input); calls.push(path);
     if (path === "/api/capabilities") return Response.json({ contractVersion: 2, capabilities: { browserRealtime: true } });
+    if (path === "/api/files-session" && init?.method === "POST" && holdCookie) return new Promise<Response>(resolve => { cookies.push(resolve); });
     if (path.includes("-session")) return new Response(null, { status: 204 });
     if (path === "/api/sync?projectId=p") return denySync ? Response.json({ error: "rotated code" }, { status: 401 }) : Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "p", projectStatus: "ok", bootstrap, state: project, revisions });
     if (path === "/api/sync?projectId=q") return Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "q", projectStatus: "ok", bootstrap, state: { ...project, project: { id: "q" } }, revisions: { settings: 7, members: {}, todos: {} } });
@@ -73,6 +76,13 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
   });
   try {
     initStore(); const entering = login("fixture");
+    for (const fn of listeners.get("pageshow") ?? []) fn();
+    await Bun.sleep(2);
+    expect(calls.filter(path => path === "/api/capabilities")).toHaveLength(1);
+    expect(cookies).toHaveLength(1);
+    expect(getState().auth).toBe("need_code");
+    holdCookie = false;
+    for (const resolve of cookies) resolve(new Response(null, { status: 204 }));
     for (let i = 0; i < 100 && getState().auth !== "ok"; i++) await Bun.sleep(1);
     expect(getState().auth).toBe("ok");
     expect(await entering).toBe(true);
@@ -205,6 +215,7 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     await Bun.sleep(5);
     expect(getState().bootstrap).toBeNull();
   } finally {
+    for (const resolve of cookies) resolve(new Response(null, { status: 204 }));
     logout();
     globalThis.fetch = originalFetch;
     for (const [name, descriptor] of saved) if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);

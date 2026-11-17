@@ -14,6 +14,27 @@ import type { FileDoc, Project, Task } from "../shared/types";
 
 const code = "isolated-file-page-test";
 
+test("startup uses one state/history read and reconciles messages sent before its socket opens", async () => {
+  const page = await browser.newPage();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/realtime-session", async route => { await gate; await route.continue().catch(() => {}); });
+  const reads: string[] = [];
+  page.on("request", request => { if (request.url().includes("/api/")) reads.push(request.url()); });
+  await page.route("**/messages/page?*", route => route.abort());
+  try {
+    await page.addInitScript(value => localStorage.setItem("iamceo.accessCode", value), code);
+    await page.goto(`${base}/#/p/${project.id}/thread`);
+    await page.locator(".shell").waitFor({ timeout: 2000 });
+    expect(reads.some(path => path.includes("/api/sync?") && path.includes("history=50"))).toBe(true);
+    expect(reads.filter(path => path.includes("/messages/page?"))).toHaveLength(0);
+    store.createMessage({ projectId: project.id, kind: "진행", body: "handoff-tail-proof" });
+    release();
+    await page.getByText("handoff-tail-proof", { exact: true }).waitFor({ timeout: 10_000 });
+    expect(reads.filter(path => path.includes("/messages/page?"))).toHaveLength(0);
+  } finally { release(); await page.close(); }
+}, 20_000);
+
 test("first screen opens while runtime diagnostics are delayed", async () => {
   const page = await browser.newPage();
   let release!: () => void;
@@ -83,6 +104,7 @@ test("list transfers only 20 summaries, scroll appends 20, old direct links load
     }
     if (/\/api\/files\/[^/]+$/.test(url.pathname)) details.push(url.pathname.split("/").at(-1)!);
     if (url.pathname.endsWith("/messages/page")) history.push(Number(url.searchParams.get("limit")));
+    if (url.pathname === "/api/sync" && url.searchParams.has("history")) history.push((await r.json()).history.items.length);
   });
   try {
     await open(page); await page.locator(".fl-row").first().waitFor({ timeout: 10000 }); expect(await page.locator(".fl-row").count()).toBe(20);
@@ -205,10 +227,63 @@ test("moving an old file into an exhausted task updates the list and open reader
     await page.locator(".cmp-task", { hasText: "목표 업무" }).click(); await count(page, 20);
     await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
     await page.locator(".fl-doc__task", { hasText: "원래 업무" }).waitFor();
+    const refreshed = page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
     store.moveRecordTask({ projectId: p.id, refType: "file", refId: old.id, from: b.id, to: a.id, basis: "classify", actor: "시험" });
-    await page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
+    await refreshed;
+    await count(page, 41);
     expect(await page.locator(".fl-row").count()).toBe(41);
     expect(await page.locator(".fl-row__title", { hasText: "옮길 옛 자료" }).count()).toBe(1);
     expect(await page.locator(".fl-doc__task").count()).toBe(0);
+  } finally { await page.close(); }
+}, 60_000);
+
+test("a moved old file stays correct in desktop and newly mounted narrow views", async () => {
+  const p = store.createProject({ name: "좁은 화면 자료 이동", cwd: project.cwd });
+  const lead = await orch.ensureConductor(p.id);
+  const task = (title: string) => store.saveTask({ projectId: p.id, memberId: lead.id, who: "담당", title }).task;
+  const a = task("목표 업무"), b = task("원래 업무");
+  for (const t of [a, b]) store.createMessage({ projectId: p.id, kind: "진행", taskId: t.id, body: t.title });
+  const old = store.createFile({ projectId: p.id, title: "옮길 옛 자료", kind: "document", body: "old", taskId: b.id });
+  for (let i = 0; i < 40; i++) store.createFile({ projectId: p.id, title: `목표 ${i}`, kind: "document", body: "body", taskId: a.id });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 850 } });
+  const responses: unknown[] = [], pending: Promise<void>[] = [];
+  page.on("response", response => {
+    if (response.url().includes(`/projects/${p.id}/files/page?`)) pending.push(response.json().then(body => {
+      responses.push({ at: new Date().toISOString(), path: new URL(response.url()).pathname + new URL(response.url()).search, ...body });
+    }));
+  });
+  try {
+    await open(page, old.id, p.id);
+    await page.locator(".cmp-task", { hasText: "목표 업무" }).click(); await count(page, 20);
+    await page.locator(".fl-list").evaluate(e => { e.scrollTop = e.scrollHeight; }); await count(page, 40);
+    await page.locator(".fl-doc__task", { hasText: "원래 업무" }).waitFor();
+    const refreshed = page.waitForResponse(r => r.url().includes("/files/page?") && r.url().includes(a.id));
+    store.moveRecordTask({ projectId: p.id, refType: "file", refId: old.id, from: b.id, to: a.id, basis: "classify", actor: "시험" });
+    await refreshed; await count(page, 41);
+    expect(await page.locator(".fl-row__title", { hasText: "옮길 옛 자료" }).count()).toBe(1);
+    expect(await page.locator(".fl-doc__task").count()).toBe(0);
+    expect(await page.locator(".fl-doc__title").innerText()).toBe("옮길 옛 자료");
+    await page.keyboard.press("Escape");
+    const dir = process.env.F1_STAGE;
+    if (dir) await page.screenshot({ path: join(dir, "desktop-moved.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".fl-back").waitFor();
+    expect(await page.locator(".fl-doc__title").innerText()).toBe("옮길 옛 자료");
+    expect(await page.locator(".fl-doc__task").count()).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (dir) await page.screenshot({ path: join(dir, "narrow-reader.png"), fullPage: true });
+    await page.locator(".fl-back").click(); await count(page, 20);
+    // Shell replaces its desktop tree at this breakpoint, so the narrow list
+    // starts a new paged read. Preserve its ordinary 20 -> 40 -> 41 controls.
+    await page.evaluate(() => document.querySelector(".fl-more")?.scrollIntoView({ block: "end" })); await count(page, 40);
+    await page.evaluate(() => document.querySelector(".fl-more")?.scrollIntoView({ block: "end" })); await count(page, 41);
+    expect(await page.locator(".fl-row__title", { hasText: "옮길 옛 자료" }).count()).toBe(1);
+    expect(new Set(await page.locator(".fl-row").evaluateAll(rows => rows.map(row => row.getAttribute("href")))).size).toBe(41);
+    if (dir) {
+      await page.screenshot({ path: join(dir, "narrow-list.png"), fullPage: true });
+      await Promise.all(pending);
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(join(dir, "screens.json"), JSON.stringify({ projectId: p.id, fileId: old.id, target: a.id, source: b.id, targetCount: store.listFilePage(p.id, { taskId: a.id }).counts, sourceCount: store.listFilePage(p.id, { taskId: b.id }).counts, responses }, null, 2));
+    }
   } finally { await page.close(); }
 }, 60_000);

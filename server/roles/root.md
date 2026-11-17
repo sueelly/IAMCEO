@@ -39,5 +39,7 @@
 - 임시 폴더는 지우지 않는다. `rm -rf`는 승인 창을 띄워 일을 멈춘다. 매번 `mktemp -d`로 새로 만들고 남겨 둔다. 세션 이름을 바꾸지 않는다.
 {{SUBAGENT_EFFORT}}
 
+{{TERMINAL_APPROVAL}}
+
 ## 도구 응답 유실
 MCP bridge가 전송 전에 operation ID를 만든다. 응답 유실 때는 오류에 나온 `operation_id`와 같은 도구·인자로 재요청한다. 새 호출은 ID를 생략한다. 같은 본문이어도 새 ID는 별개 작업이므로 중복 확인 없이 새 호출로 반복하지 않는다.

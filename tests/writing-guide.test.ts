@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportRoles, renderRole, ROLE_BOUNDARY, WRITING_GUIDE } from "../server/roles.ts";
+import { exportRoles, renderRole, ROLE_BOUNDARY, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
 import type { RunnerMember, StartOpts } from "../server/runner/types.ts";
 import type { CliProvider, MemberKind } from "../shared/types.ts";
@@ -66,9 +66,9 @@ describe("글 지침", () => {
     const paths = exportRoles(dir);
     for (const path of paths) expect(count(readFileSync(path, "utf8"), HEAD)).toBe(1);
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 템플릿");
-    // 글 지침은 붙이지 않는다. 역할 경계만 빠지지 않게 끝에 붙는다(tests/role-boundary.test.ts).
+    // 글 지침은 붙이지 않는다. 역할 경계와 터미널 승인 안내만 빠지지 않게 이 차례로 끝에 붙는다(tests/role-boundary.test.ts·tests/terminal-approval-guide.test.ts).
     const custom = renderRole("worker", vars, dir);
-    expect(custom).toBe(`승인 규칙만 있는 템플릿\n\n${ROLE_BOUNDARY.worker.trim()}\n`);
+    expect(custom).toBe(`승인 규칙만 있는 템플릿\n\n${ROLE_BOUNDARY.worker.trim()}\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`);
     expect(count(custom, HEAD)).toBe(0);
   });
 

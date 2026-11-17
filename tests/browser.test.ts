@@ -24,6 +24,7 @@ async function runFile(file: string): Promise<void> {
 }
 
 describe("화면 시험", () => {
+  test("백그라운드 회귀 작업의 직원 상태(PC+좁은 화면)", () => runFile("queue-status.browser.ts"), 120_000);
   test("전 과정(가짜 claude, 데스크톱+폰)", () => runFile("e2e-fake.browser.ts"), 300_000);
   test("전체 통합(요청 10건을 한 흐름으로)", () => runFile("integrated.browser.ts"), 300_000);
   test("회귀(결함별)", () => runFile("screens-regress.browser.ts"), 300_000);
@@ -35,4 +36,5 @@ describe("화면 시험", () => {
   test("자료 화면(종류별 보기·악성 아티팩트)", () => runFile("files.browser.ts"), 240_000);
   test("자료 화면의 업무 거르기(PC+폰)", () => runFile("files-by-task.browser.ts"), 180_000);
   test("자료의 점진 조회·업무 전환 경합·모바일 본문 지연 조회", () => runFile("file-paging.browser.ts"), 120_000);
+  test("라이트 테마 남은 일(아이콘·권장 배지 대비·폰 탭 건수)", () => runFile("light-leftovers.browser.ts"), 300_000);
 });
