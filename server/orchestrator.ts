@@ -1,4 +1,5 @@
 import { redactHarnessText } from "./harness-redaction.ts";
+import { UNKNOWN_AGENT_RESULT } from "./agent-receipts.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { readCodeSource, type CodeReadScope } from "./harness-source-read.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -3216,24 +3217,12 @@ export class Orchestrator implements OrchestratorApi {
     const current = this.store.requireMember(member.id);
     if (current.projectId !== member.projectId) throw new ApiError(404, "직원을 찾을 수 없습니다");
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(context.operationId)) throw new ApiError(400, "operationId가 잘못되었습니다");
-    let reserved = false;
-    const previous = this.store.agentOperation(current.id, name, context.operationId, args, () => {
-      reserved = true;
-      return { text: "이 작업의 결과를 확인할 수 없습니다. 같은 작업은 자동 재실행하지 않습니다", isError: true };
-    });
+    const reservation = this.store.reserveAgentOperation(current.id, name, context.operationId, args, UNKNOWN_AGENT_RESULT);
     const running = this.agentOperations.get(context.operationId);
     if (running) return running;
-    // 동기 Store 포트의 두 불변 receipt로 예약과 비동기 결과를 나눈다.
-    // ':'는 외부 operation ID에 허용하지 않아 결과 namespace와 충돌하지 않는다.
-    const resultId = `agent-result:${context.operationId}`;
-    if (!reserved) {
-      const missing = Symbol("result_pending");
-      try { return this.store.agentOperation(current.id, name, resultId, args, () => { throw missing; }); }
-      catch (error) { if (error !== missing) throw error; }
-      return previous;
-    }
+    if (!reservation.created) return reservation.result;
     const execution = this.handleAgentTool(current, name, args, signal).then(result =>
-      this.store.agentOperation(current.id, name, resultId, args, () => result),
+      this.store.completeAgentOperation(current.id, name, context.operationId, args, result),
     ).finally(() => { this.agentOperations.delete(context.operationId); });
     this.agentOperations.set(context.operationId, execution);
     return execution;
