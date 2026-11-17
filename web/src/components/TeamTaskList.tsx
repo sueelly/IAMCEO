@@ -65,7 +65,7 @@ export default function TeamTaskList({
   return (
     <div className="tt-list" ref={root}>
       {onTab ? (
-        <nav className="tt-filters" aria-label="직원 업무 상태">
+        <nav className="tt-filters team-options" aria-label="직원 업무 상태">
           {TEAM_TASK_TABS.map(([key, label]) => (
             <GlassButton
               key={key}

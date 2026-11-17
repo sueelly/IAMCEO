@@ -1,20 +1,21 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useLayoutEffect, useId, useMemo, useRef, useState } from "react";
 import type { Member, Task } from "@shared/types";
 import type { ProjectWorkflow, WorkflowNode } from "@shared/workflow";
-import { GlassButton } from "../glass";
+import { GlassButton, glassButtonClass } from "../glass";
 import {
   workflowMap,
   workflowTaskNodes,
   type WorkflowMapScope,
 } from "@shared/workflow-map";
 import { workflowSummary } from "@shared/workflow-view";
+const GROUP_WIDTH = 310;
+const GROUP_HEIGHT = 220;
+const COLUMN_STEP = 370;
+const ROW_STEP = 268;
+const GROUP_TOP = 64;
+const RELATION_WIDTH = 128;
+const RELATION_HEIGHT = 32;
+
 type Data = {
   tasks: Task[];
   workflow: ProjectWorkflow;
@@ -48,7 +49,13 @@ export default function WorkflowMap({
   const marker = useId().replace(/:/g, ""),
     worldHeight = focusTask
       ? 520
-      : Math.max(520, Math.ceil(model.groups.length / 3) * 235 + 54);
+      : Math.max(
+          520,
+          GROUP_TOP +
+            (Math.ceil(model.groups.length / 3) - 1) * ROW_STEP +
+            GROUP_HEIGHT +
+            20,
+        );
   const [zoom, setZoom] = useState(1),
     [fit, setFit] = useState(1),
     [offset, setOffset] = useState({ x: 0, y: 0 }),
@@ -60,7 +67,7 @@ export default function WorkflowMap({
     zoom: number;
     offset: { x: number; y: number };
   } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = view.current;
     if (!el) return;
     const sync = () =>
@@ -102,7 +109,10 @@ export default function WorkflowMap({
   const positions = new Map(
     model.groups.map((g, i) => [
       g.id,
-      { x: 30 + (i % 3) * 370, y: 70 + Math.floor(i / 3) * 235 },
+      {
+        x: 30 + (i % 3) * COLUMN_STEP,
+        y: GROUP_TOP + Math.floor(i / 3) * ROW_STEP,
+      },
     ]),
   );
   const activeGroups = model.groups
@@ -137,19 +147,33 @@ export default function WorkflowMap({
   const linkGeometry = (l: (typeof model.links)[number]) => {
     const a = positions.get(l.from)!,
       b = positions.get(l.to)!;
-    if (a.y === b.y)
+    const center = (x: number) => x + GROUP_WIDTH / 2;
+    const label = (x: number, y: number) => ({
+      x: x - RELATION_WIDTH / 2,
+      y: y - RELATION_HEIGHT / 2,
+    });
+    const halfGap = (ROW_STEP - GROUP_HEIGHT) / 2;
+    if (a.y === b.y) {
+      const y = a.y - halfGap;
       return {
-        path: `M${a.x + 155},${a.y} C${a.x + 155},${a.y - 60} ${b.x + 155},${b.y - 60} ${b.x + 155},${b.y}`,
-        x: (a.x + b.x) / 2 + 112,
-        y: a.y - 44,
+        path: `M${center(a.x)},${a.y} V${y} H${center(b.x)} V${b.y}`,
+        ...label((center(a.x) + center(b.x)) / 2, y),
       };
-    const top = a.y < b.y ? a : b,
-      bottom = a.y < b.y ? b : a,
-      middle = (top.y + 204 + bottom.y) / 2;
+    }
+    const top = a.y < b.y ? a : b;
+    const bottom = a.y < b.y ? b : a;
+    const start = top.y + GROUP_HEIGHT;
+    const departure = start + halfGap;
+    const arrival = bottom.y - halfGap;
+    // Route long links through the gutter beside the top card.
+    const right =
+      top.x < bottom.x || (top.x === bottom.x && top.x < 30 + 2 * COLUMN_STEP);
+    const gutter = right
+      ? top.x + (GROUP_WIDTH + COLUMN_STEP) / 2
+      : top.x - (COLUMN_STEP - GROUP_WIDTH) / 2;
     return {
-      path: `M${top.x + 155},${top.y + 204} V${middle} H${bottom.x + 155} V${bottom.y}`,
-      x: (top.x + bottom.x) / 2 + 112,
-      y: middle - 12,
+      path: `M${center(top.x)},${start} V${departure} H${gutter} V${arrival} H${center(bottom.x)} V${bottom.y}`,
+      ...label((center(top.x) + gutter) / 2, departure),
     };
   };
   // Labels sharing a hit area open one live scope containing all of their real pairs.
@@ -162,7 +186,9 @@ export default function WorkflowMap({
     const p = linkGeometry(link);
     const colliding = linkLabels.filter((label) =>
       label.points.some(
-        (q) => Math.abs(p.x - q.x) < 128 && Math.abs(p.y - q.y) < 28,
+        (q) =>
+          Math.abs(p.x - q.x) < RELATION_WIDTH &&
+          Math.abs(p.y - q.y) < RELATION_HEIGHT,
       ),
     );
     linkLabels = linkLabels.filter((label) => !colliding.includes(label));
@@ -353,13 +379,20 @@ export default function WorkflowMap({
         </div>
       </div>
       {!focusTask && (
-        <div className="map-member-filter">
-          <button aria-pressed={!member} onClick={() => setMember(null)}>
+        <div className="map-member-filter team-options">
+          <button
+            type="button"
+            className={glassButtonClass("ghost", "s")}
+            aria-pressed={!member}
+            onClick={() => setMember(null)}
+          >
             담당 전체
           </button>
           {data.members.map((m) => (
             <button
               key={m.id}
+              type="button"
+              className={glassButtonClass("ghost", "s")}
               aria-pressed={member === m.id}
               onClick={() => setMember(member === m.id ? null : m.id)}
             >
@@ -419,7 +452,7 @@ export default function WorkflowMap({
           className="map-world"
           style={{
             height: worldHeight,
-            transform: `translate(${offset.x}px,${offset.y}px) scale(${fit * zoom})`,
+            transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px)) scale(${fit * zoom})`,
           }}
         >
           <svg
@@ -493,8 +526,13 @@ export default function WorkflowMap({
                 return (
                   <button
                     key={label.links.map((l) => l.id).join(":")}
-                    className="map-link-count"
-                    style={{ left: p.x, top: p.y }}
+                    className={glassButtonClass("glass", "s", "map-link-count")}
+                    style={{
+                      left: p.x,
+                      top: p.y,
+                      width: RELATION_WIDTH,
+                      height: RELATION_HEIGHT,
+                    }}
                     onClick={() =>
                       onScope({
                         kind: "relations",
@@ -519,12 +557,14 @@ export default function WorkflowMap({
                       (member && !g.members.includes(member)) || undefined
                     }
                     data-blocked={g.blocked > 0 || undefined}
-                    style={{ left: p.x, top: p.y }}
+                    style={{
+                      left: p.x,
+                      top: p.y,
+                      width: GROUP_WIDTH,
+                      height: GROUP_HEIGHT,
+                    }}
                   >
                     <div className="map-group-top">
-                      <span>
-                        {g.id === "individual" ? "개별 업무" : "파생 업무 묶음"}
-                      </span>
                       <button
                         aria-label={`${g.title} 업무 ${g.shown.length}개 전체`}
                         onClick={() =>
@@ -605,10 +645,18 @@ export default function WorkflowMap({
                       >
                         확인 {g.counts.action}
                       </button>
-                      <span>실행 {g.counts.running}</span>
-                      <span>다음 {g.counts.next}</span>
-                      <span>완료 {g.counts.done}</span>
-                      <span>미배정 {g.counts.unassigned}</span>
+                      <span data-category="running">
+                        실행 <b>{g.counts.running}</b>
+                      </span>
+                      <span data-category="next">
+                        다음 <b>{g.counts.next}</b>
+                      </span>
+                      <span data-category="done">
+                        완료 <b>{g.counts.done}</b>
+                      </span>
+                      <span data-category="unassigned">
+                        미배정 <b>{g.counts.unassigned}</b>
+                      </span>
                     </div>
                     {participantChips(g.members, 2, {
                       kind: "members",

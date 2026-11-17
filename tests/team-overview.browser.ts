@@ -739,7 +739,7 @@ test("review: crossed group relations remain clickable without overlapping count
   const f = reviewFixture(),
     m = f.staff("첫 직원"),
     n = f.staff("둘째 직원");
-  const roots = Array.from({ length: 6 }, (_, i) =>
+  const roots = Array.from({ length: 9 }, (_, i) =>
     f.task("교차 묶음 " + i),
   ).sort((a, b) => a.id.localeCompare(b.id));
   for (const r of roots) f.task(r.title + " 자식", r.id);
@@ -747,6 +747,9 @@ test("review: crossed group relations remain clickable without overlapping count
   f.assign(m, roots[4]);
   f.assign(n, roots[1]);
   f.assign(n, roots[3]);
+  const later = f.staff("셋째 직원");
+  f.assign(later, roots[0]);
+  f.assign(later, roots[6]);
   const p = await open(1440, undefined, f.pr.id);
   try {
     await p.getByRole("button", { name: "전체 지도", exact: true }).click();
@@ -768,6 +771,22 @@ test("review: crossed group relations remain clickable without overlapping count
             b.bottom <= a.top,
         ).toBe(true);
       }
+    const overlap = await p.locator(".map-viewport").evaluate((view) => {
+      const cards = [...view.querySelectorAll(".map-group")].map((card) =>
+        card.getBoundingClientRect(),
+      );
+      return [...view.querySelectorAll(".map-link-count")].some((button) => {
+        const b = button.getBoundingClientRect();
+        return cards.some(
+          (c) =>
+            b.left < c.right &&
+            c.left < b.right &&
+            b.top < c.bottom &&
+            c.top < b.bottom,
+        );
+      });
+    });
+    expect(overlap).toBe(false);
     let edgeCount = 0;
     for (let i = 0; i < boxes.length; i++) {
       await p.locator(".map-link-count").nth(i).click();
@@ -782,7 +801,7 @@ test("review: crossed group relations remain clickable without overlapping count
         .count();
       await p.keyboard.press("Escape");
     }
-    expect(edgeCount).toBe(2);
+    expect(edgeCount).toBe(3);
   } finally {
     await p.close();
   }

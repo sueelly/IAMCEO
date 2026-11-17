@@ -16,7 +16,7 @@ import {
   type ResolvedMapScope,
 } from "@shared/workflow-map";
 import { memberIssueLabel, deliveryWaitText } from "@shared/execution-issues";
-import { GlassButton } from "../glass";
+import { Glass, GlassButton } from "../glass";
 import { useStore } from "../lib/store";
 import {
   Drawer,
@@ -302,7 +302,9 @@ export default function TeamOverview({
       title={title(n)}
     >
       <span className="to-state" data-state={n.state}>
-        {online ? n.label : `마지막 확인: ${n.label}`}
+        <span className="to-state-label" title={n.label}>
+          {n.label}
+        </span>
         {extra > 0 ? (
           <b>
             {tab === "next" ? "다른 대기 " : "외 "}
@@ -319,31 +321,33 @@ export default function TeamOverview({
         <h2>
           업무 흐름 <small>직원 {state.members.length}</small>
         </h2>
-        <div className="to-modes">
-          <GlassButton
-            size="s"
-            variant="ghost"
-            ariaPressed={mode === "compact"}
-            onClick={() => {
-              setMode("compact");
-              clearFocus();
-            }}
-          >
-            한눈에
-          </GlassButton>
-          <GlassButton
-            size="s"
-            variant="ghost"
-            ariaPressed={mode === "map"}
-            onClick={() => setMode("map")}
-          >
-            전체 지도
-          </GlassButton>
+        <div className="to-head-actions">
+          <Glass className="team-segments to-modes" level="regular">
+            <GlassButton
+              size="s"
+              variant="ghost"
+              ariaPressed={mode === "compact"}
+              onClick={() => {
+                setMode("compact");
+                clearFocus();
+              }}
+            >
+              한눈에
+            </GlassButton>
+            <GlassButton
+              size="s"
+              variant="ghost"
+              ariaPressed={mode === "map"}
+              onClick={() => setMode("map")}
+            >
+              전체 지도
+            </GlassButton>
+          </Glass>
           {headerActions}
         </div>
       </header>
       <div className="to-toolbar">
-        <nav className="to-filters" aria-label="업무 상태">
+        <nav className="to-filters team-options" aria-label="업무 상태">
           {filters.map(([key, label]) => (
             <GlassButton
               key={key}
@@ -373,7 +377,7 @@ export default function TeamOverview({
           ))}
         </nav>
         <input
-          className="to-search"
+          className="input to-search"
           aria-label="직원·업무 검색"
           placeholder="직원·업무 검색"
           value={query}

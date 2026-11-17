@@ -1015,20 +1015,22 @@ function MemberInspector({
   return (
     <>
       <nav className="tm-detail-tabs" aria-label="직원 상세 탭">
-        {sections.map(([section, label]) => (
-          <GlassButton
-            key={section}
-            size="s"
-            variant="ghost"
-            ariaPressed={view.section === section}
-            onClick={() => setView({ ...view, section })}
-          >
-            {label}
-            {section === "tasks" && state.workflow ? (
-              <span className="wf-count">{own.length}</span>
-            ) : null}
-          </GlassButton>
-        ))}
+        <Glass className="team-segments" level="regular">
+          {sections.map(([section, label]) => (
+            <GlassButton
+              key={section}
+              size="s"
+              variant="ghost"
+              ariaPressed={view.section === section}
+              onClick={() => setView({ ...view, section })}
+            >
+              {label}
+              {section === "tasks" && state.workflow ? (
+                <span className="wf-count">{own.length}</span>
+              ) : null}
+            </GlassButton>
+          ))}
+        </Glass>
       </nav>
       {!state.workflow && ["summary", "tasks"].includes(view.section) ? <p className="wf-empty" role="status">업무 흐름을 확인할 수 없습니다.</p> : null}
       {view.section === "summary" && state.workflow ? (
