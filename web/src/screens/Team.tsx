@@ -14,6 +14,7 @@ import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewSt
 import { readWriteContext, useWriteContext } from "../lib/review-context";
 import { memberSubmissions, useSubmissionDraft } from "../lib/submission-client";
 import { canStop, runLabel, stopExpectation, stopNotice } from "../lib/stop";
+import { isLocalTerminalHost, terminalCommand } from "../lib/terminal-command";
 import "../styles/team.css";
 
 const SCREEN_POLL_MS = 2000;
@@ -40,11 +41,6 @@ const ACTIVITY_LABEL: Record<ActivityKind, string> = {
 
 const DELIVERY_LABEL = { queued: "전달 대기", delivering: "전달 중", held: "보류", delivered: "받음", failed: "실패" } as const;
 
-/** 작은따옴표 안에서는 작은따옴표만 끊어 넣으면 어떤 경로도 안전하다. 안전한 글자뿐이면 그대로 둔다. */
-const shellQuote = (s: string) => (/^[A-Za-z0-9_\-./:=@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
-// sessionId 도 인용한다: 붙여 넣는 곳은 대표의 셸이다.
-// Antigravity 직원의 대화는 IAMCEO 데이터 폴더 안 직원별 설정 폴더에 있다.
-const resumeCommand = (m: Member, home: string) => `cd ${shellQuote(m.cwd)} && ${m.cli === "codex" ? "codex resume" : m.cli === "antigravity" ? `agy ${shellQuote(`--gemini_dir=${home}/antigravity/${m.id}`)} --conversation` : "claude --resume"} ${shellQuote(m.sessionId ?? "")}`;
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
 function useAction() {
@@ -516,22 +512,35 @@ function TerminalInput({ member }: { member: Member }) {
 }
 
 /** 명령 한 줄과 복사 버튼. */
-function CopyBox({ command, label, onCopied }: { command: string; label: string; onCopied?: () => void }) {
-  const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
+function CopyBox({ command, label, resolveCommand, onCopied }: { command: string | null; label: string; resolveCommand: () => Promise<string>; onCopied?: () => void }) {
+  const [state, setState] = useState<"idle" | "copying" | "ok" | "fail">("idle");
+  const [resolvedCommand, setResolvedCommand] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (resetTimer.current !== null) clearTimeout(resetTimer.current); }, []);
+  useEffect(() => { setResolvedCommand(null); }, [command]);
   const copy = async () => {
-    const ok = await copyText(command);
-    setState(ok ? "ok" : "fail");
-    if (ok) onCopied?.();
-    setTimeout(() => setState("idle"), 2000);
+    if (state === "copying") return;
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    setState("copying"); setError(null);
+    try {
+      const current = resolveCommand().then(value => { setResolvedCommand(value); return value; });
+      const ok = await copyText(current);
+      setState(ok ? "ok" : "fail");
+      if (ok) onCopied?.();
+      else setError("클립보드에 복사하지 못했습니다");
+    } catch (e) { setState("fail"); setError(errorText(e)); }
+    resetTimer.current = setTimeout(() => setState("idle"), 2000);
   };
   return (
     <div className="tm-copy__row">
-      <code className="tm-copy__cmd t-code" title={command}>
-        {command}
+      <code className="tm-copy__cmd t-code" title={resolvedCommand ?? command ?? undefined}>
+        {resolvedCommand ?? command}
       </code>
-      <GlassButton variant="glass" size="m" ariaLabel={label} onClick={copy}>
+      <GlassButton variant="glass" size="m" ariaLabel={label} onClick={copy} disabled={state === "copying"}>
         {state === "ok" ? "복사함" : state === "fail" ? "실패" : "복사"}
       </GlassButton>
+      {error ? <p className="tm-note tm-note--left" role="alert">{error}</p> : null}
     </div>
   );
 }
@@ -540,14 +549,13 @@ function CopyCommand({ m }: { m: Member }) {
   const [copied, setCopied] = useState(false);
   const running = m.status !== "asleep" && m.status !== "offline";
   const bootstrap = useBootstrap();
-  const cli = bootstrap?.cli ?? "iamceo";
   const attached = m.backend === "core" && !!m.paneId;
-  const command = attached ? `${cli} attach ${shellQuote(m.id)}` : resumeCommand(m, bootstrap?.home ?? "~/.iamceo");
+  const local = isLocalTerminalHost(window.location.hostname);
+  const command = bootstrap?.connection ? terminalCommand(m, bootstrap.connection, local) : null;
   return (
     <div className="tm-copy">
       <p className="tm-label">{attached ? "연결된 터미널 열기" : "터미널로 열기"}</p>
-      <CopyBox command={command} label="터미널로 열기 명령 복사" onCopied={() => setCopied(true)} />
-      {attached ? <p className="tm-note tm-note--left">서버 컴퓨터에서 실행하면 같은 CLI 터미널을 엽니다. 웹의 화면 탭은 읽기 전용입니다.</p> : null}
+      <CopyBox command={command} label="터미널로 열기 명령 복사" resolveCommand={async () => terminalCommand(m, await api.connection(), local)} onCopied={() => setCopied(true)} />
       {copied && running && !attached ? <p className="tm-note tm-note--left">지금 도는 세션입니다. 두 곳에서 함께 쓰면 꼬이니 먼저 잠재우고 여세요.</p> : null}
     </div>
   );

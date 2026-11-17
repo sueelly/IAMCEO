@@ -5862,7 +5862,6 @@ function adoptWarnings(project: Project, live: LiveAgent, seen: PaneInspection |
 
 /** 서버 컴퓨터의 터미널에서 CLI 를 부르는 명령. 화면의 안내가 그대로 동작해야 한다. */
 export function cliCommand(): string {
-  if (Bun.which("iamceo")) return "iamceo";
   const { command, args } = mcpCommand();
   return [command, ...args.slice(0, -1)].map(shellQuote).join(" ");
 }

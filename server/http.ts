@@ -3,7 +3,8 @@ import { readOnlyRequestAllowed } from "./read-only-policy.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
-import { detectTailscaleIp, generateAccessCode, updateConfigFile } from "./config.ts";
+import { detectTailscaleIp, generateAccessCode, updateConfigFile, updateConnectionConfig } from "./config.ts";
+import { connectionInfo, ConnectionPatchSchema } from "./connections.ts";
 import { MIGRATIONS } from "./db.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
@@ -493,7 +494,7 @@ async function artifactHtml({ config, store }: ServerContext, id: string): Promi
   return source.text();
 }
 
-function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, readHerdr: () => Promise<HerdrInfo>, currentHerdr: () => HerdrInfo): Route[] {
+function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, readHerdr: () => Promise<HerdrInfo>, currentHerdr: () => HerdrInfo, serverPort: () => number): Route[] {
   const { config, store, orch, bus } = ctx;
   const models = new ModelCatalogReader(config);
   const folders = new Folders(ctx.folderHome);
@@ -643,7 +644,16 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       strictQuery(url, []);
       return Response.json(models.read());
     }),
-    route("GET", "/api/sync", async (_req, url) => {
+    route("GET", "/api/connection", (req, url) => {
+      strictQuery(url, []);
+      return Response.json(connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()));
+    }),
+    route("PATCH", "/api/connection", async (req, url) => {
+      strictQuery(url, []);
+      updateConnectionConfig(config, await parseBody(req, ConnectionPatchSchema));
+      return Response.json(connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()));
+    }),
+    route("GET", "/api/sync", async (req, url) => {
       strictQuery(url, ["projectId"]);
       const requestedProjectId = url.searchParams.get("projectId");
       if (requestedProjectId !== null && (!requestedProjectId.trim() || Buffer.byteLength(requestedProjectId) > 256)) throw new ApiError(400, "프로젝트 ID가 잘못되었습니다");
@@ -657,14 +667,15 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const body: SyncSnapshot = {
         protocol: 2, requestedProjectId, projectStatus,
         bootstrap: { version: VERSION, settings: store.getSettings(), projects: store.projectSummaries(), herdr,
-          home: config.home, urls: urls(), cli: orch.cliCommand?.() ?? "iamceo", rankOverrides },
+          home: config.home, urls: urls(), cli: orch.cliCommand?.() ?? "iamceo", rankOverrides,
+          connection: connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()) },
         state: projectStatus === "ok" ? { ...store.projectState(requestedProjectId!), ...(ctx.delivery ? { deliveryNotices: ctx.delivery.notices(requestedProjectId!) } : {}) } : null,
         revisions: projectStatus === "ok" ? store.syncRevisions(requestedProjectId!) : { settings: store.settingsRevision(), members: {}, todos: {} },
         cursor: bus.cursor,
       };
       return Response.json(body);
     }),
-    route("GET", "/api/bootstrap", async () => {
+    route("GET", "/api/bootstrap", async (req, url) => {
       await orch.refreshConnection?.();
       const rankOverrides = { manager: 0, lead: 0 };
       for (const m of store.listAllMembers()) if (m.origin !== "manual" && (m.modelOverride || m.effortOverride)) rankOverrides[memberRank(m.kind)]++;
@@ -677,6 +688,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
         home: config.home,
         urls: urls(),
         cli: orch.cliCommand?.() ?? "iamceo",
+        connection: connectionInfo(config, req.headers.get("host") ?? url.host, orch.cliCommand?.() ?? "iamceo", serverPort()),
         rankOverrides,
       };
       return Response.json(body);
@@ -1223,7 +1235,7 @@ export async function startServer(ctx: ServerContext): Promise<RunningServer> {
     if (herdrCache) return Promise.resolve(herdrCache);
     return herdrPending ??= ctx.orch.herdrInfo().then((info) => herdrCache ??= info).finally(() => { herdrPending = undefined; });
   };
-  const routes = apiRoutes(ctx, () => reachableUrls(hosts, boundPort), pairing, readHerdr, () => herdrCache!);
+  const routes = apiRoutes(ctx, () => reachableUrls(hosts, boundPort), pairing, readHerdr, () => herdrCache!, () => boundPort);
   const pushHandler = ctx.push ? createPushHandler(ctx.push) : null;
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const v2Sockets = new Set<ServerWebSocket<SocketData>>();
