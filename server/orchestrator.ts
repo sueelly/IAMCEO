@@ -38,6 +38,8 @@ import type {
   Backend,
   CliProvider,
   CreateMemberReq,
+  CreateTemporaryConductorReq,
+  RetireTemporaryConductorReq,
   RuntimeInfo,
   CreateProjectReq,
   Decision,
@@ -3452,6 +3454,79 @@ export class Orchestrator implements OrchestratorApi {
     return spawn;
   }
 
+  private temporaryConductorHandle(projectId: string, req: RetireTemporaryConductorReq): string {
+    const project = this.store.requireProject(projectId);
+    this.requireActive(project);
+    if (project.isHq) throw new ApiError(400, "본사에는 임시 프로젝트 총괄을 만들 수 없습니다");
+    const source = this.store.getMessage(req.sourceMessageId);
+    if (!source || source.projectId !== projectId || !source.mine) throw new ApiError(400, "이 프로젝트의 대표 원문이 필요합니다");
+    const task = this.store.getTask(req.taskId);
+    if (!task || task.projectId !== projectId) throw new ApiError(404, "이 프로젝트의 업무를 찾을 수 없습니다");
+    if (source.taskId && source.taskId !== task.id) throw new ApiError(400, "대표 원문과 업무가 다릅니다");
+    return `temp-${createHash("sha256").update(JSON.stringify([req.sourceMessageId, req.taskId])).digest("hex").slice(0, 26)}`;
+  }
+
+  /** 대표 인증 HTTP 전용. 원문·업무의 고정 핸들로 재시도를 식별한다. */
+  async createTemporaryConductor(projectId: string, req: CreateTemporaryConductorReq): Promise<Member> {
+    const handle = this.temporaryConductorHandle(projectId, req);
+    if (this.store.effectiveBackend() !== "core") throw new ApiError(409, "임시 총괄은 안전한 유휴 종료를 지원하는 core 실행기에서만 만듭니다");
+    if (this.store.getMessage(`msg_retired_${handle}`)) throw new ApiError(409, "이 요청의 임시 총괄은 이미 종료됐습니다");
+    const primary = this.store.getConductor(projectId);
+    if (!primary) throw new ApiError(409, "기존 총괄을 먼저 시작해야 합니다");
+    const existing = this.store.getMemberByHandle(projectId, handle);
+    if (existing && existing.kind === "conductor" && existing.id !== primary.id) {
+      if (this.runtime(existing.id).closing) throw new ApiError(409, "임시 총괄 종료를 처리하는 중입니다");
+      await this.runtime(existing.id).starting;
+      return this.store.requireMember(existing.id);
+    }
+    if (existing || this.store.listMembers(projectId).some(m => m.kind === "conductor" && m.id !== primary.id)) throw new ApiError(409, "이미 추가 총괄이 있습니다");
+    // addMember 는 첫 await 전에 명부를 동기적으로 저장한다. 동시 요청은 위에서 같은 핸들을 찾는다.
+    return (await this.addMember(projectId, { ...req, cli: "codex", kind: "conductor", handle })).member;
+  }
+
+  /** 정식 idle-only 종료. 일반 closeMember의 강제 중단·입력 삭제·결재 닫기를 사용하지 않는다. */
+  async retireTemporaryConductor(projectId: string, memberId: string, req: RetireTemporaryConductorReq): Promise<void> {
+    const handle = this.temporaryConductorHandle(projectId, req);
+    const member = this.store.requireMember(memberId);
+    if (member.projectId !== projectId || member.kind !== "conductor" || member.handle !== handle || this.store.getConductor(projectId)?.id === member.id) throw new ApiError(400, "이 요청으로 만든 임시 총괄만 종료할 수 있습니다");
+    if (this.backendOf(member) !== "core") throw new ApiError(409, "안전한 유휴 종료를 지원하는 core 임시 총괄만 종료할 수 있습니다");
+    const rt = this.runtime(memberId);
+    if (rt.closing || this.archiving.has(projectId)) throw new ApiError(409, "세션을 처리하는 중입니다");
+    rt.closing = true;
+    try {
+      this.requireTemporaryConductorDrained(member);
+      await this.stopManaged(member, "close", false);
+      this.confirmStop(memberId);
+      this.store.patchMember(memberId, { status: "asleep" });
+      // stop의 await 중 들어온 입력·결재도 남긴다. 새 입력이 있으면 명부를 제거하지 않는다.
+      this.requireTemporaryConductorDrained(this.store.requireMember(memberId));
+      this.store.transaction(() => {
+        this.store.createMessage({ id: `msg_retired_${handle}`, projectId, taskId: req.taskId, aboutMessageId: req.sourceMessageId,
+          mine: false, who: "시스템", kind: "시스템", body: `임시 총괄 ${member.name}(#${member.id})의 유휴 세션을 종료하고 명부에서 제거했습니다. 대화와 검수 기록은 보존합니다.` });
+        this.store.removeMember(memberId);
+      });
+      this.clearRuntime(memberId, rt);
+      (this.runners.get("herdr") as HerdrCapable | undefined)?.dropMember?.(memberId);
+      this.releaseSlots();
+    } finally { rt.closing = false; }
+  }
+
+  private requireTemporaryConductorDrained(member: Member): void {
+    const rt = this.runtime(member.id), input = this.store.inputState(member.id);
+    const compaction = this.store.getContextState(member.id)?.compaction;
+    if (rt.turn || rt.starting || rt.reopening || rt.pumping || rt.background || rt.stopRequest || rt.compactRequest !== null || rt.compactTimer ||
+      this.configWrites.has(member.id) || this.terminalMutations.has(member.id) || this.isBusy(member) ||
+      member.status === "working" || member.status === "blocked" || member.blockedReason ||
+      input.lease || input.unresolvedDispatches.length ||
+      (compaction && !["succeeded", "failed"].includes(compaction.phase)) ||
+      this.store.listPendingLifecycleJournals().some(j => j.memberId === member.id) ||
+      this.store.listPendingExecutions().some(j => j.memberId === member.id) ||
+      this.store.listUndelivered(member.projectId).some(d => d.memberId === member.id) ||
+      this.store.listOpenDecisionsByMember(member.id).length) {
+      throw new ApiError(409, "미완료 실행·입력·결재·세션 작업이 있어 임시 총괄을 종료하지 않았습니다");
+    }
+  }
+
   async addMember(projectId: string, input: NewMemberInput, assignedBy?: Member): Promise<{ member: Member; assigned: AssignResult | null }> {
     const project = this.store.requireProject(projectId);
     const cli = input.cli ?? this.store.defaultMemberCli(projectId);
@@ -3478,6 +3553,8 @@ export class Orchestrator implements OrchestratorApi {
         cli,
         modelOverride: input.modelOverride,
         effortOverride: input.effortOverride,
+        // Claude의 Ultracode는 첫 입력 전에 실제 제어 명령을 거친다.
+        parallel: cli === "claude" ? undefined : input.parallel,
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
@@ -3497,7 +3574,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 명부에 올리고 세션을 띄우기 시작한다. 끝나기 전에는 pump 가 건너뛰고, 끝나면 다시 민다. */
-  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null }): { member: Member; ready: Promise<void> } {
+  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null; parallel?: boolean }): { member: Member; ready: Promise<void> } {
     this.requireActive(this.store.requireProject(project.id));
     this.requireNotSwitching(); // 옮기는 명단에 없는 칸이 옛 실행기에 남는다.
     const member = this.store.createMember({ projectId: project.id, ...input, origin: "runner", status: "idle" });

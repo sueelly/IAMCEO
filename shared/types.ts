@@ -776,6 +776,17 @@ export type RealtimeEvent =
 // ---- REST 요청 ----
 export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider; /** 개발 기억 운영. 생략하면 켠다. */ memory?: boolean }
 export interface CreateMemberReq { name: string; role?: string; cli?: CliProvider; modelOverride?: string | null }
+/** 대표 원문과 업무에 묶인 임시 공동 총괄. 일반 직원 생성에서는 kind 를 받지 않는다. */
+export interface CreateTemporaryConductorReq {
+  name: string;
+  role?: string;
+  sourceMessageId: string;
+  taskId: string;
+  modelOverride?: string | null;
+  effortOverride?: Effort | null;
+  parallel?: boolean;
+}
+export type RetireTemporaryConductorReq = Pick<CreateTemporaryConductorReq, "sourceMessageId" | "taskId">;
 export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; maxConcurrentTurns?: number | null; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
 /** PUT /api/settings. ranks·codexRanks 는 고친 칸만 보내도 된다(나머지 유지). */
 export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "resetEfforts">> & {

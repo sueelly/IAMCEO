@@ -10,6 +10,8 @@ import type {
   ApprovalPrompt,
   CreateProjectReq,
   CreateMemberReq,
+  CreateTemporaryConductorReq,
+  RetireTemporaryConductorReq,
   RuntimeInfo,
   Decision,
   HerdrInfo,
@@ -84,6 +86,8 @@ export interface OrchestratorApi {
   /** 프로젝트 변경 단일 진입점. W9 HTTP 전환 전 fake/v1 hook은 호환한다. */
   patchProject?(projectId: string, patch: PatchProjectReq): Promise<Project>;
   createMember?(projectId: string, req: CreateMemberReq): Promise<Member>;
+  createTemporaryConductor?(projectId: string, req: CreateTemporaryConductorReq): Promise<Member>;
+  retireTemporaryConductor?(projectId: string, memberId: string, req: RetireTemporaryConductorReq): Promise<void>;
   runtimeInfo?(): Promise<RuntimeInfo>;
   terminalControl?(memberId: string, action: TerminalControlAction): Promise<TerminalControlResult>;
   /** http.ts 가 store.patchProject 를 끝낸 뒤 부른다(runnerEnabled 변화 등에 반응). */

@@ -213,6 +213,11 @@ const AnswerApprovalSchema = z.strictObject({
   note: z.string().max(4000).optional(),
 });
 const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
+const CreateTemporaryConductorSchema = z.strictObject({
+  name: nonEmpty, role: z.string().optional(), sourceMessageId: nonEmpty, taskId: nonEmpty,
+  modelOverride: modelName.nullable().optional(), effortOverride: effort.nullable().optional(), parallel: z.boolean().optional(),
+});
+const RetireTemporaryConductorSchema = z.strictObject({ sourceMessageId: nonEmpty, taskId: nonEmpty });
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
 const AnswerNativePromptSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
@@ -755,6 +760,16 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       store.requireProject(id!);
       if (!orch.createMember) throw new ApiError(501, "직원 만들기를 지원하지 않습니다");
       return Response.json(await orch.createMember(id!, await parseBody(req, CreateMemberSchema)));
+    }),
+    route("POST", "/api/projects/:id/temporary-conductor", async (req, _url, [id]) => {
+      store.requireProject(id!);
+      if (!orch.createTemporaryConductor) throw new ApiError(501, "임시 총괄 만들기를 지원하지 않습니다");
+      return Response.json(await orch.createTemporaryConductor(id!, await parseBody(req, CreateTemporaryConductorSchema)));
+    }),
+    route("POST", "/api/projects/:id/temporary-conductor/:member/retire", async (req, _url, [id, memberId]) => {
+      if (!orch.retireTemporaryConductor) throw new ApiError(501, "임시 총괄 종료를 지원하지 않습니다");
+      await orch.retireTemporaryConductor(id!, memberId!, await parseBody(req, RetireTemporaryConductorSchema));
+      return Response.json({ retired: true, memberId });
     }),
     route("GET", "/api/projects/:id/state", (_req, _url, [id]) => {
       // 보관한 프로젝트는 없는 것으로 친다. 화면이 본사로 돌아간다.
