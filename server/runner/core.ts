@@ -10,7 +10,7 @@ import { antigravityDraft, antigravityExactComposer, antigravityFolderTrust, ant
 import { cleanText } from "../text.ts";
 import { limitedPrompt, parseNativePrompt } from "./prompt.ts";
 import { childEnv } from "./headless.ts";
-import { defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
+import { backgroundWait, defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
 import { CoreError, coreRpc, coreSocketPath, type CoreHello, type CoreTerminal } from "./core-client.ts";
 import { providerFor, providerLaunch, isProviderArgv, type CoreProvider, type ProviderBins } from "./providers.ts";
 import { codexBindingMarker, discoverCodexSession, observeCompactBoundary, type CodexBindingCursor, type CompactBoundaryBaseline, type CompactBoundaryCursor } from "./core-context.ts";
@@ -39,6 +39,7 @@ export interface CoreRunnerDeps {
 }
 interface Track {
   statusKey: string | null;
+  background: string | null;
   setupAttempted: string | null;
   /** 질문·선택 창이 새로 뜬 차례. 막힘(blocked)으로 들어올 때마다 1 늘어 같은 내용의 창이 다시 떠도 다르게 센다. */
   promptSeq: number;
@@ -168,7 +169,7 @@ export class CoreRunner implements Runner {
     if (this.closed) throw new CoreError("closed", "CoreRunner shut down while starting; terminal remains owned by core");
     const launch = terminal.labels["iamceo.operation"] ? this.deps.recoveryStore?.getLifecycleJournal?.(terminal.labels["iamceo.operation"]) : null;
     const launchedAt = launch?.memberId === member.id && launch.intent === "start" ? launch.createdAt : null;
-    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, setupAttempted: null, setupError: null, promptSeq: 0, answeredPrompts: [],
+    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, background: null, setupAttempted: null, setupError: null, promptSeq: 0, answeredPrompts: [],
       epoch: 0, endedTurn: terminal.turn ?? 0, completing: false, refresh: null, nonce: terminal.labels["iamceo.binding"] || null, bindingSince: terminal.labels["iamceo.startedAt"] || launchedAt || new Date().toISOString(), binding: null, compact: null,
       dispatches: [], evidence: new Map(), lastError: null, observedAt: new Date().toISOString(), failures: 0, failure: null };
     this.restore(track);
@@ -291,6 +292,9 @@ export class CoreRunner implements Runner {
     const status = terminal.state !== "live" ? "gone" : state === "working" ? "working" : ["idle", "done", "error"].includes(state || "") ? "idle" : "blocked";
     if (!initial && (terminal.turn !== previous.turn || state !== previous.status?.state)) this.bump(track);
     if (status === "gone" && laterNativeId(providerFor(track.member)) && !track.sessionId) this.lostCodex.set(track.member.id, track.member.sessionGeneration);
+    // A completed foreground turn may still own regression shells/monitors.
+    // Publish this before turn_end so reporting and settle keep that wait intact.
+    await this.reportBackground(track, status);
     if (initial && state === "error" && !track.compact) {
       track.lastError = terminal.status?.msg || "CLI reported an error";
       this.event(track, { type: "turn_end", memberId: track.member.id, finalText: "", isError: true, errorText: track.lastError });
@@ -319,6 +323,22 @@ export class CoreRunner implements Runner {
       if (state === "error") return; // Keep the error result from being overwritten by idle in the same observation.
       this.event(track, { type: "status", memberId: track.member.id, status, blockedReason, observation: { source: "core", observedAt: track.observedAt, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: track.setupError }, ...(status === "gone" ? { exit: { reason: terminal.reason ?? null, exitCode: terminal.exit_code ?? null } } : {}) });
     }
+  }
+  /** Screen evidence only describes background work; OSC still owns input/slot admission. */
+  private async reportBackground(track: Track, status: string): Promise<void> {
+    if (providerFor(track.member) !== "claude" || this.manualLease(track.member.id)) return;
+    let label: string | null = null;
+    if (status === "idle") {
+      try {
+        const screen = await this.call<{ text: string; complete?: boolean }>("terminal.read", { terminal: track.terminal.address, lines: 0 });
+        this.validateTrack(track);
+        if (screen.complete === false || inputText(screen.text) === null) return;
+        label = backgroundWait(screen.text);
+      } catch { return; } // An unreadable footer cannot prove earlier work finished.
+    }
+    if (label === track.background) return;
+    track.background = label;
+    this.event(track, { type: "background", memberId: track.member.id, label });
   }
   /** 턴 끝 실측 창·사용량. core 는 문맥 표시만 하고 자동 압축은 하지 않는다. */
   private async reportContext(track: Track): Promise<void> {

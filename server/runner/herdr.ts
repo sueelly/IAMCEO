@@ -283,6 +283,10 @@ export function backgroundWait(screen: string): string | null {
   for (const line of lines.slice(box.bottom + 1)) {
     const bar = BACKGROUND_BAR.exec(line);
     if (bar) return bar[1]!.replace(/\s+/g, " ");
+    // Claude Code's current footer counts live shells and monitors without a bar.
+    // Only read below the composer; quoted command output above it is not state.
+    const counts = line.match(/\b[1-9]\d* (?:shells?|monitors?)\b/g);
+    if (counts) return counts.join(", ");
   }
   return null;
 }
