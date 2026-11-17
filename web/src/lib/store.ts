@@ -12,6 +12,7 @@ import type {
   DecisionStatus,
   Member,
   Message,
+  MessagePage,
   ProjectState,
   ProjectSummary,
   SendMessageReq,
@@ -69,6 +70,8 @@ export interface AppState {
   syncProjectId: string | null;
   /** A completed authoritative read, independent of whether its domain values changed. */
   acceptedSnapshotVersion: number;
+  /** File events outside the compact preview still invalidate paged file reads. */
+  fileRevision: number;
   historyError: string | null;
 }
 
@@ -268,6 +271,7 @@ let state: AppState = {
   syncRevisions: null,
   syncProjectId: null,
   acceptedSnapshotVersion: 0,
+  fileRevision: 0,
   historyError: null,
 };
 
@@ -303,10 +307,12 @@ export function findMember(p: ProjectState | null, id: string | null | undefined
 const MSG_PAGE = 200;
 let wanted = false;
 let sessionGeneration = 0;
+let sessionStart: { generation: number; credentialGeneration: number; projectId: string; promise: Promise<void> } | null = null;
 let buffered: WsEvent[] | null = null;
 let historyRange: CursorHistory | null = null;
 let remoteEvents: WsEvent[] = [];
 let remoteTimer: ReturnType<typeof setTimeout> | null = null;
+let fileRevision = 0;
 const usesCursorHistory = () => coordinator.usesSnapshots && (state.capabilities?.capabilities.paging === true || state.capabilities?.capabilities.browserRealtime === true);
 
 function clearRemoteEvents(): void {
@@ -318,6 +324,7 @@ function drainRemoteEvents(base: AppState): AppState {
   return events.reduce(reduce, base);
 }
 function withHistory(next: AppState): AppState {
+  if (next.fileRevision !== fileRevision) next = { ...next, fileRevision };
   return usesCursorHistory() && next.project && historyRange?.projectId === next.project.project.id
     ? { ...next, project: { ...next.project, messages: historyRange.items } } : next;
 }
@@ -335,6 +342,7 @@ function historyFor(projectId: string): CursorHistory {
 
 function handleEvent(e: WsEvent, local = false): void {
   if (e.type === "hello" || e.type === "ping") return;
+  if (e.type === "file" && e.file.projectId === state.route.projectId) fileRevision++;
   if (buffered) buffered.push(e);
   if (usesCursorHistory() && e.type === "message" && historyRange?.projectId === e.message.projectId) {
     historyRange.receive(e.message, local);
@@ -346,6 +354,7 @@ function handleEvent(e: WsEvent, local = false): void {
 
 function receiveRemote(event: WsEvent): void {
   if (coordinator.protocol !== 2) { handleEvent(event); return; }
+  if (event.type === "file" && event.file.projectId === state.route.projectId) fileRevision++;
   if (buffered) buffered.push(event);
   if (event.type === "message" && historyRange?.projectId === event.message.projectId) historyRange.receive(event.message);
   remoteEvents.push(event);
@@ -371,12 +380,14 @@ export function clearNotice(): void {
   if (state.notice) set({ notice: null });
 }
 
-async function readHistory(context: SyncContext, kind: "refresh" | "older"): Promise<void> {
+async function readHistory(context: SyncContext, kind: "refresh" | "older", firstPage?: MessagePage): Promise<void> {
   const range = historyFor(context.projectId);
   let request = range.begin(kind === "older" ? range.isBridging ? "bridge" : "older" : range.isBridging ? "bridge" : range.initialized ? "latest" : "initial");
   while (request && context.isCurrent()) {
     try {
-      const page = await api.messagePage(context.projectId, { cursor: request.cursor, limit: request.limit, scope: { kind: "project" } }, context.signal);
+      const page = firstPage && !request.cursor ? firstPage
+        : await api.messagePage(context.projectId, { cursor: request.cursor, limit: request.limit, scope: { kind: "project" } }, context.signal);
+      firstPage = undefined;
       if (!context.isCurrent()) return;
       if (!range.apply(page, request)) throw new Error(range.error ?? "대화 기록을 받지 못했습니다");
     } catch (error) {
@@ -407,7 +418,7 @@ function readRuntime(context: SyncContext): void {
 }
 
 async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Promise<void> {
-  if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh");
+  if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh", snapshot.history);
   if (!context.isCurrent()) return;
   const pending = buffered ?? [];
   buffered = null; clearRemoteEvents();
@@ -419,6 +430,7 @@ async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Pro
     hasOlderMessages: snapshot.state ? usesCursorHistory() ? historyFor(context.projectId).hasOlder : snapshot.state.messages.length >= MSG_PAGE : false,
     syncRevisions: snapshot.revisions, syncProjectId: context.projectId,
     acceptedSnapshotVersion: state.acceptedSnapshotVersion + 1,
+    fileRevision,
   };
   for (const event of pending) next = reduce(next, event);
   next.bootstrap = shareJSON(state.bootstrap, next.bootstrap);
@@ -461,10 +473,21 @@ async function readLegacy(projectId: string, context: SyncContext): Promise<void
 }
 
 const coordinator = new BrowserSyncCoordinator({
-  capabilities: (signal) => api.capabilities(signal),
+  capabilities: async (signal) => {
+    // Both use the same credential and cancellation generation. Await cookie setup
+    // before rendering media, while avoiding a separate discovery round trip.
+    const [capabilities] = await Promise.allSettled([api.capabilities(signal), api.filesSession(signal)]);
+    if (capabilities.status === "rejected") throw capabilities.reason;
+    return capabilities.value;
+  },
   realtimeSession: (signal) => api.realtimeSession(signal),
   socket: (protocol) => new WebSocket(wsUrl(protocol)) as unknown as SyncSocket,
-  readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal, state.capabilities?.capabilities.compactState === true); },
+  readSnapshot: (projectId, signal) => {
+    buffered = [];
+    const compact = state.capabilities?.capabilities.compactState === true;
+    const history = compact && state.capabilities?.capabilities.snapshotHistory === true && !historyRange?.isBridging && !historyRange?.needsReset;
+    return api.sync(projectId, signal, compact, history);
+  },
   readLegacy,
   onSnapshot: acceptSnapshot,
   onEvent: receiveRemote,
@@ -510,15 +533,18 @@ function disconnect(): void {
 }
 
 async function startSession(): Promise<void> {
+  const credentialGeneration = getCredentialGeneration();
+  if (sessionStart && wanted && sessionStart.generation === sessionGeneration
+    && sessionStart.credentialGeneration === credentialGeneration && sessionStart.projectId === state.route.projectId) return sessionStart.promise;
   for (const fn of sessionInvalidationHooks) fn();
   const generation = ++sessionGeneration;
   wanted = true; coordinator.stop(); clearRemoteEvents(); historyRange?.cancel(); historyRange = null;
   if (typeof document !== "undefined" && document.visibilityState !== "visible") { coordinator.suspend(); return; }
   coordinator.resume();
-  // Keep an old login's cookie completion from starting a new session after logout.
-  await api.filesSession().catch(() => {});
-  if (!wanted || generation !== sessionGeneration) return;
-  await coordinator.start(state.route.projectId);
+  const start = { generation, credentialGeneration, projectId: state.route.projectId, promise: Promise.resolve() };
+  sessionStart = start;
+  start.promise = coordinator.start(start.projectId).finally(() => { if (sessionStart === start) sessionStart = null; });
+  return start.promise;
 }
 
 // ---- 동작 ----

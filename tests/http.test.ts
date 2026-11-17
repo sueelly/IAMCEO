@@ -190,6 +190,57 @@ test("compact sync is negotiated and legacy state keeps the full file body", asy
   expect(legacy.messages).toHaveLength(1);
 });
 
+test("compact snapshots can include one coherent latest history page and its older cursor", async () => {
+  const p = store.createProject({ name: "동기 경계 대화", cwd });
+  for (let i = 0; i < 100; i++) store.createMessage({ id: `combined-${String(i).padStart(3, "0")}`, projectId: p.id, kind: "진행", body: `row ${i}` });
+  const response = await api(`/api/sync?projectId=${p.id}&view=compact&history=50`);
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.state.messages).toEqual([]);
+  expect(body.history.projectId).toBe(p.id);
+  expect(body.history.items).toHaveLength(50);
+  expect(body.history.items[0].body).toBe("row 50");
+  expect(body.history.items.at(-1).body).toBe("row 99");
+  expect(body.cursor).toEqual(bus.cursor);
+  const older = await api(`/api/projects/${p.id}/messages/page?limit=50&cursor=${encodeURIComponent(body.history.nextCursor)}`).then(r => r.json());
+  expect(older.items).toHaveLength(50);
+  expect(older.items[0].body).toBe("row 0");
+  expect(older.items.at(-1).body).toBe("row 49");
+  expect(older.hasOlder).toBe(false);
+});
+
+test("combined and ordinary compact reads partition reuse and invalidate on a new message", async () => {
+  const p = store.createProject({ name: "조회 변형", cwd });
+  store.createMessage({ projectId: p.id, kind: "진행", body: "before" });
+  const builds = spyOn(store, "listMessagePage");
+  try {
+    const path = `/api/sync?projectId=${p.id}&view=compact`;
+    expect((await api(path).then(r => r.json())).history).toBeUndefined();
+    const all = await Promise.all(Array.from({ length: 8 }, () => api(path + "&history=50").then(r => r.json())));
+    expect(all[0].history).toBeDefined();
+    expect(all.every(body => body.history.items[0].body === "before")).toBe(true);
+    expect(builds).toHaveBeenCalledTimes(1);
+    expect((await api(path).then(r => r.json())).history).toBeUndefined();
+    store.createMessage({ projectId: p.id, kind: "진행", body: "after" });
+    const changed = await api(path + "&history=50").then(r => r.json());
+    expect(changed.history.items.map((m: { body: string }) => m.body)).toContain("after");
+    expect(changed.cursor).toEqual(bus.cursor);
+    expect(builds).toHaveBeenCalledTimes(2);
+  } finally { builds.mockRestore(); }
+});
+
+test("combined history is explicitly negotiated, authenticated and absent for missing projects", async () => {
+  expect((await api("/api/capabilities").then(r => r.json())).capabilities.snapshotHistory).toBe(true);
+  const path = `/api/sync?projectId=${projectId}`;
+  expect((await fetch(base + path + "&view=compact&history=50")).status).toBe(401);
+  for (const query of ["&history=50", "&view=compact&history=0", "&view=compact&history=51", "&view=compact&history=bad"]) {
+    expect((await api(path + query)).status).toBe(400);
+  }
+  const missing = await api("/api/sync?projectId=missing-combined&view=compact&history=50").then(r => r.json());
+  expect(missing.projectStatus).toBe("not_found");
+  expect(missing.history).toBeUndefined();
+});
+
 test("large JSON GETs negotiate gzip without changing content or cache policy", async () => {
   const f = store.createFile({ projectId, title: "압축", body: "compress-canary-".repeat(8000) });
   const response = await api(`/api/files/${f.id}`, { headers: { "Accept-Encoding": "br, gzip;q=0.8" } });
@@ -632,7 +683,7 @@ describe("새 읽기 계약", () => {
       }
     }
     const capabilities = await json(api("/api/capabilities"));
-    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, compactState: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
+    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
   });
 
   test("예외 로그에 비밀 query·헤더·오류 본문이 남지 않는다", async () => {
