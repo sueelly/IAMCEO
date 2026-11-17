@@ -82,6 +82,20 @@ test("a reopened source drops its stale notice without preventing the next valid
   expect(current?.text).not.toContain(f.report.id);
 });
 
+test.each(["stopped", "retry limit"] as const)("a review at the %s does not block later independent cases", async state => {
+  const f = await pendingReview();
+  const [previous] = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
+  if (state === "stopped") {
+    f.store.db.query("UPDATE delivery_recovery SET phase='stopped',reason='restore_reconciliation_required' WHERE delivery_id=?")
+      .run(previous!.id);
+  } else f.store.patchDeliveryRetry(previous!.id, { retryReason: "rejected_limit" });
+  const next = await addPendingReview(f);
+  const [current] = checkCompletionReviews(f.store, Date.now() + 120_000, 30_000);
+  expect(current?.text).toContain(next.report.id);
+  expect(current?.text).not.toContain(f.report.id);
+  expect(latestCompletionReview(f.store, f.source.id)?.delivery_id).toBe(previous!.id);
+});
+
 test("one dedicated reviewer is reused and review is routed there while the conductor is busy", async () => {
   const f = await pendingReview();
   expect(f.reviewer.finalReviewer).toBe(true);

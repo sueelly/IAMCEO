@@ -167,6 +167,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
       projects.set(project.id, batch);
       const last = review.delivery_id ? store.getDelivery(review.delivery_id) : null;
       const recovery = last && store.getDeliveryRecovery(last.id);
+      if (last && (recovery?.phase === "stopped" || store.getDeliveryRetry(last.id).retryReason === "rejected_limit")) continue;
       if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase) ||
         last.memberId === reviewer.id && ["queued", "held"].includes(last.status))) {
         batch.outstanding = true;
