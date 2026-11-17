@@ -188,11 +188,11 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
       return { ...n, historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
-    if (n.historical) return { ...n, state: "review", label: "이전 업무", reason: "이전 전달 기록만 있고 업무 결과는 확인되지 않았습니다. 업무 대화에서 당시 지시와 결과를 확인할 수 있습니다" };
     if (m?.kind === "worker" && a?.eligible && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’ 완료 후 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
     if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
+    if (n.historical) return { ...n, state: "review", label: "결과 확인 필요", reason: "옛 기록의 완료 근거를 아직 확인하지 못했습니다. 업무 대화에서 결과를 확인해 주세요" };
     if (w?.sec === "hold") return { ...n, state: "blocked", label: "보류", reason: w.detail || "진행판에서 보류한 업무입니다. 총괄이 재개 조건을 확인할 차례입니다" };
     if (!m || !a) return { ...n, label: p?.stage === "working" ? "담당 확인" : "배정 전", reason: p?.next ?? (w?.who ? `진행판 담당은 ‘${w.who}’입니다. 현재 직원 한 명과 일치하지 않아 담당을 확인해야 합니다` : "담당 직원이 아직 배정되지 않았습니다") };
     if (a.source === "board" && (!p || p.stage === "new")) return { ...n, label: "착수 대기", reason: "진행판에 담당이 지정되어 있습니다. 실행 지시의 전달은 아직 확인되지 않았습니다" };
@@ -204,7 +204,10 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };
   };
   for (const [memberId, originalRow] of rows) {
-    const row = orderAssignments(originalRow, taskMap);
+    // Report/board ancestors provide context, never an execution-order anchor.
+    const inferred = (a: WorkflowAssignment) => a.source === "report" || a.source === "board";
+    const row = [...orderAssignments(originalRow.filter(a => !inferred(a)), taskMap),
+      ...orderAssignments(originalRow.filter(inferred), taskMap)].map((a, order) => ({ ...a, order }));
     const first = row.find(a => a.eligible && taskMap.get(a.taskId)?.progress?.stage !== "done");
     let prev: WorkflowNode | undefined;
     for (const a of row) {

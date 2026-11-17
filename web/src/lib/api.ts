@@ -37,6 +37,7 @@ import type {
 } from "@shared/types";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
+import type { WorkflowAssignmentPreview, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "@shared/workflow";
 
 const CODE_KEY = "iamceo.accessCode";
 let credentialGeneration = 0;
@@ -259,6 +260,9 @@ export const api = {
   deliveryNotices: (memberId: string, signal?: AbortSignal) => get<DeliveryNoticePage>(`/api/members/${seg(memberId)}/delivery-notices?limit=50`, signal),
   /** 같은 operationId 재요청은 같은 결과를 돌려준다(서버 멱등). */
   recoverDelivery: (deliveryId: string, req: DeliveryRecoveryRequest) => post<DeliveryRecoveryResult>(`/api/deliveries/${seg(deliveryId)}/recovery`, req),
+  workflowAssignmentPreview: (projectId: string, taskId: string, memberId: string, signal?: AbortSignal) => get<WorkflowAssignmentPreview>(`/api/projects/${seg(projectId)}/workflow/tasks/${seg(taskId)}/assignment?memberId=${seg(memberId)}`, signal),
+  assignWorkflow: (projectId: string, taskId: string, req: WorkflowAssignmentRequest) => post<WorkflowAssignmentResult>(`/api/projects/${seg(projectId)}/workflow/tasks/${seg(taskId)}/assignment`, req),
+  workflowAssignmentReceipt: (projectId: string, operationId: string, signal?: AbortSignal) => get<WorkflowAssignmentResult>(`/api/projects/${seg(projectId)}/workflow/assignments/${seg(operationId)}`, signal),
 
   /** 아티팩트 원본. 격리 칸(ArtifactFrame)에만 넣는다. */
   artifact: (fileId: string) => get<{ html: string }>(`/api/files/${seg(fileId)}/artifact`),

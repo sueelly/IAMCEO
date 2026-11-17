@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Message, ProjectState, Task } from "@shared/types";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type WorkflowEdge, type WorkflowNode } from "@shared/workflow";
 import { STAGE_LABEL } from "@shared/task-stage";
@@ -8,20 +8,22 @@ import { mergeHistoryMessages } from "../lib/history";
 import { chooseTask } from "../lib/submission-client";
 import { routeHash, useStore } from "../lib/store";
 import { Markdown, Modal, MQ_DESKTOP, Sheet, Time, useMediaQuery } from "./ui";
+import WorkflowBoard from "./WorkflowBoard";
+import WorkflowAssignment from "./WorkflowAssignment";
 import "../styles/workflow.css";
 
 const EMPTY_NODES: WorkflowNode[] = [];
 const EMPTY_EDGES: WorkflowEdge[] = [];
 const executing = (node: WorkflowNode) => node.state === "running" || node.state === "starting";
-const pastAssignment = (node: WorkflowNode) => node.historical && !node.current && node.state === "review" && !node.counts.queued && !node.counts.held;
 
 /** A task occurrence belongs to the server's assignee, never Task.memberId (its registrar). */
 export default function WorkFlow({ state, selectedTaskId }: { state: ProjectState; selectedTaskId?: string | null }) {
   const connection = useStore((s) => s.connection);
   const online = connection === "online";
   const [selection, setSelection] = useState<{ projectId: string; nodeId: string } | null>(null);
-  const [historyProject, setHistoryProject] = useState<string | null>(null);
-  const allHistory = historyProject === state.project.id;
+  const [assignment, setAssignment] = useState<{ projectId: string; taskId: string; memberId: string | null } | null>(null);
+  const assignmentOrigin = useRef<HTMLElement | null>(null);
+  const closeAssignment = () => { setAssignment(null); requestAnimationFrame(() => assignmentOrigin.current?.isConnected && assignmentOrigin.current.focus({ preventScroll: true })); };
   const desktop = useMediaQuery(MQ_DESKTOP);
   const Overlay = desktop ? Modal : Sheet;
   const sourceNodes = state.workflow?.nodes ?? EMPTY_NODES;
@@ -46,110 +48,18 @@ export default function WorkFlow({ state, selectedTaskId }: { state: ProjectStat
   }), [sourceNodes, now]);
   const edges = state.workflow?.edges ?? EMPTY_EDGES;
   const tasks = useMemo(() => new Map((state.tasks ?? []).map((t) => [t.id, t])), [state.tasks]);
-  const allRows = useMemo(() => {
-    const map = new Map(state.members.map((member) => [member.id as string | null, { id: member.id as string | null, name: member.name, nodes: [] as WorkflowNode[] }]));
-    for (const node of nodes) {
-      if (!map.has(node.memberId)) map.set(node.memberId, { id: node.memberId, name: node.memberId ? "이전 직원" : "미배정", nodes: [] });
-      map.get(node.memberId)!.nodes.push(node);
-    }
-    return [...map.values()].map((row) => ({ ...row, nodes: row.nodes.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)) }));
-  }, [state.members, nodes]);
-  const hasHiddenHistory = allRows.some((row) => row.nodes.filter((node) => node.state === "done").length > 3 || row.nodes.filter(pastAssignment).length > 3);
-  const historyLabel = nodes.some((node) => node.historical) ? "이전 업무 모두" : "완료 모두";
-  const rows = useMemo(() => allRows.map((row) => {
-    if (allHistory) return row;
-    const recent = new Set([...row.nodes.filter((node) => node.state === "done").slice(-3), ...row.nodes.filter(pastAssignment).slice(-3)].map((node) => node.id));
-    return { ...row, nodes: row.nodes.filter((node) => node.state !== "done" && !pastAssignment(node) || recent.has(node.id) || node.taskId === selectedTaskId) };
-  }), [allRows, allHistory, selectedTaskId]);
-  const selected = selection?.projectId === state.project.id ? nodes.find((n) => n.id === selection.nodeId) ?? null : null;
+  const selected = selection?.projectId === state.project.id ? nodes.find(n => n.id === selection.nodeId) ?? null : null;
   const task = selected ? tasks.get(selected.taskId) : undefined;
-  const canvas = useRef<HTMLDivElement>(null);
-  const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
-  const [paths, setPaths] = useState<{ edge: WorkflowEdge; d: string }[]>([]);
-  const marker = `wf-${useId().replace(/:/g, "")}`;
-
-  // Measure real button bounds so fonts, zoom, responsive widths and long task names keep edges attached.
-  useLayoutEffect(() => {
-    const root = canvas.current;
-    if (!root) return;
-    let frame = 0;
-    const measure = () => {
-      const bounds = root.getBoundingClientRect();
-      const next = edges.flatMap((edge) => {
-        const from = nodeRefs.current.get(edge.from)?.getBoundingClientRect();
-        const to = nodeRefs.current.get(edge.to)?.getBoundingClientRect();
-        if (!from || !to) return [];
-        const sameRow = Math.abs(from.top - to.top) < 2;
-        let d: string;
-        if (edge.kind === "sequence") {
-          const x1 = from.right - bounds.left, y1 = (from.top + from.bottom) / 2 - bounds.top;
-          const x2 = to.left - bounds.left, y2 = (to.top + to.bottom) / 2 - bounds.top;
-          d = `M ${x1} ${y1} C ${x1 + 18} ${y1}, ${x2 - 18} ${y2}, ${x2} ${y2}`;
-        } else {
-          const down = to.top >= from.top;
-          const x1 = (from.left + from.right) / 2 - bounds.left, x2 = (to.left + to.right) / 2 - bounds.left;
-          const y1 = (down ? from.bottom : from.top) - bounds.top;
-          const y2 = (sameRow || !down ? to.bottom : to.top) - bounds.top;
-          const bend = sameRow ? Math.max(y1, y2) + 24 : (y1 + y2) / 2;
-          d = `M ${x1} ${y1} C ${x1} ${bend}, ${x2} ${bend}, ${x2} ${y2}`;
-        }
-        return [{ edge, d }];
-      });
-      setPaths((before) => before.length === next.length && before.every((p, i) => p.edge.id === next[i].edge.id && p.d === next[i].d) ? before : next);
-    };
-    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(measure); };
-    measure();
-    const observer = new ResizeObserver(schedule);
-    observer.observe(root);
-    for (const node of nodeRefs.current.values()) observer.observe(node);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [edges, rows]);
-
   return (
     <Glass as="section" level="regular" tint className="wf" aria-label="업무 흐름">
-      <header className="wf-head"><h2>업무 흐름</h2>{hasHiddenHistory ? <GlassButton variant="ghost" size="s" aria-pressed={allHistory} onClick={() => setHistoryProject(allHistory ? null : state.project.id)}>{historyLabel}</GlassButton> : null}</header>
       {!online ? <p className="wf-connection" role="status">{connection === "connecting" ? "연결 확인 중 · 마지막으로 받은 상태입니다." : "연결이 끊겨 마지막으로 받은 상태를 표시합니다."}</p> : null}
-      {!state.workflow ? <p className="wf-empty">업무 흐름을 확인할 수 없습니다.</p> : !nodes.length ? <p className="wf-empty">등록된 업무가 없습니다.</p> : (
-        <div className="wf-scroll" tabIndex={0} aria-label="직원별 업무 순서">
-          <div className="wf-canvas" ref={canvas} style={{ "--wf-columns": Math.max(1, ...rows.map((row) => row.nodes.length)) } as CSSProperties}>
-            <svg className="wf-edges" aria-hidden="true">
-              <defs>
-                <marker id={`${marker}-sequence`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M 0 0 L 7 3.5 L 0 7" fill="none" stroke="var(--ink-3)" /></marker>
-                <marker id={`${marker}-derived`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M 0 0 L 7 3.5 L 0 7" fill="none" stroke="var(--link)" /></marker>
-              </defs>
-              {paths.map(({ edge, d }) => <path className="wf-edge" data-kind={edge.kind} key={edge.id} d={d} markerEnd={`url(#${marker}-${edge.kind})`} />)}
-            </svg>
-            {rows.map((row) => (
-              <div className="wf-row" key={row.id ?? "unassigned"} data-member-id={row.id ?? "unassigned"}>
-                <h3 className="wf-person">{row.name}</h3>
-                <ol className="wf-sequence" aria-label={`${row.name}의 업무`}>
-                  {row.nodes.map((node) => {
-                    const task = tasks.get(node.taskId);
-                    const active = online && executing(node);
-                    return (
-                      <li key={node.id}>
-                        <button type="button" className="wf-node" ref={(el) => { if (el) nodeRefs.current.set(node.id, el); else nodeRefs.current.delete(node.id); }}
-                          data-task-id={node.taskId} data-member-id={node.memberId ?? "unassigned"} data-state={node.state}
-                          data-active={active ? "true" : undefined} data-current={node.current ? "true" : undefined} data-selected={node.taskId === selectedTaskId ? "true" : undefined}
-                          onClick={() => setSelection({ projectId: state.project.id, nodeId: node.id })} aria-haspopup="dialog"
-                          aria-label={`${task?.title ?? "업무"} · ${row.name} · ${!online && executing(node) ? `마지막 확인: ${node.label}` : node.label}${node.current ? " · 현재 위치" : ""}`}>
-                          <span className="wf-node__status"><span>{!online && executing(node) ? `마지막 확인: ${node.label}` : node.label}</span>{node.current ? <span className="wf-node__current">현재</span> : null}</span>
-                          <strong className="wf-node__title">{task?.title ?? "업무"}</strong>
-                          {node.reason ? <span className="wf-node__reason">{node.reason}</span> : node.lastActivity ? <span className="wf-node__activity">{node.lastActivity.title}</span> : null}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ol>
-                {!row.nodes.length ? <p className="wf-row__empty">배정된 업무 없음</p> : null}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {!state.workflow ? <><header className="wf-head"><h2>업무 흐름</h2></header><p className="wf-empty">업무 흐름을 확인할 수 없습니다.</p></> : <WorkflowBoard key={state.project.id} state={state} nodes={nodes} edges={edges} online={online} selectedTaskId={selectedTaskId}
+        onSelect={nodeId => setSelection({ projectId: state.project.id, nodeId })}
+        onAssign={(taskId, memberId, origin) => { assignmentOrigin.current = origin; setAssignment({ projectId: state.project.id, taskId, memberId }); }} />}
       <Overlay open={!!selected} onClose={() => setSelection(null)} title={task?.title ?? (selected ? "업무" : undefined)}>
         {selected ? <WorkflowDetail key={`${state.project.id}/${selected.id}`} node={selected} task={task} state={state} online={online} onClose={() => setSelection(null)} /> : null}
       </Overlay>
+      {assignment?.projectId === state.project.id ? <WorkflowAssignment key={`${assignment.projectId}/${assignment.taskId}`} state={state} taskId={assignment.taskId} initialMemberId={assignment.memberId} onClose={closeAssignment} /> : null}
     </Glass>
   );
 }
