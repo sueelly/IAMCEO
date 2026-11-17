@@ -4,7 +4,7 @@ import { Bus } from "../server/bus.ts";
 import type { Runner, RunnerMember } from "../server/runner/types.ts";
 import { fixture } from "./fixtures/harness-fixture.ts";
 
-const contract = { kind: "other", goal: "요청한 결과 제공", acceptance: ["저장한 결과를 다시 읽을 수 있다"], checks: [] };
+const contract = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [], kind: "other", goal: "요청한 결과 제공", acceptance: ["저장한 결과를 다시 읽을 수 있다"], checks: [] };
 type F = ReturnType<typeof fixture>;
 async function task(f: F, parentTaskId?: string, title = "저장 결과") {
   const response = await f.tool(f.lead, "task", { title, contract, ...(parentTaskId ? { parent_task_id: parentTaskId } : {}) });

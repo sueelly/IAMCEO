@@ -160,7 +160,7 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
 
 describe("반복 감시", () => {
   test("같은 실패 3번이면 총괄이 접근을 바꾸고 다시 연다", async () => {
-    const f = fixture(), task = await newTask(f);
+    const f = fixture(), task = await newTask(f, { ...ONE, inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] });
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(conductorSystem(f)).toHaveLength(0);

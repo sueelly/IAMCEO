@@ -4,7 +4,7 @@ import type { Store } from "./store.ts";
 import type { ProgressFacts } from "./task-progress.ts";
 import { relatedWork } from "./workflow.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
-import { bindingContract, formatContract } from "./harness.ts";
+import { bindingContract, formatContract, missingExecutionContractFields } from "./harness.ts";
 
 interface Followthrough {
   task_id: string; project_id: string; source_delivery_id: string | null; evidence_key: string;
@@ -182,7 +182,7 @@ export class TaskContinuationCoordinator {
     const latest = facts?.reports.findLast(r => r.kind === "완료" || r.kind === "막힘");
     const reopened = facts?.marks.findLast(m => m.stage === "reopen");
     const blocked = latest?.kind === "막힘" && (!reopened || reopened.at < latest.at || (facts?.watch?.same ?? 0) > 0);
-    if (!ctx.criteriaSources.has(task.id) && bindingContract(contract) && !facts?.watch?.trippedAt && !blocked) {
+    if (!ctx.criteriaSources.has(task.id) && bindingContract(contract) && !missingExecutionContractFields(contract).length && !facts?.watch?.trippedAt && !blocked) {
       const assignment = ctx.sources.get(task.id)?.findLast(source => source.status === "delivered" && this.store.getMember(source.member_id)?.kind === "worker");
       const worker = assignment ? this.store.getMember(assignment.member_id) : null;
       if (worker) return worker;
@@ -327,9 +327,9 @@ export class TaskContinuationCoordinator {
           if (current.delivery_id !== state.delivery_id || current.round !== state.round) return null;
           const source = this.store.getDelivery(state.source_delivery_id ?? "");
           const contract = this.store.getEffectiveContract(task.id);
-          const criteriaStep = bindingContract(contract)
+          const criteriaStep = bindingContract(contract) && !missingExecutionContractFields(contract).length
             ? `완료 기준은 현재 확정 계약 r${contract!.rev}입니다. ${worker ? "현재 결과에서 충족하지 못한 기준만 이어 수행하세요." : "남은 기준을 확인하고 담당 직원에게 보완·검토를 맡기세요."}`
-            : `완료 기준을 먼저 확정하세요. 원 지시의 범위를 유지해 task(task_id "${task.id}", contract {goal, acceptance, kind})로 판정 가능한 기준을 정하거나, 직원 제안이 맞으면 confirm_contract_rev로 확인하세요. 기준 확정 전에는 구현을 재배정하지 마세요.`;
+            : `완료 기준을 먼저 확정하세요. 원 지시의 범위를 유지해 task(task_id "${task.id}", contract {goal, inputs, outputs, scope, constraints, acceptance, exclusions, kind})로 판정 가능한 기준을 정하거나, 직원 제안이 맞으면 confirm_contract_rev로 확인하세요. 기준 확정 전에는 구현을 재배정하지 마세요.`;
           const decisions = this.store.listAllDoneDecisions(project.id).filter(d => d.taskId === task.id &&
             (["answered", "delivered"].includes(d.status) || d.closeKind === "decided" && d.closeQuote))
             .sort((a, b) => (a.answeredAt ?? a.closedAt ?? a.updatedAt).localeCompare(b.answeredAt ?? b.closedAt ?? b.updatedAt)).slice(-3);

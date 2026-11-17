@@ -67,7 +67,7 @@ import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
 import { deriveProgress, isDone, watchNotice, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
-import { bindingContract, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { bindingContract, missingExecutionContractFields, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
@@ -2256,6 +2256,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const f = of(r.task_id);
       if (f) f.notice = { id: r.id, at: r.created_at, seenAt: r.seen_at ?? null, lines: json<string[]>(r.lines_json) };
     }
+    for (const r of this.rows(`SELECT r.* FROM task_completion_reviews r JOIN tasks t ON t.id=r.task_id
+        WHERE t.project_id=?${filter.replaceAll("task_id", "r.task_id")} ORDER BY r.rowid`, projectId, ...ids)) {
+      const f = of(r.task_id);
+      if (f) f.finalReview = { status: r.status, reportId: r.report_id, contractRev: r.contract_rev, at: r.reviewed_at ?? r.completed_at };
+    }
     return out;
   }
 
@@ -2462,7 +2467,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private progressDirty = new Set<string>();
   private blockedSeen = new Map<string, string>();
   /** 커밋 뒤 한 번 다시 계산해 task 이벤트로 보낸다(같은 커밋 안의 여러 변화는 한 번). */
-  private queueProgress(taskIds: (string | null | undefined)[]): void {
+  queueProgress(taskIds: (string | null | undefined)[]): void {
     const ids = taskIds.filter((id): id is string => !!id);
     if (!ids.length) return;
     for (const id of ids) this.progressDirty.add(id);
@@ -2873,7 +2878,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         AND c.ref_type='delivery' AND c.ref_id=d.id AND c.project_id=d.project_id)`, deliveryId);
     if (!row) return null;
     const task = this.resolveTask(this.requireTask(row.task_id as string));
-    return bindingContract(this.getEffectiveContract(task.id)) ? null : task.id;
+    const contract = this.getEffectiveContract(task.id);
+    return bindingContract(contract) && !missingExecutionContractFields(contract).length ? null : task.id;
   }
 
   /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */

@@ -219,7 +219,7 @@ test("assignment preview counts unfinished historical deliveries that remain on 
 });
 
 
-test("a failed descendant's owner decision blocks assigning its parent from the workflow board", async () => {
+test("a failed descendant requires conductor intervention before assigning its parent from the workflow board", async () => {
   const f = setup();
   const reviewed = f.request();
   const child = f.store.saveTask({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "파생 검증", parentTaskId: f.task.id }).task;
@@ -227,12 +227,13 @@ test("a failed descendant's owner decision blocks assigning its parent from the 
     expect((await f.tool(f.worker, "post", { task_id: child.id, kind: "막힘", title: `파생 검증 실패 ${i + 1}`, contract_rev: 1,
       checks: [{ kind: "behavior", name: "같은 파생 검증", result: "fail", evidence: "동일 조건 재현", criterion: 1 }] })).isError).toBeUndefined();
   }
-  const decision = f.store.pendingTaskFailureDecision(f.task.id)!;
-  expect(decision).not.toBeNull();
+  expect(f.store.pendingTaskFailureDecision(f.task.id)).toBeNull();
+  const intervention = f.store.pendingTaskIntervention(f.task.id)!;
+  expect(intervention).not.toBeNull();
   const preview = f.preview();
   expect(preview.revision).not.toBe(reviewed.revision);
   expect(() => commitWorkflowAssignment(f.store, f.project.id, f.task.id, reviewed)).toThrow();
-  expect(preview.blockers.join(" ")).toContain(decision.id);
+  expect(preview.blockers.join(" ")).toContain(intervention.taskId);
   expect(() => commitWorkflowAssignment(f.store, f.project.id, f.task.id, { operationId: randomUUID(), memberId: f.worker.id, revision: preview.revision })).toThrow();
   expect(f.store.listTaskDeliveries(f.task.id).filter(d => d.memberId === f.worker.id)).toHaveLength(0);
 });

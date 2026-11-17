@@ -18,6 +18,31 @@ function queuedDelegation(proposed = false) {
   return { ...f, task, delivery, coordinator };
 }
 
+test("확정된 옛 계약도 입력·산출물·범위·제약·제외가 미정이면 대기 지시를 보존하고 총괄이 보완한 뒤 한 번 실행한다", async () => {
+  const f = queuedDelegation();
+  const before = f.orch.saveTask(f.lead, { taskId: f.task.id, contract: { ...OTHER, kind: "other" } }).contract;
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(0);
+  expect(f.store.requireDelivery(f.delivery.id)).toEqual(f.delivery);
+  expect(f.store.listDeliveryDispatches(f.delivery.id)).toHaveLength(0);
+  const coordinator = f.coordinator(), now = Date.now() + 10_000;
+  const reminders = coordinator.check(now, () => true);
+  expect(reminders).toHaveLength(1);
+  expect(reminders[0]).toMatchObject({ memberId: f.lead.id, taskId: f.task.id, kind: "system" });
+  expect(coordinator.check(now + 10_000, () => true)).toHaveLength(0);
+  expect(f.coordinator().check(now + 20_000, () => true)).toHaveLength(0);
+  expect(f.store.getTaskContract(f.task.id)).toEqual(before);
+  expect((await f.tool(f.lead, "task", { task_id: f.task.id, contract: COMPLETE_OTHER })).isError).toBeUndefined();
+  expect(coordinator.canDispatch(reminders[0]!)).toBe(false);
+  await f.orch.pump(f.worker.id);
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(1);
+  expect(f.runner.to(f.worker)[0]).toContain(f.delivery.text);
+  expect(f.runner.to(f.worker)[0]).toContain("업무 계약 r2");
+  expect(f.store.requireDelivery(f.delivery.id)).toMatchObject({ status: "delivered", text: f.delivery.text });
+  expect(f.store.listTaskContracts(f.task.id)[0]).toEqual(before!);
+});
+
 for (const proposed of [false, true]) {
   test(`이미 대기 중인 위임의 ${proposed ? "직원 제안" : "누락 기준"}을 확정할 때까지 원 지시는 보존하고 총괄에게 한 번 연결한다`, async () => {
     const f = queuedDelegation(proposed), now = Date.now() + 10000;

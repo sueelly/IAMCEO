@@ -210,7 +210,8 @@ test("server_check·server_backup: 직원은 데이터 폴더를 직접 읽지 �
   f.orch.setBackups(manager);
   const made = JSON.parse((await f.tool(f.worker, "server_backup", {})).text);
   expect(made).toMatchObject({ created: true, backup: { schemaVersion: MIGRATIONS.length, verified: true } });
-  const again = JSON.parse((await f.tool(f.lead, "server_backup", {})).text);
+  expect((await f.tool(f.lead, "server_backup", {})).isError).toBe(true);
+  const again = JSON.parse((await f.tool(f.worker, "server_backup", {})).text);
   expect(again).toMatchObject({ created: false, backup: { id: made.backup.id } });
   const check = (await f.tool(f.worker, "server_check", {})).text;
   expect(JSON.parse(check).backups.recent[0]).toMatchObject({ id: made.backup.id, verified: true });

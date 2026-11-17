@@ -20,6 +20,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
     ownership: observation?.ownership ?? "unknown", error: observation?.error?.code ?? null };
   const blockers: string[] = [];
   const failureDecision = store.pendingTaskFailureDecision(taskId);
+  const intervention = store.pendingTaskIntervention(taskId);
+  if (intervention) blockers.push(`업무 #${intervention.taskId}의 총괄 점검이 필요합니다: ${intervention.reason}. 바뀐 접근을 기록해 다시 연 뒤 배정하세요`);
   if (failureDecision) blockers.push(`같은 실패 세 번의 결재 #${failureDecision.id}에 대표 판단이 필요합니다. 결재함에서 재개 조건을 정해 주세요`);
   if (project.archived) blockers.push("보관된 프로젝트입니다");
   if (!project.runnerEnabled) blockers.push("프로젝트 실행이 꺼져 있습니다");
@@ -63,7 +65,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
     blockers,
   };
   // Changes not visible in the compact preview still invalidate the reviewed instruction.
-  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, pauses, failureDecision, files: context.files,
+  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, pauses, failureDecision, intervention, files: context.files,
     originals: context.originals, reports: context.reports, lineage: context.lineage,
     member: { revisions: store.memberRevisions(memberId), status: member.status, blockedReason: member.blockedReason, origin: member.origin, cwd: member.cwd, execution: member.executionState, lifecycle: member.lifecycleState, targetTrust },
     queue: queue.map(d => ({id:d.id,taskId:d.taskId,status:d.status,holdReason:d.holdReason})),
