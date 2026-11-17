@@ -26,7 +26,7 @@ beforeAll(async()=>{
   store=new Store(openDb(config.dbPath),bus);const runner=new FakeRunner();
   orch=new Orchestrator({config,store,runners:new Map([["core",runner]]),providerHomes:isolated.providerHomes});
   project=store.createProject({name:"업무 관리판",cwd:isolated.paths.work});other=store.createProject({name:"다른 프로젝트",cwd:isolated.paths.work});
-  const person=(handle:string,name:string,kind:"worker"|"conductor"="worker")=>{const m=store.createMember({projectId:project.id,handle,name,kind,status:"idle",origin:"runner",backend:"core",cwd:isolated.paths.work,paneId:`pane-${handle}`,sessionId:`session-${handle}`});runner.busy.add(m.id);return m};
+  const person=(handle:string,name:string,kind:"worker"|"conductor"="worker")=>{const m=store.createMember({projectId:project.id,handle,name,kind,status:"idle",origin:"runner",backend:"core",cwd:isolated.paths.work,paneId:`pane-${handle}`,sessionId:`session-${handle}`});store.patchMember(m.id,{statusObservation:{source:"core",observedAt:new Date().toISOString(),freshness:"fresh",ownership:"verified",consecutiveFailures:0,error:null}});runner.busy.add(m.id);return m};
   lead=person("lead","총괄","conductor");worker=person("native","네이티브·Codex");reviewer=person("review","하네스 검토");web=person("web","웹 담당");
   store.createMember({projectId:other.id,handle:"other",name:"다른 담당",kind:"worker"});
   done=makeTask("단계 표시 초안");current=makeTask("완료·중단 보호 보완");next=makeTask("오래된 업무 복구");derived=makeTask("보호 보완 재검증",current.id);
@@ -48,6 +48,7 @@ test("고정 열과 Glass 구성요소로 현재 업무와 다음 업무를 비�
  expect(await p.locator('.wf-column[data-column="now"]').count()).toBeGreaterThanOrEqual(4);
  expect(await p.locator(`.wf-row[data-member-id="${worker.id}"] [data-column="now"] .wf-node[data-task-id="${current.id}"]`).count()).toBe(1);
  expect(await p.locator('.glass.wf .gbtn').count()).toBeGreaterThan(0);
+ expect(await card(p,done.id).locator('time').getAttribute('datetime')).toBe(store.taskProgress(done.id).since);
  const lefts=await p.locator('.wf-column[data-column="now"]').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().left));expect(Math.max(...lefts)-Math.min(...lefts)).toBeLessThan(1);
  expect(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await p.locator('.wf').screenshot({path:join(SHOTS,"product-overview.png")});await p.close();
@@ -106,4 +107,11 @@ test("프로젝트를 바꾸면 이전 배정 검토를 닫는다",async()=>{
  await p.evaluate(id=>{location.hash=`#/p/${id}/team`},other.id);
  await p.getByRole("dialog",{name:"업무 배정",exact:true}).waitFor({state:"hidden"});
  expect(store.listDeliveries(project.id).filter(d=>d.taskId===t.id)).toHaveLength(0);await p.close();
+},30000);
+
+test("별도 저장된 실패 검사 근거를 인계 창에서 읽을 수 있다",async()=>{
+ const t=ready("실패 근거 인계"),message=store.createMessage({projectId:project.id,taskId:t.id,memberId:worker.id,who:worker.name,mine:false,kind:"막힘",title:"중단 실패",body:""});
+ store.recordReportChecks(message,worker,[{kind:"behavior",name:"중단 입력 검사",result:"fail",command:"bun test stop-handoff",evidence:"중단 뒤 입력이 남았습니다"}],{contractTaskId:t.id,contractRev:1,evidenceStatus:"missing",reviewNeeded:"실행 대조 필요"});
+ const p=await open();await assignMenu(p,t);const d=p.getByRole("dialog");await d.getByText(`${worker.name} · 막힘 · 중단 실패`,{exact:true}).click();
+ await d.getByText("중단 뒤 입력이 남았습니다",{exact:true}).waitFor();expect(await d.getByText("bun test stop-handoff",{exact:true}).count()).toBe(1);await p.close();
 },30000);

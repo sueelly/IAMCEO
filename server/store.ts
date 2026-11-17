@@ -2014,6 +2014,20 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity);
   }
 
+  /** Simulate display order without enrolling anything; admission uses the same worker policy as pump. */
+  workflowAssignmentPlacement(taskId: string, memberId: string) {
+    const member = this.requireMember(memberId), task = this.requireTask(taskId);
+    if (task.projectId !== member.projectId) throw new ApiError(404, "업무와 직원의 프로젝트가 다릅니다");
+    const tasks = new Map(this.listTasks(task.projectId).map(t => [t.id, t]));
+    const existing = this.workflowAssignments(task.projectId, memberId);
+    const candidate: WorkflowAssignment = { taskId, memberId, order: Math.max(0, ...existing.map(a => a.order)) + 1, assignedAt: task.createdAt,
+      eligible: true, enrolled: true, queued: 1, held: 0, notices: 0, protected: 0, retryAt: null };
+    const row = orderAssignments([...existing.filter(a => a.taskId !== taskId), candidate], tasks)
+      .filter(a => a.enrolled && tasks.has(a.taskId) && !tasks.get(a.taskId)!.mergedInto && tasks.get(a.taskId)!.progress?.stage !== "done");
+    return { position: row.findIndex(a => a.taskId === taskId) + 1, blocker: this.taskSequenceBlocker(memberId, taskId),
+      continuation: row.some(a => a.taskId !== taskId && relatedWork(a.taskId, taskId, tasks)) };
+  }
+
   /** Bounded task evidence, independent of the latest message window. Ancestors stay in-project. */
   workflowAssignmentContext(taskId: string) {
     const task = this.requireTask(taskId), lineage: Task[] = [], seen = new Set<string>();
@@ -2026,7 +2040,26 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (next) throw new ApiError(409, "부모 업무 연결을 먼저 확인해 주세요");
     const ids = lineage.map(t => t.id), placeholders = ids.map(() => "?").join(",");
     const originals = this.rows(`SELECT * FROM messages WHERE project_id = ? AND task_id IN (${placeholders}) AND mine = 1 ORDER BY at, id LIMIT 101`, task.projectId, ...ids).map(toMessage);
-    const reports = this.rows(`SELECT * FROM messages WHERE project_id = ? AND task_id IN (${placeholders}) AND mine = 0 AND kind IN ('진행','완료','막힘','질문','답변') ORDER BY at DESC, id DESC LIMIT 10`, task.projectId, ...ids).map(toMessage).reverse();
+    const recent = this.rows(`SELECT * FROM messages WHERE project_id = ? AND task_id IN (${placeholders}) AND mine = 0 AND kind IN ('진행','완료','막힘','질문','답변') ORDER BY at DESC, id DESC LIMIT 10`, task.projectId, ...ids).map(toMessage);
+    // Routine chatter must not displace the latest failed check for each author/task.
+    const failed = this.rows(`SELECT * FROM messages WHERE rowid IN (
+      SELECT MAX(m.rowid) FROM messages m WHERE m.project_id = ? AND m.task_id IN (${placeholders}) AND m.mine = 0
+      AND EXISTS(SELECT 1 FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') GROUP BY m.task_id, m.member_id
+    ) LIMIT 101`, task.projectId, ...ids).map(toMessage);
+    const selected = new Map([...recent, ...failed].map(m => [m.id, m]));
+    const pending = [...selected.keys()];
+    for (let i = 0; i < pending.length; i++) {
+      if (selected.size > 100) throw new ApiError(409, "인계할 실패·정정 근거가 100건을 넘습니다. 업무 범위를 먼저 정리해 주세요");
+      const id = pending[i]!, source = this.getReportReferences(task.projectId, id)?.correctsMessageId;
+      const related = this.rows(`SELECT m.* FROM messages m WHERE m.project_id = ? AND m.task_id IN (${placeholders}) AND m.mine = 0
+        AND (m.id = ? OR m.id IN (SELECT r.source_message_id FROM report_references r WHERE r.project_id = ? AND r.corrects_message_id = ?))`, task.projectId, ...ids, source ?? "", task.projectId, id).map(toMessage);
+      for (const message of related) if (!selected.has(message.id)) { selected.set(message.id, message); pending.push(message.id); }
+    }
+    const references = new Map([...selected.keys()].map(id => [id, this.getReportReferences(task.projectId, id)]));
+    const correctedBy = new Map<string, string[]>();
+    for (const [id, ref] of references) if (ref?.correctsMessageId) correctedBy.set(ref.correctsMessageId, [...(correctedBy.get(ref.correctsMessageId) ?? []), id]);
+    const reports = [...selected.values()].sort((a,b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id)).map(m => ({ ...m,
+      harness: this.getReportHarness(m.id), correctsMessageId: references.get(m.id)?.correctsMessageId ?? null, correctedBy: correctedBy.get(m.id) ?? [] }));
     const files = this.rows(`SELECT id, task_id, title, summary, body, attachments FROM files WHERE project_id = ? AND task_id IN (${placeholders}) ORDER BY sort_order DESC, rowid DESC LIMIT 30`, task.projectId, ...ids);
     const total = (table: string, condition = "") => Number(this.row(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ? AND task_id IN (${placeholders}) ${condition}`, task.projectId, ...ids)!.n);
     const attachmentIds = new Set(originals.flatMap(m => m.attachments.map(a => a.id)));

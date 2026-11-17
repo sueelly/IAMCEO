@@ -4,6 +4,7 @@ import type { WorkflowEdge, WorkflowNode } from "@shared/workflow";
 import { workflowBucket, workflowFocus, workflowSummary, workflowTaskCategories, type WorkflowFilter } from "@shared/workflow-view";
 import { GlassButton } from "../glass";
 import { useStore } from "../lib/store";
+import { Time } from "./ui";
 
 const FILTERS: [WorkflowFilter, string][] = [["all", "전체"], ["action", "확인 필요"], ["running", "실행 중"], ["next", "다음"], ["done", "완료"], ["unassigned", "미배정"]];
 const COLUMNS = [["done", "최근 완료"], ["now", "지금"], ["next", "다음"]] as const;
@@ -117,6 +118,7 @@ export default function WorkflowBoard({ state, nodes, edges, online, selectedTas
         onClick={() => onSelect(node.id)} aria-haspopup="dialog" aria-label={`${title} · ${member} · ${label}${node.current ? " · 현재 위치" : ""}`}>
         <span className="wf-node__status">{label}</span><strong className="wf-node__title">{title}</strong>
         {node.reason ? <span className="wf-node__reason">{node.reason}</span> : node.lastActivity ? <span className="wf-node__activity">{node.lastActivity.title}</span> : null}
+        {node.state === "done" && task?.progress?.stage === "done" && task.progress.since ? <Time iso={task.progress.since} className="wf-node__completed" /> : null}
       </button>
       <button type="button" className="wf-more" aria-label={`${title} 메뉴`} aria-haspopup="menu" aria-expanded={menu === node.id} ref={el => { if (el) menuRefs.current.set(node.id, el); else menuRefs.current.delete(node.id); }} onClick={() => setMenu(menu === node.id ? null : node.id)}>⋯</button>
       {menu === node.id ? <div className="wf-menu" role="menu" ref={menuRef} onKeyDown={event => {

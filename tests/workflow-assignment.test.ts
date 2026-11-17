@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { fixture } from "./fixtures/harness-fixture.ts";
-import { previewWorkflowAssignment, commitWorkflowAssignment } from "../server/workflow-assignment.ts";
+import { previewWorkflowAssignment, commitWorkflowAssignment, workflowHandoffText } from "../server/workflow-assignment.ts";
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
 import { startServer } from "../server/http.ts";
 
 function setup() {
   const f = fixture();
+  for (const member of [f.worker, f.worker2, f.lead]) f.store.patchMember(member.id, { statusObservation: { source:"core", observedAt:new Date().toISOString(), freshness:"fresh", ownership:"verified", consecutiveFailures:0, error:null } });
   const task = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: randomUUID(), title: "연결 집중 보기", origin: "owner" }).task;
   const source = f.store.createMessage({ projectId: f.project.id, taskId: task.id, mine: true, who: "대표", kind: "나", title: "", body: "관련 업무만 표시하고 기존 승인을 유지하세요" });
   f.store.saveTaskContract(task.id, { kind: "coding", goal: "연결된 업무만 표시", acceptance: ["관계 없는 노드는 숨긴다"], scope: "웹", forbidden: ["승인 자동 응답 금지"], evidence: ["브라우저 검사"] }, { author: "대표", authorKind: "owner", authorMemberId: null, sourceMessageId: source.id });
@@ -118,4 +119,49 @@ test("authenticated HTTP preview and receipt are read-only; strict assignment sa
     const receipt=await fetch(`${server.urls[0]}/api/projects/${f.project.id}/workflow/assignments/${req.operationId}`,{headers});
     expect(await receipt.json()).toEqual(result);expect(f.runner.sent).toHaveLength(0);
   }finally{await server.stop()}
+});
+
+test("reviewed derived placement and prerequisites match the worker's committed queue", () => {
+  const f=setup();
+  const parent=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"진행 중인 부모",origin:"owner"}).task;
+  const other=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"무관한 다음 업무",origin:"owner"}).task;
+  const delivered=f.store.enqueue({projectId:f.project.id,memberId:f.worker.id,taskId:parent.id,kind:"instruction",text:"부모"});f.store.markDelivered(delivered.id);
+  f.store.enqueue({projectId:f.project.id,memberId:f.worker.id,taskId:other.id,kind:"instruction",text:"다음"});
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id,f.task.id);
+  const p=f.preview();expect(p.position).toBe(2);expect(p.startCondition).not.toContain("앞선 업무 완료 후");
+  commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:p.revision});
+  const row=f.store.projectWorkflow(f.project.id).nodes.filter(n=>n.memberId===f.worker.id);
+  expect(row.map(n=>n.taskId)).toEqual([parent.id,f.task.id,other.id]);expect(f.store.taskSequenceBlocker(f.worker.id,f.task.id)).toBeNull();
+});
+
+test("conductor preview does not promise worker-style predecessor completion", () => {
+  const f=setup(),other=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"총괄의 앞선 업무",origin:"owner"}).task;
+  f.store.enqueue({projectId:f.project.id,memberId:f.lead.id,taskId:other.id,kind:"instruction",text:"앞선 입력"});
+  const p=previewWorkflowAssignment(f.store,f.project.id,f.task.id,f.lead.id);
+  expect(p.startCondition).not.toContain("앞선 업무 완료 후");expect(p.startCondition).toContain("총괄");
+});
+
+test("structured failure and its correction survive newer routine reports and affect the review digest", () => {
+  const f=setup();
+  const failed=f.store.createMessage({projectId:f.project.id,taskId:f.task.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"보완",body:""});
+  f.store.recordReportChecks(failed,f.worker2,[{kind:"behavior",name:"중단 입력",result:"fail",command:"bun test stop-unique",evidence:"UNIQUE_LEFTOVER_INPUT",criterion:1}],{contractTaskId:f.task.id,contractRev:1,evidenceStatus:"missing",reviewNeeded:"실행 대조 필요"});
+  const corrected=f.store.createMessage({projectId:f.project.id,taskId:f.task.id,memberId:f.worker2.id,who:f.worker2.name,mine:false,kind:"막힘",title:"정정",body:"재현 조건을 정정합니다"});
+  f.store.saveReportReferences(f.project.id,{sourceMessageId:corrected.id,fileIds:[],decisionIds:[],authoredAt:corrected.at,sequence:0,correctsMessageId:failed.id});
+  for(let i=0;i<15;i++)f.store.createMessage({projectId:f.project.id,taskId:f.task.id,mine:false,who:"직원",kind:"진행",body:"계속 확인 중"});
+  const p=f.preview(),text=workflowHandoffText(p);expect(JSON.stringify(p)).toContain("UNIQUE_LEFTOVER_INPUT");expect(text).toContain("bun test stop-unique");expect(text).toContain(corrected.id);expect(text).toContain(failed.id);expect(text).toContain("실행 대조 필요");
+  f.store.db.query("UPDATE report_checks SET evidence=? WHERE message_id=?").run("CHANGED_FAILURE",failed.id);
+  expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:p.revision})).toThrow();
+});
+
+test.each(["missing","stale","expired","conflict"])("%s target observation cannot accept a reviewed assignment", condition => {
+  const f=setup();const observation={source:"core" as const,observedAt:new Date().toISOString(),freshness:"fresh" as const,ownership:"verified" as const,consecutiveFailures:0,error:null};
+  const req=f.request();
+  f.store.patchMember(f.worker.id,{statusObservation:condition==="missing"?null:{...observation,...(condition==="stale"?{freshness:"stale" as const}:{}),...(condition==="expired"?{observedAt:new Date(Date.now()-91_000).toISOString()}:{}),...(condition==="conflict"?{ownership:"conflict" as const}:{})}});
+  expect(f.preview().blockers.length).toBeGreaterThan(0);expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,req)).toThrow();
+  expect(f.store.listDeliveries().filter(d=>d.taskId===f.task.id)).toHaveLength(0);
+});
+
+test("a fresh verified heartbeat does not invalidate an unchanged review", () => {
+  const f=setup(),p=f.preview();f.store.patchMember(f.worker.id,{statusObservation:{source:"core",observedAt:new Date().toISOString(),freshness:"fresh",ownership:"verified",consecutiveFailures:0,error:null}});
+  expect(f.preview().revision).toBe(p.revision);
 });

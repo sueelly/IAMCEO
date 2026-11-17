@@ -73,7 +73,7 @@ export default function WorkflowAssignment({ state, taskId, initialMemberId, onC
         {!pending && error && memberId ? <GlassButton variant="ghost" size="s" disabled={busy || !online} onClick={() => setRefresh(n => n + 1)}>다시 검토</GlassButton> : null}
         {preview ? <>
           {preview.blockers.length ? <ul className="wf-assignment__blockers">{preview.blockers.map(reason => <li key={reason}>{reason}</li>)}</ul> : null}
-          <p className="wf-assignment__position">다음 {preview.position}번째 업무<span>{preview.startCondition}</span></p>
+          <p className="wf-assignment__position">배정 후 미완료 업무 중 {preview.position}번째<span>{preview.startCondition}</span></p>
           {preview.contract ? <>
             <section><h4>목표 · 계약 r{preview.contract.rev}</h4><p>{preview.contract.goal}</p>{preview.contract.scope ? <p className="ink-2">{preview.contract.scope}</p> : null}</section>
             <section><h4>완료 조건</h4><ol>{preview.contract.acceptance.map((s,i) => <li key={i}>{s}</li>)}</ol></section>
@@ -82,7 +82,18 @@ export default function WorkflowAssignment({ state, taskId, initialMemberId, onC
             {preview.contract.evidence.length ? <section><h4>확인할 근거</h4><ul>{preview.contract.evidence.map((s,i) => <li key={i}>{s}</li>)}</ul></section> : null}
           </> : null}
           <section><h4>원래 지시</h4>{preview.originals.length ? preview.originals.map(m => <details key={m.id} open={preview.originals.length === 1}><summary>{m.who} · <Time iso={m.at} /></summary><Markdown text={m.body} /></details>) : <p className="ink-2">확정된 업무 조건을 전달합니다.</p>}</section>
-          {preview.reports.length ? <section><h4>최근 보고</h4>{preview.reports.map(m => <details key={m.id}><summary>{m.who} · {m.kind} · {m.title}</summary><Markdown text={m.body} /><Time iso={m.at} /></details>)}</section> : null}
+          {preview.reports.length ? <section><h4>최근 보고·실패 근거</h4>{preview.reports.map(m => <details key={m.id}><summary>{m.who} · {m.kind} · {m.title}</summary><Markdown text={m.body} /><Time iso={m.at} />
+            {m.correctsMessageId ? <p>정정 대상: {preview.reports.find(r => r.id === m.correctsMessageId)?.title || m.correctsMessageId}</p> : null}
+            {m.correctedBy.length ? <p>이후 정정: {m.correctedBy.map(id => preview.reports.find(r => r.id === id)?.title || id).join(" · ")}</p> : null}
+            {m.harness ? <div className="wf-proof">
+              <p>계약 r{m.harness.contractRev ?? "미확인"}{m.harness.reviewNeeded ? ` · ${m.harness.reviewNeeded}` : ""}</p>
+              {m.harness.checks.map((check,i) => <article key={i}><b>{check.name} · {({pass:"통과 보고",fail:"실패",not_run:"실행 안 함"} as Record<string,string>)[check.result] ?? check.result}</b>
+                {check.command ? <code>{check.command}</code> : null}<p>{check.evidence}</p>
+                <small>{check.execStatus === "matched" ? `실행 기록 대조 · 종료 코드 ${check.execExit ?? "미확인"}` : check.execStatus === "unsupported" ? "실행 대조 미지원" : check.execStatus === "not_required" ? "실행 대조 대상이 아닌 검사" : "실행 대조 기록 없음"}</small>
+              </article>)}
+              {m.harness.claims.map((claim,i) => <article key={`claim-${i}`}><p>{claim.text}</p><p>{claim.basis === "fact" ? "사실로 보고" : "해석으로 보고"} · 의미 검토 필요</p>{claim.source ? <p>{claim.source}</p> : null}{claim.quote ? <blockquote>{claim.quote}</blockquote> : null}{claim.via ? <small>{claim.via}</small> : null}</article>)}
+            </div> : null}
+          </details>)}</section> : null}
           {preview.files.length || preview.attachments.length ? <section><h4>관련 자료</h4><ul>{preview.files.map(f => <li key={f.id}>{f.title}{f.summary ? ` · ${f.summary}` : ""}</li>)}{preview.attachments.map(a => <li key={a.id}>{a.name}</li>)}</ul></section> : null}
           {preview.task.branch || preview.task.worktree ? <section><h4>작업 위치</h4><p>{preview.task.branch}</p><p>{preview.task.worktree}</p></section> : null}
           {preview.omitted.reports || preview.omitted.files ? <p className="ink-2">이전 보고 {preview.omitted.reports}건·자료 {preview.omitted.files}건은 업무 원문에서 이어 확인합니다.</p> : null}

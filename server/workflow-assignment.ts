@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { WorkflowAssignmentPreview, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
+import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type WorkflowAssignmentPreview, type WorkflowAssignmentRequest, type WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { canonicalAgentRequest } from "./agent-receipts.ts";
 import { bindingContract } from "./harness.ts";
 import { redactHarnessText } from "./harness-redaction.ts";
@@ -12,6 +12,10 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   const context = store.workflowAssignmentContext(taskId), contract = store.getEffectiveContract(taskId), progress = store.taskProgress(taskId);
   const queue = store.listPending(memberId), flow = store.projectWorkflow(projectId);
   const row = flow.nodes.filter(n => n.memberId === memberId && n.state !== "done" && !n.historical).sort((a,b) => a.order-b.order);
+  const placement = store.workflowAssignmentPlacement(taskId, memberId);
+  const observation = member.statusObservation, age = Date.now() - Date.parse(observation?.observedAt ?? "");
+  const targetTrust = { fresh: observation?.freshness === "fresh" && Number.isFinite(age) && age >= -5_000 && age < WORKFLOW_OBSERVATION_MAX_AGE_MS,
+    ownership: observation?.ownership ?? "unknown", error: observation?.error?.code ?? null };
   const blockers: string[] = [];
   if (project.archived) blockers.push("보관된 프로젝트입니다");
   if (!project.runnerEnabled) blockers.push("프로젝트 실행이 꺼져 있습니다");
@@ -30,23 +34,29 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (member.origin === "manual") blockers.push("직접 연결한 세션은 이 화면에서 배정하지 않습니다");
   if (["asleep", "offline", "error"].includes(member.status)) blockers.push("직원의 연결과 실행 가능 여부를 먼저 확인해 주세요");
   if (member.executionState?.phase === "unknown" || member.lifecycleState && member.lifecycleState.phase !== "started_confirmed" || member.blockedReason === "status_unknown") blockers.push("직원의 실행 상태를 확인해야 합니다");
+  if (!targetTrust.fresh || targetTrust.ownership !== "verified" || targetTrust.error) blockers.push("직원의 최근 연결과 세션 소유권을 확인해야 합니다");
   const safe = (text: string | null | undefined) => redactHarnessText(text ?? "");
+  const startCondition = [member.status === "blocked" ? "직원의 승인·선택 응답이 필요합니다." : "",
+    member.kind !== "worker" ? "총괄은 업무 완료 순서와 별개로 입력을 받습니다. 기존 전달·실행 검사를 통과하면 시작합니다"
+      : placement.blocker ? `‘${placement.blocker.title}’ 완료 후 기존 전달·실행 검사를 통과하면 시작합니다`
+      : placement.continuation ? "부모·파생 업무의 연속 작업입니다. 현재 입력 처리 뒤 기존 전달·실행 검사를 통과하면 시작합니다"
+      : "기존 전달·실행 가능 검사를 통과하면 시작합니다"].filter(Boolean).join(" ");
   const preview: Omit<WorkflowAssignmentPreview, "revision"> = {
     projectId, task: { id: task.id, title: task.title, branch: task.branch, worktree: task.worktree, parentTaskId: task.parentTaskId ?? null },
     member: { id: member.id, name: member.name },
     contract: contract ? { taskId: contract.taskId, rev: contract.rev, goal: safe(contract.goal), scope: contract.scope ? safe(contract.scope) : null, acceptance: contract.acceptance.map(safe), forbidden: contract.forbidden.map(safe), evidence: contract.evidence.map(safe), checks: contract.checks, confirmed: bindingContract(contract) } : null,
     originals: context.originals.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, body: safe(m.body) })),
-    reports: context.reports.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, kind: m.kind, title: safe(m.title), body: safe(m.body) })),
+    reports: context.reports.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, kind: m.kind, title: safe(m.title), body: safe(m.body), harness: m.harness, correctsMessageId: m.correctsMessageId, correctedBy: m.correctedBy })),
     files: context.files.map(({ fingerprint, ...file }) => ({ ...file, title: safe(file.title), summary: safe(file.summary) })),
     attachments: context.attachments.map(a => ({ id: a.id, name: a.name })), omitted: context.omitted,
-    position: row.length + 1,
-    startCondition: member.status === "blocked" ? "직원의 승인·선택 응답과 앞선 업무 완료 후 전달합니다" : row.length ? `‘${store.requireTask(row[0].taskId).title}’ 등 앞선 업무 완료 후 전달합니다` : "기존 전달·실행 가능 검사를 통과하면 시작합니다",
+    position: placement.position,
+    startCondition,
     blockers,
   };
   // Changes not visible in the compact preview still invalidate the reviewed instruction.
   const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, files: context.files,
     originals: context.originals, reports: context.reports, lineage: context.lineage,
-    member: { revisions: store.memberRevisions(memberId), status: member.status, blockedReason: member.blockedReason, origin: member.origin, cwd: member.cwd, execution: member.executionState, lifecycle: member.lifecycleState },
+    member: { revisions: store.memberRevisions(memberId), status: member.status, blockedReason: member.blockedReason, origin: member.origin, cwd: member.cwd, execution: member.executionState, lifecycle: member.lifecycleState, targetTrust },
     queue: queue.map(d => ({id:d.id,taskId:d.taskId,status:d.status,holdReason:d.holdReason})),
     row: row.map(n => ({id:n.id,taskId:n.taskId,order:n.order,state:n.state})), project: {archived:project.archived,runnerEnabled:project.runnerEnabled},
   })).digest("hex");
@@ -66,8 +76,10 @@ export function workflowHandoffText(p: WorkflowAssignmentPreview): string {
     p.task.branch ? `브랜치: ${p.task.branch}` : "", p.task.worktree ? `워크트리: ${p.task.worktree}` : "",
     "대표 원문(이전 기록의 맥락이며 현재 계약·권한을 임의로 넓히지 않습니다):",
     ...p.originals.map(m => `원문 #${m.id} · 업무 #${m.taskId} · ${m.who} · ${m.at}\n${m.body}`),
-    "최근 보고(작성자 주장과 검증 결과를 구분해서 확인합니다):",
-    ...p.reports.map(m => `보고 #${m.id} · 업무 #${m.taskId} · ${m.who} · ${m.kind} · ${m.at}\n${m.title}\n${m.body}`),
+    "최근 보고와 실패·정정 근거(작성자 주장과 검증 결과를 구분해서 확인합니다):",
+    ...p.reports.map(m => [`보고 #${m.id} · 업무 #${m.taskId} · ${m.who} · ${m.kind} · ${m.at}`, m.title, m.body,
+      m.correctsMessageId ? `정정 대상: #${m.correctsMessageId}` : "", m.correctedBy.length ? `후속 정정: ${m.correctedBy.map(id=>`#${id}`).join(", ")}` : "",
+      m.harness ? `보고 검사·계약 판·대조 상태(정정 연결만으로 통과를 추정하지 않습니다):\n${JSON.stringify(m.harness, null, 2)}` : ""].filter(Boolean).join("\n")),
     ...p.files.map(f => `자료 #${f.id} · 업무 #${f.taskId}: ${f.title}\n${f.summary}`),
     ...p.attachments.map(a => `첨부 ID #${a.id}: ${a.name}`),
     `생략: 이전 보고 ${p.omitted.reports}건, 자료 ${p.omitted.files}건. 작업 #${p.task.id}와 부모 업무의 대화·자료에서 추가 조회합니다.`,
