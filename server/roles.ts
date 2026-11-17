@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemberKind } from "../shared/types.ts";
+import boundaryConductor from "./roles/boundary-conductor.md" with { type: "text" };
+import boundaryRoot from "./roles/boundary-root.md" with { type: "text" };
+import boundaryWorker from "./roles/boundary-worker.md" with { type: "text" };
 import conductor from "./roles/conductor.md" with { type: "text" };
 import root from "./roles/root.md" with { type: "text" };
 import worker from "./roles/worker.md" with { type: "text" };
@@ -36,6 +39,18 @@ export function josa(name: string, withFinal: "이" | "을" | "은"): string {
 
 const warned = new Set<string>();
 
+/**
+ * 종류별 역할 경계(대표 2026-11-17 "총괄은 앞으로 구현은 맡지말고 시키고 합치고 판단하고 설계하는 일 까지만 맡도록 해"):
+ * 총괄은 설계·맡김·판단·검증 뒤 메인 합치기, 직원은 작업 브랜치 납품까지, 본사는 프로젝트의 구현·합치기를 떠안지 않는다.
+ * 고쳐 쓴 템플릿도 기본 글 전체를 대체하지만 이 경계는 빠지지 않는다: `{{ROLE_BOUNDARY}}` 자리가 있으면 그 자리, 없으면 끝에 붙는다.
+ */
+export const ROLE_BOUNDARY: Record<MemberKind, string> = { conductor: boundaryConductor, root: boundaryRoot, worker: boundaryWorker };
+
+function withBoundary(template: string, kind: MemberKind): string {
+  const text = ROLE_BOUNDARY[kind].trim();
+  return template.includes("{{ROLE_BOUNDARY}}") ? template.replaceAll("{{ROLE_BOUNDARY}}", () => text) : `${template.trimEnd()}\n\n${text}\n`;
+}
+
 /** 기본 템플릿을 고쳐 쓸 수 있게 꺼낸다. `<kind>.example.md` 는 읽히지 않고, `<kind>.md` 로 이름을 바꾸면 쓰인다. */
 export function exportRoles(rolesDir: string): string[] {
   mkdirSync(rolesDir, { recursive: true, mode: 0o700 });
@@ -53,11 +68,13 @@ export function exportRoles(rolesDir: string): string[] {
 export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string): string {
   const custom = rolesDir ? join(rolesDir, `${kind}.md`) : null;
   const useCustom = !!custom && existsSync(custom);
-  const template = useCustom ? readFileSync(custom, "utf8") : BUILT_IN[kind];
-  if (useCustom && !warned.has(custom) && !template.includes("승인")) {
+  const raw = useCustom ? readFileSync(custom, "utf8") : BUILT_IN[kind];
+  // 승인 규칙 경고는 고쳐 쓴 글 그대로 본다(경계 글의 낱말로 경고가 사라지지 않게).
+  if (useCustom && !warned.has(custom) && !raw.includes("승인")) {
     warned.add(custom);
     console.warn(`역할 템플릿 ${custom} 에 승인 규칙이 없습니다. 기본 규칙 전체를 대체하므로 직원이 승인 없이 일할 수 있습니다. 'iamceo roles export' 로 기본 규칙을 꺼내 고치세요`);
   }
+  const template = withBoundary(raw, kind);
   // 줄이 통째로 자리표시면 비었을 때 빈 줄을 남기지 않는다. 고쳐 쓴 템플릿에 자리표시가 없어도 규칙은 빠지지 않게 끝에 붙인다.
   const place = (text: string, key: "SUBAGENT_EFFORT" | "MEMORY", value: string, gap: string): string =>
     text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value ? `${text.trimEnd()}${gap}${value}\n` : text;

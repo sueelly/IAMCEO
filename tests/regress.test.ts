@@ -1380,7 +1380,7 @@ describe("2차 검수 회귀: REST", () => {
 
 describe("역할 템플릿 꺼내기", () => {
   test("exportRoles 는 example 만 쓰고, 승인 규칙이 빠진 맞춤 템플릿은 경고한다", async () => {
-    const { exportRoles, renderRole } = await import("../server/roles.ts");
+    const { exportRoles, renderRole, ROLE_BOUNDARY } = await import("../server/roles.ts");
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-roles-x-")));
     const paths = exportRoles(dir);
     expect(paths.map((p) => p.split("/").at(-1)).sort()).toEqual(["conductor.example.md", "root.example.md", "worker.example.md"]);
@@ -1392,7 +1392,7 @@ describe("역할 템플릿 꺼내기", () => {
     const warned: string[] = [];
     console.warn = (m: string) => warned.push(String(m));
     try {
-      expect(renderRole("worker", vars, dir)).toBe("맞춤 n");
+      expect(renderRole("worker", vars, dir)).toBe(`맞춤 n\n\n${ROLE_BOUNDARY.worker.trim()}\n`); // 역할 경계만 끝에 붙는다
     } finally {
       console.warn = warn;
     }
