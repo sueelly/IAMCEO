@@ -8,7 +8,8 @@ import type { Delivery, Task } from "../shared/types.ts";
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.db.close(); });
 function fixture() {
-  const store = new Store(openDb(":memory:"), new Bus()); stores.push(store);
+  const db = openDb(":memory:");
+  const store = new Store(db, new Bus()); stores.push(store);
   const project = store.createProject({ name: "후속 실행", cwd: process.cwd() });
   const lead = store.createMember({ projectId: project.id, handle: "lead", name: "총괄", kind: "conductor", origin: "runner", backend: "core", status: "idle", cwd: process.cwd(), sessionId: "lead-session", paneId: "lead-terminal" });
   const worker = store.createMember({ projectId: project.id, handle: "worker", name: "작성자", kind: "worker", origin: "runner", backend: "core", status: "idle", cwd: process.cwd(), sessionId: "worker-session", paneId: "worker-terminal" });
@@ -32,7 +33,7 @@ function fixture() {
       turn: 1, deliveryIds: [d.id], phase: "ended", inputReceivedAt: stamp, startedAt: stamp, lastProgressAt: stamp, endedAt: stamp,
       result: "success", reason: null, exitCode: 0, interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: stamp, updatedAt: stamp });
   };
-  return { store, project, lead, worker, next, coordinator, task, blocked, finish, start };
+  return { db, store, project, lead, worker, next, coordinator, task, blocked, finish, start };
 }
 
 function contractFor(f: ReturnType<typeof fixture>, task: Task) {
@@ -531,4 +532,24 @@ test("새 대표 지시가 전달된 뒤에도 앞서 대기 중인 위임의 �
   expect(requests[0]).toMatchObject({ memberId: f.lead.id, taskId: task.id });
   expect(requests[0]!.text).toContain(delegated.id);
   expect(f.store.requireDelivery(delegated.id).status).toBe("queued");
+});
+
+test("후속 점검은 저장된 예정 시각과 생성 시각으로 정렬하고 후보를 비교할 때 SQL을 호출하지 않는다", () => {
+  const f = fixture();
+  const first = f.task("첫 업무", false).id, second = f.task("둘째 업무", false).id, third = f.task("셋째 업무", false).id;
+  const setDue = (id: string, at: string) => f.db.query(`INSERT INTO task_continuations(task_id,project_id,next_attempt_at,updated_at)
+    VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET next_attempt_at=excluded.next_attempt_at`).run(id, f.project.id, at, at);
+  setDue(first, "2090-01-01"); setDue(third, "2000-01-01");
+  const visit = spyOn(f.store, "pendingTaskFailureDecision"), query = spyOn(f.db, "query");
+  try {
+    const scan = () => {
+      visit.mockClear(); query.mockClear();
+      f.next.check(f.start, () => false, () => true);
+      expect(query.mock.calls.filter(([sql]) => /FROM task_continuations WHERE task_id\s*=\s*\?/i.test(sql))).toHaveLength(0);
+      return visit.mock.calls.map(([id]) => id);
+    };
+    expect(scan()).toEqual([third, second, first]);
+    setDue(first, "1990-01-01");
+    expect(scan()).toEqual([first, third, second]);
+  } finally { visit.mockRestore(); query.mockRestore(); }
 });

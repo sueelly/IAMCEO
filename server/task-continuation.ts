@@ -334,8 +334,14 @@ export class TaskContinuationCoordinator {
       if (project.archived || !project.runnerEnabled || !project.connection.ok) continue;
       if (!this.store.listMembers(project.id).some(available)) continue;
       const ctx = this.context(project.id);
-      const candidates = [...ctx.tasks.values()].filter(t => this.authorized(t, ctx))
-        .sort((a, b) => (this.row(a.id)?.next_attempt_at ?? a.createdAt).localeCompare(this.row(b.id)?.next_attempt_at ?? b.createdAt));
+      const candidates = [...ctx.tasks.values()].filter(t => this.authorized(t, ctx));
+      if (candidates.length > 1) {
+        const due = this.store.db.query<{ task_id: string; next_attempt_at: string }, [string]>(
+          "SELECT task_id,next_attempt_at FROM task_continuations WHERE project_id=? AND next_attempt_at IS NOT NULL",
+        ).all(project.id);
+        const nextAttempt = new Map(due.map(row => [row.task_id, row.next_attempt_at]));
+        candidates.sort((a, b) => (nextAttempt.get(a.id) ?? a.createdAt).localeCompare(nextAttempt.get(b.id) ?? b.createdAt));
+      }
       for (const task of candidates) {
         if (this.store.pendingTaskFailureDecision(task.id)) continue;
         const recipient = this.recipient(task, ctx), worker = recipient?.kind === "worker";
