@@ -2714,6 +2714,12 @@ export class Orchestrator implements OrchestratorApi {
       const now = this.store.requireMember(memberId);
       return { outcome, memberId, memberName: now.name, runId: shown?.runId ?? null, sessionGeneration: generation, taskIds: shown?.taskIds ?? [], detail, member: now };
     };
+    if (opts.by.startsWith("agent-")) {
+      if (member.status === "blocked") return result("failed", "승인·질문 창은 대표가 직접 선택하거나 중단해야 합니다");
+      try { await runner.checkStop?.(this.runnerMember(member, project), { whileWorking: true, preservePrompt: true }); }
+      catch { return result("failed", "현재 실행·승인 창을 확인할 수 없어 중단하지 않았습니다"); }
+      if (this.store.requireMember(memberId).status === "blocked") return result("failed", "확인 중 승인·질문 창이 열려 중단하지 않았습니다");
+    }
     if (opts.expectGeneration !== undefined && opts.expectGeneration !== null && opts.expectGeneration !== generation) return result("changed", "세션이 바뀌어 멈추지 않았습니다");
     if (opts.expectRunId && opts.expectRunId !== live?.runId) {
       const seen = this.store.getExecutionJournal(opts.expectRunId);
@@ -3804,6 +3810,7 @@ export class Orchestrator implements OrchestratorApi {
     const rt = this.runtime(memberId);
     const pending = this.store.listPending(memberId);
     if (!opts.force) {
+      if (rt.background || member.subagents > 0 || member.status === "blocked") throw new ApiError(409, "뒤 작업·하위 에이전트·승인 대기가 남아 있어 잠재울 수 없습니다");
       if (this.store.inputState(memberId).lease) throw new ApiError(409, "직접 조작권이 남아 있어 잠재울 수 없습니다. 조작을 끝내고 조작권을 놓아 주세요");
       if (this.deliveryRecovery.fenced(memberId)) throw new ApiError(409, "전달 결과가 확인되지 않은 입력이 있어 잠재울 수 없습니다. 전달 확인을 먼저 끝내세요");
       if (this.coreCompactFenced(member)) throw new ApiError(409, "문맥 압축을 처리하고 있어 잠재울 수 없습니다. 압축 결과를 확인해 주세요");

@@ -86,7 +86,7 @@ export interface RunnerStartResult {
 export type RunnerReattachResult =
   | { outcome: "rejoined"; started: RunnerStartResult }
   | { outcome: "not_found" | "conflict" | "unknown"; code: string; detail?: string };
-export interface RunnerStopOptions { whileWorking?: boolean }
+export interface RunnerStopOptions { whileWorking?: boolean; /** Agent coordination must not dismiss a native approval/selection dialog. */ preservePrompt?: boolean }
 export interface DeliveryLogBaseline {
   /** 검증된 provider 루트 내부 경로. HTTP 응답에 직렬화하지 않는다. */
   path: string;

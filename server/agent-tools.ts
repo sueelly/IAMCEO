@@ -666,6 +666,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
+      if (target.status === "blocked") throw new ApiError(409, "승인·질문 창이 열려 있어 총괄이 중단하지 않습니다. 대표가 화면에서 직접 선택하거나 중단하세요");
       const taskId = a.then ? orch.instructionTask(member, a.task_id, a.user_quote) : null;
       const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId }, member) : null;
       const r = await orch.stopMember(target.id, { by: `agent-${member.id}`, expectRunId: a.expect_run_id ?? null });
