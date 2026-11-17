@@ -19,13 +19,18 @@ export function workflowCategory(node: WorkflowNode): Exclude<WorkflowFilter, "a
   return workflowBucket(node) === "now" ? "action" : "next";
 }
 
-export function workflowSummary(nodes: readonly WorkflowNode[]): Record<WorkflowFilter, number> {
+export function workflowTaskCategories(nodes: readonly WorkflowNode[]): Map<string, Exclude<WorkflowFilter, "all">> {
   const priority: Exclude<WorkflowFilter, "all">[] = ["action", "running", "next", "unassigned", "done"];
   const tasks = new Map<string, Exclude<WorkflowFilter, "all">>();
   for (const node of nodes) {
     const next = workflowCategory(node), before = tasks.get(node.taskId);
     if (!before || priority.indexOf(next) < priority.indexOf(before)) tasks.set(node.taskId, next);
   }
+  return tasks;
+}
+
+export function workflowSummary(nodes: readonly WorkflowNode[]): Record<WorkflowFilter, number> {
+  const tasks = workflowTaskCategories(nodes);
   const counts = { all: tasks.size, action: 0, running: 0, next: 0, done: 0, unassigned: 0 };
   for (const category of tasks.values()) counts[category]++;
   return counts;

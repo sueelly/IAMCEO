@@ -76,6 +76,8 @@ test("직원별 실제 배정 순서와 파생 관계를 표시하고 노드에�
   expect(await node(page, unassigned.id, null).count()).toBe(1);
   expect(await node(page, done.id, worker.id).getAttribute("data-state")).toBe("done");
   expect(await node(page, current.id, worker.id).getAttribute("data-current")).toBe("true");
+  expect(await page.locator(".wf-edge").count()).toBe(0);
+  await page.getByRole("button", { name: "연결 지도", exact: true }).click();
   await page.locator('.wf-edge[data-kind="derived"]').first().waitFor();
   expect(await page.locator('.wf-edge[data-kind="sequence"]').count()).toBeGreaterThan(0);
   await page.locator(".wf-connection").waitFor({ state: "hidden" });
@@ -175,12 +177,12 @@ test("긴 완료 이력은 최근 세 개부터 보이고 모두 펼치거나 �
   await page.close();
 }, 60_000);
 
-test("폰에서 흐름만 가로로 스크롤되며 키보드로 상세를 열고 닫으면 노드로 초점이 돌아온다", async () => {
+test("폰에서 흐름을 세로로 재배치하며 키보드로 상세를 닫으면 노드로 초점이 돌아온다", async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await open(page);
   await page.locator(".wf-connection").waitFor({ state: "hidden" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  expect(await page.locator(".wf-scroll").evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  expect(await page.locator(".wf-scroll").evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   const currentNode = node(page, next.id, worker.id);
   await currentNode.focus();
   await page.keyboard.press("Enter");
@@ -278,7 +280,7 @@ test("연결이 살아 있어도 새 관측 없이 90초가 지난 실행 강조
   await page.close();
 }, 60_000);
 
-test("과거 배정은 최근 세 개부터 보되 완료로 바꾸지 않고 보류 입력과 실제 실행은 숨기지 않는다", async () => {
+test("미완료 과거 배정을 모두 현재에 남기고 보류 입력과 실제 실행을 숨기지 않는다", async () => {
   const member = store.createMember({ projectId: project.id, handle: "legacy", name: "이전 이력 담당", kind: "worker" });
   const old: Task[] = [];
   for (let i = 1; i <= 5; i++) {
@@ -301,12 +303,11 @@ test("과거 배정은 최근 세 개부터 보되 완료로 바꾸지 않고 �
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   await open(page);
   const row = page.locator(`.wf-row[data-member-id="${member.id}"]`);
-  expect(await row.locator(".wf-node").count()).toBe(5); // Three past + one executing + one protected.
+  expect(await row.locator(".wf-node").count()).toBe(6); // Every unfinished historical occurrence remains visible.
   expect(await row.locator('.wf-node[data-state="done"]').count()).toBe(0);
   expect(await node(page, old[0].id, member.id).count()).toBe(1);
   expect(await node(page, held.id, member.id).count()).toBe(1);
-  expect(await node(page, old[1].id, member.id).count()).toBe(0);
-  await page.getByRole("button", { name: "이전 업무 모두", exact: true }).click();
+  expect(await node(page, old[1].id, member.id).count()).toBe(1);
   expect(await row.locator(".wf-node").count()).toBe(6);
   await page.close();
 }, 60_000);
