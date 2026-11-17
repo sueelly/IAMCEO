@@ -159,6 +159,51 @@ afterAll(async () => {
 
 const auth = { Authorization: `Bearer ${CODE}` };
 
+test("file pages require auth, omit bodies, and single-file reads preserve content", async () => {
+  const p = store.createProject({ name: "자료 페이지 HTTP", cwd });
+  const f = store.createFile({ projectId: p.id, title: "본문", kind: "document", body: "detail-canary".repeat(1000) });
+  const path = `/api/projects/${p.id}/files/page`;
+  expect((await fetch(base + path)).status).toBe(401);
+  const response = await api(path);
+  expect(response.status).toBe(200);
+  const page = await response.json();
+  expect(page.items[0].id).toBe(f.id);
+  expect("body" in page.items[0]).toBe(false);
+  expect((await api(`/api/files/${f.id}`).then(r => r.json())).body).toBe(f.body);
+  expect((await api(path + "?limit=0")).status).toBe(400);
+  expect((await api(path + "?unexpected=1")).status).toBe(400);
+});
+
+test("compact sync is negotiated and legacy state keeps the full file body", async () => {
+  const p = store.createProject({ name: "작은 상태 HTTP", cwd });
+  store.createFile({ projectId: p.id, title: "본문", body: "bulk-canary" });
+  store.createMessage({ projectId: p.id, kind: "진행", body: "history-canary" });
+  const caps = await api("/api/capabilities").then(r => r.json());
+  expect(caps.capabilities.compactState).toBe(true);
+  const compact = await api(`/api/sync?projectId=${p.id}&view=compact`);
+  expect(compact.status).toBe(200);
+  const snapshot = await compact.json();
+  expect(snapshot.state.messages).toEqual([]);
+  expect(snapshot.state.files[0].body).toBe("");
+  const legacy = await api(`/api/projects/${p.id}/state`).then(r => r.json());
+  expect(legacy.files[0].body).toBe("bulk-canary");
+  expect(legacy.messages).toHaveLength(1);
+});
+
+test("large JSON GETs negotiate gzip without changing content or cache policy", async () => {
+  const f = store.createFile({ projectId, title: "압축", body: "compress-canary-".repeat(8000) });
+  const response = await api(`/api/files/${f.id}`, { headers: { "Accept-Encoding": "br, gzip;q=0.8" } });
+  expect(response.headers.get("content-encoding")).toBe("gzip");
+  expect(response.headers.get("vary")).toContain("Accept-Encoding");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect((await response.json()).body).toBe(f.body);
+  const identity = await api(`/api/files/${f.id}`, { headers: { "Accept-Encoding": "gzip;q=0, *;q=1" } });
+  expect(identity.headers.get("content-encoding")).toBeNull();
+  expect((await identity.json()).body).toBe(f.body);
+  const tiny = await fetch(base + "/api/health", { headers: { "Accept-Encoding": "gzip" } });
+  expect(tiny.headers.get("content-encoding")).toBeNull();
+});
+
 function api(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Response> {
   const headers: Record<string, string> = { ...auth, ...init.headers };
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
@@ -566,7 +611,7 @@ describe("새 읽기 계약", () => {
       }
     }
     const capabilities = await json(api("/api/capabilities"));
-    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
+    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, compactState: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
   });
 
   test("예외 로그에 비밀 query·헤더·오류 본문이 남지 않는다", async () => {

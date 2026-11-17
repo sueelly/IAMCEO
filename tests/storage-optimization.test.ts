@@ -11,20 +11,22 @@ import { handleAgentTool, listAgentTools } from "../server/agent-tools.ts";
 import { publicHarness } from "../server/harness-redaction.ts";
 import { Store } from "../server/store.ts";
 import { decodeStoredText } from "../server/stored-text.ts";
+import { UNKNOWN_AGENT_RESULT } from "../server/agent-receipts.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-function fixture(legacy = false) {
+function fixture(legacy: boolean | 34 = false) {
   const runtime = createIsolatedRuntime();
   cleanups.push(() => runtime.stop());
   const path = join(runtime.paths.iamceoHome, "test.db");
   let db: Database;
   if (legacy) {
     db = new Database(path, { create: true });
-    for (let v = 0; v < 33; v++) db.exec(MIGRATIONS[v]!);
-    db.exec("PRAGMA user_version = 33");
+    const version = legacy === 34 ? 34 : 33;
+    for (let v = 0; v < version; v++) db.exec(MIGRATIONS[v]!);
+    db.exec(`PRAGMA user_version = ${version}`);
   } else db = openDb(path);
   const store = new Store(db, new Bus());
   const project = store.createProject({ name: "저장 최적화", cwd: runtime.paths.work });
@@ -125,7 +127,7 @@ test("legacy paired receipts fold into one row and existing text compresses with
   const f = fixture(true);
   const id = randomUUID(), request = JSON.stringify({ content: "자료 내용".repeat(1500) });
   const insert = f.db.query("INSERT INTO agent_operation_receipts VALUES (?,?,?,?,?,?,?)");
-  insert.run(id, f.member.id, f.project.id, "file", request, '{"text":"미확인","isError":true}', "2026-11-17T00:00:00.000Z");
+  insert.run(id, f.member.id, f.project.id, "file", request, JSON.stringify(UNKNOWN_AGENT_RESULT), "2026-11-17T00:00:00.000Z");
   insert.run(`agent-result:${id}`, f.member.id, f.project.id, "file", request, '{"text":"완료 원문"}', "2026-11-17T00:00:01.000Z");
   f.db.close();
   const db = openDb(f.path, { migrationBackup: false });
@@ -169,7 +171,7 @@ test("legacy interrupted reservation keeps its state and never becomes a complet
 });
 
 test("migration preserves mismatched/unpaired receipts and rolls back on a corrupt stored body", () => {
-  const f = fixture(true);
+  const f = fixture(34);
   const insert = f.db.query("INSERT INTO agent_operation_receipts VALUES (?,?,?,?,?,?,?)");
   for (const [id, req] of [["pair", "{}"], ["agent-result:pair", '{"different":true}'], ["orphan", "{}"], ["agent-result:missing", "{}"]]) {
     insert.run(id, f.member.id, f.project.id, "custom", req, '{"text":"原文"}', "2026-11-17T00:00:00.000Z");
@@ -178,11 +180,27 @@ test("migration preserves mismatched/unpaired receipts and rolls back on a corru
   f.db.close();
   expect(() => openDb(f.path, { migrationBackup: false })).toThrow();
   const old = new Database(f.path);
-  expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 33 });
+  expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 34 });
   expect(old.query("SELECT count(*) AS n FROM agent_operation_receipts").get()).toEqual({ n: 4 });
   old.query("UPDATE files SET body = '원문' WHERE id = 'bad'").run();
   old.close();
   const db = openDb(f.path, { migrationBackup: false });
   cleanups.push(() => db.close());
   expect(db.query("SELECT count(*) AS n FROM agent_operation_receipts").get()).toEqual({ n: 4 });
+});
+
+test("migration preserves completed parents and non-external IDs instead of treating them as reservations", () => {
+  const f = fixture(true);
+  const insert = f.db.query("INSERT INTO agent_operation_receipts VALUES (?,?,?,?,?,?,?)");
+  for (const [id, result] of [["completed", { text: "independent completed original" }], ["code-read:observation", UNKNOWN_AGENT_RESULT]]) {
+    insert.run(id, f.member.id, f.project.id, "custom", "{}", JSON.stringify(result), "now");
+    insert.run(`agent-result:${id}`, f.member.id, f.project.id, "custom", "{}", '{"text":"child result"}', "later");
+  }
+  f.db.close();
+  const db = openDb(f.path, { migrationBackup: false });
+  cleanups.push(() => db.close());
+  expect(db.query("SELECT count(*) AS n FROM agent_operation_receipts").get()).toEqual({ n: 4 });
+  const store = new Store(db, new Bus());
+  expect(store.agentOperation(f.member.id, "custom", "completed", {}, () => ({ text: "wrong" }))).toEqual({ text: "independent completed original" });
+  expect(store.agentOperation(f.member.id, "custom", "agent-result:completed", {}, () => ({ text: "wrong" }))).toEqual({ text: "child result" });
 });

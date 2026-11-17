@@ -34,6 +34,8 @@
 
 /* ── 목록 ── */
 .fl-list { display:flex; flex-direction:column; padding:6px; }
+.fl-more { flex:none; padding:14px; text-align:center; font-size:13px; color:var(--ink-2); }
+.fl-more button { min-height:44px; padding:0 14px; color:var(--link); }
 .fl-row { display:flex; align-items:flex-start; gap:12px; min-height:64px; padding:11px 12px; border-radius:15px; transition:background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
 @media (hover:hover) { .fl-row:not([aria-current]):hover { background:var(--row-hover); box-shadow:var(--row-lift); } }
 .fl-row[aria-current] { background:var(--sel-bg); box-shadow:var(--sel-ring); }

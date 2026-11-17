@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { openDb, MIGRATIONS } from "../server/db.ts";
+import { openDb, MIGRATIONS, STORAGE_OPTIMIZATION_VERSION } from "../server/db.ts";
 import { acquireHomeOwner, normalizeHome } from "../server/home-owner.ts";
 import { canonicalAgentRequest, storageContentDigest } from "../server/agent-receipts.ts";
 
@@ -57,7 +57,7 @@ export function optimizeStorage(home: string, options: { vacuum?: boolean } = {}
     let original: ReturnType<typeof storageContentDigest>, unaffected: string;
     try {
       verifyIntegrity(probe);
-      original = storageContentDigest(probe, before.schemaVersion === 33);
+      original = storageContentDigest(probe, before.schemaVersion < STORAGE_OPTIMIZATION_VERSION);
       unaffected = unaffectedContentDigest(probe);
     } finally { probe.close(); }
     const db = openDb(path, { migrationBackup: false });

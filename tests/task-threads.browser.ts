@@ -322,7 +322,7 @@ describe("웹 작업별 대화", () => {
   test("대화 글의 업무 이름을 누르면 그 업무 글만 보이고 입력칸 업무도 바뀐다. 받는 사람은 그대로, 끝낸 업무도 이어서 보낸다", async () => {
     const report = (m: Member, title: string, taskId: string | null) =>
       store.createMessage({ projectId: project.id, memberId: m.id, who: m.name, kind: "진행", title, body: "", taskId });
-    // 전체 첫 화면(최근 200개)에 들지 않는 옛 작업 글
+    // 전체 첫 화면(최근 50개)에 들지 않는 옛 작업 글
     report(pay, "환불 아주 옛 보고", taskPay.id);
     for (let i = 1; i <= 180; i++) store.createMessage({ projectId: project.id, mine: true, who: "나", kind: "나", body: `전체 글 ${i}` });
     report(search, "검색 중간 보고", taskSearch.id);
@@ -362,6 +362,8 @@ describe("웹 작업별 대화", () => {
     await page.screenshot({ path: join(SHOTS, "6-all-before-click.png") });
 
     // 1) 중간의 검색 보고 표지를 누른다 → 검색 업무 글만, 받는 사람은 그대로(총괄), 첫 화면 밖의 옛 검색 글도 서버에서 받아 온다
+    // 최신 50개 밖의 글은 실제 과거 페이지를 읽은 뒤 접근한다.
+    await page.getByRole("button", { name: "이전 글 불러오기" }).click();
     await label("검색 중간 보고").scrollIntoViewIfNeeded();
     await label("검색 중간 보고").click();
     await page.locator(".th-task", { hasText: "검색 속도" }).waitFor();

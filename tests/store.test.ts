@@ -11,15 +11,14 @@ test("project sync lists public file fields without loading artifact HTML", () =
   const { store, project } = fixture();
   const html = "<article>large artifact</article>";
   const file = store.createFile({ projectId: project.id, title: "artifact", body: "문서 본문", html });
-  // Keep the real covering index. Replacing files with a VIEW invalidates INDEXED BY.
-  const query = store.db.query.bind(store.db);
-  store.db.query = ((sql: string, ...args: unknown[]) => {
-    if (/\bFROM files\b/i.test(sql) && /\bhtml\b|SELECT \*/i.test(sql)) throw new Error("list read artifact HTML");
-    return query(sql, ...args as []);
-  }) as typeof store.db.query;
+  // Keep the real metadata index: INDEXED BY cannot address an index through a view.
+  // SQLite evaluates the malformed JSON only if the virtual HTML column is read.
+  store.db.exec("ALTER TABLE files RENAME COLUMN html TO raw_html");
+  store.db.exec("ALTER TABLE files ADD COLUMN html TEXT GENERATED ALWAYS AS (json_extract(raw_html, '$')) VIRTUAL");
+  expect(() => store.getFileHtml(file.id)).toThrow();
   expect(() => store.listFiles(project.id)).not.toThrow();
   expect(store.listFiles(project.id)).toEqual([file]);
-  store.db.query = query;
+  store.db.exec("ALTER TABLE files DROP COLUMN html; ALTER TABLE files RENAME COLUMN raw_html TO html");
   expect(store.getFileHtml(file.id)).toBe(html);
 });
 

@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { loadConfig } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { Bus } from "../server/bus.ts";
@@ -9,6 +11,7 @@ import { CoreRunner } from "../server/runner/core.ts";
 import type { CoreTerminal } from "../server/runner/core-client.ts";
 import type { RunnerEvent } from "../server/runner/types.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
+import { transcriptPath } from "../server/runner/transcript.ts";
 
 interface Rpc {
   id: string;
@@ -103,6 +106,7 @@ async function fixture(healthMs = 60_000, rpcTimeoutMs = 100) {
   });
   const current = orchestrator();
   return { ...current, store, bus, db, project, config, calls, terminals, runners, orchestrator,
+    saveTranscript: (sessionId: string) => { const path = transcriptPath(project.cwd, sessionId, isolated.paths.claudeHome); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "{}\n"); },
     count: (method: string) => calls.filter(c => c.method === method).length,
     loseRun: (value: boolean) => { runLost = value; }, loseList: (value: boolean) => { listLost = value; }, loseKeys: () => { keysLost = true; },
     loseKill: (value: boolean) => { killLost = value; }, unavailable: (value: boolean) => { getUnavailable = value; },
@@ -127,6 +131,7 @@ test("pre-launch list timeout does not fence the next explicit fresh-session att
 for (const preflight of [true, false]) test(`legacy unknown ${preflight ? "list" : "run"} failure ${preflight ? "recovers absence" : "retains its fence"}`, async () => {
   const f = await fixture(20, 1000);
   const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  f.saveTranscript(member.sessionId!);
   await f.orch.shutdown();
   f.terminals.get(member.paneId!)!.state = "finished";
   f.store.patchMember(member.id, { paneId: null, status: "error", lastError: "새 세션 시작 실패" });
@@ -554,4 +559,36 @@ for (const started of [false, true]) test(`${started ? "progress" : "start"} adv
   await emit({ type: "status", memberId: member.id, terminalId: member.paneId, sessionGeneration: run.identity.sessionGeneration, status: "working",
     observation: { source: "core", observedAt: since, freshness: "stale", ownership: "unknown", consecutiveFailures: 1, error: { code: "timeout", note: "Observation failed" } } });
   expect(f.store.requireMember(member.id).statusObservation).toMatchObject({ freshness: "stale", error: { code: "timeout" } });
+});
+
+for (const anotherProject of [false, true]) test(`explicit owner retry wakes a passive notification in ${anotherProject ? "another" : "the original"} project exactly once`, async () => {
+  const f = await fixture(60_000, 1000);
+  const project = anotherProject ? f.store.createProject({ name: "Another project", cwd: f.project.cwd, chiefCli: f.project.chiefCli }) : f.project;
+  const member = await f.orch.createMember(project.id, { name: "Conductor" });
+  const d = f.store.enqueue({ projectId: project.id, memberId: member.id, kind: "system", text: "Existing notification", wake: false });
+  const recovery = f.orch.deliveryRecovery;
+  const identity = { terminalId: member.paneId, sessionId: member.sessionId,
+    sessionGeneration: f.store.memberRevisions(member.id).sessionGeneration, process: null };
+  const baseline = { serverEpoch: "owner-retry-fixture", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date().toISOString() };
+  let markers: { deliveryId: string; marker: string }[] = [];
+  for (let i = 0; i < 5; i++) {
+    const dispatch = recovery.prepareDispatch([d.id], identity, baseline);
+    markers = dispatch.markers;
+    recovery.recordResult(dispatch.dispatchId, { ok: false, reason: "busy", retryable: true, deliveryEffect: "rejected" });
+  }
+  await f.orch.pump(member.id);
+  expect(f.count("terminal.send")).toBe(0);
+  expect(f.store.requireDelivery(d.id)).toMatchObject({ status: "held", wake: false });
+  const item = recovery.memberNotices(member.id).items[0]!;
+  expect(item.allowedActions).toEqual(["recheck"]);
+  const request = { operationId: crypto.randomUUID(), expectedVersion: item.version, action: "recheck" as const };
+  const result = await recovery.recover(d.id, request);
+  await f.orch.pump(member.id);
+  await until(() => f.store.requireDelivery(d.id).status === "delivered");
+  expect(f.store.listDispatches(member.id).at(-1)!.markers).toEqual(markers);
+  expect(f.store.requireDelivery(d.id)).toMatchObject({ id: d.id, text: d.text, status: "delivered", attempts: 1 });
+  expect(f.count("terminal.send")).toBe(1);
+  expect(await recovery.recover(d.id, request)).toEqual(result);
+  await f.orch.pump(member.id);
+  expect(f.count("terminal.send")).toBe(1);
 });

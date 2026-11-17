@@ -29,6 +29,9 @@ import type {
   Effort,
   FileDoc,
   FileKind,
+  FilePage,
+  FilePageOptions,
+  FileListItem,
   Member,
   Task,
   TaskLink,
@@ -52,7 +55,7 @@ import type {
   WorkSec,
   WsEvent,
 } from "../shared/types.ts";
-import { CLI_PROVIDERS, DEFAULT_CODEX_RANKS, DEFAULT_RANKS, fileKindOf } from "../shared/types.ts";
+import { CLI_PROVIDERS, DEFAULT_CODEX_RANKS, DEFAULT_RANKS, FILE_KINDS, fileKindOf } from "../shared/types.ts";
 import type { MemberRevisions, OperationKind, OperationReceipt, OperationStatus, SyncRevisions, ManualInboxBatch } from "../shared/operations.ts";
 import type { DeliveryDispatch, DeliveryIntentResult, DeliveryRecoveryRecord, DomainRecorder, LifecycleJournal, DecisionFollowUp, MessageReadStore, ProjectPatchStore, RunnerRecoveryStore, TerminalLease, RunnerRecoveryState, ReportReferences, BoardReview } from "./service-contracts.ts";
 import type { RunnerTerminalIdentity } from "./runner/types.ts";
@@ -317,6 +320,8 @@ export interface NewDelivery {
 export const TASK_SOURCE_KINDS = new Set<DeliveryKind>(["user_message", "answer", "todo_done", "instruction"]);
 
 export interface DeliveryUpdate {
+  /** An explicit owner retry may wake an otherwise passive notification. */
+  wake?: boolean;
   holdReason?: string | null;
   lastError?: string | null;
   /** 시도 횟수를 하나 올린다. */
@@ -841,6 +846,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     db: Database,
     private readonly bus: Bus,
     private readonly recorder?: DomainRecorder,
+    options: { readOnly?: boolean } = {},
   ) {
     this.sqlTransaction = db.transaction.bind(db);
     // 기존 import의 store.db.transaction도 같은 commit 큐를 사용한다.
@@ -856,8 +862,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    this.ensureHq();
-    this.backfillWorkTasks();
+    if (!options.readOnly) {
+      this.ensureHq();
+      this.backfillWorkTasks();
+    }
   }
 
   /** 동기 SQL 전용. await/외부 I/O는 이 경계 밖에서 한다. 중첩 실패는 해당 savepoint의 알림도 버린다. */
@@ -1220,7 +1228,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     }));
   }
 
-  projectState(id: string): ProjectState {
+  projectState(id: string, opts: { compact?: boolean } = {}): ProjectState {
     const project = this.requireProject(id);
     return {
       project,
@@ -1229,8 +1237,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       doneDecisionCount: this.row("SELECT COUNT(*) AS n FROM decisions WHERE project_id = ? AND status != 'open'", id)!.n as number,
       todos: this.listTodos(id),
       work: this.listWork(id),
-      messages: this.listMessages(id, { limit: 200 }),
-      files: this.listFiles(id),
+      messages: opts.compact ? [] : this.listMessages(id, { limit: 200 }),
+      files: opts.compact ? this.listFilePage(id).items.map(file => ({ ...file, body: "" })) : this.listFiles(id),
       tasks: this.listTasks(id),
     };
   }
@@ -2451,6 +2459,57 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       FROM files INDEXED BY files_list_metadata WHERE project_id = ? ORDER BY sort_order DESC, rowid DESC`, projectId).map(row => toFile({ ...row, body: this.cachedFileBody(row.id) }));
   }
 
+  listFilePage(projectId: string, opts: FilePageOptions = {}): FilePage {
+    this.requireProject(projectId);
+    const limit = opts.limit ?? 20, taskId = opts.taskId ?? null, kind = opts.kind ?? null;
+    const bad = () => new ApiError(400, "자료 조회 조건이 잘못되었습니다", "INVALID_FILE_PAGE_QUERY");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || taskId !== null && (!taskId || Buffer.byteLength(taskId) > 256)
+      || kind !== null && !FILE_KINDS.includes(kind)) throw bad();
+    let before: { order: number; id: string } | null = null;
+    if (opts.cursor !== undefined) {
+      try {
+        if (!opts.cursor || opts.cursor.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(opts.cursor)) throw bad();
+        const bytes = Buffer.from(opts.cursor, "base64url");
+        if (bytes.toString("base64url") !== opts.cursor) throw bad();
+        const bounded = z.string().min(1).max(256);
+        const cursor = z.strictObject({ v: z.literal(1), projectId: bounded, taskId: bounded.nullable(), kind: z.enum(FILE_KINDS).nullable(),
+          before: z.strictObject({ order: z.number().int().safe(), id: bounded }) }).parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+        if (cursor.projectId !== projectId || cursor.taskId !== taskId || cursor.kind !== kind) throw bad();
+        before = cursor.before;
+      } catch { throw new ApiError(400, "자료 목록의 위치 정보가 올바르지 않습니다", "INVALID_FILE_CURSOR"); }
+    }
+    const baseWhere = `project_id = ?${taskId === null ? "" : " AND task_id = ?"}`;
+    const baseArgs: SQLQueryBindings[] = taskId === null ? [projectId] : [projectId, taskId];
+    const index = taskId === null ? "files_page_project" : "files_page_task";
+    const columns = "id, project_id, title, who, member_id, summary, path, attachments, created_at, sort_order, kind, task_id";
+    const summary = (row: Row): FileListItem => {
+      // Preserve old inferred kinds without ever transferring the legacy body.
+      const { body: _body, ...file } = toFile({ ...row, body: row.kind === null ? this.cachedFileBody(row.id) : "" });
+      return file;
+    };
+    const counts: FilePage["counts"] = {};
+    for (const row of this.rows(`SELECT kind, COUNT(*) AS n FROM files INDEXED BY ${index} WHERE ${baseWhere} AND kind IS NOT NULL GROUP BY kind`, ...baseArgs)) {
+      counts[row.kind as FileKind] = row.n;
+    }
+    for (const row of this.rows(`SELECT ${columns} FROM files INDEXED BY ${index} WHERE ${baseWhere} AND kind IS NULL`, ...baseArgs)) {
+      const key = summary(row).kind; counts[key] = (counts[key] ?? 0) + 1;
+    }
+    const matches: FileListItem[] = [];
+    while (matches.length <= limit) {
+      const seek = before ? " AND (sort_order, id) < (?, ?)" : "";
+      const kindWhere = kind === null ? "" : " AND (kind = ? OR kind IS NULL)";
+      const args = [...baseArgs, ...(kind === null ? [] : [kind]), ...(before ? [before.order, before.id] : []), limit + 1];
+      const rows = this.rows(`SELECT ${columns} FROM files INDEXED BY ${index} WHERE ${baseWhere}${kindWhere}${seek}
+        ORDER BY sort_order DESC, id COLLATE BINARY DESC LIMIT ?`, ...args);
+      for (const row of rows) { const file = summary(row); if (kind === null || file.kind === kind) matches.push(file); }
+      if (rows.length < limit + 1 || matches.length > limit) break;
+      const last = rows.at(-1)!; before = { order: last.sort_order, id: last.id };
+    }
+    const items = matches.slice(0, limit), last = items.at(-1), hasMore = matches.length > limit;
+    return { projectId, items, counts, hasMore, nextCursor: hasMore && last ? Buffer.from(JSON.stringify({ v: 1, projectId, taskId, kind,
+      before: { order: last.order, id: last.id } })).toString("base64url") : null };
+  }
+
   private cachedFileBody(id: string): string {
     const cached = this.fileBodies.get(id);
     if (cached) {
@@ -2493,7 +2552,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         JSON.stringify(input.attachments ?? []),
         nowIso(),
         order,
-        input.kind ?? null,
+        input.kind ?? deriveFileKind(input.body ?? "", input.attachments ?? []),
         input.html === null || input.html === undefined ? null : encodeStoredText(input.html),
         this.taskRef(input.projectId, input.taskId),
       );
@@ -2632,10 +2691,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.transaction(() => {
       const before = this.requireDelivery(id);
       this.run(
-        `UPDATE deliveries SET status = ?, hold_reason = ?, last_error = ?, attempts = attempts + ?,
+        `UPDATE deliveries SET status = ?, wake = ?, hold_reason = ?, last_error = ?, attempts = attempts + ?,
            delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, ?) ELSE delivered_at END
          WHERE id = ?`,
         status,
+        Number(update.wake ?? before.wake),
         status === "held" ? (update.holdReason ?? before.holdReason) : null,
         update.lastError !== undefined ? update.lastError : before.lastError,
         update.attempt ? 1 : 0,

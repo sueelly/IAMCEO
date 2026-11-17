@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { migrateStoredContent } from "./agent-receipts.ts";
 
+export const STORAGE_OPTIMIZATION_VERSION = 35;
+
 export const MIGRATIONS: string[] = [
   `
   CREATE TABLE projects (
@@ -854,7 +856,14 @@ export const MIGRATIONS: string[] = [
   // v33: serve list metadata without walking large body/artifact overflow chains.
   `CREATE INDEX files_list_metadata ON files
     (project_id, sort_order DESC, id, title, who, member_id, summary, path, attachments, created_at, kind, task_id);`,
-  // v34: a durable reservation becomes its result; large originals have one compressed owner.
+  // Stable keyset order and task-scoped metadata reads never fetch body/html overflow pages.
+  `CREATE INDEX files_page_project ON files
+    (project_id, sort_order DESC, id DESC, title, who, member_id, summary, path, attachments, created_at, kind, task_id);
+   CREATE INDEX files_page_task ON files
+    (project_id, task_id, sort_order DESC, id DESC, title, who, member_id, summary, path, attachments, created_at, kind);
+   CREATE INDEX messages_task_page ON messages(project_id, task_id, at COLLATE BINARY DESC, id COLLATE BINARY DESC)
+    WHERE task_id IS NOT NULL;`,
+  // v35: a durable reservation becomes its result; large originals have one compressed owner.
   `ALTER TABLE agent_operation_receipts ADD COLUMN state TEXT NOT NULL DEFAULT 'completed' CHECK(state IN ('reserved','completed'));
    ALTER TABLE agent_operation_receipts ADD COLUMN result_kind TEXT NOT NULL DEFAULT 'json';
    ALTER TABLE agent_operation_receipts ADD COLUMN request_sha256 TEXT NOT NULL DEFAULT '';
@@ -937,7 +946,7 @@ function migrate(db: Database): void {
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[v]!);
-      if (v === 33) migrateStoredContent(db);
+      if (v + 1 === STORAGE_OPTIMIZATION_VERSION) migrateStoredContent(db);
       db.exec(`PRAGMA user_version = ${v + 1}`);
     })();
   }

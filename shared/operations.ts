@@ -23,6 +23,8 @@ export interface ServerCapabilities {
     realtime: boolean;
     /** Browser v2 handshake through a separate HttpOnly /ws session cookie. */
     browserRealtime?: boolean;
+    /** 웹은 자료 요약과 별도 대화 페이지를 사용하는 상태 응답을 요청할 수 있다. */
+    compactState?: boolean;
     push: boolean;
     operations: boolean;
   };

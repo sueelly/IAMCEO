@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { publicHarness } from "./harness-redaction.ts";
 import { decodeStoredText, encodeStoredText } from "./stored-text.ts";
 
-export const UNKNOWN_AGENT_RESULT = { text: "이 작업의 결과를 확인할 수 없습니다. 같은 작업은 자동 재실행하지 않습니다", isError: true };
+export const UNKNOWN_AGENT_RESULT = Object.freeze({ text: "이 작업의 결과를 확인할 수 없습니다. 같은 작업은 자동 재실행하지 않습니다", isError: true });
 export type AgentReceiptState = "reserved" | "completed";
 export type AgentResultKind = "json" | "report-reference-v1";
 type ObjectValue = Record<string, unknown>;
@@ -14,6 +14,20 @@ export function canonicalAgentRequest(value: unknown): string {
     ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
 }
 export const agentRequestHash = (request: string): string => createHash("sha256").update(request).digest("hex");
+
+interface LegacyReceipt {
+  operation_id: string; member_id: string; project_id: string; tool_name: string;
+  request_json: unknown; result_json: unknown;
+}
+function isLegacyReservation(row: LegacyReceipt): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(row.operation_id)
+    && canonicalAgentRequest(JSON.parse(decodeStoredText(row.result_json))) === canonicalAgentRequest(UNKNOWN_AGENT_RESULT);
+}
+function validLegacyPair(parent: LegacyReceipt | null, child: LegacyReceipt | null): boolean {
+  return !!parent && !!child && child.operation_id === `agent-result:${parent.operation_id}` && isLegacyReservation(parent)
+    && parent.member_id === child.member_id && parent.project_id === child.project_id && parent.tool_name === child.tool_name
+    && decodeStoredText(parent.request_json) === decodeStoredText(child.request_json);
+}
 
 function fileContent(db: Database, projectId: string, id: unknown): { body: string; html: string | null } | null {
   if (typeof id !== "string") return null;
@@ -71,15 +85,15 @@ export function migrateStoredContent(db: Database): void {
   const paired = db.query<{ operation_id: string }, []>("SELECT operation_id FROM agent_operation_receipts WHERE operation_id LIKE 'agent-result:%' ORDER BY rowid").all();
   for (const { operation_id: childId } of paired) {
     const child = get.get(childId)!, parent = get.get(childId.slice("agent-result:".length));
-    if (!parent || parent.member_id !== child.member_id || parent.project_id !== child.project_id || parent.tool_name !== child.tool_name || decodeStoredText(parent.request_json) !== decodeStoredText(child.request_json)) continue;
-    db.query("UPDATE agent_operation_receipts SET result_json = ?, state = 'completed', updated_at = ? WHERE operation_id = ?").run(decodeStoredText(child.result_json), child.created_at, parent.operation_id);
+    if (!validLegacyPair(parent, child)) continue;
+    db.query("UPDATE agent_operation_receipts SET result_json = ?, state = 'completed', updated_at = ? WHERE operation_id = ?").run(decodeStoredText(child.result_json), child.created_at, parent!.operation_id);
     db.query("DELETE FROM agent_operation_receipts WHERE operation_id = ?").run(childId);
   }
   const update = db.query("UPDATE agent_operation_receipts SET request_json = ?, request_sha256 = ?, result_json = ?, result_kind = ?, state = ?, updated_at = COALESCE(updated_at,created_at) WHERE operation_id = ?");
   for (const row of db.query<Receipt, []>("SELECT * FROM agent_operation_receipts ORDER BY rowid").iterate()) {
     const request = decodeStoredText(row.request_json), result: unknown = JSON.parse(decodeStoredText(row.result_json));
     const encoded = encodeAgentResult(db, row.project_id, row.tool_name, JSON.parse(request), result);
-    const reserved = row.updated_at === null && !row.operation_id.startsWith("agent-result:") && object(result) && result.text === UNKNOWN_AGENT_RESULT.text && result.isError === true;
+    const reserved = row.updated_at === null && isLegacyReservation(row);
     update.run(encodeStoredText(request), agentRequestHash(request), encoded.value, encoded.kind, reserved ? "reserved" : row.state, row.operation_id);
   }
   if (canonicalAgentRequest(before) !== canonicalAgentRequest(storageContentDigest(db))) throw new Error("저장 최적화 원문 검증에 실패했습니다. 변경을 취소합니다");
@@ -95,14 +109,13 @@ export function storageContentDigest(db: Database, legacy = false): { files: str
   }
   type Receipt = { operation_id: string; member_id: string; project_id: string; tool_name: string; request_json: unknown; result_json: unknown; result_kind?: string; state?: string; created_at: string };
   const get = db.query<Receipt, [string]>("SELECT * FROM agent_operation_receipts WHERE operation_id = ?");
-  const matches = (a: Receipt | null, b: Receipt | null): boolean => !!a && !!b && a.member_id === b.member_id && a.project_id === b.project_id && a.tool_name === b.tool_name && decodeStoredText(a.request_json) === decodeStoredText(b.request_json);
   for (const row of db.query<Receipt, []>("SELECT * FROM agent_operation_receipts ORDER BY operation_id COLLATE BINARY").iterate()) {
-    if (legacy && row.operation_id.startsWith("agent-result:") && matches(row, get.get(row.operation_id.slice("agent-result:".length)))) continue;
+    if (legacy && row.operation_id.startsWith("agent-result:") && validLegacyPair(get.get(row.operation_id.slice("agent-result:".length)), row)) continue;
     const child = legacy ? get.get(`agent-result:${row.operation_id}`) : null;
-    const paired = matches(row, child);
+    const paired = validLegacyPair(row, child);
     const chosen = paired ? child! : row;
     const result = decodeAgentResult<unknown>(db, row.project_id, chosen.result_kind ?? "json", chosen.result_json);
-    const reserved = !paired && !row.operation_id.startsWith("agent-result:") && object(result) && result.text === UNKNOWN_AGENT_RESULT.text && result.isError === true;
+    const reserved = !paired && isLegacyReservation(row);
     receipts.update(canonicalAgentRequest({ id: row.operation_id, member: row.member_id, project: row.project_id, tool: row.tool_name,
       request: decodeStoredText(row.request_json), result, state: legacy ? reserved ? "reserved" : "completed" : row.state, at: row.created_at }) + "\n");
     receiptCount++;

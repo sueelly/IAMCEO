@@ -66,7 +66,7 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     expect(getState().project?.messages.map((m) => m.id)).toEqual(["recent"]);
     expect(getState().syncRevisions?.settings).toBe(7);
     await loadOlderMessages();
-    expect(calls.some((p) => p.includes("cursor=opaque%2B%2F%3D") && p.includes("limit=100"))).toBe(true);
+    expect(calls.some((p) => p.includes("cursor=opaque%2B%2F%3D") && p.includes("limit=50"))).toBe(true);
     expect(getState().project?.messages.map((m) => m.id)).toEqual(["older", "recent"]);
     const socket = sockets.at(-1)!;
     socket.onmessage?.({ data: JSON.stringify({ type: "hello", protocol: 2, epoch: "e", seq: 0, heartbeatMs: 15000, staleAfterMs: 45000 }) });

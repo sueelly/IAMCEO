@@ -366,7 +366,8 @@ export interface MessagePage {
 }
 
 /** 자료의 모양. artifact 는 GET /api/files/:id/artifact 의 html 을 격리 칸에 그린다. table·code 는 body 에 원문이 있다(1MB 이하). */
-export type FileKind = "document" | "artifact" | "image" | "pdf" | "table" | "code" | "video" | "audio" | "file";
+export const FILE_KINDS = ["document", "artifact", "image", "pdf", "table", "code", "video", "audio", "file"] as const;
+export type FileKind = typeof FILE_KINDS[number];
 export interface FileDoc {
   id: string;
   kind: FileKind;
@@ -381,6 +382,18 @@ export interface FileDoc {
   createdAt: string;
   order: number;
   taskId?: string | null;
+}
+
+/** 목록은 본문을 보내지 않는다. 본문은 GET /api/files/:id로 선택 시 조회한다. */
+export type FileListItem = Omit<FileDoc, "body">;
+export interface FilePageOptions { taskId?: string; kind?: FileKind; cursor?: string; limit?: number }
+export interface FilePage {
+  projectId: string;
+  items: FileListItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  /** 종류 필터 전, 선택한 업무 전체의 개수. */
+  counts: Partial<Record<FileKind, number>>;
 }
 
 export type DeliveryKind = "user_message" | "answer" | "todo_done" | "instruction" | "report" | "system" | "compact";
@@ -588,6 +601,21 @@ export interface RuntimeInfo { backend: "core"; core: { installed: boolean; avai
 export interface HerdrInfo { installed: boolean; running: boolean; version: string | null; protocol: number | null; compatible: boolean; warning: string | null }
 export interface LiveAgent { paneId: string; name: string | null; agent: string | null; status: string; cwd: string | null; sessionId: string | null; workspaceId: string | null; tabId: string | null; adopted: boolean }
 
+export interface ConnectionOverrides {
+  sshHost?: string;
+  sshUser?: string;
+  sshPort?: number;
+}
+
+export type ConnectionPatch = { [K in keyof ConnectionOverrides]?: ConnectionOverrides[K] | null };
+
+export interface ConnectionInfo {
+  home: string;
+  port: number;
+  cli: string;
+  ssh: { host: string; user: string; port: number };
+}
+
 export interface Bootstrap {
   version: string;
   runtime?: RuntimeInfo;
@@ -599,6 +627,8 @@ export interface Bootstrap {
   urls: string[];
   /** 서버 컴퓨터의 터미널에서 이 CLI 를 부르는 명령. 설치돼 있으면 iamceo, 아니면 실행 파일 전체 경로. */
   cli: string;
+  /** Current server's terminal destination; optional for older servers. */
+  connection?: ConnectionInfo;
   /** 직급 값 대신 자기 값을 쓰는 직원 수. 직급 값을 바꿔도 이들에게는 먹지 않는다. */
   rankOverrides: Record<Exclude<Rank, "staff">, number>;
 }

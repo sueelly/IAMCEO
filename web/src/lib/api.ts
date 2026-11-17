@@ -9,6 +9,7 @@ import type {
   ApprovalPrompt,
   Attachment,
   Bootstrap,
+  ConnectionInfo,
   CreateProjectReq,
   CreateMemberReq,
   RuntimeInfo,
@@ -17,6 +18,9 @@ import type {
   Message,
   MessagePage,
   MessagePageOptions,
+  FileDoc,
+  FilePage,
+  FilePageOptions,
   PatchMemberReq,
   PatchProjectReq,
   Project,
@@ -156,11 +160,20 @@ const slowPost = <T>(path: string, body?: unknown) => request<T>("POST", path, b
 const get = <T>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, READ_TIMEOUT_MS, { signal });
 
 export const api = {
+  connection: (signal?: AbortSignal) => get<ConnectionInfo>("/api/connection", signal),
   bootstrap: (signal?: AbortSignal) => get<Bootstrap>("/api/bootstrap", signal),
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
   realtimeSession: (signal?: AbortSignal) => request<void>("POST", "/api/realtime-session", undefined, WRITE_TIMEOUT_MS, { signal }),
-  sync: (projectId: string, signal?: AbortSignal) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}`, signal),
+  sync: (projectId: string, signal?: AbortSignal, compact = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}`, signal),
+  filePage: (id: string, opts: FilePageOptions = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(opts.limit ?? 20) });
+    if (opts.taskId) query.set("taskId", opts.taskId);
+    if (opts.kind) query.set("kind", opts.kind);
+    if (opts.cursor) query.set("cursor", opts.cursor);
+    return get<FilePage>(`/api/projects/${seg(id)}/files/page?${query}`, signal);
+  },
+  file: (id: string, signal?: AbortSignal) => get<FileDoc>(`/api/files/${seg(id)}`, signal),
   /** <img>·<video> 가 쓸 첨부 쿠키를 받는다. 화면을 그리기 전에 부른다. */
   filesSession: () => post<void>("/api/files-session"),
 

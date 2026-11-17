@@ -34,4 +34,5 @@ describe("화면 시험", () => {
   test("홈과 5칸 탭", () => runFile("home.browser.ts"), 180_000);
   test("자료 화면(종류별 보기·악성 아티팩트)", () => runFile("files.browser.ts"), 240_000);
   test("자료 화면의 업무 거르기(PC+폰)", () => runFile("files-by-task.browser.ts"), 180_000);
+  test("자료의 점진 조회·업무 전환 경합·모바일 본문 지연 조회", () => runFile("file-paging.browser.ts"), 120_000);
 });

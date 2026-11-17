@@ -263,17 +263,25 @@ export function useConfirmPress(): { armed: boolean; press: (run: () => void) =>
 // ---- 복사 ----
 
 /** 평문 http(Tailscale IP 접속)에서는 navigator.clipboard 가 없어 옛 방식으로 되돌아간다. */
-export async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string | Promise<string>): Promise<boolean> {
+  // Start the clipboard write inside the click gesture, even when current connection data is still loading (Safari).
+  if (typeof text !== "string" && navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": text.then(value => new Blob([value], { type: "text/plain" })) })]);
+      return true;
+    } catch { /* Fall through for browsers that reject promised ClipboardItems. */ }
+  }
+  const value = await text;
   if (navigator.clipboard) {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(value);
       return true;
     } catch {
       // 권한 거부면 아래 방식을 시도한다
     }
   }
   const ta = document.createElement("textarea");
-  ta.value = text;
+  ta.value = value;
   ta.setAttribute("readonly", "");
   ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
   // 모달 안에서 부르면 <dialog> 밖 요소는 inert 라 선택이 안 된다

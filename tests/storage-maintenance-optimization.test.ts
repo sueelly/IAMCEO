@@ -12,12 +12,12 @@ import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-function fixture() {
+function fixture(version: 33 | 34 = 33) {
   const runtime = createIsolatedRuntime();
   cleanups.push(() => runtime.stop());
   const path = join(runtime.paths.iamceoHome, "iamceo.db"), db = new Database(path, { create: true });
-  for (let v = 0; v < 33; v++) db.exec(MIGRATIONS[v]!);
-  db.exec("PRAGMA user_version = 33");
+  for (let v = 0; v < version; v++) db.exec(MIGRATIONS[v]!);
+  db.exec(`PRAGMA user_version = ${version}`);
   const store = new Store(db, new Bus());
   const project = store.createProject({ name: "기존 자료", cwd: runtime.paths.work });
   const member = store.createMember({ projectId: project.id, handle: "worker", name: "작업자", kind: "worker", origin: "manual" });
@@ -84,4 +84,17 @@ test("corrupt legacy content fails before any schema change and leaves original 
   expect(() => optimizeStorage(f.runtime.paths.iamceoHome, { vacuum: true })).toThrow();
   expect(inspectStorage(f.runtime.paths.iamceoHome).schemaVersion).toBe(33);
   expect(inspectStorage(f.runtime.paths.iamceoHome).receiptCount).toBe(16);
+});
+
+test("pagination v34 upgrades through offline apply, preserving its indexes and normalized replay", () => {
+  const f = fixture(34);
+  const result = optimizeStorage(f.runtime.paths.iamceoHome, { vacuum: true });
+  expect(result.before.schemaVersion).toBe(34);
+  expect(result.after.schemaVersion).toBe(MIGRATIONS.length);
+  expect(result.after.receiptCount).toBe(8);
+  const db = openDb(f.path, { migrationBackup: false });
+  const store = new Store(db, new Bus());
+  expect(db.query("SELECT count(*) AS n FROM sqlite_schema WHERE name IN ('files_page_project','files_page_task','messages_task_page')").get()).toEqual({ n: 3 });
+  expect(store.agentOperation(f.member.id, "post", "op-0", { report_id: "msg_original" }, () => ({ text: "must not execute" }))).toEqual(f.result);
+  db.close();
 });

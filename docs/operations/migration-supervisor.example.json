@@ -1,0 +1,38 @@
+{
+  "root": "/private/migration/task",
+  "state_dir": "/private/migration/task/supervisor",
+  "cwd": "/work/migration",
+  "thread_id": "11111111-1111-4111-8111-111111111111",
+  "initial_job": {
+    "pid": 12345,
+    "identity": "actual ps start time and executable",
+    "events": "/private/migration/task/current-events.jsonl"
+  },
+  "source_url": "https://source.example.invalid",
+  "source_credential_file": "/private/migration/source-config.json",
+  "source_data_root": "/source/private/data",
+  "project_ids": [
+    "headquarters",
+    "registered-project"
+  ],
+  "policy_message_ids": [
+    "migration-policy-message"
+  ],
+  "codex_bin": "/absolute/bin/codex",
+  "claude_bin": "/absolute/bin/claude",
+  "public_origin": "https://app.example.invalid",
+  "tailscale_origin": "https://machine.example.ts.net:14443",
+  "viewing_release_manifest": "/private/viewers/git-sha/release.json",
+  "target_health": "http://127.0.0.1:47878/api/health",
+  "target_readiness": "http://127.0.0.1:47878/api/readiness",
+  "production_readiness": "http://127.0.0.1:47878/api/readiness",
+  "baseline_health": {
+    "existing-app": "http://127.0.0.1:3000/healthz"
+  },
+  "release_manifest": "/private/releases/git-sha/release.json",
+  "path": "/absolute/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  "poll_seconds": 120,
+  "idle_interval_seconds": 120,
+  "ingress_credential_file": "/private/cloudflared/cert.pem",
+  "docker_socket": "/private/docker/run/docker.sock"
+}

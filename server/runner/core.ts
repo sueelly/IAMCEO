@@ -1,7 +1,7 @@
 import { capturedContext } from "./statusline.ts";
 import { readCodexContextFile } from "./codex-context.ts";
 import { createHash } from "node:crypto";
-import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { constants, closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalPrompt, Backend, NativePrompt } from "../../shared/types.ts";
@@ -210,6 +210,12 @@ export class CoreRunner implements Runner {
     if (member.origin === "adopted") throw new CoreError("unsupported", "Core does not adopt terminals without IAMCEO ownership labels");
     if (laterNativeId(providerFor(member)) && (member.paneId || (this.lostCodex.has(member.id) && this.lostCodex.get(member.id) === member.sessionGeneration)) && !member.sessionId) throw new CoreError("session_unknown", "The previous Codex/Antigravity terminal is gone and its native session id is unknown; explicitly start a fresh session with context handoff");
     const launch = providerLaunch(member, opts, this.options);
+    // Rejoin a live holder first: a new conversation may not have written its
+    // transcript yet. Only a conclusively absent local Claude log lets the
+    // orchestrator use its existing missing-conversation handoff path.
+    if (opts.resume && member.sessionId && providerFor(member) === "claude" && this.missingClaudeTranscript(member.sessionId)) {
+      throw new CoreError("session_missing", `No conversation found with session ID: ${member.sessionId}`, false, "not_written");
+    }
     const env = childEnv();
     for (const key of Object.keys(env)) if (/^(HC_|HERDR_)/.test(key)) delete env[key];
     // The core itself uses isolated XDG directories; its provider programs
@@ -232,6 +238,20 @@ export class CoreRunner implements Runner {
     // the stable member labels/name, rather than replaying terminal.run.
     await this.bind(member, terminal, launch.sessionId);
     return { sessionId: launch.sessionId, paneId: terminal.address };
+  }
+  private missingClaudeTranscript(sessionId: string): boolean {
+    const projects = join(this.options.claudeHome ?? defaultClaudeHome(), "projects");
+    let directories: string[];
+    try { directories = readdirSync(projects); }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+    for (const directory of directories) {
+      try { statSync(join(projects, directory, `${sessionId}.jsonl`)); return false; }
+      catch (error) {
+        // Access and I/O failures are not evidence that a conversation is gone.
+        if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      }
+    }
+    return true;
   }
   async reattachOwned(member: RunnerMember): Promise<RunnerReattachResult> {
     const release = this.reserve(member.id);
