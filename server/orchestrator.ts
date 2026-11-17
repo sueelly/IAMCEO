@@ -1737,8 +1737,8 @@ export class Orchestrator implements OrchestratorApi {
     this.coreSupervisor?.start();
     this.startTick();
     const checking = this.settleInFlight();
-    const ids = new Set(this.store.listUndelivered().map((d) => d.memberId));
-    await Promise.all([checking, ...[...ids].map(id => this.pump(id))]);
+    const ids = this.store.listUndeliveredMemberIds();
+    await Promise.all([checking, ...ids.map(id => this.pump(id))]);
     await this.retryOrphans();
     await this.checkScheduledTasks();
   }
@@ -1872,7 +1872,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!changed) return;
     await this.broadcastHerdr();
     if (!state.ok) return;
-    for (const id of new Set(this.store.listUndelivered().map((d) => d.memberId))) void this.pump(id);
+    for (const id of this.store.listUndeliveredMemberIds()) void this.pump(id);
     void this.retryOrphans().catch((e) => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
   }
 
@@ -1905,9 +1905,7 @@ export class Orchestrator implements OrchestratorApi {
     // otherwise their short-lived pump would suppress this same tick every time.
     await this.checkScheduledTasks().catch(e => console.warn("미완료 업무 재개 확인 실패:", (e as Error).message));
     if (this.closed) return;
-    for (const d of this.store.listUndelivered()) {
-      if (d.status !== "held" || d.holdReason !== "asleep" && d.holdReason !== "runner_disabled") membersToPump.add(d.memberId);
-    }
+    for (const id of this.store.listUndeliveredMemberIds({ skipInactiveHolds: true })) membersToPump.add(id);
     await this.retryOrphans(membersToPump).catch(e => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
     for (const id of membersToPump) {
       if (this.closed) return;
@@ -2534,7 +2532,7 @@ export class Orchestrator implements OrchestratorApi {
       this.repairSourceIntents(project.id);
       if (this.store.getConductor(project.id)) {
         await this.adoptOrphans(project.id);
-        for (const id of new Set(this.store.listUndelivered(project.id).map(d => d.memberId))) {
+        for (const id of this.store.listUndeliveredMemberIds({ projectId: project.id })) {
           if (membersToPump) membersToPump.add(id);
           else void this.pump(id);
         }

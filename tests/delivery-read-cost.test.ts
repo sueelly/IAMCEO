@@ -93,3 +93,23 @@ test("delivery read scope is synchronous, restores after failure and never hides
   expect(() => f.store.withDeliveryRead(pid, () => { f.store.withDeliveryRead(pid, () => Promise.resolve()); })).toThrow("synchronous");
   expect(f.store.requireDelivery(d.id).status).toBe("held");
 });
+
+test("수신 직원 조회는 프로젝트·보류 조건을 적용한 첫 전달 순서를 보존한다", () => {
+  const f = fixture();
+  const other = f.store.createProject({ name: "다른 프로젝트", cwd: f.root });
+  const second = f.store.createMember({ projectId: f.project.id, handle: "second", name: "두 번째", kind: "worker" });
+  const foreign = f.store.createMember({ projectId: other.id, handle: "third", name: "다른 직원", kind: "worker" });
+  const add = (member: typeof f.member) => f.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", text: "본문" }).id;
+  f.store.markHeld(add(f.member), "asleep");
+  f.store.setDeliveryStatus(add(second), "delivering");
+  f.store.markHeld(add(foreign), "runner_disabled");
+  f.store.setDeliveryStatus(add(f.member), "held"); // Imported holds can lack a reason.
+  f.store.markDelivered(add(foreign));
+  add(second);
+  expect(f.store.listUndeliveredMemberIds()).toEqual([f.member.id, second.id, foreign.id]);
+  expect(f.store.listUndeliveredMemberIds({ projectId: other.id })).toEqual([foreign.id]);
+  const read = f.measure(() => f.store.listUndeliveredMemberIds({ skipInactiveHolds: true }));
+  expect(read.result).toEqual([second.id, f.member.id]);
+  expect(read.reads).toBe(1);
+  expect(f.statements[0]).not.toMatch(/SELECT\s+\*|\btext\b/i);
+});

@@ -3466,6 +3466,13 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT * FROM deliveries WHERE member_id = ? AND status IN ('queued','held') ORDER BY rowid", memberId).map(toDelivery);
   }
 
+  listUndeliveredMemberIds({ projectId, skipInactiveHolds = false }: { projectId?: string; skipInactiveHolds?: boolean } = {}): string[] {
+    return this.rows(`SELECT member_id FROM deliveries WHERE status IN ('queued','held','delivering')
+      ${projectId !== undefined ? "AND project_id = ?" : ""}
+      ${skipInactiveHolds ? "AND NOT (status = 'held' AND COALESCE(hold_reason, '') IN ('asleep','runner_disabled'))" : ""}
+      GROUP BY member_id ORDER BY MIN(rowid)`, ...(projectId !== undefined ? [projectId] : [])).map(row => row.member_id as string);
+  }
+
   /** 서버 재시작 복구용: 프로젝트 전체의 미전달 + 전달 중이던 것. */
   listUndelivered(projectId?: string): Delivery[] {
     const statuses = "status IN ('queued','held','delivering')";

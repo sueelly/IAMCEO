@@ -275,3 +275,16 @@ test("one maintenance tick gives HTTP a turn between distinct queued workers", a
     expect(seen).toEqual([false, true]);
   } finally { pump.mockRestore(); }
 });
+
+test("주기 점검은 수신 직원을 찾기 위해 전체 대기열의 본문을 읽지 않는다", async () => {
+  const f = fixture();
+  f.runner.busy.add(f.worker.id);
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "system", text: "대기" });
+  const read = spyOn(f.store, "listUndelivered");
+  const pump = spyOn(f.orch, "pump");
+  try {
+    await (f.orch as unknown as { onTick(): Promise<void> }).onTick();
+    expect(pump.mock.calls.some(([id]) => id === f.worker.id)).toBe(true);
+    expect(read.mock.calls.filter(([project]) => project === undefined)).toHaveLength(0);
+  } finally { read.mockRestore(); pump.mockRestore(); }
+});
