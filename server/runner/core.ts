@@ -847,7 +847,7 @@ export class CoreRunner implements Runner {
       if (track?.compact) { this.saveCompact(track, { ...track.compact, phase: "failed" }); track.pending = false; track.uncertain = track.dispatches.length > 0; }
     } finally { release(); }
   }
-  async checkStop(member: RunnerMember, opts: { whileWorking?: boolean } = {}): Promise<void> {
+  async checkStop(member: RunnerMember, opts: { whileWorking?: boolean; preservePrompt?: boolean } = {}): Promise<void> {
     if (member.origin === "adopted") throw new CoreError("unsupported", "Cannot close an adopted user terminal");
     if (this.manualLease(member.id)) throw new CoreError("input_busy", "Manual terminal control lease is active");
     const track = this.tracks.get(member.id);
@@ -855,6 +855,7 @@ export class CoreRunner implements Runner {
     const terminal = await this.owned(member);
     if (terminal.state !== "live") return;
     const state = terminal.status?.state;
+    if (opts.preservePrompt && !["idle", "done", "working"].includes(state || "")) throw new CoreError("busy", "Native approval or unknown CLI state must be resolved by the owner");
     if (!opts.whileWorking && !["idle", "done"].includes(state || "")) throw new CoreError("busy", "Resolve the current CLI turn/dialog before changing its provider or configuration");
     if (["idle", "done"].includes(state || "")) {
       const screen = await this.call<{ text: string }>("terminal.read", { terminal: terminal.address, lines: 0 });
