@@ -144,6 +144,31 @@ test("deployed v38 continuation state survives the additive workflow receipt mig
   expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
+test("deployed v41 memory queues, execution caps and conversations survive archive migration", () => {
+  const { path } = fixture("deployed-v41.db"), old = historicalDb(path, 41), store = new Store(old, new Bus());
+  store.patchSettings({ maxConcurrentTurns: 24 });
+  old.query("UPDATE projects SET max_concurrent_turns=7 WHERE id='p'").run();
+  store.enqueueMemoryUpload({ eventId: "keep-sent", projectId: "p", refType: "decision", refId: "original", body: "{}" });
+  store.settleMemoryUpload("keep-sent", { status: "sent", attempts: 2, remoteId: "exp-original" });
+  store.enqueueMemoryUpload({ eventId: "keep-rejected", projectId: "p", refType: "decision", refId: "failed", body: "{}" });
+  store.settleMemoryUpload("keep-rejected", { status: "rejected", attempts: 6, lastError: "HTTP 502" });
+  const queue = old.query("SELECT * FROM memory_outbox ORDER BY event_id").all();
+  const deliveries = old.query("SELECT * FROM deliveries ORDER BY id").all();
+  const members = old.query("SELECT * FROM members ORDER BY id").all();
+  const settings = old.query("SELECT * FROM settings").all();
+  old.close();
+  const migrated = track(openDb(path));
+  expect(version(migrated)).toBe(MIGRATIONS.length);
+  expect(migrated.query("SELECT * FROM memory_outbox ORDER BY event_id").all()).toEqual(queue);
+  expect(migrated.query("SELECT * FROM deliveries ORDER BY id").all()).toEqual(deliveries);
+  expect(migrated.query("SELECT * FROM members ORDER BY id").all()).toEqual(members);
+  expect(migrated.query("SELECT * FROM settings").all()).toEqual(settings);
+  expect(migrated.query("SELECT max_concurrent_turns FROM projects WHERE id='p'").get()).toEqual({ max_concurrent_turns: 7 });
+  expect(migrated.query("SELECT * FROM memory_archive_sources").all()).toEqual([]);
+  expect(migrated.query("SELECT * FROM memory_feedback_exposures").all()).toEqual([]);
+  expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+
 test("deployed v39 workflow receipts and queued work survive the failure-state migration", () => {
   expect(MIGRATIONS[38]).toContain("CREATE TABLE workflow_assignment_receipts");
   const { path } = fixture("deployed-v39.db"), old = historicalDb(path, 39);

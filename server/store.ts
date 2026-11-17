@@ -1,3 +1,4 @@
+import { describeTaskContext } from "./task-context.ts";
 import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
@@ -2430,7 +2431,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const remaining = [...(contract?.acceptance ?? []), ...failed, ...pending];
       const owner = this.pendingTaskFailureDecision(taskId);
       const delivery = this.enqueue({ projectId: task.projectId, memberId: conductor.id, kind: "system", wake: true, taskId,
-        text: `[시스템] ${watchNotice(task, watch, watch.reason ?? "진척 없는 반복", remaining)}\n${owner ? `기존 대표 결재 #${owner.id}는 계속 대기합니다. 대표 답 전에는 해당 범위를 다시 열거나 배정하지 마세요.` : "현재 승인 범위에서 원인을 확인하고 바꾼 접근을 기록한 뒤 다시 열어 직원에게 맡기세요. 새로운 권한·범위 결정이 실제로 필요할 때만 ask로 대표에게 요청하세요."}` });
+        text: `[시스템] ${watchNotice(task, watch, watch.reason ?? "진척 없는 반복", remaining)}\n${describeTaskContext(this, task)}\n${owner ? `기존 대표 결재 #${owner.id}는 계속 대기합니다. 대표 답 전에는 해당 범위를 다시 열거나 배정하지 마세요.` : "현재 승인 범위에서 원인을 확인하고 바꾼 접근을 기록한 뒤 다시 열어 직원에게 맡기세요. 새로운 권한·범위 결정이 실제로 필요할 때만 ask로 대표에게 요청하세요."}` });
       this.claimWatchNotice(taskId, delivery.id);
       return delivery;
     });
@@ -2520,6 +2521,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 기억 운영: 프로젝트 기본값 ----
+  /** Observers run after committed domain changes; they never control the original write. */
+  subscribeCommitted(listener: (event: WsEvent) => void): () => void {
+    return this.bus.subscribe(listener);
+  }
+
   /** 서버 환경 목록으로 켠 이전 프로젝트. 프로젝트가 따로 정한 값(on·off)이 있으면 그쪽이 앞선다. */
   setLegacyMemoryProjects(ids: readonly string[]): void {
     this.legacyMemory = new Set(ids);
@@ -2614,8 +2620,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows("SELECT * FROM memory_searches WHERE project_id = ? ORDER BY created_at, rowid", projectId).map(toMemorySearch);
   }
 
-  dueMemoryUploads(now: string, limit = 20): MemoryUpload[] {
-    return this.rows("SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ? ORDER BY created_at LIMIT ?", now, limit).map(toMemoryUpload);
+  dueMemoryUploads(now: string, limit = 20, projectIds?: readonly string[]): MemoryUpload[] {
+    if (projectIds?.length === 0) return [];
+    const projectFilter = projectIds ? ` AND project_id IN (${projectIds.map(() => "?").join(",")})` : "";
+    return this.rows(`SELECT * FROM memory_outbox WHERE status = 'pending' AND next_at <= ?${projectFilter} ORDER BY created_at, rowid LIMIT ?`, now, ...(projectIds ?? []), limit).map(toMemoryUpload);
   }
 
   listMemoryUploads(projectId?: string): MemoryUpload[] {

@@ -200,6 +200,18 @@ describe("공통 도구", () => {
     expect(store.requireMember(w.id).status).toBe("waiting");
   });
 
+  test("status: 대상 없는 팀 상태의 경고는 직원 응답에만 붙고 원문은 보존된다", async () => {
+    const { store, lead, call } = await setup();
+    const result = await call(lead, "status", { now: "확인 대기", next: "로그인 재개 실패의 전달 기록을 대조합니다." });
+    expect(result.isError).toBeUndefined();
+    expect(result.text).toContain("업무명과 행동 대상");
+    expect(store.requireMember(lead.id).now).toBe("확인 대기");
+    expect(store.requireMember(lead.id).next).toBe("로그인 재개 실패의 전달 기록을 대조합니다.");
+    const clean = await call(lead, "status", { now: "IAMCEO 로그인 재개 실패의 전달 기록을 대조합니다." });
+    expect(clean.isError).toBeUndefined();
+    expect(clean.text).not.toContain("글 검사 경고");
+  });
+
   test("ask: 직접 띄운 CLI 는 기다리라고 돌려준다", async () => {
     const { store, project, call } = await setup();
     const m = store.createMember({ projectId: project.id, handle: "m", name: "손", kind: "worker", origin: "manual" });
@@ -207,7 +219,7 @@ describe("공통 도구", () => {
     expect(r.wait?.decisionId).toBe(store.listDecisions(project.id)[0]!.id);
     expect(r.wait?.note).toBeUndefined();
     // 글 검사 경고는 note 로 따로 준다(브리지가 답 뒤에 붙인다).
-    const warned = await call(m, "ask", { title: "가".repeat(50), detail: "**하나** **둘** **셋** **넷**" });
+    const warned = await call(m, "ask", { title: "로그인 재개 확인", detail: "실제 원ID를 확인해야 합니다" });
     expect(warned.wait?.note).toContain("글 검사 경고");
   });
 
@@ -344,7 +356,7 @@ describe("공통 도구", () => {
 
   test("file: 마크다운 자료의 글 검사 경고는 결과에만 붙는다", async () => {
     const { store, writer, call } = await setupForFiles();
-    const r = await call(writer, "file", { title: "테스트 결과", content: "바뀐 파일은 server/roles.ts 입니다." });
+    const r = await call(writer, "file", { title: "로그인 조사 결과", content: "실제 원ID를 확인해야 합니다." });
     expect(r.isError).toBeUndefined();
     expect(r.text.split("\n")[0]).toMatch(/^자료를 올렸습니다 #/);
     expect(r.text).toContain("글 검사 경고");
@@ -382,13 +394,6 @@ describe("공통 도구", () => {
     expect(store.listFiles(project.id)).toHaveLength(3);
   });
 
-  test("file 도구 설명은 자료 한 개 기준이고 같은 본문의 html·md 짝을 요구하지 않는다", async () => {
-    const { writer } = await setupForFiles();
-    const file = listAgentTools(writer).find((t) => t.name === "file")!;
-    for (const old of ["md 짝", "글로 읽기", "짝을 함께"]) expect(JSON.stringify(file)).not.toContain(old);
-    expect(file.description).toContain("대표용 자료는 기본 한 개다. 같은 본문을 html 과 md 로 두 번 올리지 않는다");
-    expect(file.description).toContain("내용이 다른 원기록·이미지·납품물은 따로 올려도 된다");
-  });
 
   test("file: html 한 번은 자료 하나만 만들고 글 판을 따로 만들지 않는다. 글·이미지·서로 다른 원기록은 각각 남는다", async () => {
     const { home, store, project, writer, call } = await setupForFiles();

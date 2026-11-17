@@ -125,7 +125,9 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
     expect(p).toMatchObject({ stage: "done", cause: null, next: null });
     expect(p.notice!.lines[0]).toBe("단계 업무 완료");
     expect(p.notice!.lines.join("\n")).toContain("메인 합침: 메인에 합침");
-    expect(p.notice!.lines.join("\n")).not.toContain("0123abcd");
+    expect(p.notice!.lines.join("\n")).toContain("0123abcd");
+    expect(p.notice!.lines.join("\n")).toContain("단계가 이어진다");
+    expect(p.notice!.lines.join("\n")).toContain("대화와 목록이 같은 단계");
     // 늦게 온 막힘·중복 보고는 완료를 되돌리지 않는다.
     await blocked(f, task, [check("behavior", "fail", "늦은 반례")], f.worker2, "늦은 검토");
     expect(progressOf(f, task)!.stage).toBe("done");
@@ -159,6 +161,18 @@ describe("납품 뒤 단계: 검토·합치기·완료", () => {
 });
 
 describe("반복 감시", () => {
+  test.each(["unknown", "not_run"] as const)("%s 보고의 반복을 실제 검사 실패로 단정하지 않는다", async kind => {
+    const f = fixture(), task = await newTask(f);
+    const checks = kind === "unknown" ? [] : [check("behavior", "not_run", "로그인 확인")];
+    for (let i = 0; i < 3; i++) await blocked(f, task, checks);
+    expect(f.store.pendingTaskFailureDecision(task)).toBeNull();
+    const notice = conductorSystem(f)[0]!;
+    expect(notice.text).toContain(kind === "unknown" ? "검사 근거 없는 막힘 보고" : "검사 미실행 보고");
+    expect(notice.text).not.toContain("같은 실패 3번");
+    expect(progressOf(f, task)!.stage).toBe("check");
+    expect((await stage(f, task, "reopen", "기록과 남은 조건부터 확인")).isError).toBeUndefined();
+  });
+
   test("같은 실패 3번이면 총괄이 접근을 바꾸고 다시 연다", async () => {
     const f = fixture(), task = await newTask(f, { ...ONE, inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] });
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);

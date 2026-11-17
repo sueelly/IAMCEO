@@ -41,13 +41,13 @@ describe("터미널 승인 안내: 공통 프롬프트", () => {
     expect(renderRole("worker", vars)).not.toContain("직원이 승인 창 앞에서 멈췄으면");
   });
 
-  test("고쳐 쓴 템플릿에도 빠지지 않게 끝에 한 번 붙고, 글 지침은 붙이지 않는다", () => {
+  test("고쳐 쓴 템플릿에도 승인 안내와 공통 글 지침이 각각 한 번 붙는다", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-approval-guide-"));
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 템플릿");
     const custom = renderRole("worker", vars, dir);
     expect(custom.startsWith("승인 규칙만 있는 템플릿")).toBe(true);
     expect(count(custom, HEAD)).toBe(1);
-    expect(custom).not.toContain("## 대표에게 보이는 글");
+    expect(count(custom, WRITING_GUIDE.trim())).toBe(1);
     // 자리표시를 둔 템플릿은 그 자리에만 들어간다.
     writeFileSync(join(dir, "conductor.md"), "앞\n{{TERMINAL_APPROVAL}}\n뒤");
     const placed = renderRole("conductor", vars, dir);

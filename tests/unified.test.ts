@@ -13,7 +13,7 @@ import { MIGRATIONS, openDb } from "../server/db.ts";
 import { MAX_ARTIFACT_BYTES } from "../server/files.ts";
 import { startServer } from "../server/http.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
-import { renderRole, TERMINAL_APPROVAL_GUIDE } from "../server/roles.ts";
+import { renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { buildClaudeArgs, childEnv, HeadlessRunner, StreamParser } from "../server/runner/headless.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "../server/runner/types.ts";
 import { ApiError, Store } from "../server/store.ts";
@@ -428,7 +428,7 @@ describe("자료 종류", () => {
       // 키트 클래스는 글 지침의 '자료 틀 부품' 한 곳에 적는다. 탭은 꼭 볼 내용에 쓰지 않는다(지침).
       if (kind !== "conductor") expect(text).toContain("'자료 틀 부품'의 클래스만 써도 깔끔하다");
       for (const cls of ["card", "grid", "callout", "kpi", "steps", "flow", "tag", "compare", "owner", "hero", "rec"]) expect(text).toContain(`\`${cls}\``);
-      expect(text).toContain("`tabs`에는 꼭 볼 내용을 넣지 않는다");
+      expect(text).toContain("`tabs` 안에 핵심을 숨기지 않는다");
       if (kind !== "conductor") expect(text).toContain("외부 사이트에 따로 게시하지 않는다");
       expect(text).not.toContain("아티팩트를 만들지 않는다");
       expect(text).not.toContain("다른 아티팩트");
@@ -864,7 +864,7 @@ describe("직급별 모델·effort", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 고친 템플릿");
     expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: rule }, dir)).toContain(rule);
-    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`);
+    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
 
     const t = await setup();
     await t.api("PUT", "/api/settings", { ranks: { staff: { effort: "xhigh" } } });

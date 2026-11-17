@@ -14,12 +14,6 @@ struct HomeView: View {
     #endif
 
     @State private var width: CGFloat = isMac ? 900 : 0
-    @State private var nowExpanded = false
-    @State private var nowFullHeight: CGFloat = 0
-    /// Five lines of the 지금 상황 body (web .hm-now__body: 14.5px × 1.6 × 5 = 116).
-    @ScaledMetric(relativeTo: .body) private var nowClampHeight: CGFloat = isMac ? 116 : 120
-    /// Mac: the pointing hand pushed while the pointer is over the collapsed 지금 상황 body.
-    @State private var nowCursorPushed = false
     @State private var tidyNote: HomeNote?
     /// iPhone/iPad: 판 정리 asks once (no tooltip there, and the circular-arrows mark reads as "refresh").
     @State private var confirmTidy = false
@@ -146,7 +140,7 @@ struct HomeView: View {
     /// Notes and folds belong to one project; never show them on another.
     private func resetLocalState() {
         contextID = UUID()
-        nowExpanded = false; confirmTidy = false
+        confirmTidy = false
         tidyNote = nil; startError = nil; todoError = nil
         expandedTodos = []; showDoneTodos = false
     }
@@ -346,51 +340,11 @@ struct HomeView: View {
         if tidyNote?.id == note.id { withAnimation(.easeOut(duration: 0.2)) { tidyNote = nil } }
     }
 
+    /// Current context includes every condition the reader needs before acting.
     private func nowBody(_ now: String) -> some View {
-        let overflows = nowFullHeight > nowClampHeight + 4
-        let collapsed = overflows && !nowExpanded
-        return VStack(alignment: .leading, spacing: 4) {
-            // Web .hm-now__body .md: 14.5 at 1.6.
-            MarkdownText(text: now, size: 14.5, lineHeight: 1.6)
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nowFullHeight = $0 }
-                .frame(maxHeight: collapsed ? nowClampHeight : nil, alignment: .top)
-                .clipped()
-                .mask {
-                    if collapsed {
-                        LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.7), .init(color: .black.opacity(0), location: 1)],
-                                       startPoint: .top, endPoint: .bottom)
-                    } else {
-                        Rectangle()
-                    }
-                }
-                // The faded body itself opens it (the 더 보기 button stays for keyboard and VoiceOver).
-                .contentShape(Rectangle())
-                .gesture(TapGesture().onEnded {
-                    guard collapsed else { return }
-                    setNowCursor(false)
-                    withAnimation(.easeOut(duration: 0.2)) { nowExpanded = true }
-                }, including: collapsed ? .all : .subviews)
-                .onHover { setNowCursor($0 && collapsed) }
-                .onChange(of: collapsed) { _, isCollapsed in if !isCollapsed { setNowCursor(false) } }
-                .onDisappear { setNowCursor(false) }
-            if overflows {
-                HomeFoldButton(title: nowExpanded ? "접기" : "더 보기", open: nowExpanded) {
-                    withAnimation(.easeOut(duration: 0.2)) { nowExpanded.toggle() }
-                }
-                .accessibilityLabel(nowExpanded ? "지금 상황 접기" : "지금 상황 더 보기")
-            }
-        }
-        .padding(.bottom, overflows ? 0 : 2)
-    }
-
-    /// Mac: a pointing hand over the collapsed body, popped exactly once however the hover ends.
-    private func setNowCursor(_ on: Bool) {
-        #if os(macOS)
-        guard on != nowCursorPushed else { return }
-        if on { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        nowCursorPushed = on
-        #endif
+        MarkdownText(text: now, size: 14.5, lineHeight: 1.6)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, 2)
     }
 
     /// Web .hm-clear: nothing waits on me — a quiet full-width line, not a card. Finished todos fold into its trailing

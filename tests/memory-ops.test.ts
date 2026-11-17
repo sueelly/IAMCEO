@@ -27,6 +27,7 @@ function fakeGateway() {
   const tokens = new Map<string, string>();
   const seen: { path: string; body: any }[] = [];
   let down = 0;
+  let failureTarget = "";
   let dropAfterSave = 0;
   const server = Bun.serve({
     port: 0, hostname: "127.0.0.1",
@@ -36,7 +37,7 @@ function fakeGateway() {
       const body = req.method === "POST" ? await req.json().catch(() => null) : null;
       seen.push({ path: url.pathname, body });
       if (url.pathname === "/healthz") return Response.json({ ok: true, service: "development-memory" });
-      if (down > 0) { down--; return Response.json({ error: "memory_temporarily_unavailable" }, { status: 503 }); }
+      if (down > 0 && (!failureTarget || url.pathname === failureTarget || String(body?.experience?.event_id ?? "").startsWith(failureTarget))) { down--; return Response.json({ error: "memory_temporarily_unavailable" }, { status: 503 }); }
       if (auth !== SERVICE_KEY && url.pathname.startsWith("/v1/")) return Response.json({ error: "unauthorized" }, { status: 401 });
       if (url.pathname === "/v1/context") {
         if (!ID.test(body.project_id) || !ID.test(body.task_id)) return Response.json({ error: "invalid_memory_request" }, { status: 400 });
@@ -61,7 +62,7 @@ function fakeGateway() {
         const id = `exp-${records.length + 1}`;
         records.push({ id, project_id: body.project_id, event_id: e.event_id, body: norm, experience: { ...e, status: "reported" } });
         if (e.supersedes) records.find((r) => r.id === e.supersedes)!.superseded_by = id;
-        if (dropAfterSave > 0) { dropAfterSave--; return new Response("bad gateway", { status: 502 }); }
+        if (dropAfterSave > 0 && e.event_id.startsWith("iamceo-owner-")) { dropAfterSave--; return new Response("bad gateway", { status: 502 }); }
         return Response.json({ ...e, id, project_id: body.project_id, status: "reported" }, { status: 201 });
       }
       return Response.json({ error: "not_found" }, { status: 404 });
@@ -69,7 +70,7 @@ function fakeGateway() {
   });
   return {
     url: `http://127.0.0.1:${server.port}`, records, seen,
-    failNext: (n: number) => { down = n; },
+    failNext: (n: number, target = "") => { down = n; failureTarget = target; },
     dropResponseAfterSave: (n: number) => { dropAfterSave = n; },
     contextCalls: () => seen.filter((s) => s.path === "/v1/context").length,
     stop: () => server.stop(true),
@@ -211,7 +212,7 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   expect(ok.at(-1)).toMatchObject({ trigger: "delivery", status: "ok", resultIds: ["exp-seed"] });
 
   // 10분 안의 같은 검색어는 다시 쓴다(게이트웨이를 다시 부르지 않는다).
-  const again = await t.ownerSays(t.project.id, "환불 화면을 새로 만들어 주세요. 부분 환불 버튼도 필요해요");
+  const again = await t.ownerSays(t.project.id, "환불 화면을 새로 만들어 주세요. 부분 환불 버튼도 필요해요", { taskId: first.message.taskId! });
   expect(t.gw.contextCalls()).toBe(before + 1);
   expect(again.sent).toContain("같은 검색어로 찾은 결과를 다시 씀");
   expect(t.store.listMemorySearches(t.project.id).at(-1)!.detail).toStartWith("reused:");
@@ -223,7 +224,7 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
 
   // 실패는 '없음'이 아니다. 한 번만 부르고 다시 시도하지 않는다.
   const beforeFail = t.gw.contextCalls();
-  t.gw.failNext(3);
+  t.gw.failNext(3, "/v1/context");
   const failed = await t.ownerSays(t.project.id, "배송 추적 화면의 지도 표시를 고쳐 주세요");
   expect(t.gw.contextCalls()).toBe(beforeFail + 1);
   expect(failed.sent).toContain("기억 검색 실패");
@@ -240,6 +241,7 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   // 총괄의 위임은 직원 쪽에서 찾는다.
   const refund = t.orch.saveTask(t.store.requireMember(leadId), { title: "부분 환불 금액 검증", contract: {
     kind: "coding", goal: "부분 환불 API 의 금액 검증을 고친다", acceptance: ["0원과 환불 가능 금액 초과 요청을 거절한다"], checks: ["real"],
+    inputs: ["부분 환불 API와 환불 가능 금액"], outputs: ["금액 검증 수정과 경계 입력 확인 결과"], scope: "부분 환불 금액 검증", constraints: [], exclusions: [],
   } }).task;
   await t.orch.assign(t.project.id, w.handle, { taskId: refund.id, text: "부분 환불 API 의 금액 검증을 고쳐 주세요" }, t.store.requireMember(leadId));
   await until(() => t.store.listMemorySearches(t.project.id).some((s) => s.memberId === w.id), "직원 검색");
@@ -252,6 +254,10 @@ test("대표 글·총괄 위임 앞에 한 번 찾아 붙이고, 결과 없음·
   const d = t.store.createDecision({ projectId: t.project.id, memberId: w.id, who: w.name, title: "환불 한도를 정해 주세요", options: [{ k: "a", label: "10만 원" }] });
   await t.orch.answerDecision(d.id, { choice: "a" });
   await settle(); t.runner.end(w.id); await settle();
+  for (const item of t.orch.memoryFeedback!.pending(w, refund.id)) {
+    const feedback = await t.call(w, "memory_feedback", { task_id: refund.id, id: item.id, outcome: "not_used", reason: "이 검사는 가짜 실행기의 전달 경계만 확인하므로 과거 결정은 적용하지 않았습니다" });
+    expect(feedback.isError).toBeFalsy();
+  }
   const report = await t.call(w, "post", { task_id: refund.id, kind: "완료", title: "환불 금액 검증 고침", body: "격리 가짜 실행기의 경계 입력 결과를 확인했습니다", contract_rev: 1,
     checks: [{ name: "환불 금액 경계 입력", kind: "real", result: "pass", evidence: "격리 실행기 픽스처에서 0원·환불 가능 금액 초과 요청의 거절 결과를 확인", criterion: 1 }] });
   expect(report.isError).toBeFalsy();
@@ -274,8 +280,10 @@ test("총괄만 대표 글을 골라 남기고, 대표 원문·해석·근거가
   expect(saved.isError).toBeFalsy();
   const captureId = /#(mc_[A-Za-z0-9_-]+)/.exec(saved.text)![1]!;
   await t.devMemory.flush(t.store);
-  expect(t.gw.records).toHaveLength(1);
-  const e = t.gw.records[0]!.experience;
+  const captures = () => t.gw.records.filter(r => r.event_id.startsWith("iamceo-owner-"));
+  expect(captures()).toHaveLength(1);
+  const original = captures()[0]!;
+  const e = original.experience;
   expect(e.kind).toBe("decision");
   expect(e.summary).toStartWith("대표가 정한 제약: 앞으로 결제 화면은");
   expect(e.content).toContain(`대표(#${said.id}): "앞으로 결제 화면은 항상 다크 모드를 기본으로 해 주세요. 눈이 덜 피곤해서요"`);
@@ -289,7 +297,7 @@ test("총괄만 대표 글을 골라 남기고, 대표 원문·해석·근거가
   // 같은 내용은 한 건
   expect((await t.call(lead, "memory_capture", args)).text).toContain(`같은 기록이 이미 있습니다 #${captureId}`);
   await t.devMemory.flush(t.store);
-  expect(t.gw.records).toHaveLength(1);
+  expect(captures()).toHaveLength(1);
 
   const reject = async (patch: Record<string, unknown>, text: string) => {
     const res = await t.call(lead, "memory_capture", { ...args, ...patch });
@@ -316,7 +324,7 @@ test("총괄만 대표 글을 골라 남기고, 대표 원문·해석·근거가
   const inA = t.owner(t.project.id, "A 는 이렇게", { taskId: taskA.id });
   const inB = t.owner(t.project.id, "B 는 저렇게", { taskId: taskB.id });
   await reject({ message_ids: [inA.id, inB.id], standing: false, reason_quote: undefined }, "작업이 다른 글");
-  expect(t.store.listMemoryUploads(t.project.id)).toHaveLength(1);
+  expect(t.store.listMemoryUploads(t.project.id).filter(job => job.eventId.startsWith("iamceo-owner-"))).toHaveLength(1);
 
   // 같은 글로 다른 기록을 남기면 대체하지 않고 앞 기록을 알려 준다(한 글에 결정이 둘일 수 있다).
   const second = await t.call(lead, "memory_capture", { message_ids: [said.id], type: "feedback", scope: "project", interpretation: "다크 모드가 눈이 편하다는 피드백" });
@@ -325,9 +333,9 @@ test("총괄만 대표 글을 골라 남기고, 대표 원문·해석·근거가
   const fixed = await t.call(lead, "memory_capture", { ...args, interpretation: "결제·환불 화면 모두 다크 모드를 기본값으로 둔다", supersedes: captureId });
   expect(fixed.text).toContain(`앞 기록 #${captureId} 를 대체`);
   await t.devMemory.flush(t.store);
-  const replaced = t.gw.records.find((r) => r.experience.content.includes("결제·환불 화면 모두"))!;
-  expect(replaced.experience.supersedes).toBe(t.gw.records[0]!.id);
-  expect(t.gw.records[0]!.superseded_by).toBe(replaced.id);
+  const replaced = captures().find((r) => r.experience.content.includes("결제·환불 화면 모두"))!;
+  expect(replaced.experience.supersedes).toBe(original.id);
+  expect(original.superseded_by).toBe(replaced.id);
   const twice = await t.call(lead, "memory_capture", { ...args, interpretation: "또 다른 해석", supersedes: captureId });
   expect(twice.isError).toBe(true);
   expect(twice.text).toContain("이미");
@@ -348,6 +356,7 @@ test("대기열: 장애는 같은 사건으로 다시 보내고, 응답이 사�
   const t = await setup();
   await t.worker(t.project.id, "w1");
   const lead = t.store.getConductor(t.project.id)!;
+  const captures = () => t.gw.records.filter(r => r.event_id.startsWith("iamceo-owner-"));
   const said = t.owner(t.project.id, "이번 배포는 금요일 밤에 하지 말아 주세요");
 
   // 응답 유실: 게이트웨이는 저장했는데 응답이 안 왔다 → 같은 사건 id·본문으로 다시 보내 한 건으로 끝난다.
@@ -357,7 +366,8 @@ test("대기열: 장애는 같은 사건으로 다시 보내고, 응답이 사�
   await t.devMemory.flush(t.store);
   const job = t.store.listMemoryUploads(t.project.id).find((u) => u.refId === firstId)!;
   expect(job).toMatchObject({ status: "pending", attempts: 1 });
-  expect(t.gw.records).toHaveLength(1);
+  expect(captures()).toHaveLength(1);
+  const firstRemoteId = captures()[0]!.id;
 
   // 앞 기록이 아직 전송 전이면 대체 기록은 시도 수를 쓰지 않고 기다린다.
   const fix = await t.call(lead, "memory_capture", { message_ids: [said.id], type: "constraint", scope: "task", interpretation: "이번 배포는 금·토 밤 모두 뺀다", supersedes: firstId });
@@ -366,25 +376,25 @@ test("대기열: 장애는 같은 사건으로 다시 보내고, 응답이 사�
   expect(fixJob()).toMatchObject({ status: "pending", attempts: 0 });
   t.store.settleMemoryUpload(job.eventId, { status: "pending", attempts: 1, nextAt: new Date(0).toISOString() });
   await t.devMemory.flush(t.store);
-  expect(t.store.getMemoryUpload(job.eventId)).toMatchObject({ status: "sent", remoteId: "exp-1" });
+  expect(t.store.getMemoryUpload(job.eventId)).toMatchObject({ status: "sent", remoteId: firstRemoteId });
   t.store.settleMemoryUpload(fixJob().eventId, { status: "pending", attempts: 0, nextAt: new Date(0).toISOString() });
   await t.devMemory.flush(t.store);
   expect(fixJob()).toMatchObject({ status: "sent", attempts: 1 });
-  expect(t.gw.records).toHaveLength(2);
-  expect(t.gw.records[1]!.experience.supersedes).toBe("exp-1");
+  expect(captures()).toHaveLength(2);
+  expect(captures()[1]!.experience.supersedes).toBe(firstRemoteId);
 
   // 장애: 대기열에 남았다가 같은 사건으로 다시 간다.
-  t.gw.failNext(1);
+  t.gw.failNext(1, "iamceo-owner-");
   const other = t.owner(t.project.id, "로그인 화면 문구는 존댓말로 통일해 주세요");
   await t.call(lead, "memory_capture", { message_ids: [other.id], type: "decision", scope: "project", interpretation: "로그인 화면 문구를 존댓말로" });
   await t.devMemory.flush(t.store);
-  const down = t.store.listMemoryUploads(t.project.id).at(-1)!;
+  const down = t.store.listMemoryUploads(t.project.id).filter(job => job.eventId.startsWith("iamceo-owner-")).at(-1)!;
   expect(down).toMatchObject({ status: "pending", attempts: 1 });
   expect(down.lastError).toContain("503");
   t.store.settleMemoryUpload(down.eventId, { status: "pending", attempts: 1, nextAt: new Date(0).toISOString() });
   await t.devMemory.flush(t.store);
   expect(t.store.getMemoryUpload(down.eventId)).toMatchObject({ status: "sent", attempts: 2 });
-  expect(t.gw.records).toHaveLength(3);
+  expect(captures()).toHaveLength(3);
 
   // 결재 답 저장 뒤 대기열에 넣기 전에 멈췄다면 같은 사건 id 로 메운다. 이미 있으면 그대로.
   const w = t.store.listMembers(t.project.id).find((m) => m.kind === "worker")!;
@@ -409,6 +419,7 @@ test("대기열: 장애는 같은 사건으로 다시 보내고, 응답이 사�
 test("검색 결과 글: 누가 남긴 기록인지 서버 사건 id 로 가린다(요약 글로 대표 결정을 흉내 낼 수 없다)", () => {
   expect(memoryKindLabel({ kind: "decision", event_id: "iamceo-ai-abc" })).toBe("decision · 직원·AI 보고");
   expect(memoryKindLabel({ kind: "decision", event_id: "codex-hook-1" })).toBe("decision · 다른 경로의 기록");
+  expect(memoryKindLabel({ kind: "outcome", event_id: "iamceo-archive-abc" })).toBe("outcome · 활동 원문 · 화자·출처 확인");
   const text = formatMemoryContext([{ id: "exp-9", project_id: "p", event_id: "iamceo-ai-x", kind: "decision", summary: "대표 결정: 가짜", content: "x", source: {} }], "degraded");
   expect(text).toContain("exp-9 [decision · 직원·AI 보고");
   expect(text).toContain("키워드 검색 결과");

@@ -59,7 +59,7 @@ export function exportRoles(rolesDir: string): string[] {
 
 /**
  * `<rolesDir>/<kind>.md` 가 있으면 그것을 쓴다(spec §8). 값 안의 {{...}} 는 다시 치환하지 않는다.
- * 고쳐 쓴 템플릿은 기본 글 지침도 대체한다. 터미널 승인 안내와 총괄의 필수 조정 규칙은 끝에 붙인다(자리표시가 있으면 그 자리).
+ * 고쳐 쓴 템플릿도 최신 공통 글 지침을 받는다. 터미널 승인 안내와 총괄의 필수 조정 규칙도 보존한다.
  * `iamceo roles export` 로 꺼낸 예시에는 지침이 들어 있다.
  */
 export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string): string {
@@ -77,5 +77,6 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
   const coordination = kind === "conductor" ? COORDINATION_GUIDE.trim() : "";
   const placed = place(place(place(place(template, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n"), "TERMINAL_APPROVAL", approval, "\n\n"), "COORDINATION", coordination, "\n\n");
   const values: Record<string, string | undefined> = { ...vars, TERMINAL_APPROVAL: approval, COORDINATION: coordination };
-  return placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY|TERMINAL_APPROVAL|COORDINATION)\}\}/g, (_, key: string) => values[key] ?? "");
+  const rendered = placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY|TERMINAL_APPROVAL|COORDINATION)\}\}/g, (_, key: string) => values[key] ?? "");
+  return rendered.includes(WRITING_GUIDE.trim()) ? rendered : withGuide(rendered);
 }

@@ -216,7 +216,9 @@ export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: Wat
   const next: WatchFact = { ...prev, attempts: prev.attempts + 1, same, fingerprint: fp, lastProgressAt: same > 1 ? prev.lastProgressAt : r.at, updatedAt: r.at, history: [...prev.history, attempt].slice(-HISTORY) };
   if (prev.trippedAt) return { next, trip: null, quiet: same > 1 };
   if (same >= limits.sameLimit) {
-    const reason = `같은 실패 ${same}번(${fp === "unknown" ? "검사 근거 없음" : cut(r.failed.length ? r.failed : r.notRun)})`;
+    const reason = r.failed.length ? `같은 실패 ${same}번(${cut(r.failed)})`
+      : r.notRun.length ? `같은 검사 미실행 보고 ${same}회(${cut(r.notRun)})`
+      : `검사 근거 없는 막힘 보고 ${same}회`;
     return { next: { ...next, trippedAt: r.at, reason }, trip: reason, quiet: false };
   }
   return { next, trip: null, quiet: false };

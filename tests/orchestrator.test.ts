@@ -1,3 +1,4 @@
+import { WRITING_GUIDE } from "../server/roles.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,7 +186,7 @@ describe("턴 왕복", () => {
     expect(t.starts()[1]!.sessionFlag).toBeNull();
   });
 
-  test("역할 규칙 파일은 새 세션과 재개 세션 모두 자료 한 개 지침으로 다시 쓴다", async () => {
+  test("역할 규칙 파일은 새 세션과 재개 세션 모두 최신 공통 작성 지침으로 다시 쓴다", async () => {
     const t = await setup();
     await t.orch.sendUserMessage(t.project.id, { text: "첫 일 @fake:text=첫답변" });
     const lead = t.store.getConductor(t.project.id)!;
@@ -193,7 +194,7 @@ describe("턴 왕복", () => {
     const rulesPath = join(t.home, "run", `${lead.id}.rules.md`);
     expect(t.starts()[0]!.args).toContain(rulesPath);
     const fresh = readFileSync(rulesPath, "utf8");
-    expect(fresh).toContain("대표용 자료는 기본 한 개다. 같은 본문을 `html`과 `md`로 두 번 올리지 않는다.");
+    expect(fresh).toContain(WRITING_GUIDE.trim());
     expect(fresh).not.toContain("`md` 짝");
     // 고치기 전 판이 남긴 규칙 파일(같은 본문의 md 짝 강제)을 흉내 낸다. 재개 턴은 지금 지침으로 다시 쓴다.
     writeFileSync(rulesPath, "옛 규칙: html 자료에는 같은 내용의 `md` 짝을 함께 올린다.\n");
@@ -203,7 +204,7 @@ describe("턴 왕복", () => {
     expect(t.starts()[1]!.args).toContain(rulesPath);
     const resumed = readFileSync(rulesPath, "utf8");
     expect(resumed).not.toContain("`md` 짝");
-    expect(resumed).toContain("대표용 자료는 기본 한 개다.");
+    expect(resumed).toContain(WRITING_GUIDE.trim());
   });
 
   test("시스템 프롬프트·MCP 설정 파일을 계약대로 쓴다", async () => {

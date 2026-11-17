@@ -68,28 +68,15 @@ function Card({ title, count, more, children }: { title: string; count?: number;
 // ---- 지금 상황 ----
 
 function NowCard({ now, at }: { now: string; at: string | null }) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [long, setLong] = useState(false);
-  const [open, setOpen] = useState(false);
-  useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (el && !open) setLong(el.scrollHeight > el.clientHeight + 1);
-  }, [now, open]);
   return (
     <Glass as="section" level="regular" tint className="hm-card hm-now" aria-label="지금 상황">
       <header className="hm-head">
         <h2 className="hm-head__title">지금 상황</h2>
         <Time iso={at} relative className="hm-head__time" />
       </header>
-      <div ref={bodyRef} className="hm-now__body" data-open={open ? "" : undefined}>
+      <div className="hm-now__body">
         <Markdown text={now} />
       </div>
-      {long ? (
-        <button type="button" className="hm-more-btn" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-          {open ? "접기" : "더 보기"}
-          <Chevron />
-        </button>
-      ) : null}
     </Glass>
   );
 }
