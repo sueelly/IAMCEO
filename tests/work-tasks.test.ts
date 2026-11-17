@@ -133,8 +133,12 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
       const r = await orch.handleAgentTool(lead, "work_set", { sec: "doing", title, who: "철수" });
       return /대화 작업 #(tk_w_[A-Za-z0-9_-]+)/.exec(r.text)![1]!;
     };
+    const setCriteria = async (taskId: string, acceptance: string) => {
+      const result = await orch.handleAgentTool(lead, "task", { task_id: taskId, contract: { kind: "other", goal: t.store.requireTask(taskId).title, acceptance: [acceptance], checks: ["real"] } });
+      expect(result.isError, result.text).toBeFalsy();
+    };
     const taskMessages = (taskId: string) => t.store.listMessagePage(t.project.id, { scope: { kind: "task", taskId } }).items;
-    return { ...t, orch, lead, w, deliveries, chip, taskMessages };
+    return { ...t, orch, lead, w, deliveries, chip, setCriteria, taskMessages };
   }
 
   test("업무가 하나도 없는 프로젝트에서도 지시·총괄 글은 업무 없이 남지 않는다: 빼면 거절하고, task 로 새 업무를 만들어 넣는다", async () => {
@@ -148,6 +152,7 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     // 같은 제목으로 다시 부르면(응답 유실·재시도) 새로 만들지 않는다
     expect(/#(tk_[A-Za-z0-9_-]+)/.exec((await t.orch.handleAgentTool(t.lead, "task", { title: "로그인 확인" })).text)![1]).toBe(id);
     expect(t.store.listTasks(t.project.id)).toHaveLength(1);
+    await t.setCriteria(id, "로그인 성공 화면과 계정 표시를 확인한다");
     expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "확인해 주세요", task_id: id })).isError).toBeFalsy();
     expect(t.store.deliveryTaskId(t.deliveries()[0]!.id)).toBe(id);
     expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "맡겼습니다" })).isError).toBe(true);
@@ -159,6 +164,7 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     const t = await team();
     const a = await t.chip("작업A");
     const b = await t.chip("작업B");
+    await t.setCriteria(a, "작업A 결과와 합치기 판단을 같은 업무에 보고한다");
 
     const miss = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "A 하세요" });
     expect(miss.isError).toBe(true);
@@ -183,7 +189,8 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     expect(leadNull.text).toContain("null 로 '전체'에 두지 않");
 
     // 직원 보고·결재·자료
-    expect((await t.orch.handleAgentTool(t.w, "post", { kind: "완료", title: "A 끝", task_id: a })).isError).toBeFalsy();
+    expect((await t.orch.handleAgentTool(t.w, "post", { kind: "완료", title: "A 끝", task_id: a, contract_rev: 1,
+      checks: [{ name: "A 결과 확인", kind: "real", result: "pass", evidence: "격리 작업A의 결과 자료와 합치기 판단을 확인", criterion: 1 }] })).isError).toBeFalsy();
     expect((await t.orch.handleAgentTool(t.w, "ask", { title: "A 합칠까요?", detail: "합칠지", task_id: a })).isError).toBeFalsy();
     expect((await t.orch.handleAgentTool(t.w, "file", { title: "A 결과", content: "# A", task_id: a })).isError).toBeFalsy();
 
@@ -203,10 +210,12 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     const t = await team();
     const a = await t.chip("작업A");
     const b = await t.chip("작업B");
+    await t.setCriteria(b, "B 버튼이 파란색으로 표시된다");
     const onB = await t.orch.sendUserMessage(t.project.id, { text: "B 버튼 색을 파랗게 바꿔 줘", taskId: b });
     expect(onB.taskId).toBe(b);
     const whole = await t.orch.sendUserMessage(t.project.id, { text: "전체에서 보낸 다른 부탁이야", taskId: null });
     const auto = t.store.getTask(whole.taskId!)!;
+    await t.setCriteria(auto.id, "대표의 다른 부탁에 대한 결과를 원 지시 업무에 보고한다");
     expect(auto).toMatchObject({ title: "전체에서 보낸 다른 부탁이야", origin: "auto", memberId: null, mergedInto: null });
 
     const quoted = await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "B 색 바꾸기", user_quote: "B 버튼 색을 파랗게 바꿔 줘" });
@@ -226,6 +235,7 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
 
     // 총괄이 그 글을 이미 있는 업무 C 의 일로 분류하면: 그 업무에 대표 글만 있으니 글을 C 로 옮기고 기록을 남긴다(원문은 그대로)
     const c = await t.chip("작업C");
+    await t.setCriteria(c, "대표의 다른 부탁을 작업C에 분류하여 결과를 보고한다");
     const before = t.store.getMessage(whole.id)!;
     expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "다른 부탁", user_quote: "전체에서 보낸 다른 부탁이야", task_id: c })).isError).toBeFalsy();
     const after = t.store.getMessage(whole.id)!;
@@ -247,6 +257,7 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     expect((await t.orch.handleAgentTool(t.w, "post", { kind: "진행", title: "양식 초안 작성 중", task_id: auto })).isError).toBeFalsy();
     const made = await t.orch.handleAgentTool(t.lead, "task", { title: "견적서 양식 개편" });
     const next = /#(tk_[A-Za-z0-9_-]+)/.exec(made.text)![1]!;
+    await t.setCriteria(next, "견적서 양식에 항목·금액·합계 입력란이 있다");
     expect((await t.orch.handleAgentTool(t.lead, "team_assign", { member: "w1", text: "개편으로 이어서", user_quote: "견적서 양식 만들어 줘", task_id: next })).isError).toBeFalsy();
     expect(t.store.getMessage(whole.id)!.taskId).toBe(auto);
     expect(t.store.getTask(auto)!.mergedInto).toBeNull();
@@ -259,6 +270,7 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
   test("결재 닫기의 후속 지시는 그 결재 카드의 작업을 잇는다", async () => {
     const t = await team();
     const a = await t.chip("작업A");
+    await t.setCriteria(a, "대표가 정한 첫 번째 방식으로 작업A를 수행한다");
     const asked = await t.orch.handleAgentTool(t.w, "ask", { title: "A 방식?", detail: "고르기", task_id: a });
     const decisionId = /#(d_[A-Za-z0-9_-]+)/.exec(asked.text)![1]!;
     const rep = await t.orch.sendUserMessage(t.project.id, { text: "A 는 첫 번째 방식으로 해", taskId: null });

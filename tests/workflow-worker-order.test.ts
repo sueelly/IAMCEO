@@ -4,7 +4,9 @@ import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
 type Fixture = Awaited<ReturnType<typeof createQueueStatusFixture>>;
 
 function task(f: Fixture, title: string, memberId = f.member.id, parentTaskId?: string) {
-  return f.store.saveTask({ projectId: f.project.id, memberId, who: "Fixture", title, branch: `fixture/${title}`, parentTaskId }).task;
+  const saved = f.store.saveTask({ projectId: f.project.id, memberId, who: "Fixture", title, branch: `fixture/${title}`, parentTaskId }).task;
+  f.store.saveTaskContract(saved.id, { kind: "other", goal: `Finish ${title}`, acceptance: ["Assigned work is ready for integration"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+  return saved;
 }
 
 function instruction(f: Fixture, taskId: string, text: string, memberId = f.member.id, urgent = false) {
@@ -30,7 +32,7 @@ test("a worker starts the next task only after the earlier task is done, not mer
     expect(f.store.requireDelivery(first.id).status).toBe("delivered");
     expect(f.store.requireDelivery(second.id)).toMatchObject({ status: "queued", attempts: 0 });
     expect(f.writes[0]!.text).not.toContain("Second work");
-    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", taskId: a.id, title: "First branch ready for integration" });
+    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", taskId: a.id, title: "First branch ready for integration", contractRev: 1, checks: [{ kind: "other", name: "Branch readiness", result: "pass", evidence: "Assigned branch work verified before integration", criterion: 1 }] });
     f.done();
     await until(() => f.store.listActivity(f.member.id).some(a => a.kind === "turn_end"));
     await f.orch.pump(f.member.id);
@@ -65,7 +67,7 @@ test("a related child can continue unfinished work without admitting an independ
     await f.orch.pump(f.member.id);
     const later = instruction(f, b.id, "Independent work");
     const continuation = instruction(f, child.id, "Child continuation");
-    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", taskId: a.id, title: "Parent branch needs child verification" });
+    await f.orch.recordPost(f.store.requireMember(f.member.id), { kind: "완료", taskId: a.id, title: "Parent branch needs child verification", contractRev: 1, checks: [{ kind: "other", name: "Parent readiness", result: "pass", evidence: "Parent branch work verified; child review remains", criterion: 1 }] });
     f.done();
     await until(() => f.store.requireDelivery(continuation.id).status === "delivered");
     expect(f.store.requireDelivery(later.id)).toMatchObject({ status: "queued", attempts: 0 });

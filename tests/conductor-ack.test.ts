@@ -53,6 +53,10 @@ function fixture(kind: "conductor" | "root" = "conductor") {
   const runner = new AckRunner();
   const makeOrch = () => new Orchestrator({ config, store, runners: new Map([["core", runner]]), timings: { tickMs: 60_000, healthMs: 60_000 } });
   let orch = makeOrch();
+  const taskId = defaultTaskId(store, project.id);
+  orch.saveTask(lead, { taskId, contract: { kind: "other", goal: "결제 오류의 재현 결과와 수정 필요 여부를 보고한다",
+    acceptance: ["결제 요청에서 확인한 오류와 재현 결과를 구분해 보고한다"], checks: ["real"] } });
+  const reviewChecks = [{ name: "결제 오류 재현", kind: "real" as const, result: "pass" as const, evidence: "격리 실행기에서 결제 요청의 오류와 재현 결과를 확인", criterion: 1 }];
   let seq = 0;
   const notices = () => store.listMessages(project.id, { limit: 500 }).filter(m => m.id.startsWith("msg_delegation_ack_"));
   const member = () => store.createMember({ projectId: project.id, handle: `w${++seq}`, name: `검토 ${seq}`, kind: "worker", origin: "runner", backend: "core", status: "idle", cwd: project.cwd, paneId: `pane-${seq}`, sessionId: `session-${seq}` });
@@ -72,7 +76,7 @@ function fixture(kind: "conductor" | "root" = "conductor") {
     orch = makeOrch(); await orch.recover();
   };
   cleanups.push(async () => { await orch.shutdown(); db.close(); await isolated.stop(); });
-  return { get orch() { return orch; }, get store() { return store; }, project, lead, runner, member, tool, start, end, restart, notices };
+  return { get orch() { return orch; }, get store() { return store; }, project, lead, runner, member, tool, start, end, restart, notices, taskId, reviewChecks };
 }
 
 for (const kind of ["conductor", "root"] as const) {
@@ -81,8 +85,8 @@ for (const kind of ["conductor", "root"] as const) {
     await f.start();
     if (kind === "root") {
       // 본사는 현재 팀 도구를 노출하지 않는다. 서버의 방어 규칙 자체는 같은 수준으로 검증한다.
-      await f.orch.assign(f.project.id, w.handle, { text: "결제 오류 확인\n둘째 줄은 요약하지 않는다" }, f.lead);
-      await f.orch.assign(f.project.id, other.handle, { text: "가".repeat(80) }, f.lead);
+      await f.orch.assign(f.project.id, w.handle, { taskId: f.taskId, text: "결제 오류 확인\n둘째 줄은 요약하지 않는다" }, f.lead);
+      await f.orch.assign(f.project.id, other.handle, { taskId: f.taskId, text: "가".repeat(80) }, f.lead);
     } else {
       await f.tool("team_assign", { member: w.handle, text: "결제 오류 확인\n둘째 줄은 요약하지 않는다" });
       await f.tool("team_assign", { member: other.handle, text: "가".repeat(80) });
@@ -124,7 +128,7 @@ for (const postFirst of [true, false]) {
 
 test("직원 보고로 깨어난 턴에 다음 직원에게 맡기면 시스템 줄을 남기지 않는다", async () => {
   const f = fixture(); const w = f.member(), next = f.member();
-  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: defaultTaskId(f.store, f.project.id) });
+  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: f.taskId, contractRev: 1, checks: f.reviewChecks });
   await until(() => f.runner.busy.has(f.lead.id));
   await f.tool("team_assign", { member: next.handle, text: "확인된 오류 수정" });
   await f.end(); expect(f.notices()).toHaveLength(0);
@@ -135,7 +139,7 @@ test("보고 턴에 묶여 온 wake=false 대표 답은 대표가 깨운 턴으�
   const decision = f.store.createDecision({ projectId: f.project.id, memberId: f.lead.id, who: f.lead.name, title: "검토" });
   f.store.answerDecision(decision.id, { note: "진행" });
   f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "answer", text: '[대표 답(원문) \'검토\'] "진행"', wake: false, refType: "decision", refId: decision.id });
-  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: defaultTaskId(f.store, f.project.id) });
+  await f.orch.recordPost(w, { kind: "완료", title: "검토 완료", taskId: f.taskId, contractRev: 1, checks: f.reviewChecks });
   await until(() => f.runner.busy.has(f.lead.id));
   await f.tool("team_assign", { member: next.handle, text: "다음 검토" });
   await f.end(); expect(f.notices()).toHaveLength(0);
@@ -207,8 +211,9 @@ test("지시 없는 team_add·team_resume와 실패한 배정은 확인 안내�
 
 test("신규 직원 기동 실패로 취소된 첫 지시는 배정으로 알리지 않는다", async () => {
   const f = fixture(); await f.start(); f.runner.failStart = true;
-  const result = await f.orch.handleAgentTool(f.lead, "team_add", { name: "결제 구현", role: "결제", first_instruction: "새 결제 구현" });
+  const result = await f.orch.handleAgentTool(f.lead, "team_add", { name: "결제 구현", role: "결제", task_id: f.taskId, first_instruction: "새 결제 구현" });
   expect(result.isError).toBe(true);
+  expect(result.text).toContain("fixture: start rejected");
   await f.end(); expect(f.notices()).toHaveLength(0);
 });
 
@@ -218,8 +223,8 @@ test("대표 결재 답 턴의 ask_close follow_up도 배정 안내를 남긴다
   await f.orch.answerDecision(pending.decision.id, { note: "검토를 시작하도록 승인합니다" });
   await until(() => f.runner.busy.has(f.lead.id));
   // 대화에서 정해진 별도 카드의 후속 지시를 같은 대표 원문에 연결한다.
-  const source = f.store.createMessage({ projectId: f.project.id, mine: true, who: "대표", kind: "나", body: "결제 오류를 검토해 주세요" });
-  const other = f.store.createDecision({ projectId: f.project.id, memberId: w.id, who: w.name, title: "중복 질문" });
+  const source = f.store.createMessage({ projectId: f.project.id, taskId: f.taskId, mine: true, who: "대표", kind: "나", body: "결제 오류를 검토해 주세요" });
+  const other = f.store.createDecision({ projectId: f.project.id, taskId: f.taskId, memberId: w.id, who: w.name, title: "중복 질문" });
   await f.tool("ask_close", { id: other.id, kind: "decided", reason: "대표가 정함", user_quote: source.body,
     follow_up: { kind: "instruction", member_id: w.id, text: "결제 오류 검토", source_message_id: source.id } });
   await f.end(); expect(f.notices().map(m => m.body)).toEqual([`총괄이 ${w.name}에게 맡겼습니다: 결제 오류 검토`]);

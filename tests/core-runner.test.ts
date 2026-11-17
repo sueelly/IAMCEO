@@ -612,6 +612,21 @@ describe("delivery evidence and guarded repair", () => {
     writeFileSync(d.path, d.user(d.dispatch.wireText, "late-receipt"), { flag: "a" });
     expect(await runner.repairDelivery(member(), request)).toMatchObject({ ok: false, deliveryEffect: "not_written" }); expect(prepared).toBe(0); expect(d.f.calls.some(c => c.method === "terminal.send")).toBe(false);
   });
+  test("a declined final admission preserves repair state without consuming its durable write attempt", async () => {
+    const d = await deliveryFixture(); await d.runner.shutdown(); d.dispatch.transportState = "rejected";
+    let prepared = 0;
+    const runner = d.f.runner(10000, { recoveryStore: d.recovery.port, quiescence: () => ({ originalWrite: "rejected", externalInput: false }), repair: { load: () => d.dispatch, prepare: () => { prepared++; return true; } } });
+    await runner.start(member({ paneId: d.started.paneId, sessionId: d.started.sessionId }), d.f.opts);
+    const inspection = await runner.inspectDelivery(member(), d.dispatch);
+    const request: DeliveryRepair = { action: "resend", dispatchId: "dispatch", expectedRecoveryVersion: 1, expectedSessionGeneration: 1, expectedSessionId: d.started.sessionId, expectedTerminalId: d.started.paneId, expectedInputEpoch: inspection.snapshot!.inputEpoch! };
+    expect(await runner.repairDelivery(member(), request, { beforeWrite: () => false })).toMatchObject({ ok: false, reason: "busy", deliveryEffect: "not_written" });
+    expect(prepared).toBe(0);
+    expect(runner.observationState(member().id)!.inputEpoch).toBe(request.expectedInputEpoch);
+    expect(d.f.calls.filter(call => call.method === "terminal.send")).toHaveLength(0);
+    expect(await runner.repairDelivery(member(), request, { beforeWrite: () => true })).toMatchObject({ ok: true });
+    expect(prepared).toBe(1);
+    expect(d.f.calls.filter(call => call.method === "terminal.send")).toHaveLength(1);
+  });
   test("known pre-write absence resends exact stored wire only after durable prepare", async () => {
     const d = await deliveryFixture(); await d.runner.shutdown(); d.dispatch.transportState = "rejected"; let prepared = false;
     const runner = d.f.runner(10000, { recoveryStore: d.recovery.port, quiescence: () => ({ originalWrite: "rejected", externalInput: false }), repair: { load: (_id, request) => request.expectedRecoveryVersion === 1 ? d.dispatch : null, prepare: () => { prepared = true; return true; } } });
@@ -648,6 +663,19 @@ describe("compact control and shared native binding", () => {
     // The dim follow-up suggestion would read as a draft on core's plain-text screen; off for this process only.
     expect(launched.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBe("false");
     expect(launched.argv.join(" ")).not.toContain("PROMPT_SUGGESTION");
+  });
+  test("a declined final admission leaves compact queued without a physical turn or baseline mutation", async () => {
+    const d = await deliveryFixture(), store = compactStore(); await d.runner.shutdown(); d.recovery.dispatches([]);
+    const runner = d.f.runner(10000, { compactStore: store.port });
+    await runner.start(member({ paneId: d.started.paneId, sessionId: d.started.sessionId }), d.f.opts);
+    const epoch = runner.observationState(member().id)!.inputEpoch;
+    expect(await runner.compact(member(), "focus", { ...d.f.opts, beforeWrite: () => false })).toMatchObject({ ok: false, reason: "busy", deliveryEffect: "not_written" });
+    expect(store.states.size).toBe(0);
+    expect(runner.occupiesTurnSlot(member().id)).toBe(false);
+    expect(runner.observationState(member().id)!.inputEpoch).toBe(epoch);
+    expect(d.f.calls.filter(call => call.method === "terminal.send")).toHaveLength(0);
+    expect(await runner.compact(member(), "focus", { ...d.f.opts, beforeWrite: () => true })).toMatchObject({ ok: true });
+    expect(d.f.calls.filter(call => call.method === "terminal.send")).toHaveLength(1);
   });
   test("Claude compact sends one clean command; only new boundary plus settled emits compacted", async () => {
     const d = await deliveryFixture(), store = compactStore(); await d.runner.shutdown(); d.recovery.dispatches([]);

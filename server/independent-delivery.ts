@@ -7,6 +7,23 @@ import { ApiError, type Store } from "./store.ts";
 import { taskScopeForDeliveryIds } from "./task-continuation.ts";
 
 type Authorization = NonNullable<WorkflowAssignmentRequest["independent"]>;
+interface InFlightAuthorization { dispatchId: string; deliveryIds: ReadonlySet<string> }
+
+function inFlightAuthorization(store: Store, delivery: Delivery, dispatchId: string): InFlightAuthorization | null {
+  const dispatch = store.getDispatch(dispatchId), run = store.getExecutionJournal(dispatchId);
+  if (!dispatch || !run || dispatch.transportState !== "write_started" || dispatch.memberId !== delivery.memberId || dispatch.projectId !== delivery.projectId || !dispatch.items.some(item => item.deliveryId === delivery.id)) return null;
+  const member = store.requireMember(delivery.memberId), generation = store.memberRevisions(member.id).sessionGeneration;
+  if (member.projectId !== delivery.projectId || dispatch.identity.sessionGeneration !== generation || dispatch.identity.terminalId !== member.paneId || dispatch.identity.sessionId !== member.sessionId) return null;
+  if (run.runId !== dispatchId || run.memberId !== delivery.memberId || run.projectId !== delivery.projectId || run.phase !== "starting" || run.inputReceivedAt !== null || run.startedAt !== null || run.endedAt !== null || run.lastProgressAt !== null || run.result !== null || canonicalAgentRequest(run.identity) !== canonicalAgentRequest(dispatch.identity)) return null;
+  const deliveryIds = new Set(dispatch.items.map(item => item.deliveryId));
+  if (deliveryIds.size !== dispatch.items.length || run.deliveryIds.length !== deliveryIds.size || new Set(run.deliveryIds).size !== deliveryIds.size || !run.deliveryIds.every(id => deliveryIds.has(id))) return null;
+  for (const id of deliveryIds) {
+    const input = store.getDelivery(id);
+    if (!input || input.memberId !== member.id || input.projectId !== delivery.projectId || input.status !== "delivering" || store.getDeliveryRecovery(id)?.phase !== "none") return null;
+    if (store.listDeliveryDispatches(id).some(other => other.dispatchId !== dispatchId && ["prepared", "write_started", "unknown"].includes(other.transportState))) return null;
+  }
+  return { dispatchId, deliveryIds };
+}
 
 function lineage(store: Store, projectId: string, taskId: string): Task[] {
   const chain: Task[] = [], seen = new Set<string>();
@@ -24,7 +41,7 @@ function lineage(store: Store, projectId: string, taskId: string): Task[] {
 
 /** A different employee's local input fence cannot protect this employee.
  * Inspect all same-family inputs, without a recent-message window or side effects. */
-function requireUnoccupiedFamily(store: Store, projectId: string, selected: Delivery, family: ReadonlySet<string>): void {
+function requireUnoccupiedFamily(store: Store, projectId: string, selected: Delivery, family: ReadonlySet<string>, inFlight?: InFlightAuthorization): void {
   const related = new Map<string, boolean>();
   const inFamily = (taskId: string): boolean => {
     if (related.has(taskId)) return related.get(taskId)!;
@@ -43,7 +60,7 @@ function requireUnoccupiedFamily(store: Store, projectId: string, selected: Deli
   const refuse = () => { throw new ApiError(409, "같은 계통에서 수신·실행 중인 입력을 먼저 확인해 주세요"); };
   const physical = new Set(store.physicalDeliveryIds());
   for (const input of store.listDeliveries(projectId)) {
-    if (input.id === selected.id || !input.wake || !input.taskId || !inFamily(input.taskId)) continue;
+    if (input.id === selected.id || inFlight?.deliveryIds.has(input.id) || !input.wake || !input.taskId || !inFamily(input.taskId)) continue;
     if (input.status === "delivering" || physical.has(input.id)) refuse();
     const recovery = store.getDeliveryRecovery(input.id);
     if (recovery && ["checking", "waiting", "needs_owner"].includes(recovery.phase)) refuse();
@@ -55,16 +72,18 @@ function requireUnoccupiedFamily(store: Store, projectId: string, selected: Deli
     }
   }
   for (const run of store.listPendingExecutions()) {
+    if (run.runId === inFlight?.dispatchId) continue;
     if (run.projectId === projectId && !run.endedAt && taskScopeForDeliveryIds(store, run.deliveryIds).some(inFamily)) refuse();
   }
 }
 
 /** Validate only the order exception. Runner ownership, leases, approvals and
  * uncertain writes remain the ordinary pump's independent admission gates. */
-function authorizationRevision(store: Store, projectId: string, delivery: Delivery, authorization: Authorization): string {
+function authorizationRevision(store: Store, projectId: string, delivery: Delivery, authorization: Authorization, inFlight?: InFlightAuthorization): string {
   const project = store.requireProject(projectId), member = store.requireMember(delivery.memberId);
   if (delivery.projectId !== projectId || member.projectId !== projectId || member.kind !== "worker" || !delivery.taskId) throw new ApiError(409, "이 프로젝트 직원의 업무 지시만 확인할 수 있습니다");
   if (project.archived || !project.runnerEnabled) throw new ApiError(409, "실행 중인 프로젝트에서만 독립 지시를 확인할 수 있습니다");
+  if (store.pendingTaskFailureDecision(delivery.taskId)) throw new ApiError(409, "대상 업무의 반복 실패 결재를 먼저 확인해 주세요");
   if (delivery.kind !== "instruction" || !delivery.wake || delivery.urgent || !ordinaryInputAdmitted(store, delivery.id)) throw new ApiError(409, "보호된 입력이나 긴급 지시의 실행 순서는 바꿀 수 없습니다");
   if (!Number.isSafeInteger(authorization.sessionGeneration) || authorization.sessionGeneration < 0 || store.memberRevisions(member.id).sessionGeneration !== authorization.sessionGeneration) throw new ApiError(409, "직원의 세션이 바뀌었습니다. 현재 지시를 다시 확인해 주세요");
   const blocker = store.taskSequenceBlocker(member.id, delivery.taskId);
@@ -77,7 +96,7 @@ function authorizationRevision(store: Store, projectId: string, delivery: Delive
   for (const taskId of predecessors) {
     if (lineage(store, projectId, taskId).some(task => targetFamily.has(task.id))) throw new ApiError(409, "같은 계통 업무의 선행 조건은 독립 지시로 건너뛸 수 없습니다");
   }
-  requireUnoccupiedFamily(store, projectId, delivery, targetFamily);
+  requireUnoccupiedFamily(store, projectId, delivery, targetFamily, inFlight);
   const pauses = store.taskContinuationPauses(projectId);
   if (pauses.some(pause => targetFamily.has(pause.taskId))) throw new ApiError(409, "대표님이 중단한 대상 업무를 먼저 확인해 주세요");
   const facts = store.taskProgressFacts(projectId, targetFamily);
@@ -133,15 +152,16 @@ export function authorizeIndependentDelivery(store: Store, projectId: string, de
 
 /** Read-only: permission is per delivery, not a cached property of the task or
  * native parallel setting. Invalid or changed evidence always fails closed. */
-export function independentDeliveryAuthorized(store: Store, delivery: Delivery): boolean {
+export function independentDeliveryAuthorized(store: Store, delivery: Delivery, options: { inFlightDispatchId?: string } = {}): boolean {
   try {
     const current = store.getDelivery(delivery.id);
     if (!current || current.projectId !== delivery.projectId || current.memberId !== delivery.memberId || current.taskId !== delivery.taskId || current.text !== delivery.text) return false;
     delivery = current;
-    if (!["queued", "held"].includes(delivery.status)) return false;
+    const inFlight = options.inFlightDispatchId === undefined ? undefined : inFlightAuthorization(store, delivery, options.inFlightDispatchId);
+    if (inFlight === null || !["queued", "held"].includes(delivery.status) && !(delivery.status === "delivering" && inFlight)) return false;
     const receipt = store.workflowAssignmentReceiptForDelivery(delivery.id);
     if (!receipt || receipt.request.kind !== "independent_delivery" || !receipt.request.independent || receipt.request.operationId !== receipt.result.operationId || receipt.request.memberId !== delivery.memberId || receipt.result.memberId !== delivery.memberId || receipt.result.projectId !== delivery.projectId || receipt.result.taskId !== delivery.taskId || receipt.result.deliveryId !== delivery.id || store.getOperation(receipt.request.operationId)) return false;
-    return receipt.request.revision === authorizationRevision(store, delivery.projectId, delivery, receipt.request.independent);
+    return receipt.request.revision === authorizationRevision(store, delivery.projectId, delivery, receipt.request.independent, inFlight);
   } catch {
     return false;
   }

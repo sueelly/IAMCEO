@@ -189,7 +189,7 @@ test.each(["busy", "lease", "uncertain", "capacity"] as const)("explicit indepen
   } finally { await f.stop(); }
 });
 
-test("a normal turn end resumes a queued original once without an explicit pump", async () => {
+test("a normal turn end resumes an authorized independent original once without an explicit pump", async () => {
   const f = await createQueueStatusFixture();
   try {
     f.store.patchMember(f.member.id, { parallel: false });
@@ -201,10 +201,12 @@ test("a normal turn end resumes a queued original once without an explicit pump"
     await f.orch.pump(f.member.id);
     expect(f.store.requireDelivery(next.id)).toMatchObject({ status: "queued", attempts: 0 });
     expect(f.writes).toHaveLength(1);
+    await authorization(f, next.id, firstTask.id).authorize();
+    expect(f.store.requireDelivery(next.id)).toMatchObject({ status: "queued", attempts: 0 });
     await f.orch.recordPost(f.store.requireMember(f.member.id), { taskId: firstTask.id,
-      kind: "완료", title: "Current approved work is complete" });
+      kind: "진행", title: "Current turn has reported its result" });
     f.done();
-    // No manual pump here: completion must reenter the ordinary delivery path.
+    // No manual pump or fake task completion: the normal end must reenter delivery.
     await until("automatic next original delivery", () => f.store.requireDelivery(next.id).status === "delivered");
     await Bun.sleep(40);
     expect(f.writes).toHaveLength(2);

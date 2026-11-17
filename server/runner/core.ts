@@ -17,7 +17,7 @@ import { codexBindingMarker, discoverCodexSession, observeCompactBoundary, type 
 import { readDeliveryEvidence, readJsonlRange, parseCodexSessionMeta, providerLogPath, type DeliveryEvidenceCursor, type JsonlCursor } from "./delivery-evidence.ts";
 import type { DeliveryDispatch, RunnerRecoveryStore, TerminalLease } from "../service-contracts.ts";
 import { readTranscriptTail } from "./transcript.ts";
-import type { NativePromptAnswer, Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, TerminalControlAction, TerminalControlResult, DeliveryProbe, DeliveryInspection, DeliveryRepair, RunnerTerminalIdentity, RunnerReattachResult, RunnerObservation } from "./types.ts";
+import type { NativePromptAnswer, Runner, RunnerEvent, RunnerMember, SendResult, StartOpts, RunnerWriteOptions, TerminalControlAction, TerminalControlResult, DeliveryProbe, DeliveryInspection, DeliveryRepair, RunnerTerminalIdentity, RunnerReattachResult, RunnerObservation } from "./types.ts";
 
 /** claudeHome: Claude session transcripts (default CLAUDE_CONFIG_DIR or ~/.claude), read for context usage only. */
 export interface CoreRunnerOptions extends ProviderBins { coreBin?: string; socketPath?: string; session?: string; stateDir?: string; configDir?: string; claudeHome?: string; codexHome?: string; contextHome?: string }
@@ -116,9 +116,9 @@ export class CoreRunner implements Runner {
     this.rpcTimeoutMs = deps.rpcTimeoutMs ?? 8000;
     this.sendTimeoutMs = deps.sendTimeoutMs ?? 20_000;
   }
-  private call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = this.rpcTimeoutMs): Promise<T> {
+  private call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = this.rpcTimeoutMs, beforeWrite?: () => boolean): Promise<T> {
     if (this.closed) return Promise.reject(new CoreError("closed", "CoreRunner is shut down"));
-    return coreRpc<T>(this.socketPath, method, params, timeoutMs);
+    return coreRpc<T>(this.socketPath, method, params, timeoutMs, beforeWrite);
   }
   async available(): Promise<{ ok: boolean; detail?: string }> {
     try {
@@ -480,14 +480,18 @@ export class CoreRunner implements Runner {
       const current = await this.refresh(track);
       this.validateTrack(track);
       if (current.state !== "live" || current.status?.state !== state || track.epoch !== inputEpoch) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
-      track.pending = true; this.bump(track);
-      deliveryAttempted = true;
-      const result = await this.call<{ turn: number; started?: boolean | null }>("terminal.send", { terminal: terminal.address, text: cleaned, ...(state === "idle" ? { if: "idle" } : {}), force: false, wait: false }, this.sendTimeoutMs);
+      const result = await this.call<{ turn: number; started?: boolean | null }>("terminal.send", { terminal: terminal.address, text: cleaned, ...(state === "idle" ? { if: "idle" } : {}), force: false, wait: false }, this.sendTimeoutMs, () => {
+        if (opts.beforeWrite?.() === false) return false;
+        this.validateTrack(track!);
+        track!.pending = true; this.bump(track!); deliveryAttempted = true;
+        return true;
+      });
       if (!Number.isSafeInteger(result.turn)) throw new CoreError("protocol", "Send reply has no valid turn counter", true);
       // started:false still means paste+Enter was delivered. Never resend it.
       await this.refresh(track).catch(() => undefined);
       return { ok: true, started: result.started ?? null, turn: result.turn };
     } catch (error) {
+      if (error instanceof CoreError && error.kind === "admission") return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written", detail: error.message };
       if (track && deliveryAttempted && (!(error instanceof CoreError) || error.uncertain)) { track.pending = false; track.uncertain = true; return { ...unsupported(`Delivery may have occurred; do not resend automatically. ${error instanceof Error ? error.message : String(error)}`), deliveryEffect: "unknown" }; }
       if (track && deliveryAttempted) track.pending = false;
       if (error instanceof CoreError && ["blocked", "status_mismatch", "busy"].includes(error.kind)) return { ok: false, reason: error.kind === "blocked" ? "blocked" : "busy", retryable: true, detail: error.message, deliveryEffect: deliveryAttempted ? "rejected" : "not_written" };
@@ -584,7 +588,7 @@ export class CoreRunner implements Runner {
     const finding = allReceived ? "received" : ["working", "blocked"].includes(status) ? "wait" : completeAbsence && settled && externalInput === false && composer === "matches" ? "draft_only" : completeAbsence && ["not_written", "rejected"].includes(originalWrite) && externalInput === false && composer === "empty" ? "not_received" : "unknown";
     return { evidence: [read.evidence, { source: "core_screen", verdict: composer === "unknown" ? "unknown" : "present", location: "composer", code: composer, complete: composer !== "unknown", checkedAt: new Date().toISOString() }], finding, receivedDeliveryIds: read.receivedDeliveryIds, snapshot, quiescence: settled ? "settled" : "unresolved" };
   }
-  async repairDelivery(member: RunnerMember, request: DeliveryRepair): Promise<SendResult> {
+  async repairDelivery(member: RunnerMember, request: DeliveryRepair, options?: RunnerWriteOptions): Promise<SendResult> {
     let release: () => void;
     try { release = this.reserve(member.id); } catch { return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" }; }
     let attempted = false;
@@ -604,13 +608,17 @@ export class CoreRunner implements Runner {
       const latest = track.terminal;
       // This port revalidates recovery version, source revisions and cancellation,
       // then commits the one write attempt in the same synchronous transaction.
-      if (!this.deps.repair.prepare(member.id, request, dispatch)) return { ...unsupported("Recovery version or source changed before repair"), deliveryEffect: "not_written" };
-      this.validateTrack(track); this.bump(track); attempted = true; track.uncertain = true;
+      const beforeWrite = () => {
+        if (options?.beforeWrite?.() === false) return false;
+        if (!this.deps.repair!.prepare(member.id, request, dispatch)) throw new CoreError("admission", "Recovery version or source changed before repair", false, "not_written");
+        this.validateTrack(track); this.bump(track); attempted = true; track.uncertain = true;
+        return true;
+      };
       if (request.action === "submit_only") {
-        await this.call("terminal.keys", { terminal: latest.address, keys: ["enter"] }, this.sendTimeoutMs);
+        await this.call("terminal.keys", { terminal: latest.address, keys: ["enter"] }, this.sendTimeoutMs, beforeWrite);
         return { ...unsupported("Submit key was sent once; await user-record evidence before further input"), deliveryEffect: "unknown" };
       }
-      const result = await this.call<{ turn: number; started?: boolean }>("terminal.send", { terminal: latest.address, text: dispatch.wireText, if: "idle", force: false, wait: false }, this.sendTimeoutMs);
+      const result = await this.call<{ turn: number; started?: boolean }>("terminal.send", { terminal: latest.address, text: dispatch.wireText, if: "idle", force: false, wait: false }, this.sendTimeoutMs, beforeWrite);
       if (!Number.isSafeInteger(result.turn)) throw new CoreError("protocol", "Invalid repair send receipt", true);
       track.pending = true;
       // The previous write was proved absent and this exact resend has a verified receipt.
@@ -618,6 +626,7 @@ export class CoreRunner implements Runner {
       track.uncertain = track.dispatches.length > 0;
       return { ok: true, turn: result.turn, started: result.started ?? null, receipt: { dispatchId: dispatch.dispatchId, receivedAt: new Date().toISOString(), source: "transport" } };
     } catch (error) {
+      if (error instanceof CoreError && error.kind === "admission") return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written", detail: error.message };
       if (track && attempted) track.uncertain = true;
       return { ok: false, reason: "error", retryable: false, deliveryEffect: !attempted ? "not_written" : error instanceof CoreError ? error.deliveryEffect : "unknown", detail: error instanceof Error ? error.message : String(error) };
     } finally { release(); }
@@ -626,7 +635,7 @@ export class CoreRunner implements Runner {
     if (!this.deps.compactStore) throw new CoreError("unsupported", "Durable compact state port is required");
     this.deps.compactStore.save(track.member.id, state); track.compact = state;
   }
-  async compact(member: RunnerMember, focus: string, _opts: StartOpts): Promise<SendResult> {
+  async compact(member: RunnerMember, focus: string, opts: StartOpts): Promise<SendResult> {
     let release: () => void;
     try { release = this.reserve(member.id); } catch { return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" }; }
     let attempted = false;
@@ -653,15 +662,20 @@ export class CoreRunner implements Runner {
       const current = await this.refresh(track);
       const currentState = current.status?.state;
       if (current.state !== "live" || !["idle", "done"].includes(currentState || "") || track.epoch !== epoch || this.manualLease(member.id) || !readJsonlRange(root, path, baseline, { maxBytes: 0 }).complete) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
-      this.saveCompact(track, { id: crypto.randomUUID(), phase: "sending", startedAt: Date.now(), cursor: null, baseline: { path, fileIdentity: baseline.fileIdentity, offset: baseline.offset,
-        sessionId: track.sessionId, terminalId: current.address, generation: member.sessionGeneration, turn: current.turn ?? null, model: member.model } });
-      this.bump(track); track.pending = true; attempted = true;
       const command = providerFor(member) === "codex" ? "/compact" : `/compact ${cleanText(focus).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim()}`.trim();
-      const result = await this.call<{ turn: number; started?: boolean }>("terminal.send", { terminal: current.address, text: command, ...(currentState === "idle" ? { if: "idle" } : {}), force: false, wait: false }, this.sendTimeoutMs);
+      const result = await this.call<{ turn: number; started?: boolean }>("terminal.send", { terminal: current.address, text: command, ...(currentState === "idle" ? { if: "idle" } : {}), force: false, wait: false }, this.sendTimeoutMs, () => {
+        if (opts.beforeWrite?.() === false) return false;
+        this.validateTrack(track);
+        this.saveCompact(track, { id: crypto.randomUUID(), phase: "sending", startedAt: Date.now(), cursor: null, baseline: { path, fileIdentity: baseline.fileIdentity, offset: baseline.offset,
+          sessionId: track.sessionId!, terminalId: current.address, generation: member.sessionGeneration!, turn: current.turn ?? null, model: member.model } });
+        this.bump(track); track.pending = true; attempted = true;
+        return true;
+      });
       if (!Number.isSafeInteger(result.turn)) throw new CoreError("protocol", "Invalid compact receipt", true);
       this.saveCompact(track, { ...track.compact!, phase: "running" });
       return { ok: true, started: result.started ?? null, turn: result.turn };
     } catch (error) {
+      if (error instanceof CoreError && error.kind === "admission") return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written", detail: error.message };
       if (track?.compact && attempted) {
         const uncertain = !(error instanceof CoreError) || error.uncertain;
         track.uncertain ||= uncertain;

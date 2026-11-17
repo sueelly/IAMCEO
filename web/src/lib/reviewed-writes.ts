@@ -56,7 +56,7 @@ export function buildSettingsPatch(base: Settings, draft: SettingsDraft): { patc
   if (draft.permissionMode !== undefined && draft.permissionMode !== base.permissionMode) patch.permissionMode = draft.permissionMode;
   if (draft.notifyMac !== undefined && draft.notifyMac !== base.notifyMac) patch.notifyMac = draft.notifyMac;
   if (draft.boardTidyHours !== undefined && draft.boardTidyHours !== base.boardTidyHours) patch.boardTidyHours = draft.boardTidyHours;
-  const limits = { maxConcurrentTurns: ["동시 턴", 1, 64], compactAtPct: ["압축 기준", 1, 100], maxAwakeWorkers: ["직원 상한", 1, 256] } as const;
+  const limits = { maxConcurrentTurns: ["전체 동시 실행", 1, 64], compactAtPct: ["압축 기준", 1, 100], maxAwakeWorkers: ["직원 상한", 1, 256] } as const;
   for (const key of Object.keys(draft.numbers) as NumberKey[]) {
     const text = draft.numbers[key]!.trim();
     const value = Number(text);

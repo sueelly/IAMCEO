@@ -97,6 +97,18 @@ async function setup() {
     return store.requireTask(id);
   };
   const sentTo = (m: Member) => runner.sent.filter((s) => s.memberId === m.id).map((s) => s.text);
+  // 귀속 검사에서 실행하는 업무만 총괄의 구체적인 완료 기준을 준비한다. 후보 등록에는 붙이지 않는다.
+  const setCriteria = async (taskId: string, acceptance: string) => {
+    const task = store.requireTask(taskId);
+    const result = await call(lead, "task", { task_id: taskId, contract: { kind: task.branch || task.worktree ? "coding" : "other", goal: task.title, acceptance: [acceptance], checks: ["real"] } });
+    expect(result.isError, result.text).toBeFalsy();
+  };
+  const completion = async (member: Member, taskId: string, title: string, evidence: string) => {
+    const result = await call(member, "post", { kind: "완료", title, task_id: taskId, contract_rev: store.getEffectiveContract(taskId)!.rev,
+      checks: [{ name: "격리 실행 결과", kind: "real", result: "pass", evidence, criterion: 1 }] });
+    expect(result.isError, result.text).toBeFalsy();
+    return result;
+  };
   // 이 파일은 출처 이음을 검사한다. 다음 작업으로 넘어가는 시험은
   // 앞 작업의 합침·검증 완료를 명시적으로 준비하며 대화 글은 추가하지 않는다.
   const completeFixtureTask = (taskId: string) => {
@@ -104,7 +116,7 @@ async function setup() {
     if (task.branch || task.worktree) store.addStageMark({ projectId: project.id, taskId, stage: "merged", evidence: "격리 시험에서 앞 작업의 합침을 확인함", memberId: lead.id, who: lead.name });
     store.addStageMark({ projectId: project.id, taskId, stage: "done", evidence: "격리 시험에서 앞 작업의 검증·완료를 확인함", memberId: lead.id, who: lead.name });
   };
-  return { home, url, store, orch, runner, project, lead, call, api, worker, register, sentTo, completeFixtureTask };
+  return { home, url, store, orch, runner, project, lead, call, api, worker, register, sentTo, setCriteria, completion, completeFixtureTask };
 }
 
 describe("작업 등록", () => {
@@ -190,6 +202,8 @@ describe("작업별 대화", () => {
     const b = await t.worker("검색", "search");
     const ta = await t.register(a, { title: "결제 연동", branch: "feat/pay" });
     const tb = await t.register(b, { title: "검색 개선", branch: "feat/search" });
+    await t.setCriteria(ta.id, "환불을 포함한 결제 테스트 결과를 확인한다");
+    await t.setCriteria(tb.id, "검색 응답 시간이 기준 이내인 결과를 확인한다");
 
     // 결제 작업으로 a 에게, 바로 검색 작업으로 b 에게
     await t.api("POST", `/api/projects/${t.project.id}/messages`, { text: "결제 테스트 붙여 주세요", targetMemberId: a.id, taskId: ta.id });
@@ -203,8 +217,8 @@ describe("작업별 대화", () => {
     expect(t.store.requireMessage(all.body.id).delivery).toBe("queued");
 
     // 직원은 받은 글의 작업 줄대로 작업을 밝힌다
-    await t.call(a, "post", { kind: "완료", title: "결제 테스트 붙임", task_id: ta.id });
-    await t.call(b, "post", { kind: "완료", title: "검색 속도 개선", task_id: tb.id });
+    await t.completion(a, ta.id, "결제 테스트 붙임", "격리 실행기에서 환불을 포함한 결제 테스트 결과 확인");
+    await t.completion(b, tb.id, "검색 속도 개선", "격리 실행기에서 기준 이내 검색 응답 확인");
     t.completeFixtureTask(ta.id);
     t.runner.end(a.id);
     await settle();
@@ -216,7 +230,8 @@ describe("작업별 대화", () => {
     expect(missed.isError).toBe(true);
     expect(missed.text).toContain(`#${auto.id} '오늘 일정 알려 주세요'`);
     expect((await t.call(a, "post", { kind: "완료", title: "일정 정리", task_id: null })).isError).toBe(true);
-    await t.call(a, "post", { kind: "완료", title: "일정 정리", task_id: auto.id });
+    await t.setCriteria(auto.id, "오늘 일정의 시간과 남은 업무를 정리한다");
+    await t.completion(a, auto.id, "일정 정리", "오늘 일정의 시간과 남은 업무를 구분한 격리 결과 확인");
     // 직원이 작업을 밝히면 그것을 따른다(받은 글의 작업 줄)
     await t.call(a, "post", { kind: "진행", title: "결제 쪽 추가 확인", task_id: ta.id });
 
@@ -286,6 +301,7 @@ describe("작업별 대화", () => {
     const t = await setup();
     const a = await t.worker("결제", "pay");
     const ta = await t.register(a, { title: "결제 연동", branch: "feat/pay", worktree: "/repo/.wt/pay" });
+    await t.setCriteria(ta.id, "결제 실패 원인에 맞는 안내 문구를 표시한다");
     const res = await t.call(t.lead, "team_assign", { member: "pay", text: "결제 실패 문구도 고쳐 주세요", task_id: ta.id });
     expect(res.isError).toBeFalsy();
     await settle();
@@ -300,6 +316,7 @@ describe("작업별 대화", () => {
     expect((await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: null })).isError).toBe(true);
     const made = await t.call(t.lead, "task", { title: "회의록 정리" });
     const meeting = /#(tk_[A-Za-z0-9]+)/.exec(made.text)![1]!;
+    await t.setCriteria(meeting, "회의의 결정 사항과 담당자를 구분해 정리한다");
     expect((await t.call(t.lead, "team_assign", { member: "pay", text: "회의록 정리해 주세요", task_id: meeting })).isError).toBeFalsy();
     await settle();
     expect(t.sentTo(a).find((s) => s.includes("회의록"))).toContain(`작업 #${meeting} '회의록 정리'`);
@@ -342,6 +359,8 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     const w = await t.worker("결제", "pay");
     const A = t.store.saveTask({ projectId: t.project.id, memberId: w.id, who: w.name, title: "환불", branch: "feat/refund" }).task;
     const B = t.store.saveTask({ projectId: t.project.id, memberId: w.id, who: w.name, title: "정산", branch: "feat/settle" }).task;
+    await t.setCriteria(A.id, "요청 금액에 맞는 환불 처리 결과를 확인한다");
+    await t.setCriteria(B.id, "정산 합계와 개별 금액의 합이 일치한다");
     const send = (text: string, taskId: string | null) => t.api<{ id: string }>("POST", `/api/projects/${t.project.id}/messages`, { text, targetMemberId: w.id, taskId });
     const titled = (title: string) => t.store.listMessages(t.project.id).find((m) => m.memberId === w.id && m.title.endsWith(title));
     const inTask = (taskId: string) => ({
@@ -357,7 +376,7 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     const t = await twoTasks();
     await t.send("환불 붙여 주세요", t.A.id);
     await settle();
-    await t.call(t.w, "post", { kind: "완료", title: "환불 끝", task_id: t.A.id });
+    await t.completion(t.w, t.A.id, "환불 끝", "격리 환불 결과가 요청 금액과 일치함을 확인");
     t.completeFixtureTask(t.A.id);
     t.runner.end(t.w.id);
     await settle();
@@ -414,7 +433,8 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     await settle();
     const a = await t.send("환불 붙여 주세요", t.A.id);
     const b = await t.send("정산 마저 해 주세요", t.B.id);
-    await t.call(t.w, "post", { kind: "완료", title: "먼저 받은 일 끝", task_id: firstTask });
+    await t.setCriteria(firstTask, "먼저 받은 지시의 결과를 해당 업무에 보고한다");
+    await t.completion(t.w, firstTask, "먼저 받은 일 끝", "먼저 받은 지시의 격리 결과를 업무에 연결해 확인");
     t.completeFixtureTask(firstTask);
     t.runner.end(t.w.id);
     await settle();
@@ -479,7 +499,8 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     const res = await t.call(w, "post", { kind: "완료", title: "검색 봄" });
     expect(res.isError).toBe(true);
     expect(res.text).toContain(`#${sent.body.taskId} '검색 봐 주세요'`);
-    expect((await t.call(w, "post", { kind: "완료", title: "검색 봄", task_id: sent.body.taskId })).isError).toBeFalsy();
+    await t.setCriteria(sent.body.taskId, "검색 요청에 맞는 결과가 반환된다");
+    await t.completion(w, sent.body.taskId, "검색 봄", "격리 검색 요청과 반환 결과의 일치를 확인");
     expect(t.store.listMessages(t.project.id).find((m) => m.title.endsWith("검색 봄"))!.taskId).toBe(sent.body.taskId);
   });
 });

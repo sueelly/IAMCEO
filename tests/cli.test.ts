@@ -239,7 +239,7 @@ describe("역할 템플릿", () => {
       expect(worker).toContain(rule);
     }
     const conductor = renderRole("conductor", vars);
-    for (const rule of ["직접 하지 않는다", "대기열", "2호", "끼어들지", "user_quote", "대신 답하지", "`parallel`", "상한", "`team_sleep`", "`team_resume`", "압축은 서버가 자동", "`post`", "임시 폴더", "[보고 "]) {
+    for (const rule of ["직접 제작하지 않는다", "대기열", "2호", "끼어들지", "user_quote", "대신 답하지", "`parallel`", "상한", "`team_sleep`", "`team_resume`", "압축은 서버가 자동", "`post`", "임시 폴더", "[보고 "]) {
       expect(conductor).toContain(rule);
     }
     const root = renderRole("root", vars);

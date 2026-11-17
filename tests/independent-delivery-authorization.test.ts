@@ -277,3 +277,92 @@ test.each(["target-parent", "blocker-parent", "effective-contract"])("a stored g
   expect(f.store.taskSequenceBlocker(f.worker.id, f.nextTask.id)?.taskId).toBe(f.oldTask.id);
   expect(independentDeliveryAuthorized(f.store, f.next)).toBe(false);
 });
+
+function reserveOwnDispatch(f: ReturnType<typeof setup>, bundle = false) {
+  const bundled = bundle ? f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: f.nextTask.id, kind: "instruction", text: "같은 봉투에 담긴 독립 지시" }) : null;
+  const deliveries = [f.next, ...(bundled ? [bundled] : [])];
+  const at = new Date().toISOString(), dispatchId = randomUUID(), wireText = "쓰기 직전의 격리된 입력 봉투";
+  const identity = { terminalId: f.worker.paneId, sessionId: f.worker.sessionId, sessionGeneration: 0, process: { pid: 123456, startedAt: at } };
+  const dispatch = { dispatchId, memberId: f.worker.id, projectId: f.project.id, cli: f.worker.cli, backend: "core" as const, identity,
+    baseline: { serverEpoch: "isolated", turn: 0, inputEpoch: 0, logs: [], capturedAt: at },
+    markers: deliveries.map(delivery => ({ deliveryId: delivery.id, marker: `#item_${delivery.id}` })), bundleMarker: "#own_bundle", wireText,
+    wireSha256: createHash("sha256").update(wireText).digest("hex"), items: deliveries.map((delivery, ordinal) => ({ deliveryId: delivery.id, ordinal, sourceRevision: null })),
+    transportState: "write_started" as const, submitAttempts: 0, createdAt: at, updatedAt: at };
+  f.store.saveDispatch(dispatch);
+  for (const delivery of deliveries) f.store.setDeliveryStatus(delivery.id, "delivering", { attempt: true });
+  f.store.saveExecutionJournal({ runId: dispatchId, memberId: f.worker.id, projectId: f.project.id, identity, turn: null, deliveryIds: deliveries.map(delivery => delivery.id), phase: "starting",
+    inputReceivedAt: null, startedAt: null, lastProgressAt: null, endedAt: null, result: null, reason: null, exitCode: null,
+    interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at });
+  return { dispatchId, bundled, dispatch };
+}
+
+test.each([false, true])("late-write authorization excludes only its proven reserved envelope (bundle=%s)", bundle => {
+  const f = setup(); f.authorize();
+  const reserved = reserveOwnDispatch(f, bundle), current = f.store.requireDelivery(f.next.id);
+  const before = f.store.listDeliveries(), dispatch = f.store.getDispatch(reserved.dispatchId), run = f.store.getExecutionJournal(reserved.dispatchId);
+  expect(independentDeliveryAuthorized(f.store, current)).toBe(false);
+  expect(independentDeliveryAuthorized(f.store, current, { inFlightDispatchId: reserved.dispatchId })).toBe(true);
+  expect(f.store.listDeliveries()).toEqual(before);
+  expect(f.store.getDispatch(reserved.dispatchId)).toEqual(dispatch);
+  expect(f.store.getExecutionJournal(reserved.dispatchId)).toEqual(run);
+});
+
+test.each(["missing", "wrong-member", "wrong-project", "generation", "terminal", "session", "process", "transport", "missing-selected", "run-member", "run-project", "run-identity", "run-phase", "run-received", "run-started", "run-ended", "run-items"])("late-write authorization rejects %s context", change => {
+  const f = setup(); f.authorize();
+  const reserved = reserveOwnDispatch(f), run = f.store.getExecutionJournal(reserved.dispatchId)!;
+  let dispatchId: string = reserved.dispatchId;
+  if (change === "missing") dispatchId = "missing-dispatch";
+  if (change === "wrong-member") f.store.db.query("UPDATE delivery_dispatches SET member_id = ? WHERE id = ?").run(f.otherWorker.id, dispatchId);
+  if (change === "wrong-project" || change === "run-project") {
+    const other = f.store.createProject({ name: "다른 프로젝트", cwd: process.cwd() });
+    f.store.db.query(change === "wrong-project" ? "UPDATE delivery_dispatches SET project_id = ? WHERE id = ?" : "UPDATE execution_journal SET project_id = ? WHERE run_id = ?").run(other.id, dispatchId);
+  }
+  if (change === "generation") f.store.db.query("UPDATE members SET session_generation = session_generation + 1 WHERE id = ?").run(f.worker.id);
+  if (change === "terminal") f.store.patchMember(f.worker.id, { paneId: "changed-terminal" });
+  if (change === "session") f.store.patchMember(f.worker.id, { sessionId: "changed-session" });
+  if (change === "process") f.store.db.query("UPDATE delivery_dispatches SET terminal_identity_json = ? WHERE id = ?").run(JSON.stringify({ ...reserved.dispatch.identity, process: { pid: 654321, startedAt: null } }), dispatchId);
+  if (change === "transport") f.store.updateDispatch(dispatchId, "write_started", "unknown");
+  if (change === "missing-selected") f.store.db.query("UPDATE delivery_dispatch_items SET delivery_id = ? WHERE dispatch_id = ?").run(f.old.id, dispatchId);
+  if (change === "run-member") f.store.db.query("UPDATE execution_journal SET member_id = ? WHERE run_id = ?").run(f.otherWorker.id, dispatchId);
+  if (change === "run-identity") f.store.db.query("UPDATE execution_journal SET terminal_identity_json = ? WHERE run_id = ?").run(JSON.stringify({ ...run.identity, sessionId: "different-journal-session" }), dispatchId);
+  if (change === "run-phase") f.store.saveExecutionJournal({ ...run, phase: "received" });
+  if (change === "run-received") f.store.saveExecutionJournal({ ...run, inputReceivedAt: new Date().toISOString() });
+  if (change === "run-started") f.store.saveExecutionJournal({ ...run, startedAt: new Date().toISOString() });
+  if (change === "run-ended") f.store.saveExecutionJournal({ ...run, endedAt: new Date().toISOString() });
+  if (change === "run-items") f.store.saveExecutionJournal({ ...run, deliveryIds: [...run.deliveryIds, f.old.id] });
+  expect(independentDeliveryAuthorized(f.store, f.store.requireDelivery(f.next.id), { inFlightDispatchId: dispatchId })).toBe(false);
+});
+
+test.each(["delivering", "unknown", "received"])("late-write context retains another worker's %s protection", state => {
+  const f = setup(); f.authorize();
+  const reserved = reserveOwnDispatch(f);
+  occupyOtherWorker(f, f.nextTask.id, state);
+  expect(independentDeliveryAuthorized(f.store, f.store.requireDelivery(f.next.id), { inFlightDispatchId: reserved.dispatchId })).toBe(false);
+});
+
+function descendantFailureDecision(f: ReturnType<typeof setup>) {
+  const child = f.task("실패한 자식 업무", f.nextTask.id), at = new Date().toISOString();
+  const decision = f.store.createDecision({ projectId: f.project.id, taskId: child.id, memberId: f.worker.id, who: "총괄", title: "반복 실패 확인" });
+  f.store.db.query("INSERT INTO task_failure_escalations(task_id, decision_id, tripped_at, created_at) VALUES(?,?,?,?)").run(child.id, decision.id, at, at);
+  // An old obsolete-close is not an owner decision, even though normal open-card facts are empty.
+  f.store.closeDecision(decision.id, { kind: "obsolete", reason: "기존 기록", by: "총괄" });
+  return decision;
+}
+
+test("a descendant failure escalation blocks a new independent grant after an obsolete close", () => {
+  const f = setup(), decision = descendantFailureDecision(f);
+  expect(f.store.pendingTaskFailureDecision(f.nextTask.id)?.id).toBe(decision.id);
+  expect(() => f.authorize()).toThrow();
+  expect(f.store.workflowAssignmentReceipt(f.request.operationId)).toBeNull();
+});
+
+test("a descendant failure escalation invalidates a stored independent grant", () => {
+  const f = setup(); f.authorize(); descendantFailureDecision(f);
+  expect(independentDeliveryAuthorized(f.store, f.next)).toBe(false);
+});
+
+test("late-write context cannot bypass a descendant failure escalation", () => {
+  const f = setup(); f.authorize();
+  const reserved = reserveOwnDispatch(f); descendantFailureDecision(f);
+  expect(independentDeliveryAuthorized(f.store, f.store.requireDelivery(f.next.id), { inFlightDispatchId: reserved.dispatchId })).toBe(false);
+});

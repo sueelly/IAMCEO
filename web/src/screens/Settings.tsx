@@ -27,7 +27,7 @@ const MODELS = ["fable", "opus", "sonnet", "haiku"];
 const CUSTOM = "custom";
 
 const NUMBERS: { key: NumberKey; label: string; unit: string; min: number; max: number; hint: string }[] = [
-  { key: "maxConcurrentTurns", label: "동시 턴", unit: "개", min: 1, max: 64, hint: "넘치면 차례를 기다립니다" },
+  { key: "maxConcurrentTurns", label: "전체 동시 실행", unit: "개", min: 1, max: 64, hint: "넘치면 차례를 기다립니다" },
   { key: "compactAtPct", label: "압축 기준", unit: "%", min: 1, max: 100, hint: "문맥 표시 기준입니다. core 자동 압축은 지원하지 않으며 터미널에서 /compact를 사용합니다" },
   { key: "maxAwakeWorkers", label: "직원 상한", unit: "명", min: 1, max: 256, hint: "넘으면 총괄에게 잠재울 후보를 알립니다" },
 ];
@@ -161,6 +161,9 @@ function RankTable({ settings, overrides, draft, edit, onEnter }: { settings: Se
 function ProjectEdit({ project, onDone }: { project: ProjectSummary; onDone: () => void }) {
   const [name, setName] = useState(project.name);
   const [cwd, setCwd] = useState(project.cwd);
+  const [limitMode, setLimitMode] = useState(project.maxConcurrentTurns == null ? "inherit" : "custom");
+  const [limit, setLimit] = useState(String(project.maxConcurrentTurns ?? 1));
+  const [limitEdited, setLimitEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -171,7 +174,16 @@ function ProjectEdit({ project, onDone }: { project: ProjectSummary; onDone: () 
       setError("이름과 폴더를 넣어 주세요");
       return;
     }
-    const patch = { ...(name.trim() !== project.name ? { name: name.trim() } : {}), ...(cwd.trim() !== project.cwd ? { cwd: cwd.trim() } : {}) };
+    const maxConcurrentTurns = limitMode === "inherit" ? null : Number(limit.trim());
+    if (maxConcurrentTurns !== null && (!limit.trim() || !Number.isInteger(maxConcurrentTurns) || maxConcurrentTurns < 1 || maxConcurrentTurns > 64)) {
+      setError("프로젝트 동시 실행 상한은 1부터 64까지의 정수입니다");
+      return;
+    }
+    const patch = {
+      ...(name.trim() !== project.name ? { name: name.trim() } : {}),
+      ...(cwd.trim() !== project.cwd ? { cwd: cwd.trim() } : {}),
+      ...(limitEdited && maxConcurrentTurns !== (project.maxConcurrentTurns ?? null) ? { maxConcurrentTurns } : {}),
+    };
     if (Object.keys(patch).length === 0) {
       onDone();
       return;
@@ -198,6 +210,21 @@ function ProjectEdit({ project, onDone }: { project: ProjectSummary; onDone: () 
         <input className="input t-code" value={cwd} onChange={(e) => setCwd(e.target.value)} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
         <span className="su-hint">새로 뜨는 직원부터 적용됩니다</span>
       </label>
+      <div className="st-pj__limit">
+        <label className="field">
+          <span className="field__label">동시 실행</span>
+          <select className="input st-select" aria-label="동시 실행" value={limitMode} onChange={(e) => { setLimitMode(e.target.value); setLimitEdited(true); }}>
+            <option value="inherit">전체 상한 따르기</option>
+            <option value="custom">직접 지정</option>
+          </select>
+        </label>
+        {limitMode === "custom" ? (
+          <label className="field">
+            <span className="field__label">상한</span>
+            <input className="input t-tabular" aria-label="프로젝트 동시 실행 상한" inputMode="numeric" value={limit} onChange={(e) => { setLimit(e.target.value); setLimitEdited(true); }} />
+          </label>
+        ) : null}
+      </div>
       {error ? (
         <p className="form__error" role="alert">
           {error}

@@ -159,6 +159,14 @@ describe("단계 계산", () => {
 
 describe("반복 감시 경계", () => {
   const limits = DEFAULT_WATCH_LIMITS;
+  test("같은 보고의 재처리는 새 실패 시도로 세지 않는다", () => {
+    const failure = report("막힘", { failed: ["저장"], checks: 1 });
+    const first = watchOnReport(null, failure, limits).next;
+    let repeated = first;
+    for (let i = 0; i < 4; i++) repeated = watchOnReport(repeated, failure, limits).next;
+    expect(repeated).toEqual(first);
+    expect(repeated).toMatchObject({ attempts: 1, same: 1, trippedAt: null });
+  });
   test("기본값은 같은 실패 3번·2시간이다(기존 재시도 상한과 같고 늘리지 않는다)", () => {
     expect(limits).toEqual({ sameLimit: 3, idleMs: 2 * 60 * 60_000 });
   });
