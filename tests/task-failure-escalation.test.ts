@@ -269,7 +269,7 @@ test("recovery cannot resend an already prepared failed-task envelope before the
   const f = fixture(), id = await task(f);
   const queued = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", taskId: id, text: "복구 중인 이전 검사" });
   const dispatch = f.orch.deliveryRecovery.prepareDispatch([queued.id], { terminalId: f.worker.paneId, sessionId: f.worker.sessionId, sessionGeneration: 0, process: null },
-    { serverEpoch: "test", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date().toISOString() });
+    { serverEpoch: "test", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date().toISOString(), executionContracts: [{ taskId: id, contractTaskId: id, rev: 1, context: "저장 결과를 다시 읽을 수 있다" }] });
   const runner: Runner = f.runner;
   let repairs = 0;
   runner.repairDelivery = async () => { repairs++; return { ok: true, started: false, turn: 0 }; };
