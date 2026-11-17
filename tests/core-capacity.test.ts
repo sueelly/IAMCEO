@@ -6,6 +6,7 @@ import { loadConfig } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import { Store } from "../server/store.ts";
+import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 import { CoreRunner } from "../server/runner/core.ts";
 import { coreRpc } from "../server/runner/core-client.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
@@ -75,7 +76,39 @@ async function capacityPeer(runtime: ReturnType<typeof createIsolatedRuntime>, s
     async stop() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
-for (const scope of ["project", "global", "failure", "criteria", "execution_issue", "legacy_limit", "sequence"] as const) {
+for (const change of ["contract", "owner-stop"] as const) {
+  test(`worker continuation rechecks ${change} after core preflight and before physical input`, async () => {
+    const runtime = createIsolatedRuntime(), core = await capacityPeer(runtime);
+    const config = loadConfig({ IAMCEO_HOME: runtime.paths.iamceoHome, IAMCEO_PORT: "0", IAMCEO_CORE_SOCKET: runtime.socketPath,
+      IAMCEO_HERDR_SOCKET: runtime.herdrSocketPath, IAMCEO_CORE_BIN: runtime.bins.coreBin,
+      IAMCEO_CLAUDE_BIN: runtime.bins.claudeBin, IAMCEO_CODEX_BIN: runtime.bins.codexBin });
+    const db = openDb(config.dbPath), store = new Store(db, new Bus());
+    const runner = new CoreRunner(runtime.runnerOptions(runtime.providerHomes), { recoveryStore: store, pollMs: 60_000 });
+    const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), providerHomes: runtime.providerHomes,
+      timings: { tickMs: 60_000, healthMs: 60_000 } });
+    try {
+      const project = store.createProject({ name: "Continuation preflight", cwd: runtime.paths.work });
+      const worker = await orch.createMember(project.id, { name: "Worker", cli: "claude" });
+      const task = store.saveTask({ projectId: project.id, memberId: worker.id, who: "대표", title: "Approved remaining scope" }).task;
+      const contract = { kind: "other" as const, goal: "승인된 범위 확인", acceptance: ["검사 결과 확인"], inputs: ["승인 요청"], outputs: ["검사 결과"], scope: "승인 범위", constraints: [], exclusions: [] };
+      store.saveTaskContract(task.id, contract, { author: "대표", authorMemberId: null, authorKind: "owner" });
+      const source = store.enqueue({ projectId: project.id, memberId: worker.id, taskId: task.id, kind: "instruction", text: "승인된 범위를 확인하세요" });
+      store.markDelivered(source.id);
+      core.holdNextRead();
+      const [delivery] = orch.checkTaskContinuations(Date.now() + 120_000);
+      expect(delivery?.memberId).toBe(worker.id);
+      await until(() => core.calls.some(call => call.method === "terminal.read" && !call.replied));
+      if (change === "contract") store.saveTaskContract(task.id, { ...contract, goal: "새 범위 확인" }, { author: "대표", authorMemberId: null, authorKind: "owner" });
+      else new TaskContinuationCoordinator(store, { intervalMs: 1000, sameLimit: 3 }).pause([task.id], "owner-stop", "대표가 중단했습니다");
+      core.releaseReplies();
+      await orch.pump(worker.id);
+      expect(core.count("terminal.send")).toBe(0);
+      expect(store.requireDelivery(delivery!.id).deliveredAt).toBeNull();
+    } finally { core.releaseReplies(); await orch.shutdown(); await core.stop(); db.close(); await runtime.stop(); }
+  });
+}
+
+for (const scope of ["project", "global", "failure", "criteria", "contract_revision", "execution_issue", "legacy_limit", "sequence"] as const) {
   test(`${scope} policy changed during real core preflight prevents physical input and preserves its queue`, async () => {
     const runtime = createIsolatedRuntime();
     const core = await capacityPeer(runtime);
@@ -91,9 +124,10 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
       const project = store.createProject({ name: "Core capacity", cwd: runtime.paths.work });
       const first = await orch.createMember(project.id, { name: "First", cli: "claude" });
       const second = await orch.createMember(project.id, { name: "Second", cli: "claude" });
-      const lead = scope === "criteria" ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
+      const lead = ["criteria", "contract_revision"].includes(scope) ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
+      const execution = { inputs: ["현재 인계 기록"], outputs: ["인계 문서"], scope: "문서 인계", constraints: [], exclusions: [] };
       const task = scope === "failure" || scope === "sequence" ? store.saveTask({ projectId: project.id, memberId: second.id, who: "대표", title: "실패 정책 경합" }).task
-        : lead ? orch.saveTask(lead, { title: "기준 정책 경합", contract: { kind: "other", goal: "인계 문서를 전달한다", acceptance: ["담당자와 미정 사항을 확인할 수 있다"], checks: [] } }).task : null;
+        : lead ? orch.saveTask(lead, { title: "기준 정책 경합", contract: { ...execution, kind: "other", goal: "인계 문서를 전달한다", acceptance: ["담당자와 미정 사항을 확인할 수 있다"], checks: [] } }).task : null;
       await orch.assign(project.id, first.handle, { text: "First remains running" });
       core.holdNextRead();
       const secondSend = orch.assign(project.id, second.handle, { text: "Queued during cap change", ...(task ? { taskId: task.id } : {}) }, lead ?? undefined);
@@ -106,6 +140,10 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
           kind: "usage_limit" as const, detail: "weekly usage limit reached", at: new Date().toISOString(),
           sessionGeneration: store.memberRevisions(second.id).sessionGeneration, terminalId: second.paneId, exitCode: null,
         } } : {}) });
+      }
+      else if (scope === "contract_revision") {
+        store.saveTaskContract(task!.id, { ...execution, kind: "other", goal: "변경된 인계 범위만 확인한다", acceptance: ["변경된 범위의 검증"], checks: [] },
+          { author: "대표", authorMemberId: null, authorKind: "owner" });
       }
       else if (scope === "criteria") {
         const pending = store.listTaskDeliveries(task!.id).find(delivery => delivery.memberId === second.id)!;
@@ -120,8 +158,9 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
         const at = new Date().toISOString();
         store.saveTaskWatch(project.id, task!.id, { startedAt: at, attempts: 3, same: 3, fingerprint: "fail:저장 확인", lastProgressAt: at,
           trippedAt: at, reason: "같은 실패 3번", updatedAt: at, history: [] });
-        store.ensureTaskFailureDecision(task!.id);
-        expect(store.pendingTaskFailureDecision(task!.id)).not.toBeNull();
+        store.ensureTaskFailureNotice(task!.id);
+        expect(store.pendingTaskIntervention(task!.id)).not.toBeNull();
+        expect(store.pendingTaskFailureDecision(task!.id)).toBeNull();
       }
       core.releaseReplies(); await secondSend;
       expect(core.count("terminal.send")).toBe(1);
@@ -138,7 +177,7 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
         else await orch.updateSettings({ maxConcurrentTurns: 2 });
         await until(() => core.count("terminal.send") === 2);
         expect(store.requireDelivery(pending[0].id).status).toBe("delivered");
-      } else {
+      } else if (scope !== "contract_revision") {
         await orch.pump(second.id);
         expect(core.count("terminal.send")).toBe(1);
         expect(store.requireDelivery(pending[0].id).status).toBe("queued");

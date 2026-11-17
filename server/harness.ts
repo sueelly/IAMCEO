@@ -12,6 +12,11 @@ export interface ContractInput {
   goal: string;
   acceptance: string[];
   scope?: string | null;
+  /** 누락은 미정이다. 빈 constraints/exclusions 배열은 명시적으로 해당 없음이다. */
+  inputs?: string[] | null;
+  outputs?: string[] | null;
+  constraints?: string[] | null;
+  exclusions?: string[] | null;
   forbidden?: string[];
   evidence?: string[];
   /** 비우면 종류별 기본 필수 검사. 빈 배열을 주면 필수 검사 없이 합격 기준만 본다. */
@@ -25,6 +30,10 @@ export interface TaskContract {
   goal: string;
   acceptance: string[];
   scope: string | null;
+  inputs?: string[] | null;
+  outputs?: string[] | null;
+  constraints?: string[] | null;
+  exclusions?: string[] | null;
   forbidden: string[];
   evidence: string[];
   checks: CheckKind[];
@@ -43,6 +52,21 @@ export interface TaskContract {
 
 /** 판정에 묶이는 계약인지: 총괄·대표가 정했거나, 직원이 단 것을 총괄·대표가 확인했다. */
 export const bindingContract = (c: TaskContract | null | undefined): boolean => !!c && (c.authorKind !== "worker" || !!c.confirmedAt);
+
+export const EXECUTION_CONTRACT_LABEL = {
+  goal: "목표", inputs: "입력", outputs: "산출물", scope: "범위", constraints: "제한조건", acceptance: "완료 조건", exclusions: "제외 범위",
+} as const;
+export type ExecutionContractField = keyof typeof EXECUTION_CONTRACT_LABEL;
+
+/** 새 실행의 계약 완전성만 검사한다. 작성자 권한·확인 여부는 bindingContract로 별도 확인한다. */
+export function missingExecutionContractFields(contract: ContractInput | TaskContract | null | undefined): ExecutionContractField[] {
+  const text = (value: unknown) => typeof value === "string" && !!value.trim();
+  const list = (value: unknown, allowEmpty = false) => Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(text);
+  return (Object.keys(EXECUTION_CONTRACT_LABEL) as ExecutionContractField[]).filter(field => {
+    const value = contract?.[field];
+    return field === "goal" || field === "scope" ? !text(value) : !list(value, field === "constraints" || field === "exclusions");
+  });
+}
 
 export type ContractAuthorKind = "owner" | "conductor" | "worker";
 
@@ -123,8 +147,15 @@ export function formatContract(contract: TaskContract, state: { latest?: ReportC
   const out = [`업무 계약 r${contract.rev} (#${contract.taskId}, ${contract.kind === "coding" ? "코딩" : contract.kind === "research" ? "조사" : "기타"}${contract.sourceMessageId ? `, 원문 #${contract.sourceMessageId}` : ""}, 작성 ${contract.author}${contract.authorKind === "worker" ? contract.confirmedAt ? `, 직원 작성·${contract.confirmedBy ?? "총괄"} 확인` : ", 직원 작성 계약(확인 전)" : ""})`];
   if (state.forTaskId && state.forTaskId !== contract.taskId) out.push(`- 갈래 업무 #${state.forTaskId} 는 위 업무 #${contract.taskId} 의 계약을 그대로 따른다. 갈래만 끝났으면 완료가 아니라 진행으로 올린다`);
   out.push(`- 원하는 결과: ${line(contract.goal)}`);
+  for (const field of ["inputs", "outputs", "constraints", "exclusions"] as const) {
+    const values = contract[field];
+    if (values?.length) for (const value of values) out.push(`- ${EXECUTION_CONTRACT_LABEL[field]}: ${line(value)}`);
+    else out.push(`- ${EXECUTION_CONTRACT_LABEL[field]}: ${values && (field === "constraints" || field === "exclusions") ? "없음" : "미정"}`);
+  }
   contract.acceptance.forEach((a, i) => out.push(`- 합격 기준 ${i + 1}: ${line(a)}`));
-  if (contract.scope) out.push(`- 자율 범위: ${line(contract.scope)}`);
+  out.push(`- 자율 범위: ${contract.scope ? line(contract.scope) : "미정"}`);
+  const missing = missingExecutionContractFields(contract);
+  if (missing.length) out.push(`새 실행 전 총괄이 보완할 항목: ${missing.map(field => EXECUTION_CONTRACT_LABEL[field]).join(", ")}. 기존 계약의 미정 항목을 임의로 정하거나 실행 승인을 추정하지 않습니다.`);
   for (const f of contract.forbidden) out.push(`- 금지: ${line(f)}`);
   for (const e of contract.evidence) out.push(`- 필요한 증거: ${line(e)}`);
   out.push(`- 필수 검사: ${contract.checks.length ? contract.checks.map(k => `${k}(${CHECK_LABEL[k]})`).join(", ") : "없음(합격 기준만)"}`);

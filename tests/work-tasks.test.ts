@@ -134,7 +134,14 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
       return /대화 작업 #(tk_w_[A-Za-z0-9_-]+)/.exec(r.text)![1]!;
     };
     const setCriteria = async (taskId: string, acceptance: string) => {
-      const result = await orch.handleAgentTool(lead, "task", { task_id: taskId, contract: { kind: "other", goal: t.store.requireTask(taskId).title, acceptance: [acceptance], checks: ["real"] } });
+      const title = t.store.requireTask(taskId).title;
+      const result = await orch.handleAgentTool(lead, "task", { task_id: taskId, contract: {
+        kind: "other", goal: title,
+        inputs: [`${title} 작업 항목과 해당 작업에 연결한 대표 지시`],
+        outputs: [`${title}의 수행 결과 보고와 작업별 지시·보고 연결 기록`],
+        scope: `${title} 작업의 완료 기준을 수행하고 지시·보고·자료·결재를 해당 작업에 연결한다`,
+        constraints: [], exclusions: [], acceptance: [acceptance], checks: ["real"],
+      } });
       expect(result.isError, result.text).toBeFalsy();
     };
     const taskMessages = (taskId: string) => t.store.listMessagePage(t.project.id, { scope: { kind: "task", taskId } }).items;

@@ -133,7 +133,7 @@ describe("총괄의 직원 관리", () => {
   test("새 관리·터미널 도구는 총괄에게만 보이고, 기록 없는 세션은 fresh 로 새로 연다", async () => {
     const t = await setup();
     const w = (await t.add({ name: "구현", role: "구현", cli: "claude" })).member!;
-    expect(await t.tools(t.lead)).toEqual(expect.arrayContaining(["team_config", "terminal_read", "terminal_input", "team_resume"]));
+    expect(await t.tools(t.lead)).toEqual(expect.arrayContaining(["team_config", "terminal_read", "team_resume"]));
     expect((await t.tools(w)).some((n) => ["team_config", "terminal_read", "terminal_input"].includes(n))).toBe(false);
     expect((await t.call(w, "terminal_input", { member: t.lead.handle, text: "x", operation_key: "a" })).text).toContain("쓸 수 없는 도구");
     await t.orch.sleepMember(w.id, { force: true });
@@ -145,19 +145,27 @@ describe("총괄의 직원 관리", () => {
   });
 });
 
-describe("터미널 조작(총괄 도구·대표 화면 공통 경로)", () => {
+describe("터미널 조작(대표 화면 전용)", () => {
+  const send = async (t: Awaited<ReturnType<typeof setup>>, memberId: string, body: Record<string, unknown>) => {
+    const response = await fetch(`${t.url}/api/members/${memberId}/terminal/send`, {
+      method: "POST", headers: { Authorization: "Bearer code", "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    return { code: response.status, body: await response.json() as Record<string, any> };
+  };
   test("글(바로 제출)을 조작권 안에서 넣고 놓으며, 같은 operation 은 두 번 넣지 않는다", async () => {
     const t = await setup();
     const w = (await t.add({ name: "구현", role: "구현", cli: "claude" })).member!;
     const read = JSON.parse((await t.call(t.lead, "terminal_read", { member: w.handle })).text);
     expect(read).toMatchObject({ member: w.handle, status: "idle", controlHeld: null });
     expect(read.screen).toContain("❯");
-    const r1 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", operation_key: "op1" });
-    expect(r1.isError).toBeFalsy();
+    expect((await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", operation_key: "blocked" })).isError).toBe(true);
+    expect(t.runner.typed).toHaveLength(0);
+    const r1 = await send(t, w.id, { text: "/model", operationId: "op1" });
+    expect(r1.body.status).toBe("applied");
     expect(t.runner.typed.filter((x) => x.memberId === w.id)).toEqual([{ memberId: w.id, action: "input", text: "/model", key: undefined }]);
     expect(t.store.inputState(w.id).lease).toBeNull(); // 놓았다
-    const r2 = await t.call(t.lead, "terminal_input", { member: w.handle, text: "/model", operation_key: "op1" });
-    expect(r2.text).toContain("넣었습니다");
+    const r2 = await send(t, w.id, { text: "/model", operationId: "op1" });
+    expect(r2.body.status).toBe("applied");
     expect(t.runner.typed.filter((x) => x.memberId === w.id)).toHaveLength(1);
     // 대표 화면 경로도 같은 조작을 쓴다
     const res = await fetch(`${t.url}/api/members/${w.id}/terminal/send`, { method: "POST", headers: { Authorization: "Bearer code", "Content-Type": "application/json" }, body: JSON.stringify({ operationId: "web-1", key: "esc" }) });
@@ -171,21 +179,20 @@ describe("터미널 조작(총괄 도구·대표 화면 공통 경로)", () => {
     const t = await setup();
     const w = (await t.add({ name: "구현", role: "구현", cli: "claude" })).member!;
     t.store.patchMember(w.id, { status: "working" });
-    const blocked = await t.call(t.lead, "terminal_input", { member: w.handle, text: "hello", operation_key: "w1" });
-    expect(blocked.isError).toBe(true);
-    expect(blocked.text).toContain("일하는 중이라 글을 넣지 않습니다");
-    expect((await t.call(t.lead, "terminal_input", { member: w.handle, key: "esc", operation_key: "w2" })).isError).toBeFalsy();
+    const blocked = await send(t, w.id, { text: "hello", operationId: "w1" });
+    expect(blocked.code).toBe(409);
+    expect(JSON.stringify(blocked.body)).toContain("일하는 중이라 글을 넣지 않습니다");
+    expect((await send(t, w.id, { key: "esc", operationId: "w2" })).body.status).toBe("applied");
     t.store.patchMember(w.id, { status: "idle" });
 
     t.runner.failNextInput = "uncertain";
-    const unknown = await t.call(t.lead, "terminal_input", { member: w.handle, text: "x", operation_key: "u1" });
-    expect(unknown.isError).toBe(true);
-    expect(unknown.text).toContain("terminal_read 로 먼저 확인");
+    const unknown = await send(t, w.id, { text: "x", operationId: "u1" });
+    expect(unknown.body.status).toBe("unknown");
 
     // 대표가 화면에서 조작권을 쥔 채이면 총괄은 넣지 못한다
     await t.orch.terminalControlV2(w.id, { operationId: "rep-claim", expectedSessionGeneration: t.store.memberRevisions(w.id).sessionGeneration, claimId: "rep-hold", action: "claim" });
-    const held = await t.call(t.lead, "terminal_input", { member: w.handle, text: "y", operation_key: "h1" });
-    expect(held.isError).toBe(true);
+    const held = await send(t, w.id, { text: "y", operationId: "h1" });
+    expect(held.body.status).toBe("refused");
     expect(t.runner.typed.filter((x) => x.text === "y")).toHaveLength(0);
   });
 });

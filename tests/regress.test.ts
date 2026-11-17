@@ -1198,9 +1198,12 @@ describe("2차 검수 회귀: 전달", () => {
     t.runner.busy.add(w.id);
     await t.orch.setTodoDone(todo.id, true);
     await t.orch.assign(t.project.id, "cs", { text: "결제 모듈 고쳐라" });
-    const r = await t.call(lead, "team_close", { member: "cs" });
-    expect(r.text).toContain("나가지 않은 지시 1건");
-    expect(r.text).toContain("결제 모듈 고쳐라");
+    const denied = await t.call(lead, "team_close", { member: "cs" });
+    expect(denied.isError).toBe(true);
+    // Closing from the owner surface keeps its original handoff behavior.
+    const dropped = await t.orch.closeMember(w.id);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("결제 모듈 고쳐라");
     const handed = t.store.db.query("SELECT member_id FROM deliveries WHERE ref_id = ?").get(todo.id) as { member_id: string };
     expect(handed.member_id).toBe(lead.id);
   });
@@ -1390,7 +1393,7 @@ describe("2차 검수 회귀: REST", () => {
 
 describe("역할 템플릿 꺼내기", () => {
   test("exportRoles 는 example 만 쓰고, 승인 규칙이 빠진 맞춤 템플릿은 경고한다", async () => {
-    const { exportRoles, renderRole, TERMINAL_APPROVAL_GUIDE } = await import("../server/roles.ts");
+    const { exportRoles, renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } = await import("../server/roles.ts");
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-roles-x-")));
     const paths = exportRoles(dir);
     expect(paths.map((p) => p.split("/").at(-1)).sort()).toEqual(["conductor.example.md", "root.example.md", "worker.example.md"]);
@@ -1403,7 +1406,7 @@ describe("역할 템플릿 꺼내기", () => {
     console.warn = (m: string) => warned.push(String(m));
     try {
       // 터미널 승인 안내는 고친 템플릿에도 끝에 붙는다. 경고는 붙이기 전 템플릿으로 판단한다.
-      expect(renderRole("worker", vars, dir)).toBe(`맞춤 n\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`);
+      expect(renderRole("worker", vars, dir)).toBe(`맞춤 n\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
     } finally {
       console.warn = warn;
     }

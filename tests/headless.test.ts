@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { renderRole, TERMINAL_APPROVAL_GUIDE } from "../server/roles.ts";
+import { renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { buildClaudeArgs, childEnv, claudeInput, HeadlessRunner, isMissingSessionError, StreamParser } from "../server/runner/headless.ts";
 import { contextPct, parseTranscriptTail, readTranscriptTail, transcriptPath } from "../server/runner/transcript.ts";
 import type { RunnerEvent, RunnerMember, StartOpts } from "../server/runner/types.ts";
@@ -386,8 +386,8 @@ describe("도움 함수", () => {
     expect(text).not.toContain("{{ROLE}}");
     const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
     writeFileSync(join(dir, "worker.md"), "맞춤 {{NAME}}/{{ROLE}}");
-    // 고친 템플릿은 그대로 쓰되, 터미널 승인 안내만은 빠지지 않게 끝에 붙는다(tests/terminal-approval-guide.test.ts)
-    expect(renderRole("worker", vars, dir)).toBe(`맞춤 철수/개발\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n`);
+    // 고친 템플릿은 그대로 쓰되, 터미널 승인 안내와 공통 작성 기준은 빠지지 않게 끝에 붙는다(tests/terminal-approval-guide.test.ts)
+    expect(renderRole("worker", vars, dir)).toBe(`맞춤 철수/개발\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
     expect(renderRole("root", vars, dir)).not.toContain("맞춤 철수");
   });
 });

@@ -133,7 +133,7 @@ describe("도구 목록", () => {
     expect(WORKER_TOOLS).toContain("ask_close");
     expect(WORKER_TOOLS).toContain("todo_close");
     expect(names(w)).not.toContain("board");
-    expect(names(lead)).toEqual([...WORKER_TOOLS, ...CONDUCTOR_TOOLS]);
+    expect(names(lead)).toEqual([...WORKER_TOOLS, ...CONDUCTOR_TOOLS].filter(name => !["file", "server_backup", "terminal_input", "team_close"].includes(name)));
     expect(names(lead)).toContain("board");
     expect(names(root)).toEqual([...WORKER_TOOLS, ...ROOT_TOOLS]);
     expect(names(root)).toContain("board");

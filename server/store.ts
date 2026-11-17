@@ -67,8 +67,8 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { deriveProgress, isDone, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
-import { bindingContract, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
+import { deriveProgress, isDone, watchNotice, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
+import { bindingContract, missingExecutionContractFields, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
 import { MAX_PROJECT_NAME, MAX_ROLE, nameProblem, oneLineProblem, RESERVED_HANDLES, workerNameProblem } from "./text.ts";
@@ -2305,6 +2305,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const f = of(r.task_id);
       if (f) f.notice = { id: r.id, at: r.created_at, seenAt: r.seen_at ?? null, lines: json<string[]>(r.lines_json) };
     }
+    for (const r of this.rows(`SELECT r.* FROM task_completion_reviews r JOIN tasks t ON t.id=r.task_id
+        WHERE t.project_id=?${filter.replaceAll("task_id", "r.task_id")} ORDER BY r.rowid`, projectId, ...ids)) {
+      const f = of(r.task_id);
+      if (f) f.finalReview = { status: r.status, reportId: r.report_id, contractRev: r.contract_rev, at: r.reviewed_at ?? r.completed_at };
+    }
     return out;
   }
 
@@ -2390,6 +2395,23 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return null;
   }
 
+  /** A stopped failure episode blocks its execution scope until the conductor
+   * records a changed approach. Previously resolved owner approvals retain their
+   * established retry path, whose first new delivery starts the next episode. */
+  pendingTaskIntervention(taskId: string): { taskId: string; reason: string } | null {
+    const rows = this.rows(`SELECT w.task_id,w.trip_reason,w.tripped_at,w.project_id,e.decision_id,e.tripped_at AS owner_trip
+      FROM task_watch w LEFT JOIN task_failure_escalations e ON e.task_id=w.task_id
+      WHERE w.tripped_at IS NOT NULL AND w.project_id=(SELECT project_id FROM tasks WHERE id=?)`, taskId);
+    if (!rows.length) return null;
+    const tasks = new Map(this.listTasks(rows[0]!.project_id).map(task => [task.id, task]));
+    for (const row of rows) {
+      if (!relatedWork(taskId, row.task_id, tasks) || this.doneMark(row.task_id)) continue;
+      if (row.decision_id && row.owner_trip === row.tripped_at && !this.pendingTaskFailureDecision(row.task_id)) continue;
+      return { taskId: row.task_id, reason: row.trip_reason ?? "진척 없는 반복" };
+    }
+    return null;
+  }
+
   isTaskFailureDecision(decisionId: string): boolean {
     return !!this.row("SELECT 1 FROM task_failure_escalations WHERE decision_id=?", decisionId);
   }
@@ -2439,28 +2461,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return inputs.some(input => relatedWork(input.task_id, taskId, tasks)) ? resolvedAt : null;
   }
 
-  /** Called in the same transaction as the failure report/watch. The watch's
-   * tripped timestamp identifies its episode across repeated ticks/restarts. */
+  /** Legacy owner approvals retain their gate. New failures are conductor work. */
   ensureTaskFailureDecision(taskId: string): Decision | null {
+    return this.pendingTaskFailureDecision(taskId);
+  }
+
+  /** One actionable conductor notice per watch episode, including after restart.
+   * An unavailable conductor leaves the watch intact for the next scan. */
+  ensureTaskFailureNotice(taskId: string): Delivery | null {
     return this.transaction(() => {
       const task = this.requireTask(taskId), watch = this.getTaskWatch(taskId);
-      if (!watch?.trippedAt || watch.same < 3 || this.doneMark(taskId)) return null;
-      const old = this.row("SELECT decision_id,tripped_at FROM task_failure_escalations WHERE task_id=?", taskId);
-      const pending = this.pendingTaskFailureDecision(taskId);
-      if (pending) return pending;
-      if (old?.tripped_at === watch.trippedAt) return this.getDecision(old.decision_id);
       const conductor = this.getConductor(task.projectId);
-      const history = watch.history.slice(-3);
-      const decision = this.createDecision({ projectId: task.projectId, taskId, memberId: conductor?.id ?? null, who: "업무 반복 확인",
-        title: `같은 ${history.at(-1)?.failed.length ? "실패" : "막힘"} ${watch.same}회: ${task.title}`,
-        detail: [`‘${this.getProject(task.projectId)?.name ?? "프로젝트 이름 미확인"}’의 ‘${task.title}’ 업무에서 같은 막힘 보고가 ${watch.same}회 이어져 자동 재배정을 멈췄습니다. 업무는 완료되지 않았습니다.`,
-          `원인: ${watch.reason ?? watch.fingerprint}`,
-          "최근 시도:", ...history.map(h => `- ${h.who} · ${h.at} · 보고 #${h.messageId}: ${h.fingerprint}`),
-          "이 업무의 담당 직원을 바꿀지, 접근 권한·입력을 보완할지, 다른 접근으로 재시도할지 또는 보류할지 결정해 주세요. 총괄은 대표 답의 범위에서 기준과 배정을 갱신합니다.", "", describeTaskContext(this, task)].join("\n") });
-      this.run(`INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,trigger_message_id,created_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(task_id) DO UPDATE SET decision_id=excluded.decision_id,tripped_at=excluded.tripped_at,trigger_message_id=excluded.trigger_message_id,created_at=excluded.created_at`,
-        taskId, decision.id, watch.trippedAt, history.at(-1)?.messageId ?? null, nowIso());
-      return decision;
+      if (!watch?.trippedAt || this.doneMark(taskId) || !conductor || this.watchNoticeSent(taskId)) return null;
+      const contract = this.getEffectiveContract(taskId);
+      const failed = [...new Set(watch.history.flatMap(h => h.failed))];
+      const pending = watch.fingerprint.startsWith("pending:") ? watch.fingerprint.slice(8).split("|").filter(Boolean) : [];
+      const remaining = [...(contract?.acceptance ?? []), ...failed, ...pending];
+      const owner = this.pendingTaskFailureDecision(taskId);
+      const delivery = this.enqueue({ projectId: task.projectId, memberId: conductor.id, kind: "system", wake: true, taskId,
+        text: `[시스템] ${watchNotice(task, watch, watch.reason ?? "진척 없는 반복", remaining)}\n${describeTaskContext(this, task)}\n${owner ? `기존 대표 결재 #${owner.id}는 계속 대기합니다. 대표 답 전에는 해당 범위를 다시 열거나 배정하지 마세요.` : "현재 승인 범위에서 원인을 확인하고 바꾼 접근을 기록한 뒤 다시 열어 직원에게 맡기세요. 새로운 권한·범위 결정이 실제로 필요할 때만 ask로 대표에게 요청하세요."}` });
+      this.claimWatchNotice(taskId, delivery.id);
+      return delivery;
     });
   }
 
@@ -2495,7 +2516,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private progressDirty = new Set<string>();
   private blockedSeen = new Map<string, string>();
   /** 커밋 뒤 한 번 다시 계산해 task 이벤트로 보낸다(같은 커밋 안의 여러 변화는 한 번). */
-  private queueProgress(taskIds: (string | null | undefined)[]): void {
+  queueProgress(taskIds: (string | null | undefined)[]): void {
     const ids = taskIds.filter((id): id is string => !!id);
     if (!ids.length) return;
     for (const id of ids) this.progressDirty.add(id);
@@ -2913,7 +2934,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         AND c.ref_type='delivery' AND c.ref_id=d.id AND c.project_id=d.project_id)`, deliveryId);
     if (!row) return null;
     const task = this.resolveTask(this.requireTask(row.task_id as string));
-    return bindingContract(this.getEffectiveContract(task.id)) ? null : task.id;
+    const contract = this.getEffectiveContract(task.id);
+    return bindingContract(contract) && !missingExecutionContractFields(contract).length ? null : task.id;
   }
 
   /** 글·카드·자료·할 일에 붙일 작업 id. 다른 프로젝트의 작업이면 거절한다. */
@@ -4023,8 +4045,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.requireTask(taskId);
     return this.transaction(() => {
       const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
-      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso());
+      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at, inputs, outputs, constraints_json, exclusions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso(),
+        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions));
       return this.getTaskContract(taskId)!;
     });
   }
@@ -4398,6 +4421,8 @@ function toContract(r: Row): TaskContract {
   return {
     taskId: r.task_id as string, rev: r.rev as number, kind: r.kind as TaskContract["kind"], goal: r.goal as string,
     acceptance: JSON.parse(r.acceptance as string), scope: (r.scope as string | null) ?? null, forbidden: JSON.parse(r.forbidden as string),
+    inputs: r.inputs == null ? null : JSON.parse(r.inputs as string), outputs: r.outputs == null ? null : JSON.parse(r.outputs as string),
+    constraints: r.constraints_json == null ? null : JSON.parse(r.constraints_json as string), exclusions: r.exclusions == null ? null : JSON.parse(r.exclusions as string),
     evidence: JSON.parse(r.evidence as string), checks: JSON.parse(r.checks as string), author: r.author as string,
     authorMemberId: (r.author_member_id as string | null) ?? null, authorKind: (r.author_kind as ContractAuthorKind | null) ?? "conductor",
     sourceMessageId: (r.source_message_id as string | null) ?? null, at: r.at as string,

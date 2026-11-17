@@ -165,45 +165,38 @@ describe("반복 감시", () => {
     const f = fixture(), task = await newTask(f);
     const checks = kind === "unknown" ? [] : [check("behavior", "not_run", "로그인 확인")];
     for (let i = 0; i < 3; i++) await blocked(f, task, checks);
-    const decision = f.store.pendingTaskFailureDecision(task)!;
-    expect(decision).toBeTruthy();
-    expect(decision.detail).toContain("막힘 보고");
-    expect(decision.detail).not.toMatch(/같은 (?:검사 )?실패/);
-    expect(decision.title).not.toContain("같은 실패");
-    expect(decision.detail).toContain(kind === "unknown" ? "구조화된 검사 기록은 없습니다" : "로그인 확인: 미실행");
-    expect(progressOf(f, task)!.stage).toBe("owner");
-    expect((await stage(f, task, "reopen", "임의 재시도")).isError).toBe(true);
+    expect(f.store.pendingTaskFailureDecision(task)).toBeNull();
+    const notice = conductorSystem(f)[0]!;
+    expect(notice.text).toContain(kind === "unknown" ? "검사 근거 없는 막힘 보고" : "검사 미실행 보고");
+    expect(notice.text).not.toContain("같은 실패 3번");
+    expect(progressOf(f, task)!.stage).toBe("check");
+    expect((await stage(f, task, "reopen", "기록과 남은 조건부터 확인")).isError).toBeUndefined();
   });
 
-  test("같은 실패 3번이면 결재함에 올리고 대표 답 뒤에 다시 연다", async () => {
-    const f = fixture(), task = await newTask(f);
+  test("같은 실패 3번이면 총괄이 접근을 바꾸고 다시 연다", async () => {
+    const f = fixture(), task = await newTask(f, { ...ONE, inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] });
     for (let i = 0; i < 2; i++) await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(conductorSystem(f)).toHaveLength(0);
     await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     const p = progressOf(f, task)!;
-    expect(p).toMatchObject({ stage: "owner", cause: "owner", owner: "대표", loop: { attempts: 3, same: 3 } });
+    expect(p).toMatchObject({ stage: "check", cause: "loop", owner: "총괄", loop: { attempts: 3, same: 3 } });
     expect(p.loop!.trippedAt).toBeTruthy();
     expect(conductorSystem(f)).toHaveLength(1);
     expect(conductorSystem(f)[0]!.text).toContain("같은 실패 3번");
-    expect(conductorSystem(f)[0]!.text).toContain("남은 조건: 저장 시험");
+    expect(conductorSystem(f)[0]!.text).toContain("저장 시험");
     const quiet = await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     const wake = f.store.db.query<{ wake: number }, [string, string]>("SELECT wake FROM deliveries WHERE member_id = ? AND ref_id = ?").get(f.lead.id, quiet)!.wake;
     expect(wake).toBe(0);
     expect(conductorSystem(f)).toHaveLength(1);
     const refused = await f.tool(f.lead, "team_assign", { member: "철수", text: "같은 방법으로 다시", task_id: task });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("결재");
+    expect(refused.text).toContain("접근");
     // 재시작에도 감시가 남는다.
     const store = new Store(f.store.db, new Bus());
     expect(store.getTaskWatch(task)).toMatchObject({ attempts: 4, trippedAt: p.loop!.trippedAt });
-    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBe(true);
-    const decision = f.store.pendingTaskFailureDecision(task)!;
-    expect(decision.detail).toContain(f.project.name);
-    expect(decision.detail).toContain("업무: 단계 업무");
-    expect(decision.detail).toContain("저장 시험 fail");
-    f.store.answerDecision(decision.id, { note: "저장 경로를 확인한 뒤 다시 진행하세요" });
-    expect((await stage(f, task, "reopen", "대표 답에 따라 저장 경로부터 재확인")).isError).toBeUndefined();
+    expect(f.store.pendingTaskFailureDecision(task)).toBeNull();
+    expect((await stage(f, task, "reopen", "원인을 저장 경로로 좁혀 접근을 바꿈")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("fix");
     expect(progressOf(f, task)!.loop).toMatchObject({ attempts: 4, trippedAt: null });
     expect((await f.tool(f.lead, "team_assign", { member: "철수", text: "저장 경로부터 다시", task_id: task })).isError).toBeUndefined();

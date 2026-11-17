@@ -116,6 +116,21 @@ function historicalDb(path: string, target: number): Database {
   return db;
 }
 
+test("explicit execution contract migration preserves old revisions and leaves unspecified terms unknown", () => {
+  const before = MIGRATIONS.findIndex(sql => sql.includes("ALTER TABLE task_contracts ADD COLUMN inputs"));
+  expect(before).toBeGreaterThan(0);
+  const { path } = fixture("legacy-contracts.db"), old = historicalDb(path, before);
+  const store = new Store(old, new Bus());
+  const task = store.ensureSourceTask({ projectId: "p", sourceRef: "legacy-contract", title: "옛 계약", origin: "owner" }).task;
+  old.query(`INSERT INTO task_contracts (task_id,rev,kind,goal,acceptance,scope,forbidden,evidence,checks,author,author_kind,source_message_id,at)
+    VALUES (?,1,'other','원문 목표','["원래 합격 기준"]','원래 범위','["금지 원문"]','[]','[]','직원','worker','msg_original',?)`).run(task.id, at);
+  old.close();
+  const migrated = track(openDb(path)), current = new Store(migrated, new Bus());
+  expect(current.getTaskContract(task.id)).toMatchObject({ rev: 1, goal: "원문 목표", acceptance: ["원래 합격 기준"], scope: "원래 범위", forbidden: ["금지 원문"], authorKind: "worker", sourceMessageId: "msg_original", at,
+    inputs: null, outputs: null, constraints: null, exclusions: null, confirmedAt: null });
+  expect(current.listTaskContracts(task.id)).toHaveLength(1);
+});
+
 test("deployed v38 continuation state survives the additive workflow receipt migration", () => {
   expect(MIGRATIONS[37]).toContain("CREATE TABLE task_continuations");
   const {path}=fixture("deployed-v38.db"),old=historicalDb(path,38),store=new Store(old,new Bus());

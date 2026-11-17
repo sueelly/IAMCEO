@@ -62,10 +62,14 @@ const contractSchema = z.strictObject({
   goal: z.string().trim().min(1).max(600).describe("원하는 결과 한두 문장"),
   acceptance: z.array(z.string().trim().min(1).max(400)).min(1).max(12).describe("통과·실패로 판단할 합격 기준. 번호가 붙고, 완료 보고의 검사가 이 번호(criterion)를 가리켜야 한다"),
   scope: z.string().trim().max(600).optional().describe("자율로 해도 되는 범위"),
+  inputs: z.array(z.string().trim().min(1).max(600)).min(1).max(12).optional().describe("실행에 사용할 입력·원문·자료·전제. 새 실행 전에 명시한다"),
+  outputs: z.array(z.string().trim().min(1).max(600)).min(1).max(12).optional().describe("완료 후 전달할 산출물과 위치·형식. 새 실행 전에 명시한다"),
+  constraints: z.array(z.string().trim().min(1).max(600)).max(12).optional().describe("실행 중 지킬 제한조건. 없으면 빈 배열로 명시한다"),
+  exclusions: z.array(z.string().trim().min(1).max(600)).max(12).optional().describe("이번 업무에서 제외한 범위. 없으면 빈 배열로 명시한다"),
   forbidden: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("하지 말 것"),
   evidence: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("완료 보고에 남길 증거"),
   checks: z.array(z.enum(CHECK_KINDS)).max(8).optional().describe("필수 검사 종류. 비우면 coding: behavior·typecheck·regression·real, research: source·fact·unverified, other: 없음"),
-}).describe("업무 시작 계약. 계약이 있는 업무의 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
+}).describe("업무 시작 계약. 새 실행 전 goal·inputs·outputs·scope·constraints·acceptance·exclusions를 명시한다. 미정 계약은 저장할 수 있지만 총괄이 보완하기 전에는 새 실행을 맡기지 않는다. 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
 
 const claimSchema = z.strictObject({
   text: z.string().trim().min(1).describe("주장과 그 조건을 적는다. 필요한 설명은 길어도 그대로 남긴다"),
@@ -664,6 +668,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }),
     async (orch, member, a) => {
       const target = requireOther(orch, member, a.member);
+      if (target.status === "blocked") throw new ApiError(409, "승인·질문 창이 열려 있어 총괄이 중단하지 않습니다. 대표가 화면에서 직접 선택하거나 중단하세요");
       const taskId = a.then ? orch.instructionTask(member, a.task_id, a.user_quote) : null;
       const queued = a.then ? await orch.assign(member.projectId, target.handle, { text: a.then, userQuote: a.user_quote, taskId }, member) : null;
       const r = await orch.stopMember(target.id, { by: `agent-${member.id}`, expectRunId: a.expect_run_id ?? null });
@@ -874,14 +879,20 @@ async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
 
 function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
   return [
-    ...WORKER_TOOLS,
+    ...(member.kind === "conductor" ? CONDUCTOR_ALLOWED_TOOLS : WORKER_TOOLS),
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
-    ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
     ...(opts.memory && member.kind === "conductor" && member.origin !== "manual" ? MEMORY_CONDUCTOR_TOOLS : []),
     ...(member.kind === "root" ? ROOT_TOOLS : []),
     ...(member.origin === "manual" ? MANUAL_TOOLS : []),
   ];
 }
+
+/** Explicit allowlist: adding a worker/native capability must never widen the conductor role. */
+export const CONDUCTOR_ALLOWED_TOOLS = [
+  "status", "task", "ask", "post", "todo", "ask_close", "todo_close", "server_check", "task_trace", "exec_diagnose", "code_read",
+  "team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_config", "terminal_read",
+  "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage",
+] as const satisfies readonly ToolName[];
 
 export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
   return namesFor(member, opts).map((name) => {
@@ -892,6 +903,7 @@ export function listAgentTools(member: Member, opts: { memory?: boolean } = {}):
 
 export async function handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
   if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
+  if (member.kind === "conductor" && name === "team_sleep" && args.force === true) return { text: "총괄은 진행 중인 업무나 승인 대기를 강제로 해제할 수 없습니다", isError: true };
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {

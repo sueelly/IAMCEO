@@ -1,6 +1,6 @@
 // 업무 단계 계산(대표 2026-11-17 #4aab3546). 같은 업무 id 의 근거만 읽고, 아무것도 바꾸지 않는 순수 함수다.
 // 근거: 보고(종류·검사 결과·계약 판정), 열린 결재·할 일, 보류·대기 전달, 승인 창에 걸린 직원, 총괄의 단계 표시, 반복 감시, 완료 알림.
-// 계약 판정(서버의 완료 근거)은 바꾸지 않는다. 판정은 '작성자 납품'의 근거일 뿐이고 실제 완료는 총괄의 완료 표시다.
+// 수행 완료는 하네스의 자동 표시 또는 기존 총괄 표시로 판정한다. 비동기 최종 검수는 finalReview로 구분한다.
 import type { MemberKind, MessageKind, TaskBlockCause, TaskProgress, TaskStage, TaskStageMark } from "../shared/types.ts";
 
 export interface ReportFact {
@@ -38,6 +38,7 @@ export interface WatchFact {
 }
 export interface HeldFact { id: string; who: string; reason: string | null; at: string }
 export interface ProgressFacts {
+  finalReview?: TaskProgress["finalReview"];
   reports: ReportFact[];
   decisions: { id: string; title: string; at: string }[];
   todos: { id: string; title: string; at: string }[];
@@ -98,16 +99,16 @@ export function isDone(marks: MarkFact[]): MarkFact | null {
 export function deriveProgress(f: ProgressFacts): TaskProgress {
   const rev = maxTime([
     ...f.reports.map((r) => r.at), ...f.marks.map((m) => m.at), ...f.decisions.map((d) => d.at), ...f.todos.map((t) => t.at),
-    ...f.held.map((h) => h.at), ...f.queued.map((q) => q.at), ...f.approvals.map((a) => a.at), f.watch?.updatedAt, f.notice?.at, f.notice?.seenAt, ...f.revTimes,
+    ...f.held.map((h) => h.at), ...f.queued.map((q) => q.at), ...f.approvals.map((a) => a.at), f.watch?.updatedAt, f.notice?.at, f.notice?.seenAt, f.finalReview?.at, ...f.revTimes,
   ]);
   const loop = f.watch ? { startedAt: f.watch.startedAt, attempts: f.watch.attempts, same: f.watch.same, trippedAt: f.watch.trippedAt, reason: f.watch.reason } : null;
   const make = (stage: TaskStage, cause: TaskBlockCause | null, next: string | null, owner: string | null, since: string | null, basis: string[]): TaskProgress =>
-    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null });
+    ({ stage, cause, next, owner, since, basis, rev, loop, notice: stage === "done" ? f.notice : null, ...(f.finalReview ? { finalReview: f.finalReview } : {}) });
 
   const active = activeMarks(f.marks);
   const done = active.findLast((m) => m.stage === "done");
   // 완료는 끝 단계다. 뒤에 온 글·이벤트는 되돌리지 않는다(총괄이 다시 열 때만).
-  if (done) return make("done", null, null, null, done.at, [`mark:${done.id}`]);
+  if (done) return make("done", null, f.finalReview?.status === "pending" ? "총괄 최종 확인 대기 · 후속 업무 진행" : null, null, done.at, [`mark:${done.id}`]);
   const last = active.at(-1);
   if (last?.stage === "hold") return make("hold", "hold", `보류: ${last.evidence}`, CONDUCTOR, last.at, [`mark:${last.id}`]);
 
@@ -237,15 +238,13 @@ export function watchOnReopen(w: WatchFact | null, at: string): WatchFact | null
 
 /** 총괄에게 한 번 보내는 점검 글: 원인·지금까지 한 일·남은 조건. */
 export function watchNotice(task: { id: string; title: string }, w: WatchFact, reason: string, remaining: string[]): string {
-  const lines = w.history.slice(-5).map((h) => `- ${h.at} ${h.who}: ${h.fingerprint === "unknown" ? "검사 근거 없는 막힘" : h.fingerprint}`);
+  const lines = w.history.slice(-5).map((h) => `- 보고 #${h.messageId} · ${h.at} ${h.who}: ${h.fingerprint === "unknown" ? "검사 근거 없는 막힘" : h.fingerprint}`);
   return [
     `반복 감시: 업무 #${task.id} '${task.title}'의 막힘이 ${reason}. 이 업무의 자동 반복을 멈췄습니다. 같은 실패의 막힘은 더는 총괄을 깨우지 않습니다.`,
     `- 시작 ${w.startedAt} · 시도 ${w.attempts}번 · 같은 실패 연속 ${w.same}번 · 마지막 진척 ${w.lastProgressAt}`,
     "지금까지:",
     ...lines,
     `남은 조건: ${remaining.length ? remaining.join(", ") : "보고에 적힌 남은 조건 없음"}`,
-    w.same >= 3
-      ? "같은 실패 세 번은 결재함에 올립니다. 대표 답 전에는 다시 열거나 재배정하지 마세요. 대표가 정한 접근과 범위에 따라 기준을 확인하고 직원에게 맡깁니다."
-      : "점검한 뒤 같은 접근으로 다시 맡기지 말고 원인·접근을 바꿔 맡기세요. 다시 열 때는 task_stage(reopen), 멈출 때는 task_stage(hold)를 남깁니다. 대표 판단이 필요하면 ask 로 올립니다.",
+    "총괄이 원인과 남은 조건을 확인하고 바꾼 접근을 기록합니다. 같은 접근을 반복하지 말고 task_stage(reopen, evidence 바꾼 접근) 뒤 직원에게 맡기세요. 보류하면 task_stage(hold)를 남깁니다. 기존 대표 결재는 보존하고 새로운 권한·범위 판단이 필요할 때만 ask로 올립니다.",
   ].join("\n");
 }

@@ -4,11 +4,12 @@ import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 
 const id = (r: { text: string }, prefix = "tk") => r.text.match(new RegExp(`#(${prefix}_[\\w-]+)`))![1]!;
 const OTHER = { kind: "other", goal: "인계 문서를 전달한다", acceptance: ["인계 문서에서 담당자와 남은 판단을 확인할 수 있다"], checks: [] };
+const COMPLETE_OTHER = { ...OTHER, inputs: ["현재 담당자 기록과 남은 판단"], outputs: ["인계 문서"], scope: "담당자와 남은 판단의 문서 인계", constraints: ["기존 승인 상태를 유지한다"], exclusions: ["운영 배포"] };
 const checked = { name: "인계 문서 검토", kind: "other", result: "pass", evidence: "인계 문서의 담당자 열과 미정 사항을 검토했다", criterion: 1 };
 
 function queuedDelegation(proposed = false) {
   const f = fixture();
-  const task = f.orch.saveTask(proposed ? f.worker : f.lead, { title: "대기 중인 인계 문서", ...(proposed ? { contract: { ...OTHER, kind: "other" as const } } : {}) }).task;
+  const task = f.orch.saveTask(proposed ? f.worker : f.lead, { title: "대기 중인 인계 문서", ...(proposed ? { contract: { ...COMPLETE_OTHER, kind: "other" as const } } : {}) }).task;
   // A pre-policy delegated instruction already waiting for an execution slot.
   const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id,
     kind: "instruction", text: "[총괄] 인계 문서의 담당자와 남은 판단을 정리하세요", wake: true });
@@ -16,6 +17,31 @@ function queuedDelegation(proposed = false) {
   const coordinator = () => new TaskContinuationCoordinator(f.store, { intervalMs: 1000, sameLimit: 3 });
   return { ...f, task, delivery, coordinator };
 }
+
+test("확정된 옛 계약도 입력·산출물·범위·제약·제외가 미정이면 대기 지시를 보존하고 총괄이 보완한 뒤 한 번 실행한다", async () => {
+  const f = queuedDelegation();
+  const before = f.orch.saveTask(f.lead, { taskId: f.task.id, contract: { ...OTHER, kind: "other" } }).contract;
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(0);
+  expect(f.store.requireDelivery(f.delivery.id)).toEqual(f.delivery);
+  expect(f.store.listDeliveryDispatches(f.delivery.id)).toHaveLength(0);
+  const coordinator = f.coordinator(), now = Date.now() + 10_000;
+  const reminders = coordinator.check(now, () => true);
+  expect(reminders).toHaveLength(1);
+  expect(reminders[0]).toMatchObject({ memberId: f.lead.id, taskId: f.task.id, kind: "system" });
+  expect(coordinator.check(now + 10_000, () => true)).toHaveLength(0);
+  expect(f.coordinator().check(now + 20_000, () => true)).toHaveLength(0);
+  expect(f.store.getTaskContract(f.task.id)).toEqual(before);
+  expect((await f.tool(f.lead, "task", { task_id: f.task.id, contract: COMPLETE_OTHER })).isError).toBeUndefined();
+  expect(coordinator.canDispatch(reminders[0]!)).toBe(false);
+  await f.orch.pump(f.worker.id);
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(1);
+  expect(f.runner.to(f.worker)[0]).toContain(f.delivery.text);
+  expect(f.runner.to(f.worker)[0]).toContain("업무 계약 r2");
+  expect(f.store.requireDelivery(f.delivery.id)).toMatchObject({ status: "delivered", text: f.delivery.text });
+  expect(f.store.listTaskContracts(f.task.id)[0]).toEqual(before!);
+});
 
 for (const proposed of [false, true]) {
   test(`이미 대기 중인 위임의 ${proposed ? "직원 제안" : "누락 기준"}을 확정할 때까지 원 지시는 보존하고 총괄에게 한 번 연결한다`, async () => {
@@ -36,7 +62,7 @@ for (const proposed of [false, true]) {
     expect(f.store.requireDelivery(f.delivery.id)).toEqual(f.delivery);
 
     const confirmed = await f.tool(f.lead, "task", { task_id: f.task.id,
-      ...(proposed ? { confirm_contract_rev: 1 } : { contract: OTHER }) });
+      ...(proposed ? { confirm_contract_rev: 1 } : { contract: COMPLETE_OTHER }) });
     expect(confirmed.isError, confirmed.text).toBeUndefined();
     // Confirmation retires the now-obsolete reminder, never the original input.
     expect(next.canDispatch(reminders[0]!)).toBe(false);
@@ -68,7 +94,7 @@ test("뒤에 대표 지시가 전달되어도 앞서 대기 중인 위임의 완
   expect(f.coordinator().check(now + 10000, () => true)).toHaveLength(0);
   expect(f.store.requireDelivery(f.delivery.id)).toEqual(f.delivery);
   expect(f.store.requireDelivery(later.id).status).toBe("delivered");
-  const confirmed = await f.tool(f.lead, "task", { task_id: f.task.id, contract: OTHER });
+  const confirmed = await f.tool(f.lead, "task", { task_id: f.task.id, contract: COMPLETE_OTHER });
   expect(confirmed.isError, confirmed.text).toBeUndefined();
   expect(next.canDispatch(reminders[0]!)).toBe(false);
   await f.orch.pump(f.worker.id);
@@ -148,7 +174,7 @@ test("총괄의 기준 없는 위임은 전송하지 않고, 같은 호출에서
   expect(refused.isError, refused.text).toBe(true);
   expect(f.store.listTaskDeliveries(task)).toHaveLength(0);
   expect(f.runner.to(f.worker)).toHaveLength(0);
-  const accepted = await f.tool(f.lead, "team_assign", { member: "w1", task_id: task, text: "인계 문서를 만드세요", contract: OTHER });
+  const accepted = await f.tool(f.lead, "team_assign", { member: "w1", task_id: task, text: "인계 문서를 만드세요", contract: COMPLETE_OTHER });
   expect(accepted.isError, accepted.text).toBeUndefined();
   await until("확정 기준 지시", () => f.runner.to(f.worker).length === 1);
   expect(f.store.getEffectiveContract(task)).toMatchObject({ authorKind: "conductor", acceptance: OTHER.acceptance });
@@ -162,7 +188,7 @@ test("직접 호출한 위임도 업무와 확정 기준 없이 전송하지 않
 });
 
 test("직원의 미확정 기준으로는 위임하지 않고 총괄 확인 뒤에는 위임한다", async () => {
-  const f = fixture(), task = id(await f.tool(f.worker, "task", { title: "인계 기준 제안", contract: OTHER }));
+  const f = fixture(), task = id(await f.tool(f.worker, "task", { title: "인계 기준 제안", contract: COMPLETE_OTHER }));
   expect((await f.tool(f.lead, "team_assign", { member: "w1", task_id: task, text: "인계 문서를 만드세요" })).isError).toBe(true);
   expect(f.runner.to(f.worker)).toHaveLength(0);
   expect((await f.tool(f.lead, "task", { task_id: task, confirm_contract_rev: 1 })).isError).toBeUndefined();
@@ -195,7 +221,7 @@ test("대표의 직접 지시는 원문 그대로 한 번 전달하고 기준 �
   await until("대표 직접 지시", () => f.runner.to(f.worker).length === 1);
   expect(f.runner.to(f.worker)[0]).toContain(original);
   expect(f.store.getEffectiveContract(message.taskId!)).toBeNull();
-  expect((await f.tool(f.lead, "task", { task_id: message.taskId, contract: OTHER })).isError).toBeUndefined();
+  expect((await f.tool(f.lead, "task", { task_id: message.taskId, contract: COMPLETE_OTHER })).isError).toBeUndefined();
   const duplicate = await f.tool(f.lead, "team_assign", { member: "w1", task_id: message.taskId, user_quote: original, text: original });
   expect(duplicate.isError, duplicate.text).toBe(true);
   expect(f.store.listTaskDeliveries(message.taskId!).filter(d => d.memberId === f.worker.id)).toHaveLength(1);
