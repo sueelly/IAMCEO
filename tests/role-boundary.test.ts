@@ -11,7 +11,7 @@ import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
 import { guardDecision } from "../server/harness-guard.ts";
 import { guardHooks, Orchestrator } from "../server/orchestrator.ts";
-import { exportRoles, renderRole, WRITING_GUIDE } from "../server/roles.ts";
+import { exportRoles, renderRole, ROLE_BOUNDARY, WRITING_GUIDE } from "../server/roles.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
 import type { RunnerMember, StartOpts } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
@@ -185,5 +185,87 @@ describe("역할 경계: 오케스트레이터가 쓰는 규칙 파일과 하네
       expect(guardDecision({ tool_name: "Bash", tool_input: { command }, cwd: "/tmp" }, ctx).decision).toBe("ask");
     }
     await t.close();
+  });
+});
+
+// 독립 검토(2026-11-17) 세 지점: ① 통합 조건의 순환 ② 이미 받은 승인과 새 판단 ③ 고친 템플릿의 경계 1회.
+describe("역할 경계 보완: 단계별 판정·승인 범위·경계 한 번", () => {
+  test("① 통합 전 기준과 통합 뒤 기준을 가른다. 계약은 낮추지 않고, 미룰 수 있는 것은 메인·운영에 들어가야만 볼 수 있는 기준뿐이다", () => {
+    const conductor = renderRole("conductor", vars);
+    // 통합 뒤에만 확인할 기준까지 합치기 전에 통과하라던 순환 문구가 없다.
+    expect(conductor).not.toContain("그 판의 합격 기준을 모두 통과한 직원 완료 보고가 있다");
+    for (const stage of ["직원 납품(통합 전)", "독립 검토(통합 전)", "통합판 검사", "실제 적용·최종 완료"]) expect(conductor).toContain(stage);
+    expect(conductor).toContain("계약 기준은 낮추지 않는다");
+    expect(conductor).toContain("통합 전에 판정할 수 있는 기준은 모두 통과했다");
+    expect(conductor).toContain("미구현·검증 실패·중요한 미확인·남은 보류·남은 결재를 뒤 단계로 미뤄 통과로 셈하지 않는다");
+    expect(conductor).toContain("메인이나 운영에 들어가야만 확인할 대상이 생기는 기준");
+    // 그런 기준 때문에 직원 납품이 막힘이어도 통합 전 근거를 읽고 합칠 수 있다. 서버 판정은 건드리지 않는다.
+    expect(conductor).toContain("납품 보고가 `막힘`이어도");
+    expect(conductor).toContain("서버의 완료 판정을 앞당기려고");
+    // 정상 예(통합 뒤 확인 기준만 남음)와 거절 예(구현·시험 실패가 남음)를 둘 다 적는다.
+    expect(conductor).toMatch(/예: [^\n]*합친 판[^\n]*남기고 합친 뒤/);
+    expect(conductor).toMatch(/구현이 덜 됐거나 시험이 실패한 채 남은 일[^\n]*합치지 않는다/);
+    // 업무 done 은 통합 뒤 기준까지 확인한 뒤다.
+    expect(conductor).toContain("통합 뒤 기준이 있는 계약은 그 확인까지 끝나야");
+    const worker = renderRole("worker", vars);
+    expect(worker).toContain("메인이나 운영에 들어가야만 확인할 수 있는 기준");
+    expect(worker).toContain("통합 전 기준을 모두 통과시킨 뒤 `막힘`으로 납품한다");
+    expect(worker).toContain("그 기준을 통과로 적지 않는다");
+  });
+
+  test("② 이미 받은 승인 범위의 같은 통합은 다시 허락받지 않는다. 창은 끄지 않고, 범위를 대조해 한 번만 잇는다. 새 판단은 기다린다", () => {
+    const conductor = renderRole("conductor", vars);
+    // 같은 통합마다 대표에게 창을 넘기라던 문구가 없다.
+    expect(conductor).not.toContain("창의 글과 고를 것을 `post`(알림)로 대표에게 알린다");
+    expect(conductor).toContain("다시 허락을 구하지 않는다");
+    // 하네스의 ask 는 실행 보호다. 새 업무 승인이 필요하다는 뜻이 아니다. 보호는 끄지 않는다.
+    expect(conductor).toContain("새 업무 승인이 필요하다는 뜻이 아니다");
+    expect(conductor).toContain("끄거나 우회하지 않는다");
+    // 실행 확인: 저장소·브랜치·검증한 판·행동을 실제 창과 근거로 대조하고, 지원되는 조작 경로로 한 번만.
+    for (const part of ["저장소·원격·브랜치", "검증한 판", "행동", "`terminal_read`", "`terminal_input`", "한 번만", "이미 받은 승인을 잇는 실행 확인이다"]) expect(conductor).toContain(part);
+    // 자기 세션의 창은 스스로 답할 수 없다: 무엇이 막는지 남기고, 완료로 적지 않는다.
+    expect(conductor).toContain("네 세션의 창은 네가 답할 수 없다");
+    expect(conductor).toMatch(/어느 창이[^\n]*근거[^\n]*완료로 적지 않는다/);
+    // 새 판단으로 남는 것.
+    for (const part of ["강제 전송", "삭제", "비용", "새 권한 선택", "범위를 넓히는", "확실하지 않은", "근거가 모자란"]) expect(conductor).toContain(part);
+    // '대신 답하지 않기' 규칙과 부딪히지 않게 관계를 밝힌다.
+    expect(conductor).toContain("대신 답하기가 아니다");
+  });
+
+  test("③ 자리표시가 둘이어도, 완성된 역할 글을 다시 써도 현재 역할 경계는 한 번이다. 앞뒤 글과 값은 그대로다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-role-boundary-once-"));
+    // 자리표시 둘: 첫 자리에 넣고 남는 자리는 지운다.
+    writeFileSync(join(dir, "conductor.md"), "앞 승인\n{{ROLE_BOUNDARY}}\n가운데\n{{ROLE_BOUNDARY}}\n뒤");
+    const twice = renderRole("conductor", vars, dir);
+    expect(count(twice, HEAD.conductor)).toBe(1);
+    expect(twice).not.toContain("{{ROLE_BOUNDARY}}");
+    expect(twice.indexOf(HEAD.conductor)).toBeLessThan(twice.indexOf("가운데"));
+    for (const part of ["앞 승인", "가운데", "뒤"]) expect(twice).toContain(part);
+    // 완성된 역할 글을 고친 템플릿으로 다시 쓰면 그대로 나온다(세 종류).
+    for (const kind of KINDS) {
+      const normal = renderRole(kind, vars);
+      const again = mkdtempSync(join(tmpdir(), "iamceo-role-boundary-again-"));
+      writeFileSync(join(again, `${kind}.md`), normal);
+      const second = renderRole(kind, vars, again);
+      expect(count(second, HEAD[kind])).toBe(1);
+      expect(second).toBe(normal);
+    }
+    // 같은 경계 글이 두 번 든 템플릿: 뒤 사본만 빠지고 사이 글은 남는다.
+    const body = ROLE_BOUNDARY.worker.trim();
+    writeFileSync(join(dir, "worker.md"), `앞 승인\n\n${body}\n\n사이 글\n\n${body}\n\n끝 글\n`);
+    const dup = renderRole("worker", vars, dir);
+    expect(count(dup, HEAD.worker)).toBe(1);
+    for (const part of ["앞 승인", "사이 글", "끝 글"]) expect(dup).toContain(part);
+    // 값 안의 자리표시는 다시 치환하지 않는다. effort 는 한 번, 승인 규칙 없는 원문은 여전히 경고한다.
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const v = mkdtempSync(join(tmpdir(), "iamceo-role-boundary-values-"));
+      writeFileSync(join(v, "root.md"), "맞춤 {{NAME}} {{SUBAGENT_EFFORT}}\n{{ROLE_BOUNDARY}}\n{{ROLE_BOUNDARY}}");
+      const text = renderRole("root", { ...vars, NAME: "이름{{ROLE_BOUNDARY}}{{NAME}}", SUBAGENT_EFFORT: "effort=high" }, v);
+      expect(text).toContain("이름{{ROLE_BOUNDARY}}{{NAME}}");
+      expect(count(text, HEAD.root)).toBe(1);
+      expect(count(text, "effort=high")).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
   });
 });
