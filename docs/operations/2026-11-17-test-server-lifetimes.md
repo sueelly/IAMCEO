@@ -28,4 +28,39 @@ CI 단위 검사에 남은 실패는 `tests/herdr-contract.test.ts`의 기본 �
 
 PID·시작 시각·임시 DB·검증용 설정·가짜 입력을 대조한 비공개 정리 영수증과 검증 로그는 `/Users/hyejookim/Programming/01_Ing/.runtime/process-tuning/20261117/test-server-lifetimes/`에 보관했다. 원본 환경변수·접속 키·운영 DB를 소스 커밋에 넣지 않았다.
 
-작업 워크트리는 `/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/test-server-lifetimes`, 브랜치는 `fix-track-test-server-lifetimes-01a1e3d1-a72a-73d3-b88d-818b7592933b`다. Git 반영은 작업 브랜치 커밋·일반 푸시까지이며 main 통합·배포와 구분한다. 다음 개선 후보는 여러 서버의 빌드·검증 등 무거운 작업이 동시에 몰리는 것을 제한하는 공용 대기열이다.
+작업 워크트리는 `/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/test-server-lifetimes`, 브랜치는 `fix-track-test-server-lifetimes-01a1e3d1-a72a-73d3-b88d-818b7592933b`다. 최초 제공은 작업 브랜치 커밋·일반 푸시까지였다. 후속 main 통합과 기존 개발 환경 반영은 아래에 기록한다. 다음 개선 후보는 여러 서버의 빌드·검증 등 무거운 작업이 동시에 몰리는 것을 제한하는 공용 대기열이다.
+
+## main 통합과 기존 개발 환경 반영
+
+후속 요청에 따라 최신 main `4b79e9b`와 원래 수정 `f44547f`를 충돌 없이 통합했다. 테스트 관련 변경 외에는 최신 main의 내용을 유지한다.
+
+조사 시점의 별도 개발 브랜치 13개에도 테스트 관련 5개 파일만 적용했다. 각 워크트리에서 수명 회귀 검사 5개와 실제 CLI 서버 검사 3개를 수행해 총 104개가 통과했다. 각각 별도 커밋·일반 푸시 후 원격 SHA 일치를 확인했다. 원래 브랜치의 나머지 파일과 이력은 보존했다.
+
+| 워크트리 | 적용 커밋 |
+| --- | --- |
+| agent-a-native | `cc0b3adb` |
+| approval-click-20261117 | `c66c611f` |
+| conductor-merge-role-20261117 | `2ac34c18` |
+| conductor-merge-role-main-20261117 | `66758881` |
+| integrate-queue-approval-20261117 | `997295a5` |
+| light-leftovers-web-20261116 | `dd6232e4` |
+| mac-mini-migration-2026-11-16 | `f066aecd` |
+| native-glass-20261116 | `824fd6d3` |
+| refresh-terminal-address-20261117 | `752e7263` |
+| resume-queue-status-20261117 | `c3fb921e` |
+| storage-optimization-20261117 | `cc3a2ca9` |
+| task-stage-sync-20261117 | `c31ced88` |
+| terminal-approval-inbox-20261117 | `082d8ec1` |
+
+위 워크트리는 모두 `/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/` 아래에 있다. 브랜치와 원래 HEAD, 최종 SHA, 검증 로그는 비공개 `test-server-lifetimes-main/rollout-results.json` 및 `rollout-final-check.json`에 기록했다. 비교 기준으로 쓰는 detached 리뷰·과거 스냅샷 44개에는 패치를 적용하지 않았다.
+
+후속 조사에서는 다시 남아 있던 테스트 서버 20개를 정상 종료했다. 작업 폴더 안의 16개는 임시 DB·가짜 입력·설정·소스·프로세스 시작 시각을 확인했다. 임시 비교 폴더의 4개는 추가로 소스가 기존 main `e707d82`와 일치하는지 확인했다. 종료 대상 RSS 합계는 1,495.2MiB이며 운영 서버의 두 listener는 전후 HTTP 200이었다. DB·원본 비교 파일·운영 세션은 삭제하지 않았다.
+
+운영 코드 변경이 없는 테스트 경로 개선이므로 운영 앱 재시작은 수행하지 않는다. 새 테스트 실행부터 적용되며, 이미 부모가 사라진 이전 테스트 서버는 별도로 종료했다.
+
+
+통합 결과의 새 회귀 검사 5개와 CLI 검사 27개는 Bun 1.3.14·1.4.4에서 각각 32개 통과했다. 타입 검사와 최신 main의 `bun run build`도 통과했다. 기존 브라우저 강제 종료 검사는 1개 통과·기존 2개 실패였고, 해당 실행이 남긴 고아 서버는 0개였다.
+
+CI 단위 파일 집합을 Bun 1.3.14의 단일 프로세스로 실행하면 macOS `EXC_GUARD`로 종료되었다. 시스템 진단 보고서에서 보호된 파일 디스크립터의 중복 CLOSE를 확인했다. 125개 파일을 각각 별도 프로세스로 실행해 이 문제를 피했다. 최신 main의 통합 검사 4개는 결과 저장 폴더가 없어 실패했으므로, 검증 결과를 Git 밖의 전용 경로에 저장하도록 실행 환경을 준비한 뒤 해당 파일들을 재검사했다. 이 재검사는 모두 통과했다. 최종 단위 집계는 2,210개 통과·기존 2개 실패다. 기존 기본 소켓 guard와 Codex rank HTTP 실패는 수정 범위에 포함하지 않았다. 전체 검사 통과로 보고하지 않는다.
+
+메인 통합 전 독립 검토에서 차단할 소스 문제는 없었다. 원래 수정 `f44547f`가 main 이력에 포함되도록 일반 merge·일반 push를 수행하고, 원격 main SHA와 깨끗한 기본 main 체크아웃의 SHA 일치를 최종 확인한다. 통합 작업 브랜치도 같은 커밋으로 푸시한다. 강제 푸시와 운영 앱 재배포는 수행하지 않는다. Git 반영 영수증과 최종 SHA는 Git 밖의 `test-server-lifetimes-main/main-integration-receipt.json`에 기록한다.

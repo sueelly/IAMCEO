@@ -92,10 +92,18 @@
 .shell--phone[data-keyboard] .shell__bottom { padding-bottom:8px; }
 .shell--phone .shell-tabs { --tab-h:42px; width:100%; }
 .shell--phone .gtabs__link { font-size:14px; padding:0 2px; }
-/* 다섯 칸이 320px 에서도 들어가게: 건수는 옆이 아니라 글자 오른쪽 위에 얹는다(글자 자리가 건수에 따라 움직이지 않는다) */
-.shell--phone .gtabs__label { position:relative; display:inline-block; }
-.shell--phone .gtabs__count { position:absolute; left:100%; bottom:calc(100% - 3px); margin-left:-3px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
-@media (max-width:359.98px) { .shell--phone .gtabs__link { font-size:13.5px; } }
+/* 다섯 칸이 320px 에서도 들어가게: 건수는 글자 오른쪽 위에 작게 얹는다.
+   글자와 건수를 한 묶음으로 칸 가운데에 둔다(건수를 글자 밖에 매달면 320px '결재함' 칸에서 고른 칸 테두리를 넘는다).
+   글자와 1px 띄워 겹치지 않게 하고, 위로 올려도 고른 칸의 물방울 윗선 안에 있다 */
+.shell--phone .gtabs__label { display:inline-flex; align-items:center; gap:1px; }
+.shell--phone .gtabs__count { position:relative; top:-7px; min-width:16px; height:16px; padding:0 4px; font-size:10.5px; line-height:16px; }
+/* 100 이상('99+')은 세 글자라 좁은 칸에서 넘친다. 폭 경계(360px 에서 탭 글자가 커진다)에 기대지 않게 폰에서는 늘 작게 그린다.
+   320~430px 를 1px 간격으로 재는 시험(tests/light-leftovers.browser.ts)이 지킨다. 가장 좁은 320px 에서도 칸 테두리까지 1px 넘게 남긴다(실기기 글꼴 차이 여유) */
+.shell--phone .gtabs__count[data-capped] { padding:0 1.5px; font-size:9px; letter-spacing:-.08em; }
+@media (max-width:359.98px) {
+  .shell--phone .gtabs__link { font-size:13.5px; }
+  .shell--phone .gtabs__count:not([data-capped]) { padding:0 2.5px; }
+}
 .shell--phone .shell__column { padding:6px calc(var(--safe-r) + 14px) 44px calc(var(--safe-l) + 14px); }
 /* 상단 바는 불투명(아래로 지나가는 글이 비치지 않게) */
 .glass.ph-head { --g-tint:transparent; --g-glint:0; --g-a1:var(--opaque-bar); --g-a2:calc(var(--opaque-bar) - .03); }

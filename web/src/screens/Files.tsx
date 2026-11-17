@@ -133,7 +133,8 @@ export default function Files() {
   const scope = JSON.stringify([projectId, task?.id ?? null]);
   const activeKind = kindSelection.scope === scope ? kindSelection.kind : null;
   const setKind = (kind: FileKind | null) => setKindSelection({ scope, kind });
-  const feed = useFilePages(projectId, task?.id ?? null, activeKind, paged, project?.files ?? []);
+  const fileRevision = useStore(s => s.fileRevision);
+  const feed = useFilePages(projectId, task?.id ?? null, activeKind, paged, project?.files ?? [], fileRevision);
   const all = useMemo(() => [...(project?.files ?? [])].sort((a, b) => b.order - a.order), [project?.files]);
   const files = useMemo(() => taskFiles(all, task?.id ?? null), [all, task?.id]);
   const shown = paged ? feed.items : activeKind ? files.filter(f => f.kind === activeKind) : files;

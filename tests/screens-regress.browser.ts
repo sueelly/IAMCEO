@@ -1605,9 +1605,14 @@ describe("연결 게이트", () => {
     const page = await inbox(desktop, p.id);
     await input(page).fill("끊겨도 남을 글");
     let down = true;
-    await page.routeWebSocket(/\/ws/, (socket) => {
-      if (down) void socket.close();
-      else socket.connectToServer();
+    // 서버가 돌아온 뒤의 연결은 단추를 누를 때까지 붙잡아 둔다(닫지도 잇지도 않는다).
+    // 앱의 자동 재연결이 누르기보다 먼저 끝나면 끊김 띠와 단추가 사라져 누르기가 멈춘다.
+    let pressed!: () => void;
+    const retried = new Promise<void>((resolve) => (pressed = resolve));
+    await page.routeWebSocket(/\/ws/, async (socket) => {
+      if (down) return void socket.close();
+      await retried;
+      socket.connectToServer();
     });
     await page.reload();
     await page.locator(".gate[data-gate='server']").waitFor({ timeout: 8000 });
@@ -1615,6 +1620,9 @@ describe("연결 게이트", () => {
     expect(await input(page).count()).toBe(0);
     down = false;
     await page.getByRole("button", { name: "지금 다시 연결" }).click();
+    pressed();
+    // 다시 잇는 중에도 입력칸은 먼저 보인다. 서버와 실제로 다시 이어진 뒤에 입력칸과 글을 본다.
+    await page.locator(".conn[data-state='online']").waitFor({ timeout: 20_000 });
     await input(page).waitFor({ timeout: 20_000 });
     expect(await input(page).inputValue()).toBe("끊겨도 남을 글");
     await page.close();

@@ -102,8 +102,12 @@ enum CE {
     /// The neutral wash that replaces the dark theme's `white.opacity(a)` fills (hover, pressed, chips, tracks):
     /// ink at the same small opacity reads the same on the light background.
     static func wash(_ opacity: Double) -> Color { inkBase.opacity(opacity) }
-    /// Subline on the owner's violet bubble (mockup --mine-to).
-    static let onAccentSub = Color(hex: 0xE6DFFF)
+    /// The owner's violet bubble, top to bottom (web --mine #7152F5 → #6D4DF2): white text is 4.97:1 or more on it.
+    /// The mockup's #7A5BFF top left white at 4.4:1.
+    static let mineHex: [UInt32] = [0x7152F5, 0x6D4DF2]
+    /// Subline on the owner's violet bubble (web --mine-to #F7F5FF, 4.6:1 or more). The mockup's #E6DFFF read 3.4–4.1.
+    static let onAccentSubHex: UInt32 = 0xF7F5FF
+    static let onAccentSub = Color(hex: onAccentSubHex)
 }
 
 /// Semantic tone: color carries meaning, never decoration. `color` is text strength, `dot` is dot strength.

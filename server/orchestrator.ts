@@ -26,7 +26,7 @@ import { bindingContract, completionGate, formatChecksLine, formatContract, type
 import { EXEC_CHECKS, inspectProviderEvidence, matchExecChecks, readProviderEvidence, researchGate, verifyClaims, type CheckEvidence, type ClaimInput, type ClaimResult } from "./harness-evidence.ts";
 import type { LogSelectionObservation } from "./harness-exec-diagnostics.ts";
 import type {
-  AnswerNativePromptReq, NativeAnswerReceipt, NativePromptContext, NativePromptState,
+  AnswerNativePromptReq, NativeAnswerReceipt, NativePrompt, NativePromptContext, NativePromptState,
   AdoptPreview,
   AdoptReq,
   AnswerApprovalReq,
@@ -1012,6 +1012,11 @@ export class Orchestrator implements OrchestratorApi {
     const basis = effective ? this.store.completionEvidence(effective.taskId, effective.rev) : [];
     const sources = basis.filter(b => b.status === "passed").map(b => b.messageId);
     const byMessage = new Map(basis.map(b => [b.messageId, b]));
+    const deliveryTrace = this.store.taskDeliveryTrace(task.id);
+    const deliveryMetadata = (d: (typeof deliveryTrace.recent)[number]) => {
+      const { memberId, createdAt, ...rest } = d;
+      return { ...rest, to: name(memberId), at: createdAt };
+    };
     const reports = this.store.listTaskHarnessReports(task.id).map(id => {
       const m = this.store.getMessage(id);
       const h = this.store.getReportHarness(id);
@@ -1025,7 +1030,11 @@ export class Orchestrator implements OrchestratorApi {
       task: { id: task.id, title: task.title, createdAt: task.createdAt, origin: task.origin ?? null, parent: task.parentTaskId ?? null },
       contract: effective ? { on: effective.taskId, rev: effective.rev, binding: bindingContract(effective), author: effective.author, authorKind: effective.authorKind, confirmedBy: effective.confirmedBy ?? null } : null,
       contractRevs: this.store.listTaskContracts(task.id).map(c => ({ rev: c.rev, author: c.author, authorKind: c.authorKind, confirmed: !!c.confirmedAt, at: c.at, acceptance: c.acceptance.length, checks: c.checks })),
-      deliveries: this.store.listTaskDeliveries(task.id).map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
+      deliveries: deliveryTrace.history.map(d => ({ to: name(d.memberId), kind: d.kind, status: d.status, at: d.createdAt })),
+      // Keep the original history sample for clients; expose recent/pending windows explicitly.
+      deliveryCoverage: deliveryTrace.coverage,
+      recentDeliveries: deliveryTrace.recent.map(deliveryMetadata),
+      unsettledDeliveries: deliveryTrace.unsettled.map(deliveryMetadata),
       reports,
       currentCompletion: { eligible: sources.length > 0, sources },
       openDecisions: this.store.listOpenDecisions(member.projectId).filter(d => d.taskId === task.id).map(d => ({ id: d.id, title: d.title })),
@@ -2697,8 +2706,8 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
-   * 대화의 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 그 귀속(프로젝트·직원·세대·실행·작업·창 차례).
-   * 읽기만 한다. 실행기가 창을 읽지 못하면 prompt 는 limited(원문만)다.
+   * 결재함 '승인 대기'와 대화 '답을 기다림' 카드: 막힌 직원 CLI 의 질문·선택·승인 창과 그 귀속(프로젝트·직원·세대·실행·작업·창 차례·처음 읽은 시각).
+   * 읽기만 한다. 실행기가 창을 읽지 못하면 prompt 는 limited(원문만)다. 보이는 글의 비밀값은 가린다(넣을 때는 원래 창 차례로 넣는다).
    */
   async memberNativePrompt(memberId: string): Promise<NativePromptState> {
     const member = this.store.requireMember(memberId);
@@ -2707,53 +2716,79 @@ export class Orchestrator implements OrchestratorApi {
     if (!runner?.nativePrompt) return { prompt: null, context: null };
     const read = await runner.nativePrompt(this.runnerMember(member, this.store.requireProject(member.projectId)));
     if (!read) return { prompt: null, context: null };
-    return { prompt: read.prompt, context: this.nativeContext(member, read.promptKey) };
+    // 이미 답을 넣은 창: 창이 그대로여도 선택지를 다시 내지 않는다(두 번 넣지 않게)
+    if (read.answered) return { prompt: null, context: null, answered: true };
+    const observedAt = read.observedAt ?? null;
+    this.nativeSeen.set(memberId, { promptId: read.promptKey, observedAt });
+    return { prompt: this.shownPrompt(member, read.prompt), context: this.nativeContext(member, read.promptKey, observedAt) };
   }
 
-  private nativeContext(member: Member, promptId: string): NativePromptContext {
+  private nativeContext(member: Member, promptId: string, observedAt: string | null = null): NativePromptContext {
     const exec = member.executionState && !["ended", "interrupted"].includes(member.executionState.phase) ? member.executionState : null;
     const taskIds = exec?.taskIds ?? [];
-    return { projectId: member.projectId, memberId: member.id, generation: this.store.memberRevisions(member.id).sessionGeneration, executionId: exec?.runId ?? null, taskId: taskIds.length === 1 ? taskIds[0]! : null, promptId };
+    return { projectId: member.projectId, memberId: member.id, generation: this.store.memberRevisions(member.id).sessionGeneration, executionId: exec?.runId ?? null, taskId: taskIds.length === 1 ? taskIds[0]! : null, promptId, observedAt };
+  }
+
+  /** 대표 화면에 보일 창 글. 토큰·키·비밀번호 꼴과 서버 비밀값(접속 코드·직원 토큰)만 가린다. 선택지 번호·차례·뜻은 그대로다. */
+  private shownPrompt(member: Member, prompt: NativePrompt): NativePrompt {
+    const secrets = [...this.memorySecrets(), this.store.getMemberToken(member.id) ?? ""].filter((v) => v.length >= 8);
+    const hide = (text: string) => redactSensitive(text, secrets);
+    return { ...prompt, title: hide(prompt.title), body: hide(prompt.body), question: hide(prompt.question), raw: hide(prompt.raw),
+      options: prompt.options.map((o) => ({ ...o, label: hide(o.label), ...(o.detail ? { detail: hide(o.detail) } : {}) })) };
   }
 
   private static cut(text: string, max: number): string { const t = text.replace(/\s+/g, " ").trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; }
 
-  private nativeReceipts = new Map<string, NativeAnswerReceipt>();
-  private nativeInflight = new Map<string, { memberId: string; promptId: string; run: Promise<NativeAnswerReceipt> }>();
+  /** 마지막으로 카드에 보인 창(직원마다). 영수증의 '창 확인' 시각에 쓴다. */
+  private nativeSeen = new Map<string, { promptId: string; observedAt: string | null }>();
+  private nativeInflight = new Map<string, Promise<NativeAnswerReceipt>>();
 
   /**
-   * 대표가 대화에서 직원 CLI 의 창에 답한다(대표 화면 HTTP 전용, AI 도구에는 없다). 업무 대기열을 거치지 않고 지금 창에 바로 넣는다.
-   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청). 세대·실행·창 차례가 카드와 다르면 넣지 않는다.
+   * 대표가 결재함·대화에서 직원 CLI 의 창에 답한다(대표 화면 HTTP 전용, AI 도구에는 없다). 업무 대기열을 거치지 않고 지금 창에 바로 넣는다.
+   * 같은 operationId 는 처음 결과를 돌려준다(여러 탭·빠른 두 번 누름·응답 유실 재요청·서버 재시작 뒤). 넣는 중이든 끝난 뒤든 직원·프로젝트·요청 전체가 다르면 409 다. 넣기 전에 대기 영수증을 DB 에 적고,
+   * 결과를 적기 전에 멈췄던 요청은 '모름'으로 답하며 다시 넣지 않는다. 직원·프로젝트·세대·실행·창 차례가 카드와 다르면 넣지 않는다.
    */
   async answerNativePrompt(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
-    const prior = this.nativeReceipts.get(req.operationId) ?? this.nativeInflight.get(req.operationId);
-    if (prior) {
-      if (prior.memberId !== memberId || prior.promptId !== req.promptId) throw new ApiError(409, "다른 요청에 쓴 operationId 입니다", "OPERATION_CONFLICT");
-      return "run" in prior ? prior.run : prior;
-    }
-    const run = this.answerNativeOnce(memberId, req);
-    this.nativeInflight.set(req.operationId, { memberId, promptId: req.promptId, run });
+    const member = this.store.requireMember(memberId);
+    const scope = { operationId: req.operationId, projectId: member.projectId, memberId, request: req };
+    // 넣는 중인 요청도 먼저 적은 대기 영수증과 같은 대조(직원·프로젝트·요청 전체)를 거친다. 하나라도 다르면 409 이고 넣지 않는다.
+    const prior = this.store.getNativeAnswer(scope);
+    const inflight = this.nativeInflight.get(req.operationId);
+    if (inflight) return inflight;
+    const project = this.store.requireProject(member.projectId);
+    if (prior) return prior.pending ? this.nativeReceipt(memberId, req, "unknown", "결과를 적기 전에 서버가 멈췄습니다. 들어갔는지 모르니 다시 넣지 않습니다. 팀 화면에서 터미널을 확인하세요", { terminal: "unknown" }) : prior.receipt as NativeAnswerReceipt;
+    this.requireActive(project);
+    this.store.beginNativeAnswer(scope);
+    const run = this.answerNativeOnce(member, project, req).catch((error: unknown) => {
+      console.error("창 답 넣기 오류:", memberId, error);
+      return this.nativeReceipt(memberId, req, "unknown", "넣는 중 결과를 확인하지 못했습니다. 다시 넣지 않습니다. 팀 화면에서 터미널을 확인하세요", { terminal: "unknown" });
+    });
+    this.nativeInflight.set(req.operationId, run);
     try {
       const receipt = await run;
-      this.nativeReceipts.set(req.operationId, receipt);
-      if (this.nativeReceipts.size > 500) this.nativeReceipts.delete(this.nativeReceipts.keys().next().value!);
+      this.store.finishNativeAnswer(req.operationId, receipt);
       return receipt;
     } finally {
       this.nativeInflight.delete(req.operationId);
     }
   }
 
-  private async answerNativeOnce(memberId: string, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
-    const member = this.store.requireMember(memberId);
-    const project = this.store.requireProject(member.projectId);
-    this.requireActive(project);
-    const receipt = (status: NativeAnswerReceipt["status"], note: string, label: string | null = null): NativeAnswerReceipt =>
-      ({ operationId: req.operationId, status, note, memberId, promptId: req.promptId, option: status === "answered" ? req.option : null, label, at: new Date().toISOString() });
+  private nativeReceipt(memberId: string, req: AnswerNativePromptReq, status: NativeAnswerReceipt["status"], note: string,
+    extra: { terminal: NativeAnswerReceipt["terminal"]; label?: string | null; after?: NativeAnswerReceipt["after"]; reject?: boolean }): NativeAnswerReceipt {
+    const seen = this.nativeSeen.get(memberId);
+    return { operationId: req.operationId, status, note, memberId, promptId: req.promptId, option: status === "answered" ? req.option : null, label: extra.label ?? null,
+      at: new Date().toISOString(), observedAt: seen?.promptId === req.promptId ? seen.observedAt : null, terminal: extra.terminal, after: extra.after ?? null, reject: extra.reject ?? false };
+  }
+
+  private async answerNativeOnce(member: Member, project: Project, req: AnswerNativePromptReq): Promise<NativeAnswerReceipt> {
+    const refuse = (status: NativeAnswerReceipt["status"], note: string) => this.nativeReceipt(member.id, req, status, note, { terminal: "not_sent" });
+    // 카드가 고정한 직원·프로젝트가 지금 받는 쪽과 다르면 넣지 않는다(다른 화면·다른 탭의 카드).
+    if (req.memberId !== member.id || req.projectId !== member.projectId) return refuse("stale", "다른 직원이나 프로젝트의 카드라 넣지 않았습니다. 결재함을 새로고침해 지금 창을 보세요");
     const runner = this.runners.get(this.backendOf(member));
-    if (!runner?.answerNativePrompt) return receipt("unsupported", "이 실행 방식은 대화에서 답할 수 없습니다. 터미널에서 답하세요");
+    if (!runner?.answerNativePrompt) return refuse("unsupported", "이 실행 방식은 화면에서 답할 수 없습니다. 터미널에서 답하세요");
     const context = this.nativeContext(member, req.promptId);
-    if (context.generation !== req.generation) return receipt("stale", "세션이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요");
-    if (context.executionId !== req.executionId) return receipt("stale", "다른 실행으로 넘어가 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    if (context.generation !== req.generation) return refuse("stale", "세션이 바뀌어 넣지 않았습니다. 새 창을 보고 다시 고르세요");
+    if (context.executionId !== req.executionId) return refuse("stale", "다른 실행으로 넘어가 넣지 않았습니다. 새 창을 보고 다시 고르세요");
     const r = await runner.answerNativePrompt(this.runnerMember(member, project), req.promptId, req.option, req.text);
     if (!r.ok) {
       const map: Record<typeof r.reason, [NativeAnswerReceipt["status"], string]> = {
@@ -2768,13 +2803,20 @@ export class Orchestrator implements OrchestratorApi {
         leased: ["busy", "다른 사람이 터미널을 조작 중이라 넣지 않았습니다"],
       };
       const [status, note] = map[r.reason];
-      return receipt(status, note);
+      return refuse(status, note);
     }
-    const what = r.chosen.freeText ? `직접 입력으로 답했습니다: ${Orchestrator.cut(cleanText(req.text ?? ""), 120)}` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}' 을 골랐습니다`;
-    this.store.appendActivity(member.id, "system", `대표가 대화에서 ${what} · ${Orchestrator.cut([r.prompt.title, r.prompt.question].filter(Boolean).join(" — "), 160)}`);
+    const prompt = this.shownPrompt(member, r.prompt);
+    const chosen = prompt.options.find((o) => o.n === r.chosen.n) ?? r.chosen;
+    const where = req.via === "inbox" ? "결재함" : "대화";
+    const what = chosen.freeText ? `직접 입력으로 답했습니다: ${Orchestrator.cut(cleanText(req.text ?? ""), 120)}` : `${chosen.n}번 '${Orchestrator.cut(chosen.label, 80)}' 을 골랐습니다`;
+    const terminal = r.terminal ?? "unconfirmed";
+    this.store.appendActivity(member.id, "system", `대표가 ${where}에서 ${what} · ${Orchestrator.cut([prompt.title, prompt.question].filter(Boolean).join(" — "), 160)}${terminal === "accepted" ? "" : " · 넣은 뒤 창이 그대로였습니다"}`);
     // 대화에도 한 줄 남긴다: 다른 탭·기기에서도 이미 답한 것을 보고, 업무 지시와 섞이지 않게 시스템 글로 둔다.
-    this.memberNotice(member, `${member.name}의 ${r.prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 대화에서 답함 — ${r.chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${r.chosen.n}번 '${Orchestrator.cut(r.chosen.label, 80)}'`}`);
-    return receipt("answered", r.chosen.freeText ? "보냈습니다" : `'${Orchestrator.cut(r.chosen.label, 60)}' 을 골랐습니다`, r.chosen.label);
+    this.memberNotice(member, `${member.name}의 ${prompt.kind === "permission" ? "권한 창" : "질문 창"}에 대표가 ${where}에서 답함 — ${chosen.freeText ? `직접 입력 '${Orchestrator.cut(cleanText(req.text ?? ""), 80)}'` : `${chosen.n}번 '${Orchestrator.cut(chosen.label, 80)}'`}`);
+    const label = Orchestrator.cut(chosen.label, 60);
+    const note = terminal === "accepted" ? (chosen.freeText ? "보냈습니다" : `'${label}' 을 골랐습니다`)
+      : `'${label}' 을 넣었지만 창이 그대로입니다. 다시 넣지 않습니다. 팀 화면에서 터미널을 확인하세요`;
+    return this.nativeReceipt(member.id, req, "answered", note, { terminal, label: chosen.label, after: r.after ?? null, reject: chosen.reject });
   }
 
   async herdrInfo(): Promise<HerdrInfo> {
@@ -5323,6 +5365,11 @@ export class Orchestrator implements OrchestratorApi {
     try {
       const a = await this.memberApproval(member.id);
       if (a) body = `${approvalSummary(a)} · 결재함에서 승인·거절할 수 있습니다`;
+      else {
+        // core 칸: 질문·선택·승인 창을 읽어 요약한다(보이는 글과 같이 비밀값은 가림). 읽지 못한 창은 예전 문구다.
+        const native = (await this.memberNativePrompt(member.id)).prompt;
+        if (native && !native.limited) body = `${approvalSummary(native)} · 결재함에서 고를 수 있습니다`;
+      }
     } catch { /* 알림은 그대로 보낸다 */ }
     this.notifyInbox(`${member.name} 승인 대기`, body);
   }

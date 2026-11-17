@@ -7,7 +7,7 @@ interface Feed extends Omit<FilePage, "projectId"> { key: string; loading: boole
 const empty = (key: string): Feed => ({ key, items: [], counts: {}, nextCursor: null, hasMore: false, loading: true, error: null });
 
 /** A scope change fences both initial and continuation requests; a refresh keeps already-read pages when they overlap. */
-export function useFilePages(projectId: string, taskId: string | null, kind: FileKind | null, enabled: boolean, recent: FileDoc[]) {
+export function useFilePages(projectId: string, taskId: string | null, kind: FileKind | null, enabled: boolean, recent: FileDoc[], fileRevision = 0) {
   const key = JSON.stringify([projectId, taskId, kind, enabled]);
   const revision = JSON.stringify(recent.map(f => [f.id, f.taskId, f.kind, f.order, f.title, f.summary]));
   const recentRef = useRef(recent); recentRef.current = recent;
@@ -44,7 +44,7 @@ export function useFilePages(projectId: string, taskId: string | null, kind: Fil
     active.current = context;
     if (enabled) void load(null);
     return () => { context.alive = false; context.controller?.abort(); };
-  }, [key, revision, enabled, load]);
+  }, [key, revision, fileRevision, enabled, load]);
   const fresh = feed.key === key ? feed : empty(key);
   return { ...fresh, loadMore: () => load(fresh.nextCursor) };
 }

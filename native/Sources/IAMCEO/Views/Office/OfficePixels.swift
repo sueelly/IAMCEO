@@ -26,8 +26,9 @@ enum OfficePalette {
     static let shadowSolid = OfficeInk(0x28186E)
     static let bubble = OfficeInk(0xF7F4FF)
     static let bubbleShade = OfficeInk(0xD9D2F2)
-    static let screenOn = OfficeInk(0x2A1F66)
-    static let code: [OfficeInk] = [OfficeInk(0xC9BCFF), OfficeInk(0xB4F0FF), OfficeInk(0x9DEBD2)]
+    static let screenOnHex: UInt32 = 0xF3EEFF
+    static let screenOn = OfficeInk(screenOnHex)
+    static let code: [OfficeInk] = [OfficeInk(0x8E78EE), OfficeInk(0x4FA8D0), OfficeInk(0x3FB38D)]
     /// Drifts over the light floor: the asleep body's light tone (#8C88B5), not the pale lilac it was on the dark plate.
     static let zed = OfficeInk(0x8C88B5)
     /// The violet light of a working screen (the light theme's glow colour, CE.focus #7A5BFF).
@@ -37,7 +38,7 @@ enum OfficePalette {
     /// The 2px state light on a laptop lid or a monitor back.
     static func led(_ screen: OfficeScreen) -> UInt32 {
         switch screen {
-        case .off: 0x4A3F82
+        case .off: 0xB4A8E2
         case .working: 0xB9A8FF
         case .waiting: 0xFFB070
         case .blocked: 0xFF8A80

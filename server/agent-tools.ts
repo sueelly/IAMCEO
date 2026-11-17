@@ -244,7 +244,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_trace: tool(
-    "업무 한 건의 시작→지시→보고 사슬을 읽는다(바꾸지 않는다): 계약 판(작성·확인), 누구에게 어떤 글이 갔는지, 보고마다 검사·실행 증거 대조·조사 주장 대조, 열린 결재, 개선 후보. 글 본문은 싣지 않는다.",
+    "업무 한 건의 시작→지시→보고 사슬을 읽는다(바꾸지 않는다): 계약 판, 전체 전달 집계, 처음·최근·미결 전달 표본, 수신·실행 시각, 보고 검사, 열린 결재, 개선 후보. 표본은 각 60건이며 deliveryCoverage로 생략 범위를 본다. pendingWake는 실행 가능 판정이 아니다. 글 본문·실행 출력·세션 신원은 싣지 않는다.",
     z.strictObject({ task_id: z.string().trim().min(1).max(64).describe("볼 업무 id(tk_...)") }),
     (orch, member, a) => reply(JSON.stringify(orch.taskTrace(member, a.task_id))),
   ),

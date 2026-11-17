@@ -296,7 +296,7 @@ struct ChatMineRow: View {
         }
     }
 
-    /// Web .th-mine: gap 8, padding 10 15 11; violet #7A5BFF → #6D4DF2 in white, a lit top edge and a soft violet
+    /// Web .th-mine: gap 8, padding 10 15 11; violet #7152F5 → #6D4DF2 in white, a lit top edge and a soft violet
     /// shadow below (0 8px 18px -10px rgb(109 77 242 / .6)).
     private var bubble: some View {
         let shape = ChatBubbleShape.shape
@@ -1735,11 +1735,36 @@ private struct ChatBodyText: View {
     }
 }
 
+/// A file chip in a message (web .atv-file). On the light cards: --soft violet .07 (hover --soft-hover .12) in the
+/// --soft-ring (violet .16), name ink-1, size ink-2. On my violet bubble (.th-mine .atv-file): a darker ink wash
+/// rgb(23 19 43 / .14) (hover .22) in a white .28 ring, everything in white. The old white .07–.13 wash lightened the
+/// bubble and left the chip's text at 3.67–4.40 (`LightThemeContrastTests` keeps it at 4.5 or more).
+enum ChatFileChip {
+    static let violetHex: UInt32 = 0x7A5BFF
+    static let cardWash = (rest: 0.07, hover: 0.12)
+    static let cardRing = 0.16
+    static let mineShadeHex: UInt32 = 0x17132B
+    static let mineShade = (rest: 0.14, hover: 0.22)
+    static let mineRing = 0.28
+
+    static func nameInk(onBubble: Bool) -> UInt32 { onBubble ? 0xFFFFFF : 0x17132B }
+    static func subInk(onBubble: Bool) -> UInt32 { onBubble ? 0xFFFFFF : 0x4A4566 }
+
+    static func fill(onBubble: Bool, hovering: Bool) -> Color {
+        onBubble ? Color(hex: mineShadeHex).opacity(hovering ? mineShade.hover : mineShade.rest)
+                 : Color(hex: violetHex).opacity(hovering ? cardWash.hover : cardWash.rest)
+    }
+
+    static func ring(onBubble: Bool) -> Color {
+        onBubble ? Color.white.opacity(mineRing) : Color(hex: violetHex).opacity(cardRing)
+    }
+}
+
 /// Web thread colours that are not foundation tokens.
 private enum ChatPalette {
-    /// Mockup .th-mine (--mine): linear-gradient(180deg, #7A5BFF, #6D4DF2) under white text.
-    static let bubble = LinearGradient(colors: [CE.violet, CE.accentFill], startPoint: .top, endPoint: .bottom)
-    /// "{name}에게" subline and links on the bubble (--mine-to #E6DFFF).
+    /// Web .th-mine (--mine): linear-gradient(180deg, #7152F5, #6D4DF2) under white text.
+    static let bubble = LinearGradient(colors: CE.mineHex.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom)
+    /// "{name}에게" subline and links on the bubble (--mine-to #F7F5FF, AA on every stop).
     static let bubbleTo = CE.onAccentSub
     static let bubbleLink = CE.onAccentSub
     /// `code` on the bubble: a deep violet chip rgb(28 12 96 / .35), as MarkdownText draws it on accent.
@@ -1895,9 +1920,8 @@ private struct ChatAttachmentItem: View {
     private var sizeText: String { chatFileSize(attachment.size) }
     /// A white ring on my violet bubble; an ink ring on the light cards.
     private var thumbRing: Color { onBubble ? Color.white.opacity(hovering ? 0.28 : 0.1) : CE.wash(hovering ? 0.2 : 0.08) }
-    /// File chip: white .07 → .13 on my violet bubble; the soft violet (--soft) → violet .11 on the light cards.
-    private var chipFill: Color { onBubble ? Color.white.opacity(hovering ? 0.13 : 0.07) : CE.violet.opacity(hovering ? 0.11 : 0.07) }
-    private var chipRing: Color { onBubble ? Color.white.opacity(0.1) : CE.softRing }
+    private var chipFill: Color { ChatFileChip.fill(onBubble: onBubble, hovering: hovering) }
+    private var chipRing: Color { ChatFileChip.ring(onBubble: onBubble) }
 
     var body: some View {
         Group {
@@ -1963,8 +1987,8 @@ private struct ChatAttachmentItem: View {
 
     // MARK: Other files (web .atv-file)
 
-    /// 13.5 at 1.35, padding 6 14, radius 12; soft violet in its ring on the cards (white .07 / .1 ring on my bubble);
-    /// name 550, size 12.5 ink-2.
+    /// 13.5 at 1.35, padding 6 14, radius 12; name 550, size 12.5. Colours: `ChatFileChip` (web .atv-file and
+    /// .th-mine .atv-file).
     private var fileChip: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         return VStack(alignment: .leading, spacing: 6) {
@@ -1974,13 +1998,13 @@ private struct ChatAttachmentItem: View {
                         if loading { ProgressView().controlSize(.mini) }
                         else { Image(systemName: fileKindIcon(chatAttachmentKind(attachment))).font(.system(size: 13)) }
                     }
-                    .foregroundStyle(onBubble ? ChatPalette.bubbleTo : CE.ink2)
+                    .foregroundStyle(Color(hex: ChatFileChip.subInk(onBubble: onBubble)))
                     .frame(width: 16)
                     Text(displayName).font(ChatFont.fileName)
-                        .foregroundStyle(onBubble ? Color.white : CE.ink)
+                        .foregroundStyle(Color(hex: ChatFileChip.nameInk(onBubble: onBubble)))
                         .lineLimit(1).truncationMode(.middle)
                     Text(sizeText).font(CEFont.meta).monospacedDigit()
-                        .foregroundStyle(onBubble ? ChatPalette.bubbleTo : CE.ink2)
+                        .foregroundStyle(Color(hex: ChatFileChip.subInk(onBubble: onBubble)))
                         .fixedSize()
                 }
                 .padding(.horizontal, 14).padding(.vertical, 6)

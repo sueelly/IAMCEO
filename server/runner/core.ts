@@ -10,7 +10,7 @@ import { antigravityDraft, antigravityExactComposer, antigravityFolderTrust, ant
 import { cleanText } from "../text.ts";
 import { limitedPrompt, parseNativePrompt } from "./prompt.ts";
 import { childEnv } from "./headless.ts";
-import { defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
+import { backgroundWait, defaultClaudeHome, findSessionFile, inputText, screenContextPct } from "./herdr.ts";
 import { CoreError, coreRpc, coreSocketPath, type CoreHello, type CoreTerminal } from "./core-client.ts";
 import { providerFor, providerLaunch, isProviderArgv, type CoreProvider, type ProviderBins } from "./providers.ts";
 import { codexBindingMarker, discoverCodexSession, observeCompactBoundary, type CodexBindingCursor, type CompactBoundaryBaseline, type CompactBoundaryCursor } from "./core-context.ts";
@@ -30,6 +30,8 @@ export interface CoreCompactState {
 }
 export interface CoreRunnerDeps {
   pollMs?: number; rpcTimeoutMs?: number; sendTimeoutMs?: number; compactTimeoutMs?: number;
+  /** 대표의 답을 넣은 뒤 창이 닫혔는지 다시 읽어 보는 시간(ms). 지나면 '그대로'로 두고 다시 넣지 않는다. */
+  acceptCheckMs?: number;
   recoveryStore?: RunnerRecoveryStore;
   /** Synchronous transaction ports. A throw prevents external input. */
   repair?: { load(memberId: string, request: DeliveryRepair): DeliveryDispatch | null; prepare(memberId: string, request: DeliveryRepair, dispatch: DeliveryDispatch): boolean };
@@ -39,11 +41,14 @@ export interface CoreRunnerDeps {
 }
 interface Track {
   statusKey: string | null;
+  background: string | null;
   setupAttempted: string | null;
   /** 질문·선택 창이 새로 뜬 차례. 막힘(blocked)으로 들어올 때마다 1 늘어 같은 내용의 창이 다시 떠도 다르게 센다. */
   promptSeq: number;
   /** 대표가 이미 답한 창(promptKey). 같은 창에 두 번 넣지 않는다. */
   answeredPrompts: string[];
+  /** 지금 창(promptKey)을 처음 읽은 시각. 카드 등록 시각으로 보인다. */
+  promptSeen: { key: string; at: string } | null;
   setupError: { code: string; note: string } | null;
   member: RunnerMember; terminal: CoreTerminal; sessionId: string | null; pending: boolean; uncertain: boolean; status: string | null;
   epoch: number; endedTurn: number; completing: boolean; refresh: Promise<CoreTerminal> | null;
@@ -103,6 +108,8 @@ export class CoreRunner implements Runner {
   private polling = false;
   private closed = false;
   private methods = new Set<string>();
+  /** 이 실행기 기동마다 다른 표지. 창 차례 키에 넣어, 서버를 다시 띄우기 전에 읽은 카드로는 넣지 않는다(promptSeq 는 다시 1부터 센다). */
+  private readonly boot = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
 
   constructor(private readonly options: CoreRunnerOptions = {}, private readonly deps: CoreRunnerDeps = {}) {
     this.socketPath = options.socketPath || coreSocketPath(options.session);
@@ -168,7 +175,7 @@ export class CoreRunner implements Runner {
     if (this.closed) throw new CoreError("closed", "CoreRunner shut down while starting; terminal remains owned by core");
     const launch = terminal.labels["iamceo.operation"] ? this.deps.recoveryStore?.getLifecycleJournal?.(terminal.labels["iamceo.operation"]) : null;
     const launchedAt = launch?.memberId === member.id && launch.intent === "start" ? launch.createdAt : null;
-    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, setupAttempted: null, setupError: null, promptSeq: 0, answeredPrompts: [],
+    const track: Track = { member: { ...member }, terminal, sessionId, pending: false, uncertain: false, status: null, statusKey: null, background: null, setupAttempted: null, setupError: null, promptSeq: 0, answeredPrompts: [], promptSeen: null,
       epoch: 0, endedTurn: terminal.turn ?? 0, completing: false, refresh: null, nonce: terminal.labels["iamceo.binding"] || null, bindingSince: terminal.labels["iamceo.startedAt"] || launchedAt || new Date().toISOString(), binding: null, compact: null,
       dispatches: [], evidence: new Map(), lastError: null, observedAt: new Date().toISOString(), failures: 0, failure: null };
     this.restore(track);
@@ -291,6 +298,9 @@ export class CoreRunner implements Runner {
     const status = terminal.state !== "live" ? "gone" : state === "working" ? "working" : ["idle", "done", "error"].includes(state || "") ? "idle" : "blocked";
     if (!initial && (terminal.turn !== previous.turn || state !== previous.status?.state)) this.bump(track);
     if (status === "gone" && laterNativeId(providerFor(track.member)) && !track.sessionId) this.lostCodex.set(track.member.id, track.member.sessionGeneration);
+    // A completed foreground turn may still own regression shells/monitors.
+    // Publish this before turn_end so reporting and settle keep that wait intact.
+    await this.reportBackground(track, status);
     if (initial && state === "error" && !track.compact) {
       track.lastError = terminal.status?.msg || "CLI reported an error";
       this.event(track, { type: "turn_end", memberId: track.member.id, finalText: "", isError: true, errorText: track.lastError });
@@ -319,6 +329,22 @@ export class CoreRunner implements Runner {
       if (state === "error") return; // Keep the error result from being overwritten by idle in the same observation.
       this.event(track, { type: "status", memberId: track.member.id, status, blockedReason, observation: { source: "core", observedAt: track.observedAt, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: track.setupError }, ...(status === "gone" ? { exit: { reason: terminal.reason ?? null, exitCode: terminal.exit_code ?? null } } : {}) });
     }
+  }
+  /** Screen evidence only describes background work; OSC still owns input/slot admission. */
+  private async reportBackground(track: Track, status: string): Promise<void> {
+    if (providerFor(track.member) !== "claude" || this.manualLease(track.member.id)) return;
+    let label: string | null = null;
+    if (status === "idle") {
+      try {
+        const screen = await this.call<{ text: string; complete?: boolean }>("terminal.read", { terminal: track.terminal.address, lines: 0 });
+        this.validateTrack(track);
+        if (screen.complete === false || inputText(screen.text) === null) return;
+        label = backgroundWait(screen.text);
+      } catch { return; } // An unreadable footer cannot prove earlier work finished.
+    }
+    if (label === track.background) return;
+    track.background = label;
+    this.event(track, { type: "background", memberId: track.member.id, label });
   }
   /** 턴 끝 실측 창·사용량. core 는 문맥 표시만 하고 자동 압축은 하지 않는다. */
   private async reportContext(track: Track): Promise<void> {
@@ -852,7 +878,7 @@ export class CoreRunner implements Runner {
     return setup && setup.prompt.fingerprint !== track.setupAttempted ? setup.prompt : null;
   }
   /** 막힌 칸의 질문·선택·승인 창. 막힘이 아니면 null. 읽지 못하면 limited(원문만). */
-  private async readPrompt(track: Track): Promise<{ prompt: NativePrompt; key: string } | null> {
+  private async readPrompt(track: Track): Promise<{ prompt: NativePrompt; key: string; observedAt: string } | null> {
     if (track.terminal.state !== "live" || track.status !== "blocked") return null;
     const provider = providerFor(track.member);
     const epoch = track.epoch;
@@ -866,16 +892,39 @@ export class CoreRunner implements Runner {
       prompt = parseNativePrompt(screen.text, provider) ?? limitedPrompt(provider, screen.text, "창 모양을 읽지 못했습니다");
     }
     if (epoch !== track.epoch) return null;
-    return { prompt, key: `${track.member.sessionGeneration ?? 0}:${track.terminal.turn ?? 0}:${track.promptSeq}:${prompt.fingerprint}` };
+    const key = `${this.boot}:${track.member.sessionGeneration ?? 0}:${track.terminal.turn ?? 0}:${track.promptSeq}:${prompt.fingerprint}`;
+    if (track.promptSeen?.key !== key) track.promptSeen = { key, at: new Date().toISOString() };
+    return { prompt, key, observedAt: track.promptSeen.at };
   }
-  async nativePrompt(member: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string } | null> {
+  async nativePrompt(member: RunnerMember): Promise<{ prompt: NativePrompt; promptKey: string; observedAt: string; answered?: boolean } | null> {
     const track = this.tracks.get(member.id);
     if (!track) return null;
     this.assertMember(track, member);
     await this.refresh(track);
     const read = await this.readPrompt(track);
-    if (!read || track.answeredPrompts.includes(read.key)) return null;
-    return { prompt: read.prompt, promptKey: read.key };
+    if (!read) return null;
+    return { prompt: read.prompt, promptKey: read.key, observedAt: read.observedAt, ...(track.answeredPrompts.includes(read.key) ? { answered: true } : {}) };
+  }
+  /**
+   * 넣은 뒤 창을 다시 읽어 터미널이 받았는지 본다. 창이 닫히거나 다른 창이면 accepted, 시간 안에 그대로면 unconfirmed.
+   * 어느 쪽이든 다시 넣지 않는다(울타리는 넣기 전에 쳤다). 읽기 오류는 확인하지 못한 것으로 둔다.
+   */
+  private async checkAccepted(track: Track, promptKey: string): Promise<{ terminal: "accepted" | "unconfirmed"; after: "working" | "blocked" | "idle" | "gone" | null }> {
+    const deadline = Date.now() + (this.deps.acceptCheckMs ?? 1200);
+    let after: "working" | "blocked" | "idle" | "gone" | null = null;
+    for (;;) {
+      try {
+        await this.refresh(track);
+        if (this.tracks.get(track.member.id) !== track) return { terminal: "unconfirmed", after: null };
+        after = track.terminal.state !== "live" || track.status === "gone" ? "gone" : track.status === "working" ? "working" : track.status === "blocked" ? "blocked" : "idle";
+        if (after !== "blocked") return { terminal: "accepted", after };
+        const read = await this.readPrompt(track);
+        if (!read || read.key !== promptKey) return { terminal: "accepted", after };
+      } catch { /* 시간 안에 다시 본다 */ }
+      const left = deadline - Date.now();
+      if (left <= 0) return { terminal: "unconfirmed", after };
+      await Bun.sleep(Math.min(150, left));
+    }
   }
   /**
    * 대표가 고른 선택지(자유 응답이면 그 글)를 지금 창에 한 번 넣는다. 누르기 직전에 창을 다시 읽어 promptKey 가 같을 때만,
@@ -925,8 +974,7 @@ export class CoreRunner implements Runner {
       } else {
         await this.call("terminal.keys", { terminal: track.terminal.address, keys: [...arrows, "enter"] }, this.sendTimeoutMs);
       }
-      await this.refresh(track).catch(() => undefined);
-      return { ok: true, prompt: read.prompt, chosen };
+      return { ok: true, prompt: read.prompt, chosen, ...(await this.checkAccepted(track, promptKey)) };
     } catch (error) {
       if (track && attempted && (!(error instanceof CoreError) || error.uncertain)) track.uncertain = true;
       if (!attempted && error instanceof CoreError && error.kind === "not_found") return { ok: false, reason: "gone" };
