@@ -11,7 +11,7 @@
     "activeReadinessIdentity": "unverified: worker-token HTTP error; no retry or auth expansion"
   },
   "liveObservation": {
-    "basis": "총괄이 전달한 최초06:39 KST의 도구 승인정책never 거절 관측",
+    "basis": "최초 조사 당시 총괄이 전달한 관측; 후속 원문 대조는externalReviewReport에 별도 보존",
     "literalErrorIndependentlyRead": false,
     "bridgeCallArrivalIndependentlyRead": false,
     "limit": "지원task_trace는오류문자열/전담검수터미널을노출하지않음"
@@ -101,7 +101,36 @@
     "syntheticCli": "review_synthetic_design",
     "rootReexecutedCli": true
   },
-  "minimumMissingLiveEvidence": [
+  "externalReviewReport": {
+    "reportId": "msg_joLOlvnUy3GJ",
+    "author": "Novel of the world 총괄",
+    "authoredAt": "2026-11-17T22:03:06.311Z",
+    "sequence": 1209,
+    "title": "지정 검수 직원의 배치 수신과 도구 실행 거절을 확인했습니다",
+    "literalError": "MCP tool call requires approval, but approval policy is never",
+    "quotes": [
+      "06:39 KST 지정 검수 직원의 실제 터미널에서 “MCP tool call requires approval, but approval policy is never”로 검수 근거 조회가 거절되는 것을 확인했습니다.",
+      "당시 네 완료 보고는 실제 배치로 수신됐습니다.",
+      "06:55:53과 06:57:04에 서버가 다섯 건을 전달해 실행을 시작했고, 완료 판정 목록에는 지정 검수가 대기 중입니다."
+    ],
+    "observationDateKst": "2026-11-18",
+    "readVia": "post(report_id)",
+    "claimAttribution": "총괄의 실제 터미널·활동표 관측을 담은 보고를 이 직원이 조회함; 이 직원의 직접 터미널 관측은 아님",
+    "bridgeArrival": "unverified: report has no per-call tools/call or /agent/tool record",
+    "laterTurnEnd": "이번 총괄 입력에는 턴 종료도 명시됨; 조회한 보고 본문은 실행 시작과 검수 대기까지 명시하므로 출처를 구분함",
+    "supersedesGapIn": "msg_MIZPFwVIlBux / f_WFX4ivF2m0mP",
+    "originalSyntheticCommit": "71bc06099d79d5bb834d355940b59d4e68ba969d",
+    "newSyntheticExecution": false,
+    "liveRecoveryApplied": false,
+    "literalErrorReadFromReport": true
+  },
+  "remainingUnverified": [
+    "실서비스 최초 개별 호출의 tools/call·bridge /agent/tool 도달 여부와 operation ID는 보고에 없음",
+    "06:55:53/06:57:04 배치의 각 입력과 개별 검수 도구·최종 판정의 연결은 보고에 없음",
+    "등록 실행 파일과 실제 프로세스의 동일성은 종전 미확인을 보존함",
+    "설정 후보의 운영 적용·무중단 반영·실제 검수 복구는 미실행이며 이번 범위 밖"
+  ],
+  "minimumMissingLiveEvidenceAtInitialReport": [
     "최초06:39 KST의지정검수도구명과오류한줄",
     "같은호출이MCP tools/call 또는bridge /agent/tool에도달했는지",
     "내용/접속정보없이세대·실행역할·정책이읽은릴리스와같은지"
