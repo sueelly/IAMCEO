@@ -1,0 +1,189 @@
+{
+  "taskId": "tk_w_SoxDmyweQG9B",
+  "contractRev": 2,
+  "baseline": {
+    "sha": "166c99529eaae584169983049d0058bad78f6e29",
+    "schema": 44,
+    "harness": "required",
+    "operatingShaBasis": "이번 총괄 확정 지시; task_trace 자체가 바이너리 SHA를 증명하지 않음"
+  },
+  "workspace": {
+    "path": "/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/verify-live-delivery",
+    "branch": "test-verify-live-delivery-tk_w_SoxDmyweQG9B",
+    "oldWorkspacePreserved": "/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/delivery-recovery"
+  },
+  "checks": [
+    {
+      "command": "bun test --preload ./tests/fixtures/preserve-temp.ts tests/workflow-assignment-release.test.ts tests/orchestration-completion.test.ts tests/dispatch-execution-contract.test.ts",
+      "exit": 0,
+      "pass": 34,
+      "fail": 0,
+      "filtered": 0,
+      "expectations": 99,
+      "sourceUnchanged": true
+    },
+    {
+      "command": "bun run typecheck",
+      "exit": 0,
+      "pass": null,
+      "fail": null,
+      "filtered": 0,
+      "expectations": null,
+      "sourceUnchanged": true
+    },
+    {
+      "command": "bun test --preload ./tests/fixtures/preserve-temp.ts tests/task-continuation-runtime.test.ts tests/admission.test.ts tests/core-capacity.test.ts",
+      "exit": 0,
+      "pass": 50,
+      "fail": 0,
+      "filtered": 0,
+      "expectations": 418,
+      "sourceUnchanged": true
+    },
+    {
+      "command": "bun test --preload ./tests/fixtures/preserve-temp.ts tests/lifecycle-recovery.test.ts --test-name-pattern 'ACK started:false|a write whose reply was lost|busy rejected survives'",
+      "exit": 0,
+      "pass": 3,
+      "fail": 0,
+      "filtered": 35,
+      "expectations": 18,
+      "sourceUnchanged": true
+    }
+  ],
+  "total": {
+    "testsPassed": 87,
+    "testsFailed": 0,
+    "files": 7,
+    "expectations": 535,
+    "typecheckExit": 0
+  },
+  "receipt": {
+    "observer": "native subagent /root/live_receipt_link, supported task_trace once",
+    "observedAt": "2026-11-17T20:06:36.691Z",
+    "taskCoverage": {
+      "total": 17,
+      "returned": 17,
+      "truncated": false,
+      "unsettledTotal": 1,
+      "pendingWake": 0
+    },
+    "originals": [
+      {
+        "id": "dl_DPkK7h9osSqt",
+        "createdAt": "2026-11-17T17:30:14.439Z",
+        "status": "delivered",
+        "attempts": 2,
+        "deliveredAt": "2026-11-17T19:42:07.717Z"
+      },
+      {
+        "id": "dl_6rTzQPshPykm",
+        "createdAt": "2026-11-17T17:48:21.690Z",
+        "status": "delivered",
+        "attempts": 2,
+        "deliveredAt": "2026-11-17T19:42:07.721Z"
+      }
+    ],
+    "sharedExecution": {
+      "runId": "c8d215f5-7aee-471a-8df5-ee7fdaa5e960",
+      "sessionGeneration": 0,
+      "inputReceivedAt": "2026-11-17T19:42:07.749Z",
+      "startedAt": "2026-11-17T19:42:07.709Z",
+      "endedAt": "2026-11-17T19:49:41.608Z",
+      "phase": "ended",
+      "result": "success",
+      "recoveryPhase": "resolved"
+    }
+  },
+  "historicEvidence": {
+    "previousReport": "msg_ETUsyhi0hixB",
+    "previousFile": "f_vPvunU9NvXsn",
+    "diagnosticReport": "msg_3tcKxGXkpBoV",
+    "diagnosticFile": "f_Jkld3bxLD6sL",
+    "diagnosticCommit": "cb5d8afcb3dd1d695a970c2b4d972ee6a3fdcd28",
+    "previousDocCommit": "5d24eab67882140e3973b970b9680ab393803c23",
+    "firstDelayed": [
+      {
+        "taskId": "tk_w_v4VqC53JzpX1",
+        "deliveryId": "dl_xMNElcL65rIn",
+        "at": "2026-11-17T16:04:29.918Z",
+        "observedAt": "2026-11-17T16:35:21.796Z",
+        "attempts": 0,
+        "status": "queued",
+        "received": null,
+        "run": null
+      },
+      {
+        "taskId": "tk_w_B2I9m9RGD7SV",
+        "deliveryId": "dl_l5yUxEbQAa2g",
+        "at": "2026-11-17T15:52:36.425Z",
+        "observedAt": "2026-11-17T16:35:21.910Z",
+        "attempts": 0,
+        "status": "queued",
+        "received": null,
+        "run": null
+      },
+      {
+        "taskId": "tk_w_xeXefGm8U2g7",
+        "deliveryId": "dl_wMuYDGWwhErX",
+        "at": "2026-11-17T15:07:54.803Z",
+        "observedAt": "2026-11-17T16:35:21.945Z",
+        "attempts": 0,
+        "status": "queued",
+        "received": null,
+        "run": null
+      },
+      {
+        "taskId": "tk_w_Egk3jcVxrD2o",
+        "deliveryId": "dl_kGqSJg92tD3x",
+        "at": "2026-11-17T16:03:48.822Z",
+        "observedAt": "2026-11-17T16:35:21.966Z",
+        "attempts": 0,
+        "status": "queued",
+        "received": null,
+        "run": null
+      }
+    ],
+    "normal": {
+      "taskId": "tk_w_Sjx5BqKW4Hds",
+      "deliveryId": "dl_pLNg1CWnIYVf",
+      "at": "2026-11-17T16:22:55.046Z",
+      "observedAt": "2026-11-17T17:35:39.353Z",
+      "attempts": 1,
+      "received": "2026-11-17T16:28:27.103Z",
+      "ended": "2026-11-17T16:30:05.151Z",
+      "runId": "81c3a3a9-574b-4e6b-ad20-bcc2791b96ab",
+      "result": "success"
+    },
+    "legacyRecoveryDocCommit": "935f2e772e265ef38a7d5243a533e3acd162cdac"
+  },
+  "independentReview": [
+    {
+      "observer": "live_suite_scope",
+      "kind": "static fixture safety and selected test scope",
+      "executedTests": false,
+      "editedFiles": false
+    },
+    {
+      "observer": "live_contract_boundary",
+      "kind": "static current source/coverage mapping",
+      "executedTests": false,
+      "editedFiles": false
+    },
+    {
+      "observer": "live_receipt_link",
+      "kind": "supported receipt metadata once",
+      "executedTests": false,
+      "editedFiles": false
+    }
+  ],
+  "preservation": {
+    "productSourceEdits": 0,
+    "priorPatchApplied": false,
+    "mainMerge": false,
+    "operationalWrites": 0,
+    "originalReplay": false,
+    "rawLiveDbRead": false,
+    "tempRootDeleted": false,
+    "modelsEffortFastChanged": false
+  }
+}
