@@ -108,7 +108,7 @@ for (const change of ["contract", "owner-stop"] as const) {
   });
 }
 
-for (const scope of ["project", "global", "failure", "criteria", "execution_issue", "legacy_limit"] as const) {
+for (const scope of ["project", "global", "failure", "criteria", "contract_revision", "execution_issue", "legacy_limit"] as const) {
   test(`${scope} policy changed during real core preflight prevents physical input and preserves its queue`, async () => {
     const runtime = createIsolatedRuntime();
     const core = await capacityPeer(runtime);
@@ -124,9 +124,10 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
       const project = store.createProject({ name: "Core capacity", cwd: runtime.paths.work });
       const first = await orch.createMember(project.id, { name: "First", cli: "claude" });
       const second = await orch.createMember(project.id, { name: "Second", cli: "claude" });
-      const lead = scope === "criteria" ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
+      const lead = ["criteria", "contract_revision"].includes(scope) ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
+      const execution = { inputs: ["현재 인계 기록"], outputs: ["인계 문서"], scope: "문서 인계", constraints: [], exclusions: [] };
       const task = scope === "failure" ? store.saveTask({ projectId: project.id, memberId: second.id, who: "대표", title: "실패 정책 경합" }).task
-        : lead ? orch.saveTask(lead, { title: "기준 정책 경합", contract: { kind: "other", goal: "인계 문서를 전달한다", acceptance: ["담당자와 미정 사항을 확인할 수 있다"], checks: [] } }).task : null;
+        : lead ? orch.saveTask(lead, { title: "기준 정책 경합", contract: { ...execution, kind: "other", goal: "인계 문서를 전달한다", acceptance: ["담당자와 미정 사항을 확인할 수 있다"], checks: [] } }).task : null;
       await orch.assign(project.id, first.handle, { text: "First remains running" });
       core.holdNextRead();
       const secondSend = orch.assign(project.id, second.handle, { text: "Queued during cap change", ...(task ? { taskId: task.id } : {}) }, lead ?? undefined);
@@ -139,6 +140,10 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
           kind: "usage_limit" as const, detail: "weekly usage limit reached", at: new Date().toISOString(),
           sessionGeneration: store.memberRevisions(second.id).sessionGeneration, terminalId: second.paneId, exitCode: null,
         } } : {}) });
+      }
+      else if (scope === "contract_revision") {
+        store.saveTaskContract(task!.id, { ...execution, kind: "other", goal: "변경된 인계 범위만 확인한다", acceptance: ["변경된 범위의 검증"], checks: [] },
+          { author: "대표", authorMemberId: null, authorKind: "owner" });
       }
       else if (scope === "criteria") {
         const pending = store.listTaskDeliveries(task!.id).find(delivery => delivery.memberId === second.id)!;
@@ -169,7 +174,7 @@ for (const scope of ["project", "global", "failure", "criteria", "execution_issu
         else await orch.updateSettings({ maxConcurrentTurns: 2 });
         await until(() => core.count("terminal.send") === 2);
         expect(store.requireDelivery(pending[0].id).status).toBe("delivered");
-      } else {
+      } else if (scope !== "contract_revision") {
         await orch.pump(second.id);
         expect(core.count("terminal.send")).toBe(1);
         expect(store.requireDelivery(pending[0].id).status).toBe("queued");

@@ -97,7 +97,8 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       identity: z.object({ terminalId: z.string().min(1).nullable(), sessionId: z.string().min(1).nullable(), sessionGeneration: z.number().int().nonnegative(),
         process: z.object({ pid: z.number().int().positive(), startedAt: z.string().nullable() }).nullable() }),
       baseline: z.object({ serverEpoch: z.string().min(1), turn: z.number().int().nullable(), inputEpoch: z.number().int().nullable(), capturedAt: z.iso.datetime(),
-        logs: z.array(z.object({ path: z.string().min(1), fileIdentity: z.string().nullable(), offset: z.number().int().nonnegative(), eventId: z.string().nullable() })) }),
+        logs: z.array(z.object({ path: z.string().min(1), fileIdentity: z.string().nullable(), offset: z.number().int().nonnegative(), eventId: z.string().nullable() })),
+        executionContracts: z.array(z.object({ taskId: z.string().min(1), contractTaskId: z.string().min(1), rev: z.number().int().positive(), context: z.string().min(1) })).optional() }),
       markers: z.array(z.object({ deliveryId: z.string().min(1), marker: z.string().min(1) })).min(1),
     }).safeParse(dispatch).success && createHash("sha256").update(dispatch.wireText).digest("hex") === dispatch.wireSha256;
   }
@@ -128,6 +129,10 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     const expected = dispatch.items.find(item => item.deliveryId === delivery.id)?.sourceRevision;
     return expected != null && expected === this.sourceRevision(delivery);
   }
+
+  /** Domain execution context can change without changing the original source.
+   * Receipt inspection stays available; this hook guards additional writes. */
+  executionContextValid(_dispatch: DeliveryDispatch): boolean { return true; }
 
   /** Also used by ordinary and urgent admission. stopped releases only the logical fence. */
   fenced(memberId: string): boolean {
@@ -169,7 +174,12 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     const member = this.store.requireMember(first.memberId);
     const markers = deliveries.map(d => ({ deliveryId: d.id, marker: this.record(d.id).marker ?? `#iamceo_${randomBytes(16).toString("base64url")}` }));
     const bundleMarker = `#iamceo_b_${randomBytes(16).toString("base64url")}`;
-    const wireText = deliveries.map((d, index) => `${d.text}\n${markers[index].marker}`).join("\n\n") + `\n${bundleMarker}`;
+    // Partial retries must not reintroduce context for already received work.
+    const taskIds = new Set(deliveries.filter(d => d.wake).map(d => d.taskId));
+    if (baseline.executionContracts) baseline = { ...baseline, executionContracts: baseline.executionContracts.filter(c => taskIds.has(c.taskId)) };
+    const context = baseline.executionContracts?.map(c => c.context).join("\n\n");
+    const wireText = deliveries.map((d, index) => `${d.text}\n${markers[index].marker}`).join("\n\n") +
+      (context ? `\n\n[시스템] 이번 실행의 확정 업무 계약입니다. 보존된 원문에 옛 계약이 있으면 아래 판을 기준으로 수행하세요.\n${context}` : "") + `\n${bundleMarker}`;
     const createdAt = this.iso(Math.max(this.now(), Date.parse(this.store.listDispatches(member.id).at(-1)?.createdAt ?? this.iso())));
     const dispatch: DeliveryDispatch = { dispatchId: randomUUID(), memberId: first.memberId, projectId: first.projectId,
       cli: member.cli, backend: member.backend ?? "core", identity, baseline, markers, bundleMarker, wireText,
@@ -303,7 +313,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
   private loadRepair(memberId: string, request: DeliveryRepair): DeliveryDispatch | null {
     const dispatch = this.store.getDispatch(request.dispatchId);
     const member = this.store.getMember(memberId);
-    if (!dispatch || !this.validDispatch(dispatch) || !member || dispatch.memberId !== memberId || (this.store.requireProject(member.projectId).archived || !this.store.requireProject(member.projectId).runnerEnabled) || this.store.inputState(memberId).lease || dispatch.identity.sessionGeneration !== this.store.memberRevisions(memberId).sessionGeneration || dispatch.identity.sessionId !== member.sessionId || dispatch.identity.terminalId !== member.paneId || request.expectedSessionGeneration !== dispatch.identity.sessionGeneration || request.expectedSessionId !== dispatch.identity.sessionId || request.expectedTerminalId !== dispatch.identity.terminalId) return null;
+    if (!dispatch || !this.validDispatch(dispatch) || !this.executionContextValid(dispatch) || !member || dispatch.memberId !== memberId || (this.store.requireProject(member.projectId).archived || !this.store.requireProject(member.projectId).runnerEnabled) || this.store.inputState(memberId).lease || dispatch.identity.sessionGeneration !== this.store.memberRevisions(memberId).sessionGeneration || dispatch.identity.sessionId !== member.sessionId || dispatch.identity.terminalId !== member.paneId || request.expectedSessionGeneration !== dispatch.identity.sessionGeneration || request.expectedSessionId !== dispatch.identity.sessionId || request.expectedTerminalId !== dispatch.identity.terminalId) return null;
     if (dispatch.items.some(item => {
       const d = this.store.requireDelivery(item.deliveryId);
       const r = this.record(d.id);
@@ -518,7 +528,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     this.projectStatus(d, phase === "needs_owner" && reason === "retry_exhausted" ? "failed" : "held", phase === "needs_owner" ? note(reason, inspection.evidence) : CHECK_NOTE);
   }
   private async maybeRepair(original: DeliveryDispatch, inspection: DeliveryInspection, runner: Pick<Runner, "repairDelivery">): Promise<void> {
-    if (this.closed || !this.safe(original, inspection) || inspection.receivedDeliveryIds.length && inspection.finding !== "not_received") return;
+    if (this.closed || !this.safe(original, inspection) || !this.executionContextValid(original) || inspection.receivedDeliveryIds.length && inspection.finding !== "not_received") return;
     const unresolved = original.items.map(item => this.store.requireDelivery(item.deliveryId)).filter(d => !["resolved", "stopped"].includes(this.record(d.id).phase) && d.status !== "delivered");
     if (!unresolved.length) return;
     if (unresolved.some(d => !this.sourceValid(original, d)) || this.store.inputState(original.memberId).unresolvedDispatches.some(other => other.dispatchId !== original.dispatchId && ["prepared", "write_started", "unknown"].includes(other.transportState))) return;
