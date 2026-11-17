@@ -6,6 +6,7 @@ struct ModelOption: Decodable, Sendable, Equatable, Identifiable {
     var description: String? = nil
     let efforts: [String]
     var defaultEffort: String? = nil
+    var supportsFast: Bool? = nil
     var id: String { value }
 }
 

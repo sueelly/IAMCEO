@@ -3,6 +3,20 @@ import XCTest
 @testable import IAMCEO
 
 final class CodexRanksTests: XCTestCase {
+    func testCodexSpeedRoundTripAndPatchCompatibility() throws {
+        let old = try JSONDecoder().decode(Member.self, from: Data(#"{"id":"m","cli":"codex"}"#.utf8))
+        XCTAssertNil(old.codexSpeed)
+        let current = try JSONDecoder().decode(Member.self, from: Data(#"{"id":"m","cli":"codex","codexSpeed":"fast","appliedCodexSpeed":"standard"}"#.utf8))
+        XCTAssertEqual(current.codexSpeed, "fast")
+        XCTAssertEqual(current.appliedCodexSpeed, "standard")
+        let request = PatchMemberRequest(cli: "codex", modelOverride: "gpt-6.2-sol", effortOverride: "max", codexSpeed: "fast")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: String])
+        XCTAssertEqual(json, ["cli": "codex", "modelOverride": "gpt-6.2-sol", "effortOverride": "max", "codexSpeed": "fast"])
+        let legacy = PatchMemberRequest(cli: "claude", modelOverride: nil, effortOverride: nil)
+        let legacyJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        XCTAssertNil(legacyJSON["codexSpeed"])
+    }
+
     func testOlderSettingsDecodeToEmptyCodexDefaultsAndNewSettingsRoundTrip() throws {
         let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"ranks":{"lead":{"model":"sonnet","effort":"max"}}}"#.utf8))
         XCTAssertTrue(old.codexRanks.isEmpty)
@@ -40,7 +54,7 @@ final class CodexRanksTests: XCTestCase {
             XCTAssertNotNil(RankSettingsEditing.modelError(invalid, custom: true, title: "팀장"))
         }
         XCTAssertNil(RankSettingsEditing.modelError("gpt-6.1-sol", custom: true, title: "팀장"))
-        XCTAssertEqual(RankSettingsCLI.codex.efforts, ["minimal", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(RankSettingsCLI.codex.efforts, ["minimal", "low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(RankSettingsCLI.claude.efforts, ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(RankSettingsCLI.codex.models, ["gpt-6.1-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-6-astra"])
     }

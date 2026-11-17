@@ -266,12 +266,14 @@ struct CreateProjectRequest: Encodable, Sendable { let name: String; let cwd: St
 struct CreateMemberRequest: Encodable, Sendable { let name: String; let role: String; let cli: String; let modelOverride: String? }
 struct PatchMemberRequest: Encodable, Sendable {
     let cli: String; let modelOverride: String?; let effortOverride: String?
-    enum CodingKeys: String, CodingKey { case cli, modelOverride, effortOverride }
+    var codexSpeed: String? = nil
+    enum CodingKeys: String, CodingKey { case cli, modelOverride, effortOverride, codexSpeed }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(cli, forKey: .cli)
         try c.encode(modelOverride, forKey: .modelOverride)
         try c.encode(effortOverride, forKey: .effortOverride)
+        try c.encodeIfPresent(codexSpeed, forKey: .codexSpeed)
     }
 }
 

@@ -1,7 +1,7 @@
 import { deliveryWaitText, memberIssueLabel, providerIssueKind } from "@shared/execution-issues";
 // 팀 요약·전체 지도. 직원 상세는 기존 주소의 <sub>(직원 id)로 열린다.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type ProjectState, type Task, type WorkItem, type WorkSec } from "@shared/types";
+import { CODEX_EFFORTS, EFFORTS, memberRank, type CodexSpeed, type ModelList, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type ProjectState, type Task, type WorkItem, type WorkSec } from "@shared/types";
 import type { WorkflowNode } from "@shared/workflow";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import { PROVIDERS } from "../lib/runtime";
@@ -506,12 +506,29 @@ const ANTIGRAVITY_MODELS = ["gemini-4-argon-medium", "gemini-4-argon-high", "gem
 
 /** 제공자 전환은 서버가 이전 세션을 닫고 새 세션에 인계한다. */
 function MemberConfig({ m }: { m: Member }) {
-  const rank = useBootstrap()?.settings.ranks[memberRank(m.kind)];
+  const settings = useBootstrap()?.settings;
+  const codex = m.cli === "codex";
+  const rank = (codex ? settings?.codexRanks : settings?.ranks)?.[memberRank(m.kind)];
   const context = useWriteContext();
   const acceptedSnapshotVersion = useStore(state => state.acceptedSnapshotVersion);
   const diagnostics = useRuntime();
   const { busy, error, run, setError } = useAction();
   const [modelDraft, setModelDraft] = useState<{ value: string; review: WriteReview } | null>(null);
+  const [codexModels, setCodexModels] = useState<ModelList | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [codexDraft, setCodexDraft] = useState<{ model: string; effort: string; speed: CodexSpeed; review: WriteReview } | null>(null);
+  useEffect(() => {
+    if (!codex) return;
+    const controller = new AbortController();
+    setCodexModels(null);
+    setCatalogError(null);
+    void api.models(controller.signal).then(result => {
+      if (!controller.signal.aborted) setCodexModels(result.codex);
+    }, error => {
+      if (!controller.signal.aborted) setCatalogError(`모델 목록을 불러오지 못했습니다. ${errorText(error)}`);
+    });
+    return () => controller.abort();
+  }, [codex, m.id]);
   const [conflict, setConflict] = useState<{ patch: PatchMemberReq; review: WriteReview; snapshotVersion: number; ready?: boolean } | null>(null);
   const model = modelDraft?.value ?? m.modelOverride ?? "";
   const capture = () => captureWriteReview(context, { kind: "member", projectId: m.projectId, id: m.id });
@@ -522,7 +539,10 @@ function MemberConfig({ m }: { m: Member }) {
         () => api.patchMember(m.id, patch));
       if (!reviewStillCurrent(reviewed, readWriteContext())) return;
       applyLocal({ type: "member", member });
-      if (patch.modelOverride !== undefined) setModelDraft(null);
+      if (codex || patch.modelOverride !== undefined || patch.cli !== undefined) {
+        setModelDraft(null);
+        setCodexDraft(null);
+      }
       setConflict(null);
       await refresh();
     } catch (e) {
@@ -539,6 +559,27 @@ function MemberConfig({ m }: { m: Member }) {
   const agy = m.cli === "antigravity";
   // Antigravity 는 직급 기본값이 없고 effort 가 모델 이름에 들어 있다.
   const base = (v: string | null | undefined) => agy ? "Antigravity 기본값" : `직급 기본값${v ? ` (${v})` : ""}`;
+  const savedCodex = { model: m.modelOverride ?? "", effort: m.effortOverride ?? "", speed: m.codexSpeed ?? "standard" as CodexSpeed };
+  const draft = codexDraft ?? savedCodex;
+  const options = codexModels?.models ?? [];
+  const selected = options.find(option => option.value === (draft.model || rank?.model));
+  const efforts: readonly string[] = selected?.efforts.length ? selected.efforts : CODEX_EFFORTS;
+  const canUseFast = selected?.supportsFast === true;
+  const codexBusy = busy !== null || !!conflict || legacy || !codexModels;
+  const codexPatch: PatchMemberReq = {
+    ...(draft.model !== savedCodex.model ? { modelOverride: draft.model || null } : {}),
+    ...(draft.effort !== savedCodex.effort ? { effortOverride: draft.effort || null } : {}),
+    ...(draft.speed !== savedCodex.speed ? { codexSpeed: draft.speed } : {}),
+  };
+  const codexChanged = Object.keys(codexPatch).length > 0;
+  const editCodex = (change: Partial<typeof savedCodex>) => setCodexDraft(previous => ({ ...savedCodex, ...previous, ...change, review: previous?.review ?? capture() }));
+  const chooseCodexModel = (value: string) => {
+    const option = options.find(candidate => candidate.value === (value || rank?.model));
+    const supported: readonly string[] = option?.efforts.length ? option.efforts : CODEX_EFFORTS;
+    editCodex({ model: value, effort: supported.includes(draft.effort) ? draft.effort : "", speed: option?.supportsFast ? draft.speed : "standard" });
+  };
+  const speedLabel = (speed: CodexSpeed) => speed === "fast" ? "Fast" : "Standard";
+  const codexSummary = (value: typeof savedCodex) => `모델 ${value.model || base(rank?.model)} · effort ${value.effort || base(rank?.effort)} · ${speedLabel(value.speed)}`;
   return (
     <div className="tm-config">
       <p className="tm-label">AI CLI · 모델 · effort</p>
@@ -549,33 +590,58 @@ function MemberConfig({ m }: { m: Member }) {
         </select>
       </label>
       <p className="tm-note tm-note--left">{legacy ? "이전 실행기의 세션은 여기서 CLI를 전환할 수 없습니다." : changing ? "일이나 전달 대기가 끝나면 CLI를 바꿀 수 있습니다." : blocked ?? "CLI를 바꾸면 이전 세션을 닫고 현재 일과 상황을 새 세션에 인계합니다."}</p>
+      {codex ? <>
+        <div className="tm-config__row">
+          <label className="field"><span className="field__label">모델</span><select className="input tm-select" aria-label="모델" disabled={codexBusy} value={draft.model} onChange={e => chooseCodexModel(e.target.value)}>
+            <option value="">{base(rank?.model)}</option>
+            {draft.model && !options.some(option => option.value === draft.model) ? <option value={draft.model} disabled>{draft.model} · 목록에 없음</option> : null}
+            {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select></label>
+          <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={codexBusy} value={draft.effort} onChange={e => editCodex({ effort: e.target.value })}>
+            <option value="">{rank?.effort && efforts.includes(rank.effort) ? base(rank.effort) : "모델 기본값"}</option>
+            {draft.effort && !efforts.includes(draft.effort) ? <option value={draft.effort} disabled>{draft.effort} · 이 모델에서 지원하지 않음</option> : null}
+            {efforts.map(effort => <option key={effort} value={effort}>{effort === "max" ? "Max" : effort}</option>)}
+          </select></label>
+        </div>
+        <label className="field"><span className="field__label">속도</span><select className="input tm-select" aria-label="속도" disabled={codexBusy} value={draft.speed} onChange={e => editCodex({ speed: e.target.value as CodexSpeed })}>
+          <option value="standard">Standard</option>
+          <option value="fast" disabled={!canUseFast}>Fast</option>
+        </select></label>
+        <GlassButton variant="glass" size="m" disabled={codexBusy || !codexChanged || (draft.speed === "fast" && !canUseFast) || ((m.status === "working" || m.status === "blocked") && !!m.paneId)} onClick={() => void save(codexPatch, codexDraft?.review ?? capture())}>{busy ? "저장하는 중" : "설정 저장"}</GlassButton>
+        {codexDraft ? <GlassButton variant="ghost" size="m" disabled={busy !== null} onClick={() => { setCodexDraft(null); setConflict(null); setError(null); }}>편집 되돌리기</GlassButton> : null}
+        {catalogError ? <ErrorLine>{catalogError}</ErrorLine> : null}
+        {m.appliedCodexSpeed && m.appliedCodexSpeed !== savedCodex.speed ? <p className="tm-note tm-note--left">현재 세션 속도는 {speedLabel(m.appliedCodexSpeed)}입니다.</p> : null}
+        {(m.status === "working" || m.status === "blocked") && codexChanged ? <p className="tm-note tm-note--left">현재 턴이 끝나면 설정을 저장할 수 있습니다.</p> : null}
+      </> : <>
       <div className="tm-config__row">
         <label className="field"><span className="field__label">모델</span><input className="input t-code" aria-label="모델" disabled={busy !== null || legacy} value={model} onChange={(e) => {
           const value = e.target.value;
           setModelDraft(current => ({ value, review: current?.review ?? capture() }));
-        }} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(m.cli === "codex" ? [] : m.cli === "antigravity" ? ANTIGRAVITY_MODELS : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
+        }} placeholder={base(rank?.model)} list={`models-${m.id}`} autoCapitalize="off" autoCorrect="off" spellCheck={false} /><datalist id={`models-${m.id}`}>{(agy ? ANTIGRAVITY_MODELS : MODELS).map((x) => <option key={x} value={x} />)}</datalist></label>
         <label className="field"><span className="field__label">effort</span><select className="input tm-select" aria-label="effort" disabled={busy !== null || !!conflict || legacy || agy} value={m.effortOverride ?? ""} onChange={(e) => void save({ effortOverride: (e.target.value || null) as Effort | null })}>
           <option value="">{agy ? "모델 이름에 포함" : base(rank?.effort)}</option>
-          {EFFORTS.map((x) => <option key={x} value={x} disabled={m.cli === "codex" && x === "max"}>{x}{m.cli === "codex" && x === "max" ? " · Codex 미지원" : ""}</option>)}
+          {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
         </select></label>
       </div>
       <GlassButton variant="glass" size="m" disabled={busy !== null || !!conflict || legacy || (model.trim() || null) === m.modelOverride} onClick={() => void save({ modelOverride: model.trim() || null }, modelDraft?.review ?? capture())}>{busy ? "저장하는 중" : "모델 저장"}</GlassButton>
+      </>}
       {conflict ? <div role="status">
-        <p className="tm-note tm-note--left">입력한 값은 남겨 두었습니다. 현재 설정: {providerName(m.cli ?? "claude")} · 모델 {m.modelOverride ?? "직급 기본값"} · effort {m.effortOverride ?? "직급 기본값"}</p>
-        <p className="tm-note tm-note--left">저장하려던 값: {conflict.patch.cli ? `CLI ${providerName(conflict.patch.cli)}` : conflict.patch.effortOverride !== undefined ? `effort ${conflict.patch.effortOverride ?? "직급 기본값"}` : `모델 ${model.trim() || "직급 기본값"}`}</p>
+        <p className="tm-note tm-note--left">입력한 값은 남겨 두었습니다. 현재 설정: {providerName(m.cli ?? "claude")} · {codex ? codexSummary(savedCodex) : `모델 ${m.modelOverride ?? "직급 기본값"} · effort ${m.effortOverride ?? "직급 기본값"}`}</p>
+        <p className="tm-note tm-note--left">저장하려던 값: {conflict.patch.cli ? `CLI ${providerName(conflict.patch.cli)}` : codex ? codexSummary({ model: conflict.patch.modelOverride === undefined ? savedCodex.model : conflict.patch.modelOverride ?? "", effort: conflict.patch.effortOverride === undefined ? savedCodex.effort : conflict.patch.effortOverride ?? "", speed: conflict.patch.codexSpeed ?? savedCodex.speed }) : conflict.patch.effortOverride !== undefined ? `effort ${conflict.patch.effortOverride ?? "직급 기본값"}` : `모델 ${model.trim() || "직급 기본값"}`}</p>
         {conflict.ready ? (
-          <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void save(conflict.patch.modelOverride !== undefined ? { modelOverride: model.trim() || null } : conflict.patch, conflict.review)}>검토한 변경 저장</GlassButton>
+          <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void save(!codex && conflict.patch.modelOverride !== undefined ? { modelOverride: model.trim() || null } : conflict.patch, conflict.review)}>검토한 변경 저장</GlassButton>
         ) : (
           <GlassButton variant="glass" size="m" disabled={busy !== null || acceptedSnapshotVersion === conflict.snapshotVersion || capture().mode === "unavailable"} onClick={() => {
             const nextReview = capture();
             setModelDraft(current => current ? { ...current, review: nextReview } : current);
+            setCodexDraft(current => current ? { ...current, review: nextReview } : current);
             setConflict({ ...conflict, review: nextReview, ready: true });
             setError(null);
           }}>현재 값 확인했습니다</GlassButton>
         )}
       </div> : null}
       {modelDraft ? <GlassButton variant="ghost" size="m" disabled={busy !== null} onClick={() => { setModelDraft(null); setConflict(null); setError(null); }}>모델 입력 되돌리기</GlassButton> : null}
-      <p className="tm-note tm-note--left">모델·effort 변경은 세션을 잠재운 뒤 다시 열 때 적용됩니다. 빈 모델은 직급 기본값을 씁니다.</p>
+      {!codex ? <p className="tm-note tm-note--left">모델·effort 변경은 세션을 잠재운 뒤 다시 열 때 적용됩니다. 빈 모델은 직급 기본값을 씁니다.</p> : null}
       <ErrorLine>{error}</ErrorLine>
     </div>
   );

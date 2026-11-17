@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const SHOTS = join(
   import.meta.dir,
@@ -33,7 +33,12 @@ beforeAll(async () => {
     IAMCEO_HOME: isolated.paths.iamceoHome,
     IAMCEO_PORT: "0",
     IAMCEO_ENABLE_CLI: "false",
+    CODEX_HOME: isolated.paths.codexHome,
   };
+  writeFileSync(join(isolated.paths.codexHome, "models_cache.json"), JSON.stringify({ models: [
+    { slug: "codex-max", display_name: "Codex Max", visibility: "list", supported_reasoning_levels: [{ effort: "max" }], additional_speed_tiers: ["fast"] },
+    { slug: "codex-standard", display_name: "Codex Standard", visibility: "list", supported_reasoning_levels: [{ effort: "low" }] },
+  ] }));
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env),
     bus = new Bus(),
@@ -834,4 +839,32 @@ test("review: map focus returns to the same group list and expanded task", async
   } finally {
     await p.close();
   }
+}, 20000);
+
+
+test("Codex model, Max and Fast are selected and saved in a single reviewed write", async () => {
+  const m = store.createMember({ projectId: project.id, name: "Codex 직원", handle: "codex-options", kind: "worker", cli: "codex", status: "asleep" });
+  const p = await open(390);
+  try {
+    await p.locator(`[data-member-id="${m.id}"] .to-person`).click();
+    const detail = p.getByRole("dialog");
+    await detail.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
+    const model = detail.getByRole("combobox", { name: "모델", exact: true });
+    const effort = detail.getByRole("combobox", { name: "effort", exact: true });
+    const speed = detail.getByRole("combobox", { name: "속도", exact: true });
+    await model.selectOption("codex-max");
+    await effort.selectOption("max");
+    await speed.selectOption("fast");
+    const save = detail.getByRole("button", { name: "설정 저장", exact: true });
+    const submitted = p.waitForResponse(r => r.url().endsWith(`/api/members/${m.id}`) && r.request().method() === "PATCH");
+    await save.click();
+    const response = await submitted;
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON()).toEqual({ modelOverride: "codex-max", effortOverride: "max", codexSpeed: "fast" });
+    expect(store.requireMember(m.id)).toMatchObject({ modelOverride: "codex-max", effortOverride: "max", codexSpeed: "fast", status: "asleep" });
+    await model.selectOption("codex-standard");
+    expect(await effort.inputValue()).toBe("");
+    expect(await speed.inputValue()).toBe("standard");
+    expect(await speed.locator('option[value="fast"]').evaluate((option: HTMLOptionElement) => option.disabled)).toBe(true);
+  } finally { await p.close(); store.removeMember(m.id); }
 }, 20000);

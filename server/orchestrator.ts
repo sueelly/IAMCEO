@@ -2151,7 +2151,9 @@ export class Orchestrator implements OrchestratorApi {
     try {
       await this.tools();
       // Validate the target invocation before stopping a working installation.
-      const target = { ...member, ...patch, cli: patch.cli!, sessionId: !freshSession && patch.cli === member.cli && member.cli === "claude" ? member.sessionId : null, paneId: null };
+      const sameProvider = patch.cli === member.cli;
+      const resumeId = !freshSession && sameProvider && (member.cli === "claude" || member.cli === "codex") ? member.sessionId : null;
+      const target = { ...member, ...patch, cli: patch.cli!, sessionId: resumeId, paneId: null };
       const targetRunner = this.runners.get(this.store.effectiveBackend());
       if (targetRunner instanceof CoreRunner) {
         const model = this.desiredConfig(target).model;
@@ -2168,25 +2170,24 @@ export class Orchestrator implements OrchestratorApi {
         }
       }
       changedSession = true;
-      const sameProvider = patch.cli === member.cli;
       this.store.transaction(() => {
         this.endExecution(member, "interrupted", freshSession ? "명시적 새 세션으로 전환했습니다" : "세션 설정을 변경했습니다");
         this.confirmStop(member.id);
         this.store.archiveAndRotateSession(member.id, patch.cli!, freshSession ? "fresh_session" : sameProvider ? "settings_change" : "provider_switch");
+        this.store.patchMember(member.id, { ...patch, ...(resumeId ? { sessionId: resumeId } : {}), ...(freshSession ? { origin: "runner" as const } : {}), backend: this.store.effectiveBackend(), status: "idle", lastError: null });
       });
-      if (!freshSession && sameProvider && member.cli === "claude") this.store.patchMember(member.id, { sessionId: member.sessionId });
-      this.store.patchMember(member.id, { ...patch, ...(freshSession ? { origin: "runner" as const } : {}), backend: this.store.effectiveBackend(), status: "idle", lastError: null });
       if (member.kind !== "worker") this.store.setChiefCli(project.id, patch.cli!);
       const handoff = [
-        `CLI 설정 변경: ${member.cli} → ${patch.cli}. ${!freshSession && sameProvider && member.cli === "claude" ? "같은 Claude 세션을 새 설정으로 이어 열었습니다" : "이전 제공자의 세션을 재개하지 않는 새 세션입니다"}.`,
+        `CLI 설정 변경: ${member.cli} → ${patch.cli}. ${resumeId ? "같은 대화를 새 설정으로 이어 엽니다" : "새 세션으로 인계합니다"}.`,
         `역할: ${member.role}. 현재 상황: ${member.now}. 다음: ${member.next}.`,
         `프로젝트 상황: ${project.now}. board 도구로 대화·결재·작업을 확인하고 계속하세요.`,
       ].join("\n");
       this.store.enqueue({ projectId: project.id, memberId: member.id, kind: "system", text: formatSystem(handoff), wake: false });
       const fresh = this.store.requireMember(member.id);
       this.openRunner(fresh);
+      const sent = this.desiredConfig(fresh);
       const started = await this.startManaged(fresh, project, !!fresh.sessionId);
-      this.applyStarted(member.id, project, started, this.desiredConfig(fresh));
+      this.applyStarted(member.id, project, started, sent);
       sessionReady = true;
       this.store.appendActivity(member.id, "system", handoff);
       return this.store.requireMember(member.id);
@@ -2370,8 +2371,13 @@ export class Orchestrator implements OrchestratorApi {
       }
       return updated;
     }
-    if (this.runners.has("core") && member.backend === "core" && (member.sessionId || member.paneId) &&
-        ((patch.modelOverride !== undefined && patch.modelOverride !== member.modelOverride) || (patch.effortOverride !== undefined && patch.effortOverride !== member.effortOverride))) {
+    const changed = (patch.modelOverride !== undefined && patch.modelOverride !== member.modelOverride) ||
+      (patch.effortOverride !== undefined && patch.effortOverride !== member.effortOverride) ||
+      (patch.codexSpeed !== undefined && patch.codexSpeed !== (member.codexSpeed ?? "standard"));
+    if (changed && this.runners.has("core") && member.backend === "core" && (member.sessionId || member.paneId)) {
+      if (member.cli === "codex" && (member.status === "asleep" || (member.status === "offline" && !member.paneId))) {
+        return this.store.patchMember(memberId, patch);
+      }
       return this.switchProvider(member, { ...patch, cli: member.cli });
     }
     return this.store.patchMember(memberId, patch);
@@ -5326,10 +5332,9 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 이 직원의 세션에 들어가 있어야 할 설정. */
   private desiredConfig(member: Member): AppliedConfig {
-    const { ranks, codexRanks } = this.store.getSettings();
-    const { model, effort } = memberConfig(member, ranks, codexRanks);
-    const staff = staffSubagent(member.cli, ranks, codexRanks);
-    return { model, effort, staffModel: staff.subagentModel, staffEffort: staff.subagentEffort, toolsSig: this.toolSignature(member) };
+    const settings = this.store.getSettings();
+    const staff = staffSubagent(member.cli, settings.ranks, settings.codexRanks);
+    return { ...this.models.memberLaunchConfig(member, settings), staffModel: staff.subagentModel, staffEffort: staff.subagentEffort, toolsSig: this.toolSignature(member) };
   }
 
   /**
@@ -5397,7 +5402,8 @@ export class Orchestrator implements OrchestratorApi {
     const want = this.desiredConfig(member);
     if (this.runtime(member.id).configGaveUp === JSON.stringify(want)) return false;
     const have = this.store.getAppliedConfig(member.id);
-    return want.model !== (have?.model ?? null) || want.effort !== (have?.effort ?? null) || want.staffModel !== (have?.staffModel ?? null) || want.staffEffort !== (have?.staffEffort ?? null);
+    return want.model !== (have?.model ?? null) || want.effort !== (have?.effort ?? null) ||
+      (want.codexSpeed ?? "standard") !== (have?.codexSpeed ?? "standard") || want.staffModel !== (have?.staffModel ?? null) || want.staffEffort !== (have?.staffEffort ?? null);
   }
 
   /** 쉬는 세션을 새 설정으로 다시 연다. 이번 전달을 그대로 이어가도 되면 true. */
@@ -6411,7 +6417,7 @@ export class Orchestrator implements OrchestratorApi {
       cwd: member.cwd,
       sessionId: member.sessionId,
       paneId: member.paneId,
-      ...memberConfig(member, settings.ranks, settings.codexRanks),
+      ...this.models.memberLaunchConfig(member, settings),
       subagentModel: staffSubagent(member.cli, settings.ranks, settings.codexRanks).subagentModel,
       permissionMode: settings.permissionMode,
       kind: member.kind,

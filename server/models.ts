@@ -1,24 +1,10 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { CliProvider, Member, PatchMemberReq, Settings, SettingsPatch } from "../shared/types.ts";
+import type { CliProvider, CodexSpeed, Member, ModelCatalog, ModelList, ModelOption, PatchMemberReq, Settings, SettingsPatch } from "../shared/types.ts";
 import { ApiError } from "./store.ts";
-import { CODEX_EFFORTS, EFFORTS, memberRank } from "../shared/types.ts";
+import { CODEX_EFFORTS, EFFORTS, memberConfig, memberRank } from "../shared/types.ts";
 import { ANTIGRAVITY_DEFAULT_MODELS } from "./runner/antigravity.ts";
-
-export interface ModelOption {
-  value: string;
-  label: string;
-  description?: string;
-  efforts: string[];
-  defaultEffort?: string;
-}
-export interface ModelList {
-  models: ModelOption[];
-  source: "cli" | "default";
-  updatedAt?: string;
-}
-export interface ModelCatalog { claude: ModelList; codex: ModelList; antigravity: ModelList }
 
 const validName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,127}$/.test(value);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -52,8 +38,10 @@ function codexModels(data: unknown): ModelOption[] {
     if (!validName(model.slug) || !Array.isArray(model.supported_reasoning_levels)) continue;
     const efforts = [...new Set(model.supported_reasoning_levels.filter(record).map(level => level.effort).filter((effort): effort is string => typeof effort === "string" && effort.length > 0))];
     if (models.some(option => option.value === model.slug)) continue;
+    const supportsFast = (Array.isArray(model.additional_speed_tiers) && model.additional_speed_tiers.includes("fast")) ||
+      (Array.isArray(model.service_tiers) && model.service_tiers.some(tier => record(tier) && tier.id === "priority"));
     models.push({ value: model.slug, label: typeof model.display_name === "string" ? model.display_name : model.slug,
-      ...description(model.description), efforts,
+      ...description(model.description), efforts, ...(supportsFast ? { supportsFast } : {}),
       ...(typeof model.default_reasoning_level === "string" && efforts.includes(model.default_reasoning_level) ? { defaultEffort: model.default_reasoning_level } : {}),
     });
   }
@@ -88,7 +76,7 @@ export class ModelCatalogReader {
 
   efforts(cli: CliProvider, value?: string | null): readonly string[] {
     if (cli === "antigravity") return [];
-    const list = this.read()[cli].models;
+    const list = this.readList(cli).models;
     const model = list.find(model => model.value === value) ??
       (cli === "claude" && value === "fable" ? list.find(model => model.label.toLowerCase() === "fable") : undefined);
     return model?.efforts.length ? model.efforts : cli === "codex" ? CODEX_EFFORTS : EFFORTS;
@@ -96,6 +84,20 @@ export class ModelCatalogReader {
 
   requireEffort(cli: CliProvider, model: string | null | undefined, effort: string | null | undefined): void {
     if (effort != null && !this.efforts(cli, model).includes(effort)) throw new ApiError(400, `${cli}에서 지원하지 않는 effort입니다`);
+  }
+
+  private supportsFast(model: string | null): boolean {
+    return model !== null && this.readList("codex").models.some(option => option.value === model && option.supportsFast);
+  }
+
+  memberLaunchConfig(member: Member, settings: Settings): { model: string | null; effort: string | null; codexSpeed?: CodexSpeed } {
+    const config = memberConfig(member, settings.ranks, settings.codexRanks);
+    if (member.cli !== "codex") return config;
+    const option = this.readList("codex").models.find(candidate => candidate.value === config.model);
+    const efforts: readonly string[] = option?.efforts.length ? option.efforts : CODEX_EFFORTS;
+    const effort = config.effort && efforts.includes(config.effort) ? config.effort : null;
+    const codexSpeed = member.codexSpeed === "fast" && option?.supportsFast ? "fast" : "standard";
+    return { ...config, effort, codexSpeed };
   }
 
   memberPatch(member: Member, input: PatchMemberReq, settings: Settings): { patch: PatchMemberReq; resetOverrides: NonNullable<Member["resetOverrides"]> } {
@@ -112,7 +114,13 @@ export class ModelCatalogReader {
     if (switching && patch.effortOverride === undefined && member.effortOverride != null && !this.efforts(cli, model).includes(member.effortOverride)) {
       patch.effortOverride = null; resetOverrides.push("effortOverride");
     }
-    this.requireEffort(cli, model, patch.effortOverride === undefined ? member.effortOverride : patch.effortOverride);
+    if (switching || patch.modelOverride !== undefined || patch.effortOverride !== undefined || patch.codexSpeed !== "standard") {
+      this.requireEffort(cli, model, patch.effortOverride === undefined ? member.effortOverride : patch.effortOverride);
+    }
+    if (patch.codexSpeed === "fast" || (!switching && cli === "codex" && patch.codexSpeed === undefined && member.codexSpeed === "fast")) {
+      if (cli !== "codex" || !this.supportsFast(model)) throw new ApiError(400, "Fast를 지원하는 Codex 모델을 고르거나 속도를 Standard로 바꾸세요");
+    }
+    if (switching && member.cli === "codex" && cli !== "codex") patch.codexSpeed = "standard";
     return { patch, resetOverrides };
   }
 

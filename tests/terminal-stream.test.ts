@@ -462,9 +462,11 @@ describe("terminal stream", () => {
       const res = await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ cli: nextCli }) });
       expect(res.status).toBe(200);
       const body = await res.json(), updated = v2 ? body.member : body;
-      expect(updated).toMatchObject({ cli: nextCli, modelOverride: null, effortOverride: null, resetOverrides: ["modelOverride", "effortOverride"] });
-      expect(f.store.requireMember(f.member.id)).toMatchObject({ cli: nextCli, modelOverride: null, effortOverride: null });
-      expect(f.store.listActivity(f.member.id).some(a => a.text.includes("modelOverride, effortOverride") && a.text.includes("직급 기본값"))).toBe(true);
+      const effortOverride = nextCli === "codex" ? "max" : null;
+      const resetOverrides = nextCli === "codex" ? ["modelOverride"] : ["modelOverride", "effortOverride"];
+      expect(updated).toMatchObject({ cli: nextCli, modelOverride: null, effortOverride, resetOverrides });
+      expect(f.store.requireMember(f.member.id)).toMatchObject({ cli: nextCli, modelOverride: null, effortOverride });
+      expect(f.store.listActivity(f.member.id).some(a => a.text.includes(resetOverrides.join(", ")) && a.text.includes("직급 기본값"))).toBe(true);
     });
 
     test(`PATCH validates explicit model/effort against the new provider (${cli}, v2=${v2})`, async () => {

@@ -5,6 +5,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } fro
 import { homedir, networkInterfaces } from "node:os";
 import { detectTailscaleIp, generateAccessCode, updateConfigFile, updateConnectionConfig } from "./config.ts";
 import { connectionInfo, ConnectionPatchSchema } from "./connections.ts";
+import { CODEX_SPEEDS } from "../shared/types.ts";
 import { MIGRATIONS } from "./db.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
@@ -213,7 +214,7 @@ const AnswerApprovalSchema = z.strictObject({
   note: z.string().max(4000).optional(),
 });
 const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
-const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional() });
+const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional(), codexSpeed: z.enum(CODEX_SPEEDS).optional() });
 const AnswerNativePromptSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
   projectId: z.string().min(1).max(100),
@@ -340,7 +341,7 @@ function publicFields<T extends object>(value: T, keys: readonly (keyof T)[]): o
 
 function receiptMember(member: Member): object {
   return publicFields({ ...member, lastActiveAt: member.lastActiveAt ?? null }, ["id", "projectId", "handle", "name", "role", "kind", "origin", "wasAdopted", "cli", "backend",
-    "modelOverride", "effortOverride", "appliedModel", "appliedEffort", "status", "now", "next", "cwd", "sessionId", "paneId",
+    "modelOverride", "effortOverride", "codexSpeed", "appliedModel", "appliedEffort", "appliedCodexSpeed", "status", "now", "next", "cwd", "sessionId", "paneId",
     "contextPct", "contextWindow", "contextWindowSource", "subagents", "parallel", "queuedCount", "lastError", "lastActiveAt", "updatedAt", "createdAt",
     "statusObservation", "blockedReason", "subagentState", "nowAt", "manualActivityAt", "executionState", "lifecycleState", "contextState"]);
 }

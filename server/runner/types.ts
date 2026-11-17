@@ -1,4 +1,4 @@
-import type { ActivityKind, ApprovalOption, ApprovalPrompt, Backend, NativePrompt, NativePromptOption, BlockedReason, CliProvider, DeliveryEvidence, DeliveryFinding, Effort, MemberKind, MemberOrigin, PermissionMode, StatusObservation, SubagentState } from "../../shared/types.ts";
+import type { ActivityKind, ApprovalOption, ApprovalPrompt, Backend, NativePrompt, NativePromptOption, BlockedReason, CliProvider, CodexSpeed, DeliveryEvidence, DeliveryFinding, Effort, MemberKind, MemberOrigin, PermissionMode, StatusObservation, SubagentState } from "../../shared/types.ts";
 import type { ContextReading } from "./context.ts";
 
 /**
@@ -28,6 +28,7 @@ export interface RunnerMember {
   paneId: string | null;
   model: string | null;
   effort: Effort | null;
+  codexSpeed?: CodexSpeed;
   /** 서브에이전트 모델. 환경변수로 넘긴다(childEnv·칸 환경). null 이면 넘기지 않는다. */
   subagentModel: string | null;
   permissionMode: PermissionMode;

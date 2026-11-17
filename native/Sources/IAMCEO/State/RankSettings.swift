@@ -8,7 +8,7 @@ enum RankSettingsCLI: String, CaseIterable {
         self == .codex ? ["gpt-6.1-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-6-astra"] : ["fable", "opus", "sonnet", "haiku"]
     }
     var efforts: [String] {
-        self == .codex ? ["minimal", "low", "medium", "high", "xhigh"] : ["low", "medium", "high", "xhigh", "max"]
+        self == .codex ? ["minimal", "low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max"]
     }
     var ranksKeyPath: WritableKeyPath<Settings, [String: RankConfig]> {
         self == .codex ? \.codexRanks : \.ranks

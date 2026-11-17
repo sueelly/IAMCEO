@@ -15,6 +15,7 @@ import type {
   RuntimeInfo,
   Decision,
   Member,
+  ModelList,
   Message,
   MessagePage,
   MessagePageOptions,
@@ -164,6 +165,7 @@ const get = <T>(path: string, signal?: AbortSignal) => request<T>("GET", path, u
 export const api = {
   connection: (signal?: AbortSignal) => get<ConnectionInfo>("/api/connection", signal),
   bootstrap: (signal?: AbortSignal) => get<Bootstrap>("/api/bootstrap", signal),
+  models: (signal?: AbortSignal) => get<{ codex: ModelList }>("/api/models", signal),
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
   realtimeSession: (signal?: AbortSignal) => request<void>("POST", "/api/realtime-session", undefined, WRITE_TIMEOUT_MS, { signal }),

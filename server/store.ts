@@ -208,7 +208,7 @@ export interface NewMember {
 export type MemberPatch = Partial<
   Pick<
     Member,
-    "name" | "role" | "cli" | "origin" | "backend" | "modelOverride" | "effortOverride" | "status" | "now" | "next" | "cwd" | "sessionId" | "paneId" | "contextPct" | "contextWindow" | "contextWindowSource" | "subagents" | "parallel" | "lastError" | "executionIssue" | "statusObservation" | "blockedReason" | "subagentState" | "nowAt" | "manualActivityAt"
+    "name" | "role" | "cli" | "origin" | "backend" | "modelOverride" | "effortOverride" | "codexSpeed" | "status" | "now" | "next" | "cwd" | "sessionId" | "paneId" | "contextPct" | "contextWindow" | "contextWindowSource" | "subagents" | "parallel" | "lastError" | "executionIssue" | "statusObservation" | "blockedReason" | "subagentState" | "nowAt" | "manualActivityAt"
   >
 >;
 
@@ -220,6 +220,7 @@ export interface AppliedConfig {
   effort: Effort | null;
   staffModel: string | null;
   staffEffort: Effort | null;
+  codexSpeed?: Member["codexSpeed"];
   /** 세션을 띄울 때 서버가 준 도구 목록(이름·입력 형식)의 지문. 다르면 쉴 때 같은 대화를 이어 다시 연다. 옛 세션은 없다. */
   toolsSig?: string | null;
 }
@@ -445,6 +446,7 @@ function lifecyclePhase(intent: LifecycleJournal["intent"], phase: LifecycleJour
 
 // token 은 일부러 옮기지 않는다: Member 는 화면까지 나간다.
 function toMember(r: Row): Member {
+  const applied = appliedOf(r);
   return {
     id: r.id,
     projectId: r.project_id,
@@ -458,8 +460,9 @@ function toMember(r: Row): Member {
     backend: r.backend ?? null,
     modelOverride: r.model_override ?? null,
     effortOverride: r.effort_override ?? null,
-    appliedModel: appliedOf(r)?.model ?? null,
-    appliedEffort: appliedOf(r)?.effort ?? null,
+    ...(r.cli === "codex" ? { codexSpeed: r.codex_speed ?? "standard", appliedCodexSpeed: applied?.codexSpeed ?? null } : {}),
+    appliedModel: applied?.model ?? null,
+    appliedEffort: applied?.effort ?? null,
     status: r.status,
     now: r.now,
     next: r.next,
@@ -751,6 +754,7 @@ const MEMBER_COLUMNS: Record<keyof MemberPatch, string> = {
   backend: "backend",
   modelOverride: "model_override",
   effortOverride: "effort_override",
+  codexSpeed: "codex_speed",
   status: "status",
   now: "now",
   next: "next",
@@ -1441,7 +1445,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         subagentState: patch.subagentState == null ? patch.subagentState : JSON.stringify(patch.subagentState),
       }, MEMBER_COLUMNS);
       if (set.length === 0) return before;
-      if (["name", "role", "cli", "modelOverride", "effortOverride", "cwd", "backend"].some((key) => patch[key as keyof MemberPatch] !== undefined && patch[key as keyof MemberPatch] !== before[key as keyof MemberPatch])) set.push("config_revision = config_revision + 1");
+      if (["name", "role", "cli", "modelOverride", "effortOverride", "codexSpeed", "cwd", "backend"].some((key) => patch[key as keyof MemberPatch] !== undefined && patch[key as keyof MemberPatch] !== before[key as keyof MemberPatch])) set.push("config_revision = config_revision + 1");
       set.push("updated_at = ?");
       values.push(at);
       this.run(`UPDATE members SET ${set.join(", ")} WHERE id = ?`, ...values, id);

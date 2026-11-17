@@ -109,6 +109,8 @@ struct Member: Codable, Sendable, Identifiable {
     var backend: String? = nil
     var modelOverride: String? = nil
     var effortOverride: String? = nil
+    var codexSpeed: String? = nil
+    var appliedCodexSpeed: String? = nil
     var appliedModel: String? = nil
     var appliedEffort: String? = nil
     var status: String = "offline"
@@ -152,6 +154,8 @@ extension Member {
         backend = try c.decodeIfPresent(String.self, forKey: ModelKey("backend"))
         modelOverride = try c.decodeIfPresent(String.self, forKey: ModelKey("modelOverride"))
         effortOverride = try c.decodeIfPresent(String.self, forKey: ModelKey("effortOverride"))
+        codexSpeed = try c.decodeIfPresent(String.self, forKey: ModelKey("codexSpeed"))
+        appliedCodexSpeed = try c.decodeIfPresent(String.self, forKey: ModelKey("appliedCodexSpeed"))
         appliedModel = try c.decodeIfPresent(String.self, forKey: ModelKey("appliedModel"))
         appliedEffort = try c.decodeIfPresent(String.self, forKey: ModelKey("appliedEffort"))
         status = try c.decodeIfPresent(String.self, forKey: ModelKey("status")) ?? "offline"

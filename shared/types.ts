@@ -7,7 +7,20 @@ export const CLI_PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export type PermissionMode = "bypassPermissions" | "auto" | "default";
 export const PERMISSION_MODES = ["bypassPermissions", "auto", "default"] as const;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-export const CODEX_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const CODEX_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const CODEX_SPEEDS = ["standard", "fast"] as const;
+export type CodexSpeed = typeof CODEX_SPEEDS[number];
+
+export interface ModelOption {
+  value: string;
+  label: string;
+  description?: string;
+  efforts: string[];
+  defaultEffort?: string;
+  supportsFast?: boolean;
+}
+export interface ModelList { models: ModelOption[]; source: "cli" | "default"; updatedAt?: string }
+export type ModelCatalog = Record<CliProvider, ModelList>;
 /** CLI catalogs may introduce new per-model effort names; writes validate catalog membership. */
 export type Effort = string;
 /** manager 부장(총괄·본사 AI) · lead 팀장(직원 세션) · staff 직원(서브에이전트) */
@@ -185,6 +198,9 @@ export interface Member {
   /** null 이면 직급 기본(Settings.ranks) */
   modelOverride: string | null;
   effortOverride: Effort | null;
+  /** Legacy snapshots omit speed. Fast requires an explicit selection. */
+  codexSpeed?: CodexSpeed;
+  appliedCodexSpeed?: CodexSpeed | null;
   /** PATCH response only: saved overrides reset on a provider change. */
   resetOverrides?: ("modelOverride" | "effortOverride")[];
   /** 지금 세션에 실제로 들어간 값. null 은 CLI 기본이거나 모름(넘겨받은 세션). */
@@ -790,7 +806,7 @@ export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "res
   codexRanks?: Partial<Record<Rank, Partial<RankConfig>>>;
 };
 /** PATCH /api/members/:id. null 이면 직급 기본으로 돌아간다. */
-export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | null; effortOverride?: Effort | null }
+export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | null; effortOverride?: Effort | null; codexSpeed?: CodexSpeed }
 /**
  * taskId: 보낸 순간 고른 업무. newTaskTitle: 새 업무 이름(taskId 와 함께 쓰지 않는다).
  * 둘 다 없으면 서버가 글 첫 줄로 이름 붙인 새 업무를 만든다(본사는 업무를 쓰지 않는다). 같은 id 로 다시 보내면 업무를 새로 만들지 않는다.

@@ -179,6 +179,21 @@ describe("core Codex missing resume preflight", () => {
     expect(started.sessionId).toBe(worker.sessionId);
     expect(await Bun.file(configFile).text()).toBe(fastConfig);
   });
+  test("an explicit Fast selection launches the same Codex session with its model and Max effort", async () => {
+    const f = await fixture();
+    const home = join(f.dir, "codex-home");
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    writeFileSync(join(home, "config.toml"), 'service_tier = "default"\n[features]\nfast_mode = false\n');
+    writeFileSync(join(home, "sessions", `rollout-fixture-${sessionId}.jsonl`), "{}\n");
+    const worker = member({ cli: "codex", sessionId, model: "gpt-6.2-sol", effort: "max", codexSpeed: "fast" });
+    await f.runner(10000).start(worker, { ...f.opts, resume: true });
+    const argv = f.calls.find(request => request.method === "terminal.run")!.params.argv as string[];
+    expect(argv).toContain('service_tier="fast"');
+    expect(argv).toContain("features.fast_mode=true");
+    expect(argv).toContain("gpt-6.2-sol");
+    expect(argv).toContain('model_reasoning_effort="max"');
+    expect(argv.slice(-2)).toEqual(["resume", sessionId]);
+  });
   test("live owned terminal rejoins before its native transcript is written", async () => {
     const f = await fixture(), first = f.runner(10000);
     const started = await first.start(member({ cli: "codex" }), f.opts);

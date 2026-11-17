@@ -1025,6 +1025,7 @@ export const MIGRATIONS: string[] = [
      PRIMARY KEY(task_id, report_id)
    );
    CREATE INDEX task_completion_reviews_task ON task_completion_reviews(task_id);`,
+  `ALTER TABLE members ADD COLUMN codex_speed TEXT NOT NULL DEFAULT 'standard' CHECK (codex_speed IN ('standard', 'fast'));`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

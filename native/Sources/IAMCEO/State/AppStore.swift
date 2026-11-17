@@ -1223,8 +1223,8 @@ final class AppStore: ProjectManagementStore {
         if let message = outcome.message { errorMessage = message }
         return outcome == .ready && canWrite && members.first(where: { $0.id == member.id }).map(TerminalAvailability.isReady) == true
     }
-    @discardableResult func patchMember(_ member: Member, provider: String, model: String?, effort: String?) async -> Bool {
-        let req = PatchMemberRequest(cli: provider, modelOverride: model, effortOverride: effort)
+    @discardableResult func patchMember(_ member: Member, provider: String, model: String?, effort: String?, codexSpeed: String? = nil) async -> Bool {
+        let req = PatchMemberRequest(cli: provider, modelOverride: model, effortOverride: effort, codexSpeed: codexSpeed)
         if !strictWriteContract {
             let result: Member? = await mutate("member:\(member.id)") { api in
                 try await api.send("/api/members/\(APIClient.segment(member.id))", method: "PATCH", body: req)

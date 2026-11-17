@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Member, Backend } from "../shared/types.ts";
@@ -24,7 +24,7 @@ class FakeCore implements Runner {
   result: SendResult = { ok: true };
   cb: (e: RunnerEvent) => void = () => {};
   async available() { return { ok: true }; }
-  async start(m: RunnerMember) { if (this.startError) throw this.startError; this.starts.push({ ...m }); return { sessionId: m.cli === "codex" ? null : m.sessionId ?? crypto.randomUUID(), paneId: `core:${this.starts.length}` }; }
+  async start(m: RunnerMember) { if (this.startError) throw this.startError; this.starts.push({ ...m }); return { sessionId: m.sessionId ?? (m.cli === "codex" ? null : crypto.randomUUID()), paneId: `core:${this.starts.length}` }; }
   async send(_m: RunnerMember, text: string) { this.sends.push(text); return this.result; }
   isBusy() { return this.busy; }
   async compact(): Promise<SendResult> { return { ok: true }; }
@@ -361,7 +361,8 @@ test("Codex rank HTTP validation, legacy save, v2 CAS and all settings responses
   const saved = await put({ codexRanks: { lead: { model: "gpt-6-luna", effort: "minimal" } } });
   expect(saved.status).toBe(200);
   expect((await saved.json()).codexRanks.lead).toEqual({ model: "gpt-6-luna", effort: "minimal" });
-  for (const value of ["max", "auto", "", "HIGH"]) expect((await put({ codexRanks: { lead: { effort: value } } })).status).toBe(400);
+  expect((await put({ codexRanks: { lead: { effort: "max" } } })).status).toBe(200);
+  for (const value of ["auto", "", "HIGH"]) expect((await put({ codexRanks: { lead: { effort: value } } })).status).toBe(400);
   for (const model of ["", " ", "--model", "bad model"]) expect((await put({ codexRanks: { lead: { model } } })).status).toBe(400);
   expect((await put({ codexRanks: { lead: { extra: true } } })).status).toBe(400);
   expect((await put({ codexRanks: { other: {} } })).status).toBe(400);
@@ -409,7 +410,33 @@ test("member effort HTTP uses the same Codex effort choices and keeps Claude val
   cleanup.unshift(() => server.stop());
   const patch = (id: string, effortOverride: string) => fetch(`${server.urls[0]}/api/members/${id}`, { method: "PATCH", headers: { Authorization: `Bearer ${f.config.accessCode}`, "Content-Type": "application/json" }, body: JSON.stringify({ effortOverride }) });
   expect((await patch(codex.id, "minimal")).status).toBe(200);
-  expect((await patch(codex.id, "max")).status).toBe(400);
+  expect((await patch(codex.id, "max")).status).toBe(200);
   expect((await patch(claude.id, "minimal")).status).toBe(400);
   expect((await patch(claude.id, "max")).status).toBe(200);
+});
+
+
+test("Codex model, Max and Fast save together, resume the same conversation and return to Standard", async () => {
+  const f = fixture();
+  const codexHome = join(f.config.home, "codex-fixture");
+  mkdirSync(codexHome);
+  writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [
+    { slug: "fast-option", visibility: "list", supported_reasoning_levels: [{ effort: "max" }], additional_speed_tiers: ["fast"] },
+    { slug: "standard-option", visibility: "list", supported_reasoning_levels: [{ effort: "low" }] },
+  ] }));
+  const orch = new Orchestrator({ config: { ...f.config, codexHome }, store: f.store, runners: new Map([["core", f.runner]]), timings: { healthMs: 60_000, tickMs: 60_000 } });
+  cleanup.unshift(() => orch.shutdown());
+  const member = await orch.createMember(f.project.id, { name: "Codex", cli: "codex" });
+  const conversation = "existing-codex-session";
+  f.store.patchMember(member.id, { sessionId: conversation });
+  const revision = f.store.memberRevisions(member.id).configRevision;
+  const patch = { modelOverride: "fast-option", effortOverride: "max", codexSpeed: "fast" } as const;
+  const updated = await orch.patchMemberConfigV2(member.id, patch, { expectedRevision: revision });
+  expect(updated.member).toMatchObject({ ...patch, sessionId: conversation, appliedCodexSpeed: "fast", appliedEffort: "max" });
+  expect(f.runner.starts.at(-1)).toMatchObject({ sessionId: conversation, model: "fast-option", effort: "max", codexSpeed: "fast" });
+  await expect(orch.patchMemberConfig(member.id, { modelOverride: "standard-option", effortOverride: "low" })).rejects.toMatchObject({ status: 400 });
+  expect(f.runner.stops).toHaveLength(1);
+  const standard = await orch.patchMemberConfig(member.id, { modelOverride: "standard-option", effortOverride: "low", codexSpeed: "standard" });
+  expect(standard).toMatchObject({ sessionId: conversation, appliedCodexSpeed: "standard", appliedModel: "standard-option", appliedEffort: "low" });
+  expect(f.runner.starts.at(-1)).toMatchObject({ sessionId: conversation, codexSpeed: "standard" });
 });

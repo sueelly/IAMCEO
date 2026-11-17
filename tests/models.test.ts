@@ -37,6 +37,16 @@ describe("CLI model catalog (isolated fake homes only)", () => {
     expect(JSON.stringify(list)).not.toContain("codex-account-secret");
   });
 
+  test("Codex projects Fast availability and Max separately for each visible model", () => {
+    const f = fixture();
+    writeFileSync(f.codexPath, JSON.stringify({ models: [
+      { ...model("capable", 1), service_tiers: [{ id: "priority", name: "Fast" }], supported_reasoning_levels: [{ effort: "max" }] },
+      { ...model("standard", 2), additional_speed_tiers: ["ultrafast"] },
+    ] }));
+    expect(f.reader.read().codex.models[0]).toMatchObject({ value: "capable", supportsFast: true, efforts: ["max"] });
+    expect(f.reader.read().codex.models[1]?.supportsFast).toBeUndefined();
+  });
+
   test("Claude aliases plus additional options; unrelated account keys never enter response", () => {
     const f = fixture();
     writeFileSync(f.claudePath, JSON.stringify({ oauthAccount: { emailAddress: "private-account-secret" }, arbitrary: "do-not-export", additionalModelOptionsCache: [

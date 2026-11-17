@@ -328,6 +328,7 @@ struct MemberDetailView: View {
     @State private var provider = "claude"
     @State private var model = ""
     @State private var effort = ""
+    @State private var codexSpeed = "standard"
     @State private var baseline = TeamConfigSnapshot()
     @State private var configRevision: Int?
     @State private var freshMember: Member?
@@ -372,7 +373,7 @@ struct MemberDetailView: View {
             if let latest = current { loadConfig(latest) }
         }
         .onChange(of: store.writeRevisions?.members?[memberID]?.configRevision) { _, _ in
-            if running != "config", TeamConfigSnapshot(provider: provider, model: model, effort: effort) == baseline,
+            if running != "config", TeamConfigSnapshot(provider: provider, model: model, effort: effort, speed: codexSpeed) == baseline,
                let latest = current { loadConfig(latest) }
         }
         .onChange(of: memberID) { _, _ in
@@ -384,7 +385,7 @@ struct MemberDetailView: View {
         .onChange(of: member.map(TeamConfigSnapshot.init)) { old, new in
             // Follow server-side changes unless the user is in the middle of editing.
             guard new != nil else { return }
-            if running != "config", old == nil || TeamConfigSnapshot(provider: provider, model: model, effort: effort) == baseline {
+            if running != "config", old == nil || TeamConfigSnapshot(provider: provider, model: model, effort: effort, speed: codexSpeed) == baseline {
                 if let latest = current { loadConfig(latest) }
             }
         }
@@ -1199,7 +1200,7 @@ struct MemberDetailView: View {
         let switchAllowed = canSwitchProvider(m)
         let target = configTarget(m)
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let dirty = TeamConfigSnapshot(provider: target, model: trimmed, effort: effort) != baseline
+        let dirty = TeamConfigSnapshot(provider: target, model: trimmed, effort: effort, speed: codexSpeed) != baseline
         let reopens = dirty && configReopens(m, target: target, model: trimmed)
         let block = configBlock(m, target: target, reopens: reopens)
         let busy = running == "config"
@@ -1209,6 +1210,8 @@ struct MemberDetailView: View {
         let cli: RankSettingsCLI = target == "codex" ? .codex : .claude
         let list = store.modelCatalog.list(provider: target)
         let selected = list.option(for: trimmed)
+        let effectiveOption = list.option(for: trimmed.isEmpty ? (rankConfig?.model ?? "") : trimmed)
+        let speedEnabled = target == "codex" && (m.codexSpeed != nil || list.models.contains { $0.supportsFast == true })
         // Antigravity: effort is part of the model id (gemini-4-argon-high), so there is no separate choice.
         let efforts = agy ? [] : list.efforts(for: trimmed.isEmpty ? (rankConfig?.model ?? "") : trimmed, cli: cli)
         let modelDefault = agy ? "Antigravity 기본값" : rankConfig?.model.map { "직급 기본값 (\($0))" } ?? "직급 기본값"
@@ -1232,7 +1235,14 @@ struct MemberDetailView: View {
             if let reason = switchBlockReason(m) { teamNote(reason) }
             TeamFactRow(label: "모델", alignment: .center, strong: true) {
                 TeamSelect(value: modelShown, mono: !trimmed.isEmpty, accessibility: "모델") {
-                    Picker("모델", selection: $model) {
+                    Picker("모델", selection: Binding(get: { model }, set: { value in
+                        model = value
+                        if target == "codex" {
+                            let effective = value.isEmpty ? (rankConfig?.model ?? "") : value
+                            if !list.efforts(for: effective, cli: .codex).contains(effort) { effort = "" }
+                            if list.option(for: effective)?.supportsFast != true { codexSpeed = "standard" }
+                        }
+                    })) {
                         Text(modelDefault).tag("")
                         ForEach(list.models) { option in
                             Text(option.label).tag(selected?.value == option.value ? trimmed : option.value)
@@ -1248,7 +1258,7 @@ struct MemberDetailView: View {
                 TeamSelect(value: effortShown, accessibility: "effort") {
                     Picker("effort", selection: $effort) {
                         Text(effortDefault).tag("")
-                        ForEach(efforts, id: \.self) { Text($0).tag($0) }
+                        ForEach(efforts, id: \.self) { Text($0 == "max" ? "Max" : $0).tag($0) }
                         if !([""] + efforts).contains(effort) { Text("현재: \(effort)").tag(effort).disabled(true) }
                     }
                     .labelsHidden()
@@ -1256,11 +1266,24 @@ struct MemberDetailView: View {
                 }
                 .disabled(!store.canWrite || agy)
             }
+            if speedEnabled {
+                TeamFactRow(label: "속도", alignment: .center, strong: true) {
+                    TeamSelect(value: codexSpeed == "fast" ? "Fast" : "Standard", accessibility: "속도") {
+                        Picker("속도", selection: $codexSpeed) {
+                            Text("Standard").tag("standard")
+                            Text("Fast").tag("fast").disabled(effectiveOption?.supportsFast != true)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.inline)
+                    }
+                    .disabled(!store.canWrite)
+                }
+            }
             if reopens {
                 InlineNotice(tone: .attention, icon: "arrow.triangle.2.circlepath", title: reopenTitle(m, target: target),
                              detail: reopenDetail(m, target: target))
             }
-            teamNote(configHelp(m))
+            if !configHelp(m).isEmpty { teamNote(configHelp(m)) }
             if configChanged(m) {
                 teamNote("서버 설정이 바뀌었습니다. 내 편집은 보존했습니다. 현재 값 · \(configSummary(m))")
                 Button("내 편집 유지하고 다시 검토") {
@@ -1433,13 +1456,14 @@ struct MemberDetailView: View {
     /// True when applying closes the current session and opens a new one (provider switch, or model/effort on a live core session).
     private func configReopens(_ m: Member, target: String, model trimmed: String) -> Bool {
         if target != m.cli { return true }
-        let changed = trimmed != (m.modelOverride ?? "") || effort != (m.effortOverride ?? "")
+        let changed = trimmed != (m.modelOverride ?? "") || effort != (m.effortOverride ?? "") ||
+            (target == "codex" && codexSpeed != (m.codexSpeed ?? "standard"))
+        if target == "codex", m.status == "asleep" || (m.status == "offline" && m.paneId == nil) { return false }
         return changed && hasLiveCoreSession(m)
     }
 
-    /// Server keeps the Claude session id (resume) only for a same-provider Claude change; everything else is a new session.
-    private func resumesClaude(_ m: Member, target: String) -> Bool {
-        target == m.cli && m.cli == "claude" && !(m.sessionId ?? "").isEmpty
+    private func resumesConversation(_ m: Member, target: String) -> Bool {
+        target == m.cli && ["claude", "codex"].contains(target) && !(m.sessionId ?? "").isEmpty
     }
 
     private func reopenTitle(_ m: Member, target: String) -> String {
@@ -1448,8 +1472,8 @@ struct MemberDetailView: View {
 
     private func reopenDetail(_ m: Member, target: String) -> String {
         var parts: [String] = []
-        if resumesClaude(m, target: target) {
-            parts.append("같은 Claude 대화를 새 모델·effort로 이어 엽니다.")
+        if resumesConversation(m, target: target) {
+            parts.append("같은 \(providerFullName(target)) 대화를 새 설정으로 이어 엽니다.")
         } else {
             parts.append("새 \(providerFullName(target)) 세션을 엽니다. 이전 대화는 이어지지 않고 역할·현재 일·다음만 인계합니다.")
         }
@@ -1459,13 +1483,19 @@ struct MemberDetailView: View {
     }
 
     private func configHelp(_ m: Member) -> String {
-        hasLiveCoreSession(m)
+        if m.cli == "codex" { return "" }
+        return hasLiveCoreSession(m)
             ? "CLI를 바꾸면 새 세션을 열어 인계합니다. 세션이 있어서 모델·effort를 바꿔도 지금 세션을 닫고 다시 엽니다. 빈 모델은 직급 기본값을 씁니다."
             : "CLI를 바꾸면 새 세션을 열어 인계합니다. 모델·effort 변경은 세션을 열 때 적용됩니다. 빈 모델은 직급 기본값을 씁니다."
     }
 
     private func configBlock(_ m: Member, target: String, reopens: Bool) -> String? {
-        if target != "antigravity" && !effort.isEmpty && !(target == "codex" ? RankSettingsCLI.codex : .claude).efforts.contains(effort) { return "선택한 CLI에서 지원하지 않는 effort입니다. 다른 값을 고르세요." }
+        let rank = store.bootstrap?.settings.rankConfig(m.kind == "worker" ? "lead" : "manager", cli: target == "codex" ? .codex : .claude)
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effective = trimmed.isEmpty ? (rank?.model ?? "") : trimmed
+        let list = store.modelCatalog.list(provider: target)
+        if target != "antigravity" && !effort.isEmpty && !list.efforts(for: effective, cli: target == "codex" ? .codex : .claude).contains(effort) { return "이 모델에서 지원하는 effort를 고르세요." }
+        if target == "codex" && codexSpeed == "fast" && list.option(for: effective)?.supportsFast != true { return "Fast를 지원하는 모델을 고르거나 속도를 Standard로 바꾸세요." }
         if target != m.cli, store.runtime?.providers[target]?.installed == false {
             return "\(providerFullName(target))가 실행 호스트에 설치돼 있지 않습니다. 설정의 실행 환경을 확인하세요."
         }
@@ -1494,6 +1524,7 @@ struct MemberDetailView: View {
         provider = snapshot.provider
         model = snapshot.model
         effort = snapshot.effort
+        codexSpeed = snapshot.speed
         baseline = snapshot
     }
 
@@ -1531,12 +1562,15 @@ struct MemberDetailView: View {
         }
         let target = configTarget(m)
         let switching = target != m.cli
-        let sent = TeamConfigSnapshot(provider: provider, model: model, effort: effort)
+        let sent = TeamConfigSnapshot(provider: provider, model: model, effort: effort, speed: codexSpeed)
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let reopens = configReopens(m, target: target, model: trimmed)
         let namespace = store.writeNamespace, id = memberID
         running = "config"; configNote = nil; configFailure = nil; configHandoff = false
-        let ok = await store.patchMember(m, provider: target, model: trimmed.isEmpty ? nil : trimmed, effort: sent.effort.isEmpty || target == "antigravity" ? nil : sent.effort)
+        let speedEnabled = target == "codex" && (m.codexSpeed != nil || store.modelCatalog.codex.models.contains { $0.supportsFast == true })
+        let ok = await store.patchMember(m, provider: target, model: trimmed.isEmpty ? nil : trimmed,
+                                         effort: sent.effort.isEmpty || target == "antigravity" ? nil : sent.effort,
+                                         codexSpeed: speedEnabled ? sent.speed : nil)
         guard namespace == store.writeNamespace, id == memberID else { return }
         running = nil
         guard ok else {
@@ -1544,7 +1578,7 @@ struct MemberDetailView: View {
             return
         }
         if let latest = current {
-            if TeamConfigSnapshot(provider: provider, model: model, effort: effort) == sent { loadConfig(latest) }
+            if TeamConfigSnapshot(provider: provider, model: model, effort: effort, speed: codexSpeed) == sent { loadConfig(latest) }
             else {
                 baseline = TeamConfigSnapshot(latest)
                 configRevision = store.writeRevisions?.members?[latest.id]?.configRevision
@@ -1562,7 +1596,7 @@ struct MemberDetailView: View {
         configHandoff = true
         let opened = switching
             ? "\(providerFullName(target)) 새 세션을 열었습니다."
-            : (resumesClaude(m, target: target) ? "같은 Claude 대화를 새 설정으로 다시 열었습니다." : "새 설정으로 \(providerFullName(target)) 새 세션을 열었습니다.")
+            : (resumesConversation(m, target: target) ? "같은 \(providerFullName(target)) 대화를 새 설정으로 다시 열었습니다." : "새 설정으로 \(providerFullName(target)) 새 세션을 열었습니다.")
         configNote = Self.handoffQueuedNote(opened)
     }
 }
@@ -1618,9 +1652,13 @@ private struct TeamConfigSnapshot: Equatable {
     var provider = "claude"
     var model = ""
     var effort = ""
+    var speed = "standard"
     init() {}
-    init(provider: String, model: String, effort: String) { self.provider = provider; self.model = model; self.effort = effort }
-    init(_ m: Member) { provider = m.cli; model = m.modelOverride ?? ""; effort = m.effortOverride ?? "" }
+    init(provider: String, model: String, effort: String, speed: String) {
+        self.provider = provider; self.model = model; self.effort = effort
+        self.speed = provider == "codex" ? speed : "standard"
+    }
+    init(_ m: Member) { self.init(provider: m.cli, model: m.modelOverride ?? "", effort: m.effortOverride ?? "", speed: m.codexSpeed ?? "standard") }
 }
 
 private struct TeamPushTitle: ViewModifier {
