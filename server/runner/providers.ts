@@ -68,6 +68,8 @@ export function providerLaunch(member: RunnerMember, opts: StartOpts, bins: Prov
   // Codex 0.166 opens an "Update available" menu on start whose default item runs `npm install -g @openai/codex`.
   // Under IAMCEO that menu only stalls the member (and one stray Enter would upgrade a global CLI). Off per process.
   args.push("-c", "check_for_update_on_startup=false");
+  // Keep IAMCEO launches on Standard even if another Codex session saved Fast as the shared default.
+  args.push("-c", 'service_tier="default"', "-c", "features.fast_mode=false");
   if (member.kind === "conductor") args.push(...codexRoleArgs(bin, member, bins.codexHome));
   else if (member.permissionMode === "bypassPermissions") args.push("--dangerously-bypass-approvals-and-sandbox");
   else if (member.permissionMode === "auto") args.push("--approve-for-me");

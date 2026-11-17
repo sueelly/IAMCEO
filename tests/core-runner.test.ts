@@ -158,6 +158,27 @@ describe("core Codex missing resume preflight", () => {
     expect(launches[0].params.argv.slice(-2)).toEqual(["resume", sessionId]);
     expect(launches[0].params.labels["iamceo.session"]).toBe(sessionId);
   });
+  test.each([false, true])("Codex launch stays on Standard with a Fast user config (resume=%s)", async resume => {
+    const f = await fixture();
+    const home = join(f.dir, "codex-home");
+    const sessions = join(home, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const configFile = join(home, "config.toml");
+    const fastConfig = 'service_tier = "fast"\n';
+    writeFileSync(configFile, fastConfig);
+    if (resume) {
+      writeFileSync(join(sessions, `rollout-fixture-${sessionId}.jsonl`), "{}\n");
+    }
+    const worker = member({ cli: "codex", sessionId: resume ? sessionId : null });
+    const started = await f.runner(10000).start(worker, { ...f.opts, resume });
+
+    const launch = f.calls.find(request => request.method === "terminal.run")!.params;
+    expect(launch.env.CODEX_HOME).toBe(home);
+    expect(launch.argv).toContain('service_tier="default"');
+    expect(launch.argv).toContain("features.fast_mode=false");
+    expect(started.sessionId).toBe(worker.sessionId);
+    expect(await Bun.file(configFile).text()).toBe(fastConfig);
+  });
   test("live owned terminal rejoins before its native transcript is written", async () => {
     const f = await fixture(), first = f.runner(10000);
     const started = await first.start(member({ cli: "codex" }), f.opts);
