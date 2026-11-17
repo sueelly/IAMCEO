@@ -48,6 +48,16 @@ test("직원에게 전달되는 도구 필드는 제목·요약·본문과 상�
   expect(description("project_now", "text")).toContain("병목");
 });
 
+test("file 도구는 렌더링되는 화면과 도식을 안내하고 ask는 해당 자료를 연결한다", () => {
+  const f = fixture();
+  const tools = listAgentTools(f.worker);
+  const html = (tools.find(tool => tool.name === "file")!.inputSchema as any).properties.html.description as string;
+  expect(html.match(/목업.*플로우차트.*아키텍처 다이어그램/)).not.toBeNull();
+  expect(html.match(/스크립트.*도식/)).not.toBeNull();
+  const fileDescription = tools.find(tool => tool.name === "file")!.description;
+  expect(fileDescription.includes("ask.file_id")).toBe(true);
+});
+
 test("비 BMP 문자를 포함한 임시 이름도 실제 task 입력 한도와 서로게이트 경계를 지킨다", () => {
   for (const source of ["가".repeat(119) + "🚀해줘", "가".repeat(118) + "🚀가해줘", "🚀원인".repeat(40) + "조사해줘"]) {
     const generated = taskTitleFrom(source, "대표 글");

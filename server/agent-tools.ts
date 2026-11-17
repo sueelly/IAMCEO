@@ -408,7 +408,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       rec: z.string().optional().describe("권장 선택지의 k"),
       rec_reason: oneLineOpt(300).optional().describe("권장 이유를 구체적인 대상과 함께 쓴다. 대표가 말한 조건(비용·기간·위험)과 잇고, 감수할 것도 쓴다. rec 와 함께 주면 서버가 detail 맨 위에 '★ 권장: <버튼 글> — <이유>' 줄을 쓴다"),
       group: oneLineOpt(80).optional().describe("묶음 이름"),
-      file_id: z.string().optional().describe("대표가 판단할 때 열어 볼 실제 검수 보고서·비교 자료의 id. 이미 등록한 관련 자료가 있으면 연결하고, 새 문서를 만들면 file로 등록한 뒤 받은 id를 넣는다"),
+      file_id: z.string().optional().describe("대표가 판단할 때 열어 볼 실제 검수 보고서·목업·플로우차트·아키텍처 다이어그램·비교 자료의 id. 이미 등록한 관련 자료가 있으면 연결하고, 새 문서를 만들면 file로 등록한 뒤 받은 id를 넣는다"),
       images: z.array(z.string()).max(10).optional().describe("카드에 바로 보일 이미지 파일 경로(시안 캡처 등). 작업 폴더 안의 파일"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),
@@ -444,7 +444,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       title: oneLine().optional().describe("보고를 훑어볼 때 알 수 있는 업무 대상과 이번에 달라진 결과. 진행은 변화, 막힘은 장애와 필요한 조건, 완료는 실제 끝낸 범위·확인 단계를 쓴다"),
       body: z.string().optional().describe("이 글만 읽어도 이해할 업무·요청 맥락, 핵심 결과, 가까운 근거, 남은 확인 대상과 다음 행동(마크다운). 줄 수 때문에 대상·조건·불확실성을 빼지 않는다. 상세 근거는 실제 자료에 연결한다"),
       owner_action: oneLineOpt().optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
-      file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
+      file_ids: z.array(z.string()).optional().describe("대표가 열어 확인할 결과물의 자료 id. file로 등록한 최신 목업·플로우차트·다이어그램과 관련 근거를 연결한다"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
@@ -486,13 +486,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   file: tool(
-    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 결과의 id 는 post 의 file_ids 로 잇는다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 표는 내용과 독자의 목적에 따라 post 또는 content에도 쓸 수 있다. 상호작용 자료는 독립 실행 HTML과 같은 핵심 내용을 읽을 텍스트 대체 파일을 제공한다. 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
+    "대표가 읽거나 복사하거나 확인할 문서·대본·표·이미지·영상은 반드시 이 도구로 자료에 올린다. 등록 결과의 실제 id는 post.file_ids에 넣고, 결재 근거로 쓸 때는 ask.file_id에도 연결한다. 로컬 경로만 보고하지 않는다. 바뀌면 새 판을 올려 최신 id를 연결한다. 짧은 보고는 post, 긴 글과 복사할 본문은 content(마크다운)로 올린다. 비교·흐름·구조·수치·시안처럼 글만으로 보기 힘든 내용은 html 로 한 페이지를 만든다. 표는 내용과 독자의 목적에 따라 post 또는 content에도 쓸 수 있다. 상호작용 자료는 독립 실행 HTML과 같은 핵심 내용을 읽을 텍스트 대체 파일을 제공한다. 내용이 다른 원기록·이미지·납품물은 따로 올려도 된다. 외부 사이트에 따로 게시하지 않는다. path 는 디스크의 파일로, 종류는 확장자로 정해진다(.html 아티팩트, csv·tsv 표는 내려받아 쓸 원본 데이터일 때, json·코드·로그·txt 코드, pdf, 이미지, 영상, 오디오).",
     z.strictObject({
       title: text.describe("목록에서 찾아 쓸 대상과 결과물 종류. 예: 로그인 재개 오류 진단서. 작성했습니다 같은 활동 보고를 이름으로 쓰지 않는다"),
       summary: z.string().optional().describe("목록에서 열어 볼지 판단할 용도·핵심 내용·중요한 사용 제한. 제목을 그대로 반복하지 않고 본문에 없는 내용을 만들지 않는다"),
       path: z.string().optional().describe("파일 경로. 작업 폴더 안의 파일만. 상대 경로는 작업 폴더 기준"),
       content: z.string().optional().describe("바로 읽거나 사용할 마크다운 전문. 이해·비교·결정·검토·사용 목적에 맞는 순서로 완성된 본문을 쓴다. 작업 과정 설명으로 대신하지 않는다"),
-      html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
+      html: z.string().optional().describe("한 페이지짜리 자체 완결 HTML(2MB 이하). UI에는 실제 목업, 유저 플로우에는 조건 분기가 보이는 플로우차트, 기술 구조에는 경계와 데이터 방향이 보이는 아키텍처 다이어그램을 담는다. 스크립트를 실행하기 전에도 화면과 도식이 보이게 한다. CDN·일반 외부 요청은 막힌다(iframe·link 는 지워지고, 격리가 완전하지 않으므로 비밀번호·개인정보 같은 민감한 데이터는 싣지 않는다). 스크립트는 대표가 실행을 눌러야 돌고 앱에서는 돌지 않는다. 스크립트가 없는 자료는 웹에서 실행 없이 바로 열린다. onclick 같은 속성과 javascript: 주소도 스크립트로 친다. 꼭 볼 내용은 스크립트·탭·접기 없이 그린다. 스크립트는 인라인만, 이미지는 data: 로. 기본 스타일 키트가 자동으로 깔려 semantic HTML 과 키트 클래스만 써도 깔끔하다. 키트 클래스: card, grid, callout, kpi, steps, flow, tag, compare, pick, tabs(꼭 볼 내용은 넣지 않음). 더한 부품(스크립트 없이 그려짐): page(읽기 폭), owner(대표 차례 띠), toc·find·no(목차·찾는 말·장 번호), hero(큰 숫자), delta(전후 숫자), bars·bar(가로 막대), cols·col(세로 막대), ba(전후 나란히), rec·opts(권장 카드·고를 것), gantt(일정 막대), status(상태 목록), dg(도식). kpi 는 <div class=\"kpi\"><b>값</b><small>설명</small></div>, 대표 차례 띠는 <p class=\"owner\"><b>대표 차례</b><span>할 일</span></p>. 더한 부품은 정해진 짜임에서만 그려진다: <main class=\"page\">는 body 바로 아래, 막대는 <figure class=\"bars\"> 안의 .bar, 세로 막대는 <figure class=\"cols\"><div class=\"cols-plot\"> 안의 .col, 상태 목록은 <ul class=\"status\"> 의 li 마다 .tag, 권장 카드는 <div class=\"rec\"> 안에 .rec-head."),
       images: z.array(z.string()).optional().describe("이미지 파일 경로(작업 폴더 안)"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),

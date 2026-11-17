@@ -34,6 +34,20 @@ describe("글 지침", () => {
     }
   });
 
+  test("화면·사용자 흐름·아키텍처의 검토 가능한 산출물을 모든 역할에 전달한다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "iamceo-artifact-guide-"));
+    for (const kind of KINDS) {
+      writeFileSync(join(dir, `${kind}.md`), "맞춤 승인 규칙");
+      for (const rolesDir of [undefined, dir]) {
+        const guide = renderRole(kind, vars, rolesDir);
+        for (const requirement of [/UI.*실제 목업/, /유저 플로우.*플로우차트/, /아키텍처.*다이어그램/, /핵심 조작을 직접/, /자료를 직접 열어/, /`post\.file_ids`/, /`ask\.file_id`/]) {
+          expect(guide.match(requirement)).not.toBeNull();
+        }
+      }
+    }
+    expect(renderRole("conductor", vars)).toContain("목업·플로우차트·아키텍처 다이어그램의 제작과 등록을 담당 직원에게 맡긴다");
+  });
+
   test("사용자 정의 역할도 최신 공통 작성 지침을 받고 작성자의 역할 내용은 보존된다", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-custom-guide-"));
     for (const kind of KINDS) {
