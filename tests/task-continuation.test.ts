@@ -506,3 +506,29 @@ test("timed continuation checks skip ineligible projects and read each eligible 
     expect(facts.mock.calls.filter(([id, subset]) => id === f.project.id && !subset)).toHaveLength(1);
   } finally { facts.mockRestore(); }
 });
+
+test("후속 후보를 고를 때 과거 전달 본문을 다시 읽지 않는다", () => {
+  const f = fixture(), history = new Set<string>();
+  for (let i = 0; i < 80; i++) {
+    const task = f.task("이력 " + i);
+    history.add(f.store.listTaskDeliveries(task.id)[0]!.id);
+  }
+  const read = spyOn(f.store, "getDelivery");
+  try {
+    expect(f.next.check(f.start, () => true)).toHaveLength(0);
+    expect(read.mock.calls.filter(([id]) => history.has(id))).toHaveLength(0);
+  } finally { read.mockRestore(); }
+});
+
+test("새 대표 지시가 전달된 뒤에도 앞서 대기 중인 위임의 계약 확인을 요청한다", () => {
+  const f = fixture(), task = f.task("계약 확인", false);
+  const delegated = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "instruction", text: "미확정 위임" });
+  f.store.recordReportClosure({ memberId: f.lead.id, kind: "delegated", refType: "delivery", refId: delegated.id });
+  const later = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "user_message", text: "추가 요청" });
+  f.store.markDelivered(later.id);
+  const requests = f.next.check(f.start, () => true);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ memberId: f.lead.id, taskId: task.id });
+  expect(requests[0]!.text).toContain(delegated.id);
+  expect(f.store.requireDelivery(delegated.id).status).toBe("queued");
+});

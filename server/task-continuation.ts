@@ -164,12 +164,14 @@ export class TaskContinuationCoordinator {
       const last = facts.get(id)?.reports.at(-1);
       if (!last || last.at <= w.updatedAt) boardDone.add(id);
     }
+    const pending = this.store.listUndelivered(projectId);
+    const pendingById = new Map(pending.map(delivery => [delivery.id, delivery]));
     const criteriaSources = new Map<string, Source>();
     for (const [taskId, list] of sources) {
       // A later accepted owner input does not settle an earlier queued delegation.
       // Keep its criteria request separate from the latest owner scope below.
       const awaiting = list.findLast(source => {
-        const delivery = this.store.getDelivery(source.id);
+        const delivery = pendingById.get(source.id);
         return delivery && this.awaitingCriteria(delivery, taskId);
       });
       if (awaiting) criteriaSources.set(taskId, awaiting);
@@ -177,11 +179,11 @@ export class TaskContinuationCoordinator {
     const sequence = this.store.taskSequenceSnapshot(projectId, undefined, facts);
     const sequenceSources = new Map<string, { source: Source; blocker: { taskId: string; title: string } }>();
     for (const [taskId, list] of sources) {
-      const source = list.at(-1), delivery = source && this.store.getDelivery(source.id);
+      const source = list.at(-1), delivery = source && pendingById.get(source.id);
       const blocker = delivery && this.awaitingSequence(delivery, sequence);
       if (source && blocker && !relatedWork(taskId, blocker.taskId, tasks)) sequenceSources.set(taskId, { source, blocker });
     }
-    return { tasks, facts, sources, enrolled, pending: this.store.listUndelivered(projectId), running, workerRunning, own, boardDone,
+    return { tasks, facts, sources, enrolled, pending, running, workerRunning, own, boardDone,
       paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources, sequenceSources, sequence };
   }
 
