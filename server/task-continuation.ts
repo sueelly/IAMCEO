@@ -19,6 +19,7 @@ interface Context {
   enrolled: Set<string>; pending: Delivery[]; running: Set<string>; own: Set<string>; boardDone: Set<string>; paused: Set<string>;
   markSources: Map<number, number | null>;
   criteriaSources: Map<string, Source>;
+  sequenceSources: Map<string, { source: Source; blocker: { taskId: string; title: string } }>;
 }
 const waiting = new Set(["queued", "held", "delivering"]);
 const finalOrExternal = new Set(["done", "hold", "owner", "approval", "held"]);
@@ -93,6 +94,18 @@ export class TaskContinuationCoordinator {
       dispatch?.transportState === "rejected" && (recovery?.phase === "none" || recovery?.phase === "resolved" && recovery.reason === "not_received");
   }
 
+  private awaitingSequence(delivery: Delivery): { taskId: string; title: string } | null {
+    if (!delivery.taskId || !delivery.wake || !["instruction", "user_message"].includes(delivery.kind) ||
+      !["queued", "held"].includes(delivery.status) || !ordinaryInputAdmitted(this.store, delivery.id)) return null;
+    const recovery = this.store.getDeliveryRecovery(delivery.id), dispatch = this.store.listDeliveryDispatches(delivery.id).at(-1);
+    const untouched = delivery.attempts === 0 && !dispatch && (!recovery || recovery.phase === "none");
+    const refused = dispatch?.transportState === "rejected" && (recovery?.phase === "none" || recovery?.phase === "resolved" && recovery.reason === "not_received");
+    if (!untouched && !refused) return null;
+    const blocker = this.store.taskSequenceBlocker(delivery.memberId, delivery.taskId);
+    // A scoped hold/stop on this task is not permission to coordinate around it.
+    return blocker && blocker.taskId !== delivery.taskId ? blocker : null;
+  }
+
   private context(projectId: string): Context {
     const tasks = new Map(this.store.listTasks(projectId).filter(t => !t.mergedInto).map(t => [t.id, t]));
     const facts = this.store.taskProgressFacts(projectId);
@@ -144,8 +157,14 @@ export class TaskContinuationCoordinator {
       });
       if (awaiting) criteriaSources.set(taskId, awaiting);
     }
+    const sequenceSources = new Map<string, { source: Source; blocker: { taskId: string; title: string } }>();
+    for (const [taskId, list] of sources) {
+      const source = list.at(-1), delivery = source && this.store.getDelivery(source.id);
+      const blocker = delivery && this.awaitingSequence(delivery);
+      if (source && blocker && !relatedWork(taskId, blocker.taskId, tasks)) sequenceSources.set(taskId, { source, blocker });
+    }
     return { tasks, facts, sources, enrolled, pending: this.store.listUndelivered(projectId), running, own, boardDone,
-      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources };
+      paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources, sequenceSources };
   }
 
   private authorized(task: Task, ctx: Context): boolean {
@@ -153,7 +172,7 @@ export class TaskContinuationCoordinator {
     if (ctx.boardDone.has(task.id)) return false;
     // Proven queued delegation authorizes defining its missing criteria only.
     // The original input stays queued until a binding contract exists.
-    if (ctx.criteriaSources.has(task.id)) return true;
+    if (ctx.criteriaSources.has(task.id) || ctx.sequenceSources.has(task.id)) return true;
     // Sequence membership says order, not permission to replace cancelled or
     // uncertain instructions. Only accepted, reconciled scope can be continued.
     if (!latest || latest.status !== "delivered" || !["none", "resolved"].includes(latest.phase) || ["duplicate_draft", "not_received"].includes(latest.recovery_reason ?? "") || ctx.boardDone.has(task.id)) return false;
@@ -169,7 +188,8 @@ export class TaskContinuationCoordinator {
   private occupied(task: Task, ctx: Context, except?: string): boolean {
     if ([...ctx.running].some(id => this.family(task.id, id, ctx))) return true;
     return ctx.pending.some(d => d.id !== except && d.wake && this.family(task.id, d.taskId ?? null, ctx) &&
-      !(ctx.criteriaSources.has(task.id) && this.awaitingCriteria(d, task.id)));
+      !(ctx.criteriaSources.has(task.id) && this.awaitingCriteria(d, task.id)) &&
+      !(ctx.sequenceSources.has(task.id) && d.taskId === task.id && this.awaitingSequence(d)));
   }
   private familyGated(task: Task, ctx: Context): boolean {
     const ancestors = new Set<string>();
@@ -199,7 +219,7 @@ export class TaskContinuationCoordinator {
     const assignment = sources.findLast(s => s.kind === "instruction");
     const scopeText = assignment ? this.store.getDelivery(assignment.id)?.text.replace(/\s+/g, " ").trim() : null;
     // Deliberately omit timestamps, heartbeat, report wording and our own input.
-    return JSON.stringify({ stage: task.progress?.stage, contract: contract ? [contract.taskId, contract.rev] : null,
+    return JSON.stringify({ sequenceBlocker: ctx.sequenceSources.get(task.id)?.blocker.taskId ?? null, stage: task.progress?.stage, contract: contract ? [contract.taskId, contract.rev] : null,
       // A repeated downstream assignment is not progress. A genuinely new
       // owner instruction may explicitly revise scope or authorize a new attempt.
       source: { owner: owner?.id ?? null, assignment: scopeText },
@@ -254,6 +274,7 @@ export class TaskContinuationCoordinator {
         if (now < lastAt + this.options.intervalMs) continue;
         const sources = ctx.sources.get(task.id) ?? [];
         const criteriaSource = ctx.criteriaSources.get(task.id);
+        const sequenceSource = ctx.sequenceSources.get(task.id);
         const effectiveSource = sources.findLast(s => s.kind === "user_message") ?? sources.at(-1);
         const state = this.ensure(task, effectiveSource, now);
         if (state.next_attempt_at && now < Date.parse(state.next_attempt_at)) continue;
@@ -307,9 +328,11 @@ export class TaskContinuationCoordinator {
           const context = describeTaskContext(this.store, task, { sourceDeliveryId: state.source_delivery_id, facts: f });
           const purpose = criteriaSource
             ? `대기 중인 위임의 완료 기준 확정: #${task.id} '${task.title}'\n위임 지시 #${criteriaSource.id}는 확정 기준이 없어 아직 전송하지 않고 원문 그대로 보관 중입니다.`
+            : sequenceSource ? `업무 순서에 막힌 지시 확인: #${task.id} '${task.title}'\n직원에게 보낼 지시 #${sequenceSource.source.id}가 선행 업무 #${sequenceSource.blocker.taskId} '${sequenceSource.blocker.title}' 때문에 아직 전달되지 않았습니다.`
             : `업무 계속 진행: #${task.id} '${task.title}'\n한 번의 보고·턴은 끝났지만 완료 조건이 남아 있습니다.`;
           const nextAction = criteriaSource
             ? `현재 승인 범위의 완료 기준만 먼저 확정하세요. 확정 후 보관된 지시 #${criteriaSource.id}가 일반 입장 검사와 수신 확인을 거쳐 한 번 전달됩니다. 직원은 현재 업무 계약을 확인해야 합니다. 같은 원 지시를 team_assign으로 다시 만들거나 구현을 직접 시작하지 마세요.`
+            : sequenceSource ? `총괄은 선행 업무 #${sequenceSource.blocker.taskId}의 남은 조건과 실제 담당자를 확인하고, 기존 납품 검토·필요한 보완·범위에 맞는 보류 중 필요한 조정을 수행하세요. 지시 #${sequenceSource.source.id}는 원문 그대로 대기 중입니다. 같은 지시를 team_assign으로 다시 만들거나 완료 근거 없이 선행 업무를 완료 처리하지 마세요. 순서가 풀리면 보관된 지시가 일반 입장 검사와 수신 확인을 거쳐 전달됩니다. 대표 중단·결재·승인·수신 불확실을 해제하는 요청이 아닙니다.`
             : `기존 수정·보고·계약을 확인하고 현재 승인 범위에 필요한 다음 행동을 수행하세요. 구현과 반영까지 승인된 업무라면 보완 → 독립 검토 → 메인 통합 → 실제 적용 확인 → task_stage(done)까지 이어갑니다. 코딩 완료는 통합·적용 근거를 남깁니다. 같은 지시를 통째로 재실행하거나 완료 근거를 만들지 마세요. 이미 처리한 범위는 다시 하지 말고 남은 조건만 처리하세요.\n담당자 없는 승인된 범위는 기존 적합한 직원에게 team_assign으로 맡기고, 검토 실패는 원 작성자에게 연결하세요. 총괄의 확인·막힘 보고만으로 끝내지 마세요. 후보·검토 요청을 구현 승인으로 확대하지 마세요.`;
           const d = this.store.enqueue({ projectId: project.id, memberId: lead.id, kind: "system", wake: true, urgent: false, taskId: task.id,
             text: `[시스템] ${purpose}\n최신 대표 지시가 이전 지시·계약보다 우선합니다. 조사·검토만 허용했으면 구현이나 배포를 시작하지 말고 허용된 결과만 확인하세요.\n현재 단계: ${STAGE_LABEL[task.progress!.stage]}\n${criteriaStep}\n다음 조건: ${task.progress?.next ?? "현재 결과와 미완료 조건을 확인해 담당자에게 구체적으로 맡기기"}\n${contract ? `기록된 완료 조건(최신 지시와 대조): ${contract.acceptance.join(" / ")}\n` : ""}${context}\n${ownerAnswers}\n최신 대표 지시와 결재 답의 제한을 우선합니다. 총괄은 제작·구현·제품 설계를 직접 하지 않고 기준 정의·배정·검토 요청·상태 종합을 맡습니다.\n${nextAction}\n대표 중단·터미널 승인·수신 불확실·계정 한도를 우회하지 마세요. 같은 실패 세 번의 결재가 있으면 대표 답 전에는 reopen하거나 재배정하지 마세요. 대표가 정한 범위 안에서만 다시 열고 직원에게 맡기세요.` });

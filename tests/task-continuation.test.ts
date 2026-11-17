@@ -371,3 +371,42 @@ test.each(["pause", "done"] as const)("new owner input survives delivery deletio
   f.store.markDelivered(resume.id);
   expect(f.next.check(f.start, () => true)).toHaveLength(1);
 });
+
+function sequenceBlockedFixture() {
+  const f = fixture(), earlier = f.task("earlier still assigned", false);
+  // Existing work occupies the predecessor; it must not create a second request.
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Finish earlier work", taskId: earlier.id });
+  const task = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "queued-later", title: "Later authorized work", origin: "owner" }).task;
+  f.store.saveTaskContract(task.id, { kind: "other", goal: "Later work", acceptance: ["Verified result"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Perform later authorized work", taskId: task.id });
+  return { ...f, earlier, task, input };
+}
+
+test("safe queued work blocked by a predecessor receives scoped coordination instead of being considered occupied", () => {
+  const f = sequenceBlockedFixture();
+  expect(f.store.taskSequenceBlocker(f.worker.id, f.task.id)?.taskId).toBe(f.earlier.id);
+  const requests = f.next.check(f.start, () => true);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ memberId: f.lead.id, taskId: f.task.id, kind: "system" });
+  expect(requests[0]!.text).toContain(f.input.id);
+  expect(requests[0]!.text).toContain(f.earlier.id);
+  expect(f.next.canDispatch(requests[0]!)).toBe(true);
+  expect(f.store.requireDelivery(f.input.id)).toEqual(f.input);
+  expect(f.coordinator().check(f.start + 60000, () => true)).toHaveLength(0);
+  expect(f.store.listDeliveryDispatches(f.input.id)).toEqual([]);
+});
+
+test.each(["stopped", "waiting", "checking", "needs_owner", "resolved"] as const)("a sequence-blocked input with %s recovery cannot authorize new coordination", phase => {
+  const f = sequenceBlockedFixture();
+  f.store.updateDeliveryRecovery(f.input.id, f.store.getDeliveryRecovery(f.input.id)!.version, { phase, reason: "session_lost" });
+  expect(f.next.check(f.start, () => true)).toEqual([]);
+});
+
+test("a generated sequence request is retired once the original input can proceed", () => {
+  const f = sequenceBlockedFixture();
+  const request = f.next.check(f.start, () => true)[0]!; expect(request).toBeDefined();
+  f.store.addStageMark({ projectId: f.project.id, taskId: f.earlier.id, stage: "hold", who: f.lead.name, memberId: f.lead.id, evidence: "Only predecessor on hold" });
+  expect(f.next.canDispatch(request)).toBe(false);
+  expect(f.store.requireDelivery(request.id).status).toBe("failed");
+  expect(f.store.requireDelivery(f.input.id)).toEqual(f.input);
+});
