@@ -204,6 +204,19 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
       !history.some(x => ["prepared", "write_started", "unknown"].includes(x.transportState));
   }
 
+  /**
+   * A queued delivery whose every attempt was refused before any input (newest envelope rejected, settled as not_received,
+   * no envelope left prepared/writing/unknown). Holding it for an archive or sleep cannot hide or replay a write.
+   * Ambiguous, received or still-checking rows are never unwritten.
+   */
+  unwritten(deliveryId: string): boolean {
+    const d = this.store.getDelivery(deliveryId);
+    if (!d || d.status !== "queued" || d.attempts === 0) return false;
+    const r = this.record(d.id), history = this.store.listDeliveryDispatches(d.id);
+    return history.at(-1)?.transportState === "rejected" && r.phase === "resolved" && r.reason === "not_received" &&
+      !history.some(x => ["prepared", "write_started", "unknown"].includes(x.transportState));
+  }
+
   /** A durable pre-write refusal needs no log, identity or quiescence evidence. */
   requeueRejected(deliveryId: string): boolean {
     return this.store.transaction(() => {

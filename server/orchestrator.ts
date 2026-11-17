@@ -3710,7 +3710,9 @@ export class Orchestrator implements OrchestratorApi {
         this.interruptCoreCompaction(member);
         this.store.patchMember(memberId, { status: "asleep", subagents: 0, paneId: null });
         for (const d of this.store.listPending(memberId)) {
-          if (opts.holdAs && (d.attempts > 0 || d.status === "held" && d.holdReason !== "archived")) continue;
+          // 시도한 전달은 결과를 모를 수 있어 보관 보류로 바꾸지 않는다. 다만 매번 입력 전에 거절된 전달(not_written)은
+          // 줄에 남기면 보관이 거부된 뒤 틱이 먼저 끝낸 칸을 다시 연다. 잠든 칸의 다른 줄처럼 보류한다.
+          if (opts.holdAs && ((d.attempts > 0 && !this.deliveryRecovery.unwritten(d.id)) || d.status === "held" && d.holdReason !== "archived")) continue;
           this.hold(d, opts.holdAs ?? "asleep");
         }
         this.confirmStop(memberId);
