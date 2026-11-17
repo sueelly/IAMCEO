@@ -51,6 +51,33 @@ for (const proposed of [false, true]) {
   });
 }
 
+test("뒤에 대표 지시가 전달되어도 앞서 대기 중인 위임의 완료 기준을 확정하고 원 지시를 한 번 전달한다", async () => {
+  const f = queuedDelegation(), now = Date.now() + 10000;
+  const owner = f.store.createMessage({ projectId: f.project.id, mine: true, who: "나", kind: "나", taskId: f.task.id,
+    body: "영희는 현재 담당자를 먼저 확인해주세요" });
+  const later = f.store.enqueue({ projectId: f.project.id, memberId: f.worker2.id, taskId: f.task.id,
+    kind: "user_message", refType: "message", refId: owner.id, text: owner.body, wake: true });
+  f.store.markDelivered(later.id);
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(0);
+  const next = f.coordinator(), reminders = next.check(now, () => true);
+  expect(reminders).toHaveLength(1);
+  expect(reminders[0]!.text).toContain(f.delivery.id);
+  expect(reminders[0]!.text).toContain(owner.body);
+  expect(next.canDispatch(reminders[0]!)).toBe(true);
+  expect(f.coordinator().check(now + 10000, () => true)).toHaveLength(0);
+  expect(f.store.requireDelivery(f.delivery.id)).toEqual(f.delivery);
+  expect(f.store.requireDelivery(later.id).status).toBe("delivered");
+  const confirmed = await f.tool(f.lead, "task", { task_id: f.task.id, contract: OTHER });
+  expect(confirmed.isError, confirmed.text).toBeUndefined();
+  expect(next.canDispatch(reminders[0]!)).toBe(false);
+  await f.orch.pump(f.worker.id);
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(1);
+  expect(f.runner.to(f.worker)[0]).toContain(f.delivery.text);
+  expect(f.store.requireDelivery(f.delivery.id)).toMatchObject({ status: "delivered", text: f.delivery.text });
+});
+
 test("위임 증거가 없는 오래된 instruction은 대표 지시로 추정해 기준 요청을 만들지 않는다", async () => {
   const f = fixture(), task = f.orch.saveTask(f.lead, { title: "출처가 없는 과거 지시" }).task;
   const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id,

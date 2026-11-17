@@ -135,8 +135,13 @@ export class TaskContinuationCoordinator {
     }
     const criteriaSources = new Map<string, Source>();
     for (const [taskId, list] of sources) {
-      const latest = list.at(-1)!, delivery = this.store.getDelivery(latest.id);
-      if (delivery && this.awaitingCriteria(delivery, taskId)) criteriaSources.set(taskId, latest);
+      // A later accepted owner input does not settle an earlier queued delegation.
+      // Keep its criteria request separate from the latest owner scope below.
+      const awaiting = list.findLast(source => {
+        const delivery = this.store.getDelivery(source.id);
+        return delivery && this.awaitingCriteria(delivery, taskId);
+      });
+      if (awaiting) criteriaSources.set(taskId, awaiting);
     }
     return { tasks, facts, sources, enrolled, pending: this.store.listUndelivered(projectId), running, own, boardDone,
       paused: new Set(activeTaskContinuationPauses(this.store, projectId).map(p => p.taskId)), markSources, criteriaSources };

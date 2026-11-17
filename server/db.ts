@@ -977,7 +977,18 @@ export const MIGRATIONS: string[] = [
      retired_reason TEXT
    );
    CREATE INDEX task_continuation_deliveries_task ON task_continuation_deliveries(task_id, round);`,
-  // v39: independent project admission caps and durable owner escalation after
+  // v39: A workflow assignment is committed with its queue input. No pending external action is replayed.
+  `CREATE TABLE workflow_assignment_receipts (
+     operation_id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     task_id TEXT NOT NULL,
+     member_id TEXT NOT NULL,
+     delivery_id TEXT NOT NULL,
+     request_json TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX workflow_assignment_receipts_project ON workflow_assignment_receipts(project_id, created_at);`,
+  // v40: independent project admission caps and durable owner escalation after
   // repeated task failures. No running execution or existing answer is changed.
   `ALTER TABLE projects ADD COLUMN max_concurrent_turns INTEGER DEFAULT NULL
      CHECK (max_concurrent_turns IS NULL OR (typeof(max_concurrent_turns) = 'integer' AND max_concurrent_turns BETWEEN 1 AND 64));
