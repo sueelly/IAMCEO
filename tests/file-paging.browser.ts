@@ -14,6 +14,27 @@ import type { FileDoc, Project, Task } from "../shared/types";
 
 const code = "isolated-file-page-test";
 
+test("startup uses one state/history read and reconciles messages sent before its socket opens", async () => {
+  const page = await browser.newPage();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/realtime-session", async route => { await gate; await route.continue().catch(() => {}); });
+  const reads: string[] = [];
+  page.on("request", request => { if (request.url().includes("/api/")) reads.push(request.url()); });
+  await page.route("**/messages/page?*", route => route.abort());
+  try {
+    await page.addInitScript(value => localStorage.setItem("iamceo.accessCode", value), code);
+    await page.goto(`${base}/#/p/${project.id}/thread`);
+    await page.locator(".shell").waitFor({ timeout: 2000 });
+    expect(reads.some(path => path.includes("/api/sync?") && path.includes("history=50"))).toBe(true);
+    expect(reads.filter(path => path.includes("/messages/page?"))).toHaveLength(0);
+    store.createMessage({ projectId: project.id, kind: "진행", body: "handoff-tail-proof" });
+    release();
+    await page.getByText("handoff-tail-proof", { exact: true }).waitFor({ timeout: 10_000 });
+    expect(reads.filter(path => path.includes("/messages/page?"))).toHaveLength(0);
+  } finally { release(); await page.close(); }
+}, 20_000);
+
 test("first screen opens while runtime diagnostics are delayed", async () => {
   const page = await browser.newPage();
   let release!: () => void;
@@ -83,6 +104,7 @@ test("list transfers only 20 summaries, scroll appends 20, old direct links load
     }
     if (/\/api\/files\/[^/]+$/.test(url.pathname)) details.push(url.pathname.split("/").at(-1)!);
     if (url.pathname.endsWith("/messages/page")) history.push(Number(url.searchParams.get("limit")));
+    if (url.pathname === "/api/sync" && url.searchParams.has("history")) history.push((await r.json()).history.items.length);
   });
   try {
     await open(page); await page.locator(".fl-row").first().waitFor({ timeout: 10000 }); expect(await page.locator(".fl-row").count()).toBe(20);

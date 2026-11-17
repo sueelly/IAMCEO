@@ -12,6 +12,7 @@ import type {
   DecisionStatus,
   Member,
   Message,
+  MessagePage,
   ProjectState,
   ProjectSummary,
   SendMessageReq,
@@ -372,12 +373,14 @@ export function clearNotice(): void {
   if (state.notice) set({ notice: null });
 }
 
-async function readHistory(context: SyncContext, kind: "refresh" | "older"): Promise<void> {
+async function readHistory(context: SyncContext, kind: "refresh" | "older", firstPage?: MessagePage): Promise<void> {
   const range = historyFor(context.projectId);
   let request = range.begin(kind === "older" ? range.isBridging ? "bridge" : "older" : range.isBridging ? "bridge" : range.initialized ? "latest" : "initial");
   while (request && context.isCurrent()) {
     try {
-      const page = await api.messagePage(context.projectId, { cursor: request.cursor, limit: request.limit, scope: { kind: "project" } }, context.signal);
+      const page = firstPage && !request.cursor ? firstPage
+        : await api.messagePage(context.projectId, { cursor: request.cursor, limit: request.limit, scope: { kind: "project" } }, context.signal);
+      firstPage = undefined;
       if (!context.isCurrent()) return;
       if (!range.apply(page, request)) throw new Error(range.error ?? "대화 기록을 받지 못했습니다");
     } catch (error) {
@@ -408,7 +411,7 @@ function readRuntime(context: SyncContext): void {
 }
 
 async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Promise<void> {
-  if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh");
+  if (snapshot.state && usesCursorHistory()) await readHistory(context, "refresh", snapshot.history);
   if (!context.isCurrent()) return;
   const pending = buffered ?? [];
   buffered = null; clearRemoteEvents();
@@ -471,7 +474,12 @@ const coordinator = new BrowserSyncCoordinator({
   },
   realtimeSession: (signal) => api.realtimeSession(signal),
   socket: (protocol) => new WebSocket(wsUrl(protocol)) as unknown as SyncSocket,
-  readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal, state.capabilities?.capabilities.compactState === true); },
+  readSnapshot: (projectId, signal) => {
+    buffered = [];
+    const compact = state.capabilities?.capabilities.compactState === true;
+    const history = compact && state.capabilities?.capabilities.snapshotHistory === true && !historyRange?.isBridging && !historyRange?.needsReset;
+    return api.sync(projectId, signal, compact, history);
+  },
   readLegacy,
   onSnapshot: acceptSnapshot,
   onEvent: receiveRemote,

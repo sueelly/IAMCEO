@@ -165,7 +165,7 @@ export const api = {
   runtime: (signal?: AbortSignal) => get<RuntimeInfo>("/api/runtime", signal),
   capabilities: (signal?: AbortSignal) => get<ServerCapabilities>("/api/capabilities", signal),
   realtimeSession: (signal?: AbortSignal) => request<void>("POST", "/api/realtime-session", undefined, WRITE_TIMEOUT_MS, { signal }),
-  sync: (projectId: string, signal?: AbortSignal, compact = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}`, signal),
+  sync: (projectId: string, signal?: AbortSignal, compact = false, history = false) => get<SyncSnapshot>(`/api/sync?projectId=${seg(projectId)}${compact ? "&view=compact" : ""}${history ? "&history=50" : ""}`, signal),
   filePage: (id: string, opts: FilePageOptions = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({ limit: String(opts.limit ?? 20) });
     if (opts.taskId) query.set("taskId", opts.taskId);

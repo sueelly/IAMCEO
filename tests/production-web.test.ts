@@ -45,6 +45,8 @@ test("the standard build embeds a production screen within the first-load transf
     await context.addInitScript(code => localStorage.setItem("iamceo.accessCode", code), settings.accessCode);
     const page = await context.newPage();
     const errors: string[] = [];
+    const requests: string[] = [];
+    page.on("request", request => { if (request.url().includes("/api/")) requests.push(new URL(request.url()).pathname + new URL(request.url()).search); });
     const failedReads: { path: string; status: number }[] = [];
     page.on("pageerror", error => errors.push(error.stack ?? error.message));
     page.on("response", response => { if (response.status() >= 400) failedReads.push({ path: new URL(response.url()).pathname, status: response.status() }); });
@@ -52,6 +54,9 @@ test("the standard build embeds a production screen within the first-load transf
     try { await page.locator(".shell").waitFor({ timeout: 10_000 }); }
     catch (error) { console.log({ errors, failedReads, body: await page.locator("body").innerText() }); throw error; }
     expect(await page.getByRole("link", { name: "설정", exact: true }).count()).toBeGreaterThan(0);
+    expect(requests.filter(path => path === "/api/files-session")).toHaveLength(1);
+    expect(requests.some(path => path.includes("/api/sync?") && path.includes("history=50"))).toBe(true);
+    expect(requests.filter(path => path.includes("/messages/page?"))).toHaveLength(0);
     expect(errors).toEqual([]);
     await context.close();
   } finally {
