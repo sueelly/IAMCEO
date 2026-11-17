@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { cleanText, SESSION_ID_RE } from "../text.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "./types.ts";
+import { claudeRoleArgs } from "./role-policy.ts";
 
 // 뒤쪽 변수들은 서버를 Claude Code 안에서 띄웠을 때 바깥 세션의 신원·설정이 새는 것을 막는다.
 const STRIPPED_ENV = /^(HERDR_.*|CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SSE_PORT|CLAUDE_CODE_SESSION_.*|CLAUDE_CODE_CHILD_SESSION|CLAUDE_CODE_MESSAGING_.*|CLAUDE_CODE_EXECPATH|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_EFFORT_LEVEL|CLAUDE_CODE_SUBAGENT_MODEL|CLAUDE_CODE_SUBAGENT_MODEL_FORCE)$/;
@@ -85,9 +86,10 @@ export function buildClaudeArgs(m: RunnerMember, o: StartOpts, established: bool
   args.push(established ? "--resume" : "--session-id", m.sessionId!);
   args.push("--mcp-config", o.mcpConfigFile);
   args.push("--append-system-prompt-file", o.systemPromptFile);
-  args.push("--permission-mode", m.permissionMode);
+  const permissions = claudeRoleArgs(m);
+  args.push(...permissions.slice(0, 2));
   args.push("--permission-prompts", "none");
-  args.push("--allowedTools", "mcp__iamceo");
+  args.push(...permissions.slice(2));
   // 첨부는 프로젝트 폴더 밖에 있다. default 모드는 승인 창이 없어 이 폴더를 열어 주지 않으면 읽지 못한다. herdr 칸과 같다.
   if (inbox) args.push("--add-dir", inbox);
   args.push("--output-format", "stream-json", "--verbose");
@@ -470,7 +472,7 @@ export class HeadlessRunner implements Runner {
       proc = Bun.spawn({
         cmd: [this.config.claudeBin, ...buildClaudeArgs(member, o, session.established, inbox)],
         cwd: m.cwd,
-        env: { ...this.env, ...subagentEnv(member.subagentModel) },
+        env: { ...this.env, ...(member.kind === "conductor" ? {} : subagentEnv(member.subagentModel)) },
         // 다 쓰면 Bun 이 닫는다. 열어 두면 claude -p 가 입력을 3초 기다린다.
         stdin: new TextEncoder().encode(claudeInput(text)),
         stdout: "pipe",

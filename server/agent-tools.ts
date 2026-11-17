@@ -876,14 +876,20 @@ async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
 
 function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
   return [
-    ...WORKER_TOOLS,
+    ...(member.kind === "conductor" ? CONDUCTOR_ALLOWED_TOOLS : WORKER_TOOLS),
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
-    ...(member.kind === "conductor" ? CONDUCTOR_TOOLS : []),
     ...(opts.memory && member.kind === "conductor" && member.origin !== "manual" ? MEMORY_CONDUCTOR_TOOLS : []),
     ...(member.kind === "root" ? ROOT_TOOLS : []),
     ...(member.origin === "manual" ? MANUAL_TOOLS : []),
   ];
 }
+
+/** Explicit allowlist: adding a worker/native capability must never widen the conductor role. */
+export const CONDUCTOR_ALLOWED_TOOLS = [
+  "status", "task", "ask", "post", "todo", "ask_close", "todo_close", "server_check", "task_trace", "exec_diagnose", "code_read",
+  "team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_config", "terminal_read",
+  "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage",
+] as const satisfies readonly ToolName[];
 
 export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
   return namesFor(member, opts).map((name) => {
@@ -894,6 +900,7 @@ export function listAgentTools(member: Member, opts: { memory?: boolean } = {}):
 
 export async function handleAgentTool(orch: Orchestrator, member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
   if (!(namesFor(member, { memory: orch.memoryEnabledFor?.(member) ?? false }) as readonly string[]).includes(name)) return { text: `쓸 수 없는 도구입니다: ${name}`, isError: true };
+  if (member.kind === "conductor" && name === "team_sleep" && args.force === true) return { text: "총괄은 진행 중인 업무나 승인 대기를 강제로 해제할 수 없습니다", isError: true };
   const tool = TOOLS[name as ToolName];
   const parsed = (tool.schema as z.ZodType).safeParse(args);
   if (!parsed.success) {

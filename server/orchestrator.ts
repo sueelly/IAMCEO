@@ -5242,13 +5242,14 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
-   * 쉬는 세션이 띄울 때와 다른 도구·역할 글을 갖고 있는가. 서버가 띄운 core 세션만 본다(넘겨받은·직접 띄운 칸은 대표의 것).
+   * 영속 세션의 도구·역할 변경 여부. 총괄의 옛 권한은 갱신 전 새 입력을 받지 않는다.
    * 지문이 없는 옛 총괄도 필수 조정 규칙을 받는다. 다른 옛 세션은 기억 도구가 새로 붙을 때 연다. 같은 대화의 세션 id 가 있어야 한다.
    */
   private toolsPending(member: Member): string | null {
-    if (member.origin !== "runner" || member.backend !== "core" || !member.sessionId || member.status === "asleep" || member.status === "offline") return null;
+    const conductor = member.kind === "conductor";
+    if ((!conductor && member.origin !== "runner") || member.origin === "manual" || (!conductor && member.backend !== "core") || this.backendOf(member) === "headless" || (!member.sessionId && !member.paneId) || member.status === "asleep" || member.status === "offline") return null;
     const want = this.toolSignature(member);
-    if (!want || this.runtime(member.id).toolsGaveUp === want) return null;
+    if (!want || (!conductor && this.runtime(member.id).toolsGaveUp === want)) return null;
     const have = this.store.getAppliedConfig(member.id)?.toolsSig ?? null;
     if (have === want) return null;
     if (have === null && member.kind !== "conductor" && !this.memoryEnabledFor(member)) return null;
@@ -5257,11 +5258,15 @@ export class Orchestrator implements OrchestratorApi {
 
   /**
    * 쉬는 세션을 끝내고 같은 대화(--resume·codex resume)로 다시 연다. 새 도구 목록과 지금 규칙을 받는다. 일하는 중에는 부르지 않는다.
-   * 끝내기에 실패하면 옛 세션 그대로 일을 잇고 같은 지문으로는 다시 시도하지 않는다. 이어 열기가 실패하면 다음 전달 때 다시 연다.
+   * 총괄은 갱신을 확인하기 전 새 입력을 보존한다. 직원의 기존 설정 실패 정책은 유지한다.
    */
   private async refreshSession(member: Member, want: string): Promise<Member | null | "kept"> {
     const rt = this.runtime(member.id);
-    if (rt.closing || rt.starting || rt.reopening) return "kept";
+    if (member.kind === "conductor" && member.origin !== "runner") {
+      this.store.patchMember(member.id, { lastError: "총괄의 조정 전용 권한을 확인할 수 없어 새 입력을 보류했습니다. 대표가 넘겨준 기존 세션은 유지합니다" });
+      return null;
+    }
+    if (rt.closing || rt.starting || rt.reopening) return member.kind === "conductor" ? null : "kept";
     rt.closing = true;
     try {
       await this.stopManaged(member, "sleep", false);
@@ -5270,6 +5275,10 @@ export class Orchestrator implements OrchestratorApi {
         this.confirmStop(member.id);
       });
     } catch (e) {
+      if (member.kind === "conductor") {
+        this.store.patchMember(member.id, { lastError: "총괄의 조정 전용 권한을 적용하지 못해 새 입력을 보류했습니다" });
+        return null;
+      }
       rt.toolsGaveUp = want;
       this.store.appendActivity(member.id, "error", `도구 목록을 새로 받으려고 세션을 다시 열지 못해 지금 세션으로 잇습니다: ${(e as Error).message.slice(0, 300)}`);
       return "kept";
@@ -5353,6 +5362,7 @@ export class Orchestrator implements OrchestratorApi {
   /** Commit the exact envelope before I/O; all ambiguous results belong to recovery. */
   private async sendEnvelope(member: Member, project: Project, runner: Runner, deliveries: Delivery[], urgent: boolean): Promise<SendResult> {
     deliveries = this.admittedInputs(member.id, deliveries);
+    if (member.kind === "conductor" && this.toolsPending(member)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     if (project.archived || this.archiving.has(project.id) || this.coreCompactFenced(member) || !deliveries.length || this.deliveryRecovery.fenced(member.id)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
@@ -5649,6 +5659,7 @@ export class Orchestrator implements OrchestratorApi {
   private reservedInputAllowed(member: Member, deliveries: readonly Delivery[] = [], urgent = false): boolean {
     const current = this.store.getMember(member.id);
     if (this.closed || !current || this.executionInputBlocked(current)) return false;
+    if (current.kind === "conductor" && this.toolsPending(current)) return false;
     member = current;
     if (!urgent && ["core", "headless"].includes(this.backendOf(member)) && !this.hasAutomaticCapacity(member, true)) {
       this.waiting.add(member.id);
