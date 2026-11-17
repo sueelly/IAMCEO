@@ -107,6 +107,7 @@ function TodoRow({ todo, onToggled, onError }: { todo: Todo; onToggled: (todo: T
     if (busy || Date.now() - shiftedAt < AFTER_SHIFT_MS) return;
     const next = !todo.done;
     const optimistic = { ...todo, done: next };
+    const snapshotAtSubmit = getState().acceptedSnapshotVersion;
     setBusy(true);
     onError(null);
     onToggled(todo, next);
@@ -115,11 +116,13 @@ function TodoRow({ todo, onToggled, onError }: { todo: Todo; onToggled: (todo: T
       const saved = await executeReviewedWrite(review, readWriteContext(),
         revision => api.todoDoneV2(todo.id, next, Number(revision)).then(result => result.todo),
         () => api.todoDone(todo.id, next));
-      if (reviewStillCurrent(review, readWriteContext()) && getState().project?.todos.find(t => t.id === todo.id) === optimistic) applyLocal({ type: "todo", todo: saved });
+      if (reviewStillCurrent(review, readWriteContext()) && getState().acceptedSnapshotVersion === snapshotAtSubmit
+        && getState().project?.todos.find(t => t.id === todo.id) === optimistic) applyLocal({ type: "todo", todo: saved });
       void refresh();
     } catch (e) {
       if (!reviewStillCurrent(review, readWriteContext())) return;
-      const rollback = rollbackTodo(getState().project?.todos.find(t => t.id === todo.id), optimistic, todo);
+      const rollback = getState().acceptedSnapshotVersion === snapshotAtSubmit
+        ? rollbackTodo(getState().project?.todos.find(t => t.id === todo.id), optimistic, todo) : null;
       if (rollback) { applyLocal({ type: "todo", todo: rollback }); onToggled(todo, todo.done); }
       onError(errorText(e));
       if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) void refresh();

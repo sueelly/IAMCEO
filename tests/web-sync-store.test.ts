@@ -33,7 +33,11 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
   });
   const msg = (id: string): Message => ({ id, at: "2026-01-01", projectId: "p", body: id, attachments: [], mine: false,
     memberId: null, who: "", kind: "진행", title: "", targetMemberId: null, targetName: null, decisionId: null, fileId: null, delivery: null, deliveryNote: null });
-  const project = { project: { id: "p" }, messages: [], members: [], decisions: [], todos: [], work: [], files: [] } as unknown as ProjectState;
+  const project = { project: { id: "p" }, messages: [], members: [
+    { id: "m1", projectId: "p", status: "idle", now: "" },
+    { id: "m2", projectId: "p", status: "idle", now: "" },
+  ], decisions: [], todos: [], work: [], files: [] } as unknown as ProjectState;
+  const revisions = { settings: 7, members: { m1: { configRevision: 1, sessionGeneration: 1 }, m2: { configRevision: 1, sessionGeneration: 1 } }, todos: {} };
   const bootstrap = { projects: [{ id: "p" }], runtime: {} } as Bootstrap;
   const calls: string[] = [];
   let replaced = false;
@@ -46,7 +50,7 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     const path = String(input); calls.push(path);
     if (path === "/api/capabilities") return Response.json({ contractVersion: 2, capabilities: { browserRealtime: true } });
     if (path.includes("-session")) return new Response(null, { status: 204 });
-    if (path === "/api/sync?projectId=p") return denySync ? Response.json({ error: "rotated code" }, { status: 401 }) : Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "p", projectStatus: "ok", bootstrap, state: project, revisions: { settings: 7, members: {}, todos: {} } });
+    if (path === "/api/sync?projectId=p") return denySync ? Response.json({ error: "rotated code" }, { status: 401 }) : Response.json({ protocol: 2, cursor: { epoch: "e", seq }, requestedProjectId: "p", projectStatus: "ok", bootstrap, state: project, revisions });
     if (path === "/api/messages/reauth") return Response.json({ ...msg("reauth"), mine: true, delivery: "delivered" });
     if (path === "/api/projects/p/messages" && init?.method === "POST") return new Promise<Response>((resolve) => { writes.push(resolve); });
     if (path === "/api/members/member/activity?limit=200") return new Promise<Response>((resolve) => { activityResponse = resolve; });
@@ -65,6 +69,35 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     expect(calls.some((p) => p.startsWith("/api/sync?"))).toBe(true);
     expect(getState().project?.messages.map((m) => m.id)).toEqual(["recent"]);
     expect(getState().syncRevisions?.settings).toBe(7);
+    const initial = getState();
+    await refresh();
+    const equal = getState();
+    expect(equal.acceptedSnapshotVersion).toBeNumber();
+    expect(equal.acceptedSnapshotVersion).toBe(initial.acceptedSnapshotVersion + 1);
+    expect(equal.bootstrap).toBe(initial.bootstrap);
+    expect(equal.project).toBe(initial.project);
+    expect(equal.syncRevisions).toBe(initial.syncRevisions);
+    project.members[0] = { ...project.members[0], status: "working", now: "reading source" };
+    seq = 1;
+    await refresh();
+    const changed = getState();
+    expect(changed.project?.members[0].status).toBe("working");
+    expect(changed.project?.members[0].now).toBe("reading source");
+    expect(changed.syncRevisions?.members.m1.configRevision).toBe(1);
+    expect(changed.project?.members[0]).not.toBe(initial.project?.members[0]);
+    expect(changed.project?.members[1]).toBe(initial.project?.members[1]);
+    for (const key of ["messages", "files", "todos", "decisions", "work"] as const) {
+      expect(changed.project?.[key]).toBe(initial.project?.[key]);
+    }
+    expect(changed.bootstrap).toBe(initial.bootstrap);
+    expect(changed.syncRevisions).toBe(initial.syncRevisions);
+    project.members = [project.members[1], project.members[0]];
+    seq = 2;
+    await refresh();
+    expect(getState().project?.members[0]).toBe(changed.project?.members[1]);
+    expect(getState().project?.members[1]).toBe(changed.project?.members[0]);
+    expect(getState().project?.messages).toBe(changed.project?.messages);
+    expect(getState().acceptedSnapshotVersion).toBe(changed.acceptedSnapshotVersion + 1);
     await loadOlderMessages();
     expect(calls.some((p) => p.includes("cursor=opaque%2B%2F%3D") && p.includes("limit=50"))).toBe(true);
     expect(getState().project?.messages.map((m) => m.id)).toEqual(["older", "recent"]);
@@ -133,4 +166,4 @@ test("store uses v2 snapshots and opaque history cursors, then suspends and fenc
     globalThis.fetch = originalFetch;
     for (const [name, descriptor] of saved) if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
   }
-});
+}, 15000);

@@ -569,10 +569,11 @@ const ANTIGRAVITY_MODELS = ["gemini-4-argon-medium", "gemini-4-argon-high", "gem
 function MemberConfig({ m }: { m: Member }) {
   const rank = useBootstrap()?.settings.ranks[memberRank(m.kind)];
   const context = useWriteContext();
+  const acceptedSnapshotVersion = useStore(state => state.acceptedSnapshotVersion);
   const diagnostics = useRuntime();
   const { busy, error, run, setError } = useAction();
   const [modelDraft, setModelDraft] = useState<{ value: string; review: WriteReview } | null>(null);
-  const [conflict, setConflict] = useState<{ patch: PatchMemberReq; review: WriteReview; serverMember: Member; ready?: boolean } | null>(null);
+  const [conflict, setConflict] = useState<{ patch: PatchMemberReq; review: WriteReview; snapshotVersion: number; ready?: boolean } | null>(null);
   const model = modelDraft?.value ?? m.modelOverride ?? "";
   const capture = () => captureWriteReview(context, { kind: "member", projectId: m.projectId, id: m.id });
   const save = (patch: PatchMemberReq, reviewed = capture()) => run("config", async () => {
@@ -587,7 +588,7 @@ function MemberConfig({ m }: { m: Member }) {
       await refresh();
     } catch (e) {
       if (e instanceof ReviewRequiredError || e instanceof ApiError && (e.status === 409 || e.status === 0)) {
-        setConflict({ patch, review: reviewed, serverMember: getState().project?.members.find(member => member.id === m.id) ?? m });
+        setConflict({ patch, review: reviewed, snapshotVersion: getState().acceptedSnapshotVersion });
         void refresh();
       }
       throw e;
@@ -626,7 +627,7 @@ function MemberConfig({ m }: { m: Member }) {
         {conflict.ready ? (
           <GlassButton variant="glass" size="m" disabled={busy !== null} onClick={() => void save(conflict.patch.modelOverride !== undefined ? { modelOverride: model.trim() || null } : conflict.patch, conflict.review)}>검토한 변경 저장</GlassButton>
         ) : (
-          <GlassButton variant="glass" size="m" disabled={busy !== null || m === conflict.serverMember || capture().mode === "unavailable"} onClick={() => {
+          <GlassButton variant="glass" size="m" disabled={busy !== null || acceptedSnapshotVersion === conflict.snapshotVersion || capture().mode === "unavailable"} onClick={() => {
             const nextReview = capture();
             setModelDraft(current => current ? { ...current, review: nextReview } : current);
             setConflict({ ...conflict, review: nextReview, ready: true });

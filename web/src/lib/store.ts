@@ -21,6 +21,7 @@ import type {
 import type { ServerCapabilities, SyncRevisions } from "@shared/operations";
 import { CursorHistory, compareMessages, mergeHistoryMessages } from "./history";
 import { BrowserSyncCoordinator, type SyncContext, type SyncSocket } from "./sync";
+import { shareJSON } from "./structural-sharing";
 import {
   ApiError,
   api,
@@ -66,6 +67,8 @@ export interface AppState {
   capabilities: ServerCapabilities | null;
   syncRevisions: SyncRevisions | null;
   syncProjectId: string | null;
+  /** A completed authoritative read, independent of whether its domain values changed. */
+  acceptedSnapshotVersion: number;
   historyError: string | null;
 }
 
@@ -264,6 +267,7 @@ let state: AppState = {
   capabilities: null,
   syncRevisions: null,
   syncProjectId: null,
+  acceptedSnapshotVersion: 0,
   historyError: null,
 };
 
@@ -401,8 +405,12 @@ async function acceptSnapshot(snapshot: SyncSnapshot, context: SyncContext): Pro
     projectLoading: false, projectError: null, historyError: null,
     hasOlderMessages: snapshot.state ? usesCursorHistory() ? historyFor(context.projectId).hasOlder : snapshot.state.messages.length >= MSG_PAGE : false,
     syncRevisions: snapshot.revisions, syncProjectId: context.projectId,
+    acceptedSnapshotVersion: state.acceptedSnapshotVersion + 1,
   };
   for (const event of pending) next = reduce(next, event);
+  next.bootstrap = shareJSON(state.bootstrap, next.bootstrap);
+  next.project = shareJSON(state.project, next.project);
+  next.syncRevisions = shareJSON(state.syncRevisions, next.syncRevisions);
   set(next);
   if (!snapshot.state && context.projectId !== HQ_ID && state.route.settings) {
     set({ route: { ...state.route, projectId: HQ_ID, tab: "home" } });
@@ -429,6 +437,7 @@ async function readLegacy(projectId: string, context: SyncContext): Promise<void
     project: fresh ? { ...fresh, messages: mergeMessages(gap ? local.filter((m) => m.mine && (m.delivery === "queued" || m.delivery === "failed")) : local, fresh.messages) } : null,
     hasOlderMessages: fresh ? gap || !local.length ? fresh.messages.length >= MSG_PAGE : state.hasOlderMessages : false,
     syncRevisions: null, syncProjectId: null,
+    acceptedSnapshotVersion: state.acceptedSnapshotVersion + 1,
   };
   for (const event of pending) next = reduce(next, event);
   set(next);
