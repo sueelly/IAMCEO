@@ -203,8 +203,8 @@ private extension CLIApprovalOption {
     }
 }
 
-/// Web .apv-opt: the option number in a mono gutter, the label 14.5 / 600 at 1.45, tags under it. Unpicked is the soft
-/// violet tile (mockup .opt); picked is the selected violet fill with a 2pt focus ring and a violet check; a picked
+/// Web .apv-opt: the option number in a mono gutter, the label 14.5 / 600 at 1.45, tags under it. Unpicked is the opaque
+/// soft violet tile (web --btn-soft); picked is the opaque pressed violet fill with a 2pt focus ring and a violet check; a picked
 /// rejection is red (error .12 with a 2pt danger ring and a red check).
 private struct CLIOptionTile: View {
     let option: CLIApprovalOption
@@ -262,13 +262,14 @@ private struct CLIOptionTile: View {
         return parts.joined(separator: ", ")
     }
 
+    /// Opaque, so the plate's light never shows through a choice (web .apv-opt: `--btn-soft`, hover `--btn-soft-hover`,
+    /// picked `--btn-press`, a picked rejection the error tint on white).
     private var fill: AnyShapeStyle {
         if picked {
-            if option.reject { return AnyShapeStyle(CE.error.opacity(0.12)) }
-            // mockup --sel-bg: violet .16 → .10 top to bottom
-            return AnyShapeStyle(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+            if option.reject { return AnyShapeStyle(CE.tintOnWhite(0xD9363E, 0.12)) }
+            return AnyShapeStyle(CE.pressedSolid)
         }
-        return AnyShapeStyle(hovering && isEnabled ? CE.violet.opacity(0.11) : CE.soft)
+        return AnyShapeStyle(hovering && isEnabled ? CE.softHoverSolid : CE.softSolid)
     }
 
     private var stroke: (color: Color, width: CGFloat) {

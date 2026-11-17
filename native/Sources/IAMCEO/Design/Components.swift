@@ -30,9 +30,10 @@ extension EnvironmentValues {
     }
 }
 
-/// A content card in the light glass style (mockup `.g`): white glass 74% → 52% over the light aurora, radius 22, a rim
-/// lit white at the top left and violet/ice at the bottom right, a soft violet shadow. Cards nested inside a card become
-/// quiet fills.
+/// A content card in the light glass style (web `.glass` + `.glass-tint`, the web's content cards): clear white glass
+/// (white 50% → 24% plus the text-heavy +16%) over the light aurora, radius 22, a 1.75pt rim lit white at the top left
+/// and bending violet/ice at the bottom right, corner glints, an edge bevel and a soft violet shadow. Cards nested inside
+/// a card become quiet fills.
 struct Plate<Content: View>: View {
     @Environment(\.ceInsideGlass) private var insideGlass
     var padding: CGFloat = CESpace.l
@@ -70,25 +71,64 @@ extension View {
     }
 }
 
-// MARK: - Card glass (web `.glass.glass--regular` + `.hm-card` tint)
+// MARK: - Card glass (web `.glass` in the 2026-11-09 clearer glass, A안: thick edges, opaque on hover)
+
+/// How much white a glass surface carries (web `--g-a1` / `--g-a2` plus its `--g-tint`, composited).
+enum GlassLevel: Sendable, Equatable {
+    /// `.glass` alone: white 50% → 24%.
+    case clear
+    /// `.glass-tint` (+16%, `--tint-text`): text-heavy content cards (home, inbox, files, team, settings panels).
+    case text
+    /// `--tint-strong` (+42%): approval originals, the reader, long documents.
+    case strong
+    /// `.glass--thick` (+8%) with `--tint-text`: the large setup card.
+    case thick
+    /// `--opaque-bar`: tab bar, segment pill, save bar, dialogs (97% → 94%).
+    case opaque
+    /// The composer panel: opaque (100% → 98%).
+    case solid
+
+    /// Top and bottom white alpha (top at 0, bottom from 62% down).
+    var alphas: (top: Double, bottom: Double) {
+        func over(_ a: Double, tint t: Double) -> Double { 1 - (1 - a) * (1 - t) }
+        switch self {
+        case .clear: return (CE.glassA1, CE.glassA2)
+        case .text: return (over(CE.glassA1, tint: 0.16), over(CE.glassA2, tint: 0.16))
+        case .strong: return (over(CE.glassA1, tint: 0.42), over(CE.glassA2, tint: 0.42))
+        case .thick: return (over(CE.glassA1 + 0.08, tint: 0.16), over(CE.glassA2 + 0.08, tint: 0.16))
+        case .opaque: return (CE.opaqueBar, CE.opaqueBar - 0.03)
+        case .solid: return (1, 0.98)
+        }
+    }
+    /// Corner glints sit on see-through plates only (web `--g-glint: 0` on the opaque bars and the tab drop).
+    var glints: Bool {
+        switch self {
+        case .opaque, .solid: false
+        default: true
+        }
+    }
+}
 
 extension View {
-    /// The light card surface for a box of content: white glass 74% → 52% (mockup `--g-bg`), the inset depth of
-    /// `--g-depth`, the rim and a soft violet shadow outside the card only. No Liquid Glass and no material: the static
-    /// aurora behind a card needs no blur. Reduce Transparency: the solid plate.
-    func cardGlass<S: InsettableShape>(_ shape: S, raised: Bool = false) -> some View {
-        modifier(CardGlass(shape: shape, raised: raised))
+    /// The light card surface for a box of content: clear white glass (`level`, the text-heavy tint by default), the
+    /// corner glints and edge bevel of `--g-depth`, the 1.75pt rim and a soft violet shadow outside the card only.
+    /// `lifted` (hover on a pressable card, web `.tm-card:hover`) fades the plate to opaque white 97% → 94% over 220ms.
+    /// No Liquid Glass and no material: the static aurora behind a card needs no blur. Reduce Transparency: the solid
+    /// plate.
+    func cardGlass<S: InsettableShape>(_ shape: S, raised: Bool = false, level: GlassLevel = .text, lifted: Bool = false) -> some View {
+        modifier(CardGlass(shape: shape, raised: raised, level: level, lifted: lifted))
     }
 
-    /// The card surface for a box that floats over scrolling content (the composer): the same white glass, depth and
-    /// rim drawn on top of the system blur, so what passes beneath is blurred instead of showing through sharp.
+    /// The surface for a box that floats over scrolling content (the composer, web `.cmp__panel`): opaque white
+    /// (100% → 98%) so what passes beneath never shows through; the glass rim, bevel and shadow stay.
     func glassPanel<S: InsettableShape>(_ shape: S) -> some View {
         modifier(GlassPanel(shape: shape))
     }
 
-    /// The card surface in a capsule, for a pill of controls (the Mac destination tabs, the inbox segment pill): the
-    /// card's white glass, depth and rim (mockup `.tabs.g`). No card shadow under a pill. Put `TabDrop` behind the
-    /// selected item. Reduce Transparency: the solid plate. `tint` is kept for callers; the light glass ignores it.
+    /// The surface in a capsule, for a pill of controls (the Mac destination tabs, the inbox segment pill, web `.gtabs`
+    /// / `.ibx-seg`): opaque white 97% → 94% (they are the way around the app), the thin glass bevel and the rim. No card
+    /// shadow under a pill. Put `TabDrop` behind the selected item. Reduce Transparency: the solid plate. `tint` is kept
+    /// for callers; the light glass ignores it.
     func cardPill(tint: Double = 0.55) -> some View {
         modifier(CardPill(tint: tint))
     }
@@ -102,15 +142,16 @@ private struct CardPill: ViewModifier {
             content.background(CE.plateSolid, in: Capsule()).overlay { Capsule().strokeBorder(CE.lineStrong) }
         } else {
             content
-                .background { CardGlassFill(shape: Capsule(), tint: tint) }
+                .background { CardGlassFill(shape: Capsule(), level: .opaque, depth: .thin) }
                 .overlay { CardRim(shape: Capsule()) }
         }
     }
 }
 
-/// Mockup `.tabs span.on`: the selected tab of a `cardPill`. A white drop (white → white .86) with a violet glow under
-/// it (`0 6px 16px -6px violet .55`) and a violet .22 ring; the label on it is `CE.accent`. The glow is cut out of the
-/// drop, so it lights the pill around it. Draw it behind the label; with `matchedGeometryEffect` it slides.
+/// Web `.gtabs__drop`: the selected tab of a `cardPill`. A white drop (white → white .86) over a violet .07 tint, with a
+/// violet glow under it (`0 6px 16px -6px violet .55`) and a violet .22 ring; the label on it is `CE.accent`. The glow
+/// is cut out of the drop, so it lights the pill around it. Draw it behind the label; with `matchedGeometryEffect` it
+/// slides.
 struct TabDrop: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var body: some View {
@@ -120,6 +161,7 @@ struct TabDrop: View {
                 shape.fill(Color.white).overlay { shape.strokeBorder(CE.selectedRing) }
             } else {
                 shape.fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.86)], startPoint: .top, endPoint: .bottom))
+                    .background { shape.fill(CE.violet.opacity(0.07)) }
                     .overlay { shape.strokeBorder(CE.violet.opacity(0.22)) }
                     .background {
                         shape.inset(by: 6).fill(CE.violet.opacity(0.55)).offset(y: 6).blur(radius: 8)
@@ -137,12 +179,14 @@ private struct CardGlass<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let shape: S
     let raised: Bool
+    let level: GlassLevel
+    let lifted: Bool
     func body(content: Content) -> some View {
         if reduceTransparency {
             content.background(raised ? CE.plateRaisedSolid : CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
         } else {
             content
-                .background { CardGlassFill(shape: shape, raised: raised) }
+                .background { CardGlassFill(shape: shape, raised: raised, level: level, lifted: lifted) }
                 .overlay { CardRim(shape: shape) }
                 .background { CardShadow(shape: shape, raised: raised) }
         }
@@ -152,91 +196,178 @@ private struct CardGlass<S: InsettableShape>: ViewModifier {
 private struct GlassPanel<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let shape: S
-    /// Over the blur the white is a little denser, so text on the composer reads as on a card.
-    private static var tint: Double { 0.72 }
     func body(content: Content) -> some View {
         if reduceTransparency {
             content.background(CE.plateSolid, in: shape).overlay { shape.strokeBorder(CE.lineStrong) }
-        } else if #available(macOS 26.0, iOS 26.0, *) {
-            content
-                .background { CardGlassFill(shape: shape, tint: Self.tint) }
-                .glassEffect(.regular, in: shape)
-                .overlay { CardRim(shape: shape) }
-                .background { CardShadow(shape: shape) }
         } else {
             content
-                .background { CardGlassFill(shape: shape, tint: Self.tint) }
-                .background(.ultraThinMaterial, in: shape)
+                .background { CardGlassFill(shape: shape, level: .solid) }
                 .overlay { CardRim(shape: shape) }
                 .background { CardShadow(shape: shape) }
         }
     }
 }
 
-/// Inside of the card (mockup `--g-bg` + `--g-depth`): white 74% → 52% top-down, a crisp white top highlight, a white
-/// .55 inner ring and a faint violet glow rising from the bottom edge. `raised` adds a light violet wash.
+/// One CSS inset box-shadow (`inset x y blur spread color`) inside `shape`: the shape's inverse, moved by (x, y) and
+/// shrunk by `spread`, blurred (CSS blur radius = 2σ) and clipped to the shape. Blur 0 gives the crisp 1px edges.
+struct InsetShadow<S: InsettableShape>: View {
+    let shape: S
+    let color: Color
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    var blur: CGFloat = 0
+    var spread: CGFloat = 0
+    var body: some View {
+        let sigma = blur / 2
+        // A band from the hole's edge outwards, wide enough that its far edge never reaches the shape after the move
+        // and the blur.
+        let band = 3 * sigma + max(abs(x), abs(y)) + max(spread, 0) + 4
+        shape.inset(by: spread - band / 2)
+            .stroke(color, lineWidth: band)
+            .offset(x: x, y: y)
+            .blur(radius: sigma)
+            .clipShape(shape)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Inside of a glass surface (web `.glass` background + `--g-depth`). From the bottom: `raised` violet wash, the white
+/// fill (`level`, top → bottom at 62%), `lifted` opaque white (hover), the corner glints (white at the top left, ice →
+/// violet at the bottom right, fixed 180×120 / 170×110 ellipses like the web), then the depth: crisp 1px edges (white
+/// top/left, violet bottom, ice right), a 3px bevel at top and bottom, a white .34 ring, white light bleeding in from
+/// every edge (thickness) and a violet shade rising from the bottom.
 struct CardGlassFill<S: InsettableShape>: View {
+    enum Depth: Sendable { case regular, thick, thin }
     let shape: S
     var raised = false
-    /// Denser white for panels drawn over a blur or holding long text (≥ 0.66 → white 84% → 64%); nil = the card.
+    /// Kept for callers: ≥ 0.66 means a dense panel (`.strong`); nil = the `level` given.
     var tint: Double? = nil
+    var level: GlassLevel = .text
+    var depth: Depth = .regular
+    var lifted = false
+    private var effectiveLevel: GlassLevel {
+        if let tint, tint >= 0.66 { return .strong }
+        return level
+    }
     var body: some View {
-        let dense = (tint ?? 0) >= 0.66
+        let alphas = effectiveLevel.alphas
         ZStack {
-            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(dense ? 0.84 : 0.74), location: 0),
-                                              .init(color: .white.opacity(dense ? 0.64 : 0.52), location: 0.62)],
-                                      startPoint: .top, endPoint: .bottom))
             if raised { shape.fill(CE.violet.opacity(0.08)) }
-            // inset 0 0 0 1px white .55
-            shape.strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
-            // inset 0 1px 0 white 1: the top highlight, tapering away down the corners
-            shape.strokeBorder(Color.white, lineWidth: 1)
-                .mask(alignment: .top) {
-                    LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 11)
-                }
-            // inset 0 -10px 22px -16px violet .14: a faint violet light along the bottom
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                LinearGradient(colors: [CE.violet.opacity(0), CE.violet.opacity(0.06)], startPoint: .top, endPoint: .bottom).frame(height: 14)
-            }
-            .clipShape(shape)
+            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(alphas.top), location: 0),
+                                              .init(color: .white.opacity(alphas.bottom), location: 0.62)],
+                                      startPoint: .top, endPoint: .bottom))
+            // web `.tm-card:hover { --g-a1:.97; --g-a2:.94 }`, eased like the registered-property transition
+            shape.fill(LinearGradient(stops: [.init(color: .white.opacity(0.97), location: 0), .init(color: .white.opacity(0.94), location: 0.62)],
+                                      startPoint: .top, endPoint: .bottom))
+                .opacity(lifted ? 1 : 0)
+                .animation(.easeOut(duration: 0.22), value: lifted)
+            if effectiveLevel.glints { CornerGlints(shape: shape) }
+            depthLayers
         }
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder private var depthLayers: some View {
+        switch depth {
+        case .regular:
+            InsetShadow(shape: shape, color: .white, y: 1)
+            InsetShadow(shape: shape, color: .white.opacity(0.85), x: 1)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.28), y: -1)
+            InsetShadow(shape: shape, color: CE.ice.opacity(0.6), x: -1)
+            InsetShadow(shape: shape, color: .white, y: 3, blur: 5, spread: -3)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.22), y: -3, blur: 6, spread: -4)
+            shape.strokeBorder(Color.white.opacity(0.34), lineWidth: 1)
+            InsetShadow(shape: shape, color: .white.opacity(0.95), blur: 22, spread: -6)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.3), y: -16, blur: 28, spread: -18)
+        case .thick:
+            InsetShadow(shape: shape, color: .white, y: 1)
+            InsetShadow(shape: shape, color: .white.opacity(0.75), x: 1)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.22), y: -1)
+            InsetShadow(shape: shape, color: CE.ice.opacity(0.5), x: -1)
+            shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+            InsetShadow(shape: shape, color: .white.opacity(0.9), blur: 24, spread: -8)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.26), y: -18, blur: 30, spread: -20)
+        case .thin:
+            InsetShadow(shape: shape, color: .white, y: 1)
+            shape.strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
+            InsetShadow(shape: shape, color: CE.violet.opacity(0.12), y: -6, blur: 12, spread: -10)
+        }
+    }
+}
+
+/// The glints of a see-through plate, under its content (web `.glass` background layers, `--g-glint`): white .78 from
+/// the top left corner and ice .3 → violet .06 into the bottom right corner, fixed-size ellipses clipped to the plate.
+private struct CornerGlints<S: InsettableShape>: View {
+    let shape: S
+    var body: some View {
+        ZStack {
+            // radial-gradient(180px 120px at 0% 0%, white .78, white 0 70%)
+            Ellipse()
+                .fill(EllipticalGradient(stops: [.init(color: .white.opacity(0.78), location: 0), .init(color: .white.opacity(0), location: 0.7)]))
+                .frame(width: 360, height: 240)
+                .position(x: 0, y: 0)
+            // radial-gradient(170px 110px at 100% 100%, ice .3, violet .06 45%, ice 0 72%)
+            GeometryReader { geo in
+                Ellipse()
+                    .fill(EllipticalGradient(stops: [.init(color: CE.ice.opacity(0.3), location: 0),
+                                                     .init(color: CE.violet.opacity(0.06), location: 0.45),
+                                                     .init(color: CE.ice.opacity(0), location: 0.72)]))
+                    .frame(width: 340, height: 220)
+                    .position(x: geo.size.width, y: geo.size.height)
+            }
+        }
+        .clipShape(shape)
         .allowsHitTesting(false)
     }
 }
 
-/// Mockup `--rim`: a 1.2pt rim lit white from the top left (white 1 → .6 → 0), a violet → ice glow at the bottom
-/// right, over a violet .1 base ring.
+/// Web `.glass::before`, the refracting rim: 1.75pt (2pt on thick plates), white light pooling at the top left (white
+/// 1 → .9 → 0 from the corner, and white 1 → .65 → 0 along the top at 34%), violet .72 → ice .62 bending into the bottom
+/// right, a little ice at the bottom left, over a violet .2 base ring. `EllipticalGradient` radii are fractions of the
+/// size, so each end radius is the CSS radius × its last stop (e.g. 62% × 74% ≈ .47) and the stops are rescaled to it.
 struct CardRim<S: InsettableShape>: View {
     let shape: S
-    var width: CGFloat = 1.2
+    var width: CGFloat = 1.75
     var body: some View {
         ZStack {
-            shape.strokeBorder(CE.violet.opacity(0.1), lineWidth: width)
+            shape.strokeBorder(CE.violet.opacity(0.2), lineWidth: width)
+            // radial-gradient(40% 50% at 0% 100%, ice .45, white 0 72%)
             shape.strokeBorder(EllipticalGradient(stops: [
-                .init(color: CE.violet.opacity(0.38), location: 0),
-                .init(color: CE.ice.opacity(0.3), location: 0.4 / 0.7),
+                .init(color: CE.ice.opacity(0.45), location: 0),
                 .init(color: CE.ice.opacity(0), location: 1),
-            ], center: .bottomTrailing, startRadiusFraction: 0, endRadiusFraction: 0.58), lineWidth: width)
+            ], center: .bottomLeading, startRadiusFraction: 0, endRadiusFraction: 0.32), lineWidth: width)
+            // radial-gradient(62% 64% at 100% 100%, violet .72, ice .62 42%, white 0 74%)
+            shape.strokeBorder(EllipticalGradient(stops: [
+                .init(color: CE.violet.opacity(0.72), location: 0),
+                .init(color: CE.ice.opacity(0.62), location: 0.42 / 0.74),
+                .init(color: CE.ice.opacity(0), location: 1),
+            ], center: .bottomTrailing, startRadiusFraction: 0, endRadiusFraction: 0.47), lineWidth: width)
+            // radial-gradient(62% 58% at 34% 0%, white 1, white .65 34%, white 0 68%)
             shape.strokeBorder(EllipticalGradient(stops: [
                 .init(color: .white, location: 0),
-                .init(color: .white.opacity(0.6), location: 0.5),
+                .init(color: .white.opacity(0.65), location: 0.5),
                 .init(color: .white.opacity(0), location: 1),
-            ], center: UnitPoint(x: 0.34, y: 0), startRadiusFraction: 0, endRadiusFraction: 0.62), lineWidth: width)
+            ], center: UnitPoint(x: 0.34, y: 0), startRadiusFraction: 0, endRadiusFraction: 0.41), lineWidth: width)
+            // radial-gradient(52% 64% at 0% 0%, white 1, white .9 42%, white 0 78%)
+            shape.strokeBorder(EllipticalGradient(stops: [
+                .init(color: .white, location: 0),
+                .init(color: .white.opacity(0.9), location: 0.42 / 0.78),
+                .init(color: .white.opacity(0), location: 1),
+            ], center: .topLeading, startRadiusFraction: 0, endRadiusFraction: 0.45), lineWidth: width)
         }
         .allowsHitTesting(false)
     }
 }
 
-/// Mockup `--g-shadow`: `0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .30)`. Drawn from a
-/// caster inset by the (negative) spread and cut out of the card's own area, so it never tints the see-through inside.
+/// Web `--g-shadow`: `0 1px 2px rgb(40 24 110 / .06), 0 18px 44px -22px rgb(70 46 180 / .32)`. Drawn from a caster
+/// inset by the (negative) spread and cut out of the card's own area, so it never tints the see-through inside.
 struct CardShadow<S: InsettableShape>: View {
     let shape: S
     var raised = false
     var body: some View {
         ZStack {
             shape.fill(CE.shadowNear.opacity(0.06)).offset(y: 1).blur(radius: 1)
-            shape.inset(by: 22).fill(CE.shadowFar.opacity(raised ? 0.38 : 0.30)).offset(y: 18).blur(radius: 22)
+            shape.inset(by: 22).fill(CE.shadowFar.opacity(raised ? 0.38 : 0.32)).offset(y: 18).blur(radius: 22)
         }
         .overlay { shape.fill(Color.black).blendMode(.destinationOut) }
         .compositingGroup()

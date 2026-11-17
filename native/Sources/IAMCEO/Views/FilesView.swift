@@ -2675,8 +2675,9 @@ private extension View {
     }
 }
 
-/// Web .vw-btn: rounded button in a viewer bar (Mac 34 tall, 13.5/600, radius 11, white → white .8 with a soft violet
-/// ring and a small lift; violet .12 wash on hover); `on` draws a toggle that is on as the light violet selection.
+/// Web .vw-btn: rounded button in a viewer bar (Mac 34 tall, 13.5/600, radius 11, the opaque --btn2 white → #FBFAFF
+/// with a soft violet ring and a small lift; violet .12 wash on hover); `on` draws a toggle that is on as the opaque
+/// light violet selection (--btn-sel).
 private struct ViewerButtonStyle: ButtonStyle {
     var on = false
     func makeBody(configuration: Configuration) -> some View { ViewerBody(configuration: configuration, on: on) }
@@ -2703,11 +2704,11 @@ private struct ViewerButtonStyle: ButtonStyle {
         }
         @ViewBuilder private func surface(_ shape: RoundedRectangle) -> some View {
             if on {
-                shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                shape.fill(CE.selectedSolid)
             } else if !isEnabled {
                 shape.fill(Color.white.opacity(0.35))
             } else {
-                shape.fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                shape.fill(LinearGradient(colors: [Color.white, Color(hex: 0xFBFAFF)], startPoint: .top, endPoint: .bottom))
                     .overlay { shape.fill(CE.violet.opacity(washOpacity)) }
                     .shadow(color: CE.shadowNear.opacity(0.14), radius: 5, y: 4)
             }
@@ -2716,8 +2717,9 @@ private struct ViewerButtonStyle: ButtonStyle {
     }
 }
 
-/// Web .fl-chip: Mac 36 tall (web 44), 13.5/550, a white .55 capsule with an ink .14 ring that takes a violet .12
-/// wash on hover (ink-1); the chosen one is the light violet selection with accent text.
+/// Web .fl-chip: Mac 36 tall (web 44), 13.5/550, an opaque white capsule with an ink .14 ring that takes a violet .12
+/// wash on hover (ink-1); the chosen one is the opaque light violet selection (--btn-sel) with accent text. Opaque so the
+/// plate's light never shows through a chip.
 private struct FilterChipStyle: ButtonStyle {
     let on: Bool
     func makeBody(configuration: Configuration) -> some View { ChipBody(configuration: configuration, on: on) }
@@ -2741,18 +2743,18 @@ private struct FilterChipStyle: ButtonStyle {
         }
         @ViewBuilder private var surface: some View {
             if on {
-                Capsule().fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                Capsule().fill(CE.selectedSolid)
             } else {
                 let wash = configuration.isPressed ? 0.16 : hovering ? 0.12 : 0
-                Capsule().fill(Color.white.opacity(0.55))
+                Capsule().fill(Color.white)
                     .overlay { Capsule().fill(CE.violet.opacity(wash)) }
             }
         }
     }
 }
 
-/// The reader's link chips (결재 · 대화): Mac 30 tall white capsules that take a violet wash on hover; an open
-/// decision is the light violet selection.
+/// The reader's link chips (결재 · 대화): Mac 30 tall opaque white capsules that take a violet wash on hover; an open
+/// decision is the light violet selection on white.
 private struct LinkChipStyle: ButtonStyle {
     let highlighted: Bool
     func makeBody(configuration: Configuration) -> some View { LinkBody(configuration: configuration, highlighted: highlighted) }
@@ -2771,8 +2773,8 @@ private struct LinkChipStyle: ButtonStyle {
                 .animation(.linear(duration: 0.12), value: hovering)
         }
         private var fill: Color {
-            if highlighted { return CE.violet.opacity(configuration.isPressed ? 0.24 : hovering ? 0.2 : 0.14) }
-            return configuration.isPressed ? CE.violet.opacity(0.16) : hovering ? CE.violet.opacity(0.12) : Color.white.opacity(0.55)
+            if highlighted { return CE.violetOnWhite(configuration.isPressed ? 0.24 : hovering ? 0.2 : 0.14) }
+            return configuration.isPressed ? CE.violetOnWhite(0.16) : hovering ? CE.violetOnWhite(0.12) : Color.white
         }
     }
 }

@@ -1589,8 +1589,8 @@ private struct ChatJumpBody<Label: View>: View {
     let pressed: Bool
     let prominent: Bool
     @State private var hovering = false
-    /// Mockup .th-jump: soft violet (--soft) in its ring (--soft-ring); the open one the selected violet (--sel-bg) in a
-    /// focus-violet ring. Hover/press add a faint violet wash. 120ms linear.
+    /// Web .th-link: opaque soft violet (--btn-soft) in its ring (--soft-ring); the open one the opaque selected violet
+    /// (--btn-sel) in a focus-violet ring. Hover/press add a faint violet wash. 120ms linear.
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         let wash = pressed ? 0.08 : hovering ? 0.04 : 0
@@ -1599,10 +1599,11 @@ private struct ChatJumpBody<Label: View>: View {
             .contentShape(shape)
             .background {
                 ZStack {
+                    // Opaque (web --btn-sel / --btn-soft): the plate's light never shows through a jump chip.
                     if prominent {
-                        shape.fill(LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom))
+                        shape.fill(CE.selectedSolid)
                     } else {
-                        shape.fill(CE.soft)
+                        shape.fill(CE.softSolid)
                     }
                     shape.fill(CE.violet.opacity(wash))
                 }
@@ -1743,8 +1744,8 @@ private enum ChatPalette {
     static let bubbleLink = CE.onAccentSub
     /// `code` on the bubble: a deep violet chip rgb(28 12 96 / .35), as MarkdownText draws it on accent.
     static let bubbleCode = Color(red: 28 / 255, green: 12 / 255, blue: 96 / 255).opacity(0.35)
-    /// Mockup .th-card (--card-bg): white .86, a plate rather than glass (hundreds of rows scroll).
-    static let cardFill = Color.white.opacity(0.86)
+    /// Web .th-card (--card-bg): white .6, clear like the plates (2026-11-09 clearer glass; was .86).
+    static let cardOpacity = 0.6
     /// Lit top edge + faint ring on the bubble (inset 0 1px .5px white .4, inset 0 0 0 1px white .07).
     static let bubbleRim = LinearGradient(stops: [
         .init(color: .white.opacity(0.4), location: 0),
@@ -1787,12 +1788,15 @@ private enum ChatFont {
     #endif
 }
 
-/// Mockup .th-card: radius 18, white .86 with a 1pt ink .06 ring (--card-ring) and a white highlight along the top
-/// edge, over a soft violet-ink shadow (--card-shadow: 0 1px 2px .05, 0 10px 28px -18px .25). No glass or rim
-/// gradient: hundreds of these scroll, so the shadow sits on the plain fill shape only.
-/// Reduce Transparency: the solid plate.
+/// Web .th-card: radius 18, clear white .6 (--card-bg) with the glass edge of the plates (--card-ring: crisp white
+/// top/left and violet/ice bottom/right edges, a 3px bevel, a violet .12 ring and white light bleeding in from the edges),
+/// over a soft violet-ink shadow (--card-shadow: 0 1px 2px .05, 0 10px 28px -18px .25). No backdrop: the light behind is a
+/// soft radial glow, so the clear fill reads as glass without blur, and the rows sit in a lazy stack. A pointer over the
+/// card fades it to white .97 over 220ms (web `.th-card:hover`, pointer devices only). Reduce Transparency: the solid
+/// plate.
 private struct ChatCardSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var hovering = false
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: CERadius.card, style: .continuous)
         if reduceTransparency {
@@ -1800,20 +1804,26 @@ private struct ChatCardSurface: ViewModifier {
         } else {
             content
                 .background {
-                    shape.fill(ChatPalette.cardFill)
-                        .shadow(color: CE.shadowNear.opacity(0.05), radius: 1, y: 1)
-                        .shadow(color: CE.shadowFar.opacity(0.16), radius: 12, y: 8)
-                }
-                .overlay {
+                    // The edge sits under the text, like the web's inset box-shadows.
                     ZStack {
-                        shape.strokeBorder(CE.wash(0.06), lineWidth: 1)
-                        shape.strokeBorder(Color.white, lineWidth: 0.5)
-                            .mask(alignment: .top) {
-                                LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 8)
-                            }
+                        InsetShadow(shape: shape, color: .white, y: 1)
+                        InsetShadow(shape: shape, color: .white.opacity(0.85), x: 1)
+                        InsetShadow(shape: shape, color: CE.violet.opacity(0.26), y: -1)
+                        InsetShadow(shape: shape, color: CE.ice.opacity(0.55), x: -1)
+                        InsetShadow(shape: shape, color: .white, y: 3, blur: 5, spread: -3)
+                        InsetShadow(shape: shape, color: CE.violet.opacity(0.2), y: -3, blur: 6, spread: -4)
+                        shape.strokeBorder(CE.violet.opacity(0.12), lineWidth: 1)
+                        InsetShadow(shape: shape, color: .white.opacity(0.95), blur: 20, spread: -6)
+                    }
+                    .background {
+                        shape.fill(Color.white.opacity(hovering ? 0.97 : ChatPalette.cardOpacity))
+                            .animation(.easeOut(duration: 0.22), value: hovering)
+                            .shadow(color: CE.shadowNear.opacity(0.05), radius: 1, y: 1)
+                            .shadow(color: CE.shadowFar.opacity(0.16), radius: 12, y: 8)
                     }
                     .allowsHitTesting(false)
                 }
+                .onHover { hovering = $0 }
         }
     }
 }

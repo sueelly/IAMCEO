@@ -277,9 +277,9 @@ private struct TeamWorkList: View {
     }
 }
 
-/// Web .tm-chip: 13.5/600 ink-2, 36 tall (44 on a phone), padding 0 13, the light violet soft capsule (violet .07 with a
-/// violet .16 ring); selected = the selected gradient (violet .16 → .10) in a violet .3 ring with an accent label; hover
-/// darkens the label to ink.
+/// Web .tm-chip: 13.5/600 ink-2, 36 tall (44 on a phone), padding 0 13, the opaque soft violet capsule (--btn-soft:
+/// violet .07 on white, a violet .16 ring); selected = the opaque selected gradient (--btn-sel) in a violet .3 ring with
+/// an accent label; hover takes --btn-soft-hover and darkens the label to ink.
 private struct TeamFilterChip: View {
     let title: String
     let count: Int?
@@ -301,7 +301,7 @@ private struct TeamFilterChip: View {
             .foregroundStyle(selected ? CE.accent : hovering ? CE.ink : CE.ink2)
             .padding(.horizontal, isMac ? 13 : 14)
             .frame(minHeight: isMac ? 36 : 44)
-            .background(selected ? AnyShapeStyle(Self.selectedFill) : AnyShapeStyle(CE.soft), in: Capsule())
+            .background(selected ? AnyShapeStyle(CE.selectedSolid) : AnyShapeStyle(hovering ? CE.softHoverSolid : CE.softSolid), in: Capsule())
             .overlay { Capsule().strokeBorder(selected ? CE.selectedRing : CE.softRing) }
             .contentShape(Capsule())
         }
@@ -311,9 +311,6 @@ private struct TeamFilterChip: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
-    private static var selectedFill: LinearGradient {
-        LinearGradient(colors: [CE.selectedTop, CE.selectedBottom], startPoint: .top, endPoint: .bottom)
-    }
 }
 
 // MARK: - Member detail (Mac: glass drawer hosted by the shell · iPhone: pushed)
@@ -1134,9 +1131,9 @@ struct MemberDetailView: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(CE.ink2)
                 .frame(width: isMac ? 32 : 38, height: isMac ? 32 : 38)
-                // Same surface as the quiet buttons beside it (mockup .btn--g): white → white .8, violet .16 ring, the
+                // Same surface as the quiet buttons beside it (web --btn2): opaque #FFF → #FBFAFF, violet .16 ring, the
                 // same soft violet-ink shadow under it.
-                .background(LinearGradient(colors: [Color.white, Color.white.opacity(0.8)], startPoint: .top, endPoint: .bottom), in: Capsule())
+                .background(LinearGradient(colors: [Color.white, Color(hex: 0xFBFAFF)], startPoint: .top, endPoint: .bottom), in: Capsule())
                 .overlay { Capsule().strokeBorder(CE.softRing) }
                 .shadow(color: CE.shadowNear.opacity(0.16), radius: 6, y: 5)
                 .frame(minWidth: isMac ? nil : 44, minHeight: isMac ? nil : 44)
@@ -1981,7 +1978,7 @@ private struct DetailSectionTitle: View {
     }
 }
 
-/// Web .input.tm-select: a white .9 well (mockup --field) with an ink .12 ring (.2 on hover), the value and a chevron
+/// Web .input.tm-select: an opaque white well (web --field) with an ink .12 ring (.2 on hover), the value and a chevron
 /// at the trailing edge; the choices open as a menu. `content` is an inline Picker, so the chosen value keeps its checkmark.
 private struct TeamSelect<Content: View>: View {
     let value: String
@@ -2008,7 +2005,7 @@ private struct TeamSelect<Content: View>: View {
             }
             .padding(.horizontal, 12)
             .frame(minWidth: 170, minHeight: isMac ? 36 : 44, alignment: .leading)
-            .background(Color.white.opacity(0.9), in: shape)
+            .background(Color.white, in: shape)
             .overlay { shape.strokeBorder(CE.wash(isEnabled && hovering ? 0.2 : 0.12)) }
             .contentShape(shape)
         }
@@ -2038,11 +2035,11 @@ private struct DetailPressStyle: ButtonStyle {
 }
 
 private extension View {
-    /// Text field on a flat plate: a white .9 well with an ink .12 ring (mockup --field / --field-ring).
+    /// Text field on a flat plate: an opaque white well with an ink .12 ring (web --field / --field-ring).
     func detailField() -> some View {
         self.textFieldStyle(.plain)
             .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: CERadius.control, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: CERadius.control, style: .continuous).strokeBorder(CE.wash(0.12)) }
     }
 }
