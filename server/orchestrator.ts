@@ -196,9 +196,13 @@ function harnessChecks(input: PostInput): ReportCheckInput[] {
 function cleanContract(input: ContractInput): ContractInput {
   const one = (v: string) => cleanText(v).replace(/\s+/g, " ").trim();
   const list = (v: string[] | undefined) => (v ?? []).map(one).filter(Boolean);
+  const terms = (v: string[] | null | undefined) => {
+    if (v == null) return null;
+    const cleaned = list(v);
+    return cleaned.length === v.length ? cleaned : null;
+  };
   const contract = { kind: input.kind, goal: one(input.goal), acceptance: list(input.acceptance), scope: input.scope ? one(input.scope) || null : null,
-    inputs: input.inputs == null ? null : list(input.inputs), outputs: input.outputs == null ? null : list(input.outputs),
-    constraints: input.constraints == null ? null : list(input.constraints), exclusions: input.exclusions == null ? null : list(input.exclusions),
+    inputs: terms(input.inputs), outputs: terms(input.outputs), constraints: terms(input.constraints), exclusions: terms(input.exclusions),
     forbidden: list(input.forbidden), evidence: list(input.evidence), ...(input.checks ? { checks: input.checks } : {}) };
   if (!contract.goal || !contract.acceptance.length) throw new ApiError(400, "계약에는 goal(원하는 결과)과 acceptance(합격 기준) 1개 이상이 필요합니다");
   return contract;
