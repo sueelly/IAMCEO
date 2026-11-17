@@ -656,7 +656,8 @@ describe("팀 화면", () => {
     await api("POST", `/api/projects/${p.id}/messages`, { text: "오래 걸리는 일 @fake:delay=20000" });
     const page = await open(desktop, `#/p/${p.id}/team`);
     const lead = (await state(p.id)).members.find((m) => m.kind !== "worker")!;
-    await page.locator(".tm-card__link", { hasText: lead.name }).click();
+    await page.locator(".to-person", { hasText: lead.name }).click();
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     await page.getByRole("button", { name: "중단" }).click();
     await until("멈춤", async () => (await state(p.id)).members.find((m) => m.id === lead.id)!.status !== "working", 8000);
     await page.close();
@@ -669,6 +670,7 @@ describe("팀 화면", () => {
     const page = await open(desktop, `#/p/${p.id}/team/${w.member.id}`);
     await page.locator(".dialog .status[data-status='working']").first().waitFor();
     // 더블클릭으로는 안 빠진다. 문구를 읽을 틈을 둔 둘째 누름만 뺀다.
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     await page.getByRole("button", { name: "명부에서 빼기" }).dblclick();
     await page.waitForTimeout(150);
     expect((await state(p.id)).members.length).toBe(1);
@@ -682,7 +684,7 @@ describe("팀 화면", () => {
     const p = await newProject();
     const w = await joinWorker(p.id, "색 시험");
     const page = await open(desktop, `#/p/${p.id}/team`);
-    await page.locator(".tm-card__link", { hasText: "색 시험" }).waitFor();
+    await page.locator(".to-person", { hasText: "색 시험" }).waitFor();
     const colors = await page.evaluate(() => {
       const out: Record<string, string[]> = {};
       for (const status of ["working", "waiting", "idle", "blocked", "asleep", "error"]) {
@@ -775,6 +777,7 @@ describe("core 실행 환경·설정 화면", () => {
     await api("POST", `/api/projects/${p.id}/conductor/start`);
     const page = await open(desktop, `#/p/${p.id}/team`);
     expect(await page.getByRole("button", { name: "기존 세션 편입" }).count()).toBe(0);
+    await page.getByLabel("팀 메뉴", { exact: true }).click();
     await page.getByRole("button", { name: "직원 추가" }).click();
     const form = page.locator("form.form");
     await form.getByLabel("이름", { exact: true }).fill("새 조사 직원");
@@ -795,6 +798,7 @@ describe("core 실행 환경·설정 화면", () => {
     await page.route("**/api/runtime", (route) => route.fulfill({ json: { backend: "core", core: { installed: false, available: false, version: null, detail: "격리 실행기 연결 실패" }, providers: { claude: { installed: true }, codex: { installed: false } } } }));
     await page.route("**/api/bootstrap", async (route) => { const response = await route.fetch(); const body = await response.json(); await route.fulfill({ response, json: { ...body, runtime: { backend: "core", core: { installed: false, available: false, version: null, detail: "격리 실행기 연결 실패" }, providers: { claude: { installed: true }, codex: { installed: false } } } } }); });
     await page.goto(`${base}/#/p/${p.id}/team`);
+    await page.getByLabel("팀 메뉴", { exact: true }).click();
     await page.getByRole("button", { name: "직원 추가" }).click();
     const form = page.locator("form.form");
     await form.getByLabel("이름", { exact: true }).fill("시작할 수 없음");
@@ -810,6 +814,7 @@ describe("core 실행 환경·설정 화면", () => {
     await api("POST", `/api/projects/${p.id}/conductor/start`);
     const lead = (await api<ProjectState>("GET", `/api/projects/${p.id}/state`)).members[0]!;
     const page = await open(desktop, `#/p/${p.id}/team/${lead.id}`);
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     const model = page.getByLabel("모델", { exact: true });
     await model.waitFor();
     expect(await model.inputValue()).toBe("");
@@ -1118,7 +1123,7 @@ describe("2차 검수 회귀", () => {
     await box.fill("길게 쓰던 지시");
     await again.keyboard.press("Escape");
     await again.getByRole("dialog").waitFor({ state: "detached" }).catch(() => {});
-    await again.locator(".tm-card__link", { hasText: "철수" }).click();
+    await again.locator(".to-person", { hasText: "철수" }).click();
     expect(await again.getByRole("textbox", { name: /철수에게 직접 지시/ }).inputValue()).toBe("길게 쓰던 지시");
     await again.close();
   }, 30_000);
@@ -1291,7 +1296,9 @@ describe("2차 검수 회귀", () => {
     db.run("UPDATE members SET status = 'idle' WHERE id = ?", [w.member.id]);
     db.close();
     const page = await open(desktop, `#/p/${p.id}/team`);
-    const card = page.locator(".tm-card", { hasText: "결제 버그 고치는 중" });
+    await page.locator(`[data-member-id="${w.member.id}"] .to-person`).click();
+    const card = page.locator(".tm-detail .tm-facts");
+    expect(await card.textContent()).toContain("결제 버그 고치는 중");
     await card.waitFor();
     expect(await card.locator("dt").first().innerText()).toBe("마지막 보고");
     await page.close();

@@ -24,6 +24,8 @@ async function runFile(file: string): Promise<void> {
 }
 
 describe("화면 시험", () => {
+  test("팀 요약·직원 상세·전체 지도", () => runFile("team-overview.browser.ts"), 120_000);
+  test("팀 배정·충돌·연결 초점", () => runFile("workflow-overview.browser.ts"), 120_000);
   test("읽는 목적에 맞는 결재·상황·보고·자료(PC+휴대폰)", () => runFile("output-purpose.browser.ts"), 120_000);
   test("자동 결재의 업무·요청·보고 맥락(PC+휴대폰)", () => runFile("report-context.browser.ts"), 120_000);
   test("프로젝트와 전체 동시 실행 상한(PC+좁은 화면)", () => runFile("project-capacity.browser.ts"), 120_000);

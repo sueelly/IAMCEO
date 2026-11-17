@@ -52,8 +52,12 @@ test("지금 상황의 마지막 조건까지 펼쳐 보이고 팀에서는 현�
     expect(await page.getByRole("button", { name: "더 보기", exact: true }).count()).toBe(0);
     await shot("purpose-home");
     await page.goto(`${base}/#/p/${f.project.id}/team`);
-    await page.locator(".tm-now__text").waitFor();
-    expect(await page.locator(".tm-now__text").innerText()).toBe(now);
+    await page.getByLabel("팀 메뉴", { exact: true }).click();
+    await page.getByRole("button", { name: "팀 상황", exact: true }).click();
+    expect(await page.getByRole("dialog").locator(".md").innerText()).toBe(now);
+    await page.keyboard.press("Escape");
+    await page.locator(`[data-member-id="${f.worker.id}"] .to-person`).click();
+    await page.locator(".tm-detail .tm-facts").waitFor();
     expect(await page.locator(".tm-facts").allInnerTexts()).toContainEqual(expect.stringContaining("세션 기록이 제공되면 철수가 종료 시점과 재개 요청을 대조합니다."));
     await shot("purpose-team");
   });

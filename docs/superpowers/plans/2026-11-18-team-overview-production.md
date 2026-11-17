@@ -42,7 +42,7 @@
 **Interfaces:** TeamOverview는 ProjectState와 신선도 판정한 WorkflowNode[], 관계, onSelect/onMember/onAssign/onFocus 콜백을 받는다. WorkFlow는 freshness 및 assignment 영수증의 소유자다. MemberDetail은 기존 member route를 유지하고 summary/tasks/activity/runtime 탭과 선택 node ID를 받는다. WorkflowDetail은 기존 원문 증거 조회를 재사용한다.
 
 - [ ] 실제 격리 서버에서 11명·다수 업무를 준비해 고정 높이 행, 같은 직원 팝업, 모든 목록 수, 상태 탭, 지도 합계/연결/초점/검색을 검증하는 실패 검사를 작성한다. 승인·전달·시작·진행판 진입과 프로젝트 변경을 포함한다.
-- [ ] `bun test tests/team-overview.browser.ts`로 요약 행 미구현 실패를 확인한다.
+- [ ] `bun test ./tests/team-overview.browser.ts`로 요약 행 미구현 실패를 확인한다.
 - [ ] 요약판과 지도, 공통 업무 상세, 직원 상세 탭, 상단 팀 메뉴를 구현한다. 하단 중복 렌더만 제거하고 실제 데이터·제어 API는 유지한다.
 - [ ] 기존 브라우저 검사를 새 진입 동작으로 갱신한다. 상태·보호 검증의 강도를 낮추지 않는다. 드래그 배정과 충돌·응답 유실을 실제 격리 서버로 확인한다.
 - [ ] `bun run typecheck`, 새 browser tests와 기존 workflow/queue/delivery/approval/stop browser tests를 통과시킨다.

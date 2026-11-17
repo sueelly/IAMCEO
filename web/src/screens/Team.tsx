@@ -1,15 +1,16 @@
 import { deliveryWaitText, memberIssueLabel, providerIssueKind } from "@shared/execution-issues";
-// 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
+// 팀 요약·전체 지도. 직원 상세는 기존 주소의 <sub>(직원 id)로 열린다.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type Task, type WorkItem, type WorkSec } from "@shared/types";
+import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type ProjectState, type Task, type WorkItem, type WorkSec } from "@shared/types";
 import type { WorkflowNode } from "@shared/workflow";
 import { ProviderSelect, RuntimeDetails, providerName, runtimeBlock, useRuntime } from "../components/RuntimeStatus";
 import { PROVIDERS } from "../lib/runtime";
 import ApprovalPanel from "../components/ApprovalPanel";
-import WorkFlow from "../components/WorkFlow";
+import WorkFlow, {useWorkflowNodes} from "../components/WorkFlow";
+import TeamTaskList, {teamTaskScope, type TeamTaskTab} from "../components/TeamTaskList";
 import { enterSends, isComposing } from "../components/Composer";
 import ConnectGate, { useGate } from "../components/ConnectGate";
-import { Badge, MQ_DESKTOP, Modal, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
+import { Badge, MQ_DESKTOP, Modal, Drawer, Sheet, StatusDot, Time, copyText, formatTime, useConfirmPress, useMediaQuery, Markdown } from "../components/ui";
 import { Glass, GlassButton, cx } from "../glass";
 import { ApiError, api, errorText } from "../lib/api";
 import { applyLocal, findMember, getState, loadActivity, navigate, newId, refresh, routeHash, useBootstrap, useProject, useRoute, useStore } from "../lib/store";
@@ -25,9 +26,6 @@ const SCREEN_POLL_MS = 2000;
 const CLOCK_TICK_MS = 30_000;
 const ACTIVITY_SHOWN = 200;
 const LONG_ACTIVITY = 180;
-
-/** 눈이 먼저 가야 할 순서: 대표가 풀어 줘야 하는 상태가 위로 */
-const STATUS_RANK: Record<MemberStatus, number> = { blocked: 0, waiting: 1, error: 2, working: 3, idle: 4, offline: 5, asleep: 6 };
 
 const SECS: readonly WorkSec[] = ["doing", "next", "hold", "done"];
 
@@ -97,10 +95,10 @@ function StartPanel({ project, hasMembers }: { project: Project; hasMembers: boo
   );
 }
 
-function CreateMember({ project }: { project: Project }) {
+function CreateMember({ project, onDismiss }: { project: Project; onDismiss?: () => void }) {
   const members = useProject()?.members ?? [];
   const inheritedCli = members.find(member => member.kind === "conductor" || member.kind === "root")?.cli ?? project.chiefCli ?? "claude";
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!onDismiss);
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [cli, setCli] = useState<CliProvider>(inheritedCli);
@@ -117,14 +115,14 @@ function CreateMember({ project }: { project: Project }) {
     void run("create", async () => {
       applyLocal({ type: "member", member: await api.createMember(project.id, { name: name.trim(), role: role.trim() || undefined, cli, modelOverride: model.trim() || null }) });
       await refresh();
-      setOpen(false);
+      setOpen(false); onDismiss?.();
       setName(""); setRole(""); setModel("");
     });
   };
   return (
     <div className="tm-adopt-entry">
-      <GlassButton variant="glass" size="m" onClick={() => { setError(null); setCli(inheritedCli); setOpen(true); }}>직원 추가</GlassButton>
-      <Overlay open={open} onClose={() => { if (!busy) setOpen(false); }} title="직원 추가">
+      {!onDismiss ? <GlassButton variant="glass" size="m" onClick={() => { setError(null); setCli(inheritedCli); setOpen(true); }}>직원 추가</GlassButton> : null}
+      <Overlay open={open} onClose={() => { if (!busy) { setOpen(false); onDismiss?.(); } }} title="직원 추가">
         <form className="form" onSubmit={submit}>
           <label className="field"><span className="field__label">이름</span><input className="input" value={name} disabled={!!busy} onChange={(e) => setName(e.target.value)} placeholder="개발 담당" data-autofocus="" /></label>
           <label className="field"><span className="field__label">역할 · 선택</span><input className="input" value={role} disabled={!!busy} onChange={(e) => setRole(e.target.value)} placeholder="결제 화면 구현" /></label>
@@ -155,11 +153,6 @@ function ContextMeter({ pct, compactAt }: { pct: number; compactAt: number }) {
   );
 }
 
-function memberHref(m: Member) {
-  return routeHash({ projectId: m.projectId, tab: "team", sub: m.id });
-}
-
-/** 개발 기억: 이 프로젝트가 쓰는지와 서버 연결 상태를 따로 보인다. 켜고 끄는 것은 세션을 끊지 않는다(쉬는 틈에 같은 대화로 이어 열 때 들어간다). */
 function MemoryRow({ project }: { project: Project }) {
   const service = useBootstrap()?.runtime?.memory ?? null;
   const [busy, setBusy] = useState(false);
@@ -246,93 +239,11 @@ function Subagents({ n }: { n: number }) {
   return n > 0 ? <span className="tm-sub t-tabular">서브에이전트 {n}개</span> : null;
 }
 
-function MemberCard({ m, compactAt, openAsks, extra, lead }: { m: Member; compactAt: number; openAsks: number; extra?: ReactNode; lead?: boolean }) {
-  return (
-    <Glass as="article" level="regular" tint className={cx("tm-card", lead && "tm-card--lead")} data-status={m.status}>
-      <header className="tm-card__head">
-        <h3 className="tm-card__name">
-          <a className="tm-card__link" href={memberHref(m)}>
-            {m.name}
-          </a>
-          <Badge>{providerName(m.cli ?? "claude")}</Badge>
-          {lead && m.kind === "conductor" && m.name !== "총괄" ? <span className="tm-card__tag">총괄</span> : null}
-        </h3>
-        <span className="tm-card__status">
-          <Subagents n={m.subagents} />
-          <StaffStatus m={m} label />
-        </span>
-      </header>
-      <p className="tm-card__role">
-        {m.role && m.role !== m.name ? <span>{m.role}</span> : null}
-        <Time iso={m.updatedAt} relative />
-      </p>
-      <MemberFacts m={m} compactAt={compactAt} openAsks={openAsks} extra={extra} />
-      {m.lastError ? <p className="tm-error tm-card__err">{m.lastError}</p> : null}
-      <NoTools m={m} />
-    </Glass>
-  );
-}
-
-/** 이전 실행기의 편입 세션을 새 core 세션인 것처럼 조작하지 않는다. */
 function NoTools({ m }: { m: Member }) {
   if (m.origin !== "adopted" && (!m.backend || m.backend === "core")) return null;
   return <p className="tm-notools tm-notools__text" role="status">이전 실행기의 세션입니다. 기존 터미널에서 확인하세요. herdr-core에서는 기존 세션 편입과 도구를 붙여 다시 열기를 지원하지 않습니다.</p>;
 }
 
-function AsleepGroup({ members, runnerEnabled }: { members: Member[]; runnerEnabled: boolean }) {
-  return (
-    <Glass as="details" level="regular" tint className="tm-fold">
-      <summary className="tm-fold__sum">
-        잠든 직원 <span className="t-tabular ink-2">{members.length}</span>
-        <span className="tm-fold__hint">세션은 그대로 있습니다</span>
-      </summary>
-      <ul className="tm-asleep">
-        {members.map((m) => (
-          <AsleepRow key={m.id} m={m} runnerEnabled={runnerEnabled} />
-        ))}
-      </ul>
-    </Glass>
-  );
-}
-
-function AsleepRow({ m, runnerEnabled }: { m: Member; runnerEnabled: boolean }) {
-  const { busy, error, run } = useAction();
-  const manual = m.origin === "manual";
-  return (
-    <li className="tm-asleep__row">
-      <a className="tm-asleep__main" href={memberHref(m)}>
-        <span className="tm-asleep__name">
-          <StaffStatus m={m} />
-          {m.name}
-          <Badge>{providerName(m.cli ?? "claude")}</Badge>
-          {m.role ? <span className="tm-asleep__role">{m.role}</span> : null}
-        </span>
-        {m.now ? <span className="tm-asleep__last">마지막 보고: {m.now}</span> : null}
-      </a>
-      {manual || !runnerEnabled ? null : (
-        <GlassButton
-          variant="glass"
-          size="m"
-          className="tm-asleep__btn"
-          disabled={busy !== null || (!!m.backend && m.backend !== "core")}
-          onClick={() => run("resume", async () => applyLocal({ type: "member", member: await api.resume(m.id) }))}
-        >
-          {busy ? "여는 중" : "다시 열기"}
-        </GlassButton>
-      )}
-      {m.backend && m.backend !== "core" ? <p className="tm-note">이전 실행기 세션 · 기존 터미널에서 확인하세요</p> : null}
-      {error ? (
-        <p className="tm-error tm-asleep__err" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </li>
-  );
-}
-
-// ---- 일 목록 ----
-
-/** Workflow counts distinguish actionable inputs from quiet notices. Unclassified legacy rows remain factual. */
 function queueText(m: Member, nodes?: readonly WorkflowNode[]): string {
   if (nodes) {
     const counts = nodes.filter((node) => node.memberId === m.id).reduce((sum, node) => ({ queued: sum.queued + node.counts.queued, held: sum.held + node.counts.held, notices: sum.notices + node.counts.notices }), { queued: 0, held: 0, notices: 0 });
@@ -678,7 +589,7 @@ const NOTICE_KIND: Record<DeliveryNoticeItem["kind"], string> = { user_message: 
 
 /** 이 직원에게 아직 닿지 않은 전달과 '다시 확인'. 앱의 전달 알림 패널과 같은 서버 API·검사를 쓴다.
  * 웹은 '다시 확인'만 내놓는다(중복 위험 재전송·중지는 앱/서버 정책 그대로 두고 여기서는 열지 않는다). */
-function DeliveryNotices({ m }: { m: Member }) {
+function DeliveryNotices({ m, onCount }: { m: Member; onCount?: (count: number) => void }) {
   const [page, setPage] = useState<DeliveryNoticePage | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   // 응답을 못 받은 요청은 같은 operationId 로 다시 보낸다(서버 멱등). 결과를 받으면 지운다.
@@ -725,6 +636,7 @@ function DeliveryNotices({ m }: { m: Member }) {
   };
 
   const items = page?.items ?? [];
+  useEffect(() => onCount?.(items.length), [items.length, onCount]);
   if (!items.length && !loadError) return null;
   return (
     <section className="tm-delivery" aria-label="전달 알림">
@@ -758,7 +670,8 @@ function DeliveryNotices({ m }: { m: Member }) {
   );
 }
 
-function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; project: Project; compactAt: number; openAsks: number }) {
+function MemberDetailBody({ m, project, compactAt, openAsks, section, onSection }: { m: Member; project: Project; compactAt: number; openAsks: number; section: MemberSection; onSection: (section: MemberSection) => void }) {
+  const [deliveryCount, setDeliveryCount] = useState(0);
   const hasScreen = m.backend === "core" && !!m.paneId && m.status !== "asleep" && m.status !== "offline";
   const [pane, setPane] = useState<"activity" | "screen" | null>(null);
   const shownPane = hasScreen ? (pane ?? (m.status === "blocked" ? "screen" : "activity")) : "activity";
@@ -792,9 +705,15 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
       {/* 승인 창을 읽을 수 있으면 여기서 승인·거절한다. 못 읽으면(폴더 신뢰 창 등) 화면을 보고 터미널에서 푼다. */}
       {m.status === "blocked" ? <ApprovalPanel member={m} boxed fallback={<p className="tm-hint">승인 창 앞에서 멈췄습니다. 화면을 보고 터미널에서 승인하거나 거절하세요.</p>} /> : null}
       {m.status === "blocked" && m.backend === "core" && m.paneId ? <CopyCommand m={m} /> : null}
+      {deliveryCount > 0 && section !== "runtime" ? <button type="button" className="tm-detail-alert" onClick={() => onSection("runtime")}>전달 알림 {deliveryCount}건 →</button> : null}
+      {openAsks > 0 && section !== "summary" ? <a className="tm-detail-alert" href={routeHash({projectId: m.projectId, tab: "inbox"})}>결재 대기 {openAsks}건 →</a> : null}
+      <div hidden={section !== "summary"}>
       <MemberFacts m={m} compactAt={compactAt} openAsks={openAsks} />
       {m.lastError ? <p className="tm-error">{m.lastError}</p> : null}
       <NoTools m={m} />
+      {m.kind !== "worker" && project.now ? <section className="tm-detail-report"><h3>팀 상황</h3><Markdown text={project.now}/></section> : null}
+      </div>
+      <div hidden={section !== "runtime"}>
 
       {manual ? (
         <>
@@ -910,12 +829,13 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
         </p>
       ) : null}
 
-      <DeliveryNotices m={m} />
+      <DeliveryNotices m={m} onCount={setDeliveryCount} />
 
       {manual ? null : <MemberConfig m={m} />}
       {(m.sessionId || (m.backend === "core" && m.paneId)) && m.status !== "blocked" ? <CopyCommand m={m} /> : null}
 
-      <div className="tm-panes">
+      </div>
+      <div className="tm-panes" hidden={section !== "activity"}>
         {hasScreen ? (
           <div className="tm-chips">
             <button type="button" className="tm-chip" aria-pressed={shownPane === "activity"} onClick={() => setPane("activity")}>
@@ -977,27 +897,175 @@ function DirectInput({ m }: { m: Member }) {
   );
 }
 
-function MemberDetail({ memberId, compactAt }: { memberId: string | null; compactAt: number }) {
-  const desktop = useMediaQuery(MQ_DESKTOP);
-  const project = useProject();
-  const member = findMember(project, memberId);
-  const Overlay = desktop ? Modal : Sheet;
-  const close = () => navigate({ sub: null });
-
-  // 주소로 들어왔는데 없거나, 보는 중에 명부에서 빠진 직원
+type MemberSection = "summary" | "tasks" | "activity" | "runtime";
+type MemberView = {
+  memberId: string;
+  section: MemberSection;
+  tab: TeamTaskTab;
+  expanded: string | null;
+};
+function MemberInspector({
+  m,
+  state,
+  compactAt,
+  initial,
+  onFocus,
+  onMember,
+  onClose,
+}: {
+  m: Member;
+  state: ProjectState;
+  compactAt: number;
+  initial?: MemberView;
+  onFocus: (id: string, view: MemberView) => void;
+  onMember: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [view, setView] = useState<MemberView>(
+    initial ?? {
+      memberId: m.id,
+      section: "summary",
+      tab: "all",
+      expanded: null,
+    },
+  );
   useEffect(() => {
-    if (memberId && project && !member) navigate({ sub: null }, { replace: true });
+    if (initial) setView(initial);
+  }, [initial]);
+  const nodes = useWorkflowNodes(state),
+    own = nodes
+      .filter((n) => n.memberId === m.id)
+      .sort((a, b) => a.order - b.order);
+  const online = useStore((s) => s.connection === "online");
+  const openAsks = state.decisions.filter(
+    (d) => d.status === "open" && d.memberId === m.id,
+  ).length;
+  const sections: [MemberSection, string][] = [
+    ["summary", "요약"],
+    ["tasks", "업무"],
+    ["activity", "활동"],
+    ["runtime", "실행·설정"],
+  ];
+  return (
+    <>
+      <nav className="tm-detail-tabs" aria-label="직원 상세 탭">
+        {sections.map(([section, label]) => (
+          <GlassButton
+            key={section}
+            size="s"
+            variant="ghost"
+            ariaPressed={view.section === section}
+            onClick={() => setView({ ...view, section })}
+          >
+            {label}
+            {section === "tasks" ? (
+              <span className="wf-count">{own.length}</span>
+            ) : null}
+          </GlassButton>
+        ))}
+      </nav>
+      {view.section === "summary" ? (
+        <div className="tm-detail-metrics">
+          {(
+            [
+              ["now", "지금"],
+              ["next", "다음·대기"],
+              ["blocked", "막힘"],
+              ["done", "완료"],
+            ] as const
+          ).map(([tab, label]) => (
+            <button
+              type="button"
+              key={tab}
+              onClick={() =>
+                setView({ ...view, section: "tasks", tab, expanded: null })
+              }
+            >
+              <span>{label}</span>
+              <b>{teamTaskScope(own, tab).length}</b>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <MemberDetailBody
+        m={m}
+        project={state.project}
+        compactAt={compactAt}
+        openAsks={openAsks}
+        section={view.section}
+        onSection={(section) => setView({ ...view, section })}
+      />
+      {view.section === "tasks" ? (
+        <TeamTaskList
+          state={{
+            ...state,
+            workflow: { nodes, edges: state.workflow?.edges ?? [] },
+          }}
+          nodes={own}
+          online={online}
+          tab={view.tab}
+          onTab={(tab) => setView({ ...view, tab, expanded: null })}
+          expanded={view.expanded}
+          onExpand={(expanded) => setView({ ...view, expanded })}
+          onFocus={(id) => onFocus(id, view)}
+          onMember={onMember}
+          onClose={onClose}
+        />
+      ) : null}
+    </>
+  );
+}
+function MemberDetail({
+  memberId,
+  compactAt,
+  view,
+  onFocus,
+  onMember,
+  onClose,
+}: {
+  memberId: string | null;
+  compactAt: number;
+  view: MemberView | null;
+  onFocus: (taskId: string, view: MemberView) => void;
+  onMember: (id: string) => void;
+  onClose: () => void;
+}) {
+  const desktop = useMediaQuery(MQ_DESKTOP),
+    project = useProject(),
+    member = findMember(project, memberId);
+  const Overlay = desktop ? Drawer : Sheet;
+  const close = onClose;
+  useEffect(() => {
+    if (memberId && project && !member)
+      navigate({ sub: null }, { replace: true });
   }, [memberId, project, member]);
-
-  const openAsks = member && project ? project.decisions.filter((d) => d.status === "open" && d.memberId === member.id).length : 0;
   return (
     <Overlay
       open={!!member}
       onClose={close}
-      title={member ? `${member.name}${member.kind === "conductor" ? " · 총괄" : ""}` : undefined}
-      footer={member && project ? <DirectInput key={member.id} m={member} /> : undefined}
+      title={
+        member
+          ? `${member.name}${member.kind === "conductor" ? " · 총괄" : ""}`
+          : undefined
+      }
+      footer={
+        member && project ? (
+          <DirectInput key={member.id} m={member} />
+        ) : undefined
+      }
     >
-      {member && project ? <MemberDetailBody key={member.id} m={member} project={project.project} compactAt={compactAt} openAsks={openAsks} /> : null}
+      {member && project ? (
+        <MemberInspector
+          key={member.id}
+          m={member}
+          state={project}
+          compactAt={compactAt}
+          initial={view?.memberId === member.id ? view : undefined}
+          onFocus={onFocus}
+          onMember={onMember}
+          onClose={close}
+        />
+      ) : null}
     </Overlay>
   );
 }
@@ -1015,68 +1083,174 @@ function useClockTick() {
 
 export default function Team() {
   const state = useProject();
-  const route = useRoute();
-  const bootstrap = useBootstrap();
-  const compactAt = bootstrap?.settings.compactAtPct ?? 70;
+  return state ? <TeamContent key={state.project.id} state={state} /> : null;
+}
+function TeamContent({ state }: { state: ProjectState }) {
+  const route = useRoute(),
+    bootstrap = useBootstrap(),
+    compactAt = bootstrap?.settings.compactAtPct ?? 70;
+  const [view, setView] = useState<MemberView | null>(null),
+    [focus, setFocus] = useState<{
+      taskId: string;
+      at: number;
+      onReturn?: () => void;
+    } | null>(null),
+    [menu, setMenu] = useState<
+      "report" | "memory" | "records" | "create" | null
+    >(null);
+  const Overlay = useMediaQuery(MQ_DESKTOP) ? Drawer : Sheet;
   useClockTick();
-  if (!state) return null;
-  const { project, members, work, decisions } = state;
-
-  const openAsks = (id: string) => decisions.filter((d) => d.status === "open" && d.memberId === id).length;
-  const lead = members.find((m) => m.kind !== "worker") ?? null;
-  const workers = members.filter((m) => m.kind === "worker");
-  const asleep = workers.filter((m) => m.status === "asleep");
-  const awake = workers.filter((m) => m.status !== "asleep").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
-  const working = workers.filter((m) => m.status === "working").length;
-  const waiting = workers.filter((m) => m.status === "waiting").length;
-
+  const { project, members, work } = state;
+  const memberOrigin = useRef<HTMLElement | null>(null);
+  const closeMember = () => {
+    navigate({ sub: null });
+    requestAnimationFrame(() => {
+      const origin = memberOrigin.current;
+      if (origin?.isConnected) origin.focus({ preventScroll: true });
+      else if (view)
+        document
+          .querySelector<HTMLElement>(
+            `[data-member-id="${CSS.escape(view.memberId)}"] .to-person`,
+          )
+          ?.focus({ preventScroll: true });
+    });
+  };
+  const openMember = (
+    memberId: string,
+    tab?: TeamTaskTab,
+    expanded: string | null = null,
+  ) => {
+    memberOrigin.current = document.activeElement as HTMLElement;
+    setView({
+      memberId,
+      section: tab ? "tasks" : "summary",
+      tab: tab ?? "all",
+      expanded,
+    });
+    navigate({ sub: memberId });
+  };
+  const openFocus = (taskId: string, snapshot: MemberView) => {
+    navigate({ sub: null });
+    setFocus({
+      taskId,
+      at: Date.now(),
+      onReturn: () => {
+        setView(snapshot);
+        navigate({ sub: snapshot.memberId });
+      },
+    });
+  };
+  const actionMenu = (
+    <details className="to-menu">
+      <summary aria-label="팀 메뉴">⋯</summary>
+      <div>
+        {(
+          [
+            ["report", "팀 상황"],
+            ["memory", "개발 기억"],
+            ["records", "진행판 기록"],
+            ...(!project.isHq ? [["create", "직원 추가"]] : []),
+          ] as ["report" | "memory" | "records" | "create", string][]
+        ).map(([key, label]) => (
+          <button
+            type="button"
+            key={key}
+            onClick={(e) => {
+              e.currentTarget.closest("details")?.removeAttribute("open");
+              setMenu(key);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
   return (
     <div className="tm">
-      <WorkFlow state={state} />
-      {!project.runnerEnabled || members.length === 0 ? <StartPanel project={project} hasMembers={members.length > 0} /> : null}
-
-      {project.now ? (
-        <Glass as="section" level="regular" tint className="tm-now" aria-label="지금 상황">
-          <p className="tm-label">
-            지금 상황
-            <Time iso={project.nowAt} relative className="tm-now__at" />
-          </p>
-          <Markdown text={project.now} className="tm-now__text" />
-        </Glass>
+      {!project.runnerEnabled || !members.length ? (
+        <StartPanel project={project} hasMembers={members.length > 0} />
       ) : null}
-
-      {lead ? (
-        <MemberCard
-          lead
-          m={lead}
-          compactAt={compactAt}
-          openAsks={openAsks(lead.id)}
-          extra={
-            <>
-              <Row label="직원">
-                <span className="t-tabular">
-                  {[`${workers.length}명`, working ? `일하는 중 ${working}` : "", waiting ? `내 답 기다림 ${waiting}` : "", `잠듦 ${asleep.length}`].filter(Boolean).join(" · ")}
-                </span>
-              </Row>
-              <MemoryRow project={project} />
-            </>
+      <WorkFlow
+        state={state}
+        overview
+        onMember={openMember}
+        onNodeSelect={(node) => {
+          if (node.memberId && members.some((m) => m.id === node.memberId)) {
+            openMember(node.memberId, "all", node.id);
+            return true;
           }
-        />
+          return false;
+        }}
+        focusRequest={focus}
+        headerActions={actionMenu}
+        onRecords={() => setMenu("records")}
+      />
+      <MemberDetail
+        memberId={route.sub}
+        compactAt={compactAt}
+        view={view}
+        onClose={closeMember}
+        onFocus={openFocus}
+        onMember={(id) => openMember(id)}
+      />
+      <Overlay
+        open={menu !== null && menu !== "create"}
+        title={
+          menu === "report"
+            ? "팀 상황"
+            : menu === "memory"
+              ? "개발 기억"
+              : "진행판 기록"
+        }
+        onClose={() => setMenu(null)}
+      >
+        {menu === "report" ? (
+          project.now ? (
+            <>
+              <Time iso={project.nowAt} />
+              <Markdown text={project.now} />
+            </>
+          ) : (
+            <p className="wf-empty">등록된 팀 상황이 없습니다.</p>
+          )
+        ) : null}
+        {menu === "memory" ? (
+          <dl className="tm-facts">
+            <MemoryRow project={project} />
+          </dl>
+        ) : null}
+        {menu === "records" ? (
+          <>
+            <WorkList work={work} tasks={state.tasks ?? []} />
+            <section className="to-records">
+              <h3>업무 흐름 밖의 기록</h3>
+              {(state.tasks ?? [])
+                .filter(
+                  (t) => !state.workflow?.nodes.some((n) => n.taskId === t.id),
+                )
+                .map((t) => (
+                  <article key={t.id}>
+                    <a
+                      href={routeHash({ projectId: project.id, tab: "thread" })}
+                      onClick={() => {
+                        chooseTask(project.id, { id: t.id });
+                        setMenu(null);
+                      }}
+                    >
+                      {t.title}
+                    </a>
+                    <Time iso={t.updatedAt} />
+                    {t.mergedInto ? <span>합쳐진 업무</span> : null}
+                  </article>
+                ))}
+            </section>
+          </>
+        ) : null}
+      </Overlay>
+      {menu === "create" ? (
+        <CreateMember project={project} onDismiss={() => setMenu(null)} />
       ) : null}
-
-      {awake.length > 0 ? (
-        <div className="tm-grid">
-          {awake.map((m) => (
-            <MemberCard key={m.id} m={m} compactAt={compactAt} openAsks={openAsks(m.id)} />
-          ))}
-        </div>
-      ) : null}
-
-      {asleep.length > 0 ? <AsleepGroup members={asleep} runnerEnabled={project.runnerEnabled} /> : null}
-      {work.length > 0 || hasTaskRows(state.tasks ?? [], Date.now()) ? <WorkList work={work} tasks={state.tasks ?? []} /> : null}
-      {!project.isHq ? <CreateMember project={project} /> : null}
-      <MemberDetail memberId={route.sub} compactAt={compactAt} />
     </div>
   );
 }
-

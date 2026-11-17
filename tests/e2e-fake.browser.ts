@@ -346,7 +346,7 @@ async function send(page: Page, text: string): Promise<void> {
   else await input.press("Enter");
 }
 
-const memberCard = (page: Page, name: string): Locator => page.locator(".tm-card", { has: page.locator(".tm-card__link", { hasText: name }) });
+const memberCard = (page: Page, name: string): Locator => page.locator(".to-row", { has: page.locator(".to-person", { hasText: name }) });
 
 beforeAll(async () => {
   writeFileSync(join(WORK, "script.json"), JSON.stringify(SCRIPT));
@@ -482,14 +482,20 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
 
     await goBoth("team");
     for (const page of [desk, phone]) {
-      await memberCard(page, "민수").locator(".status", { hasText: "내 답 기다림" }).waitFor();
-      await memberCard(page, "민수").getByText("색 방향을 대표에게 묻는 중").waitFor();
-      await memberCard(page, "민수").getByText("1건 대기").waitFor();
-      await page.getByText("민수가 랜딩 시안을 만드는 중입니다").first().waitFor();
-      await page.locator(".tm-wi", { hasText: "랜딩 시안" }).first().waitFor();
+      await memberCard(page, "민수").locator(".to-person").click();
+      const detail = page.getByRole("dialog");
+      await detail.locator(".status", { hasText: "내 답 기다림" }).waitFor();
+      await detail.getByText("색 방향을 대표에게 묻는 중").waitFor();
+      await detail.getByText("1건 대기").waitFor();
+      expect(await detail.locator(".tm-ctx").count()).toBe(0);
+      await page.keyboard.press("Escape");
+      await page.getByLabel("팀 메뉴", {exact:true}).click();await page.getByRole("button", {name:"팀 상황",exact:true}).click();
+      await page.getByText("민수가 랜딩 시안을 만드는 중입니다").first().waitFor();await page.keyboard.press("Escape");
+      await page.getByLabel("팀 메뉴", {exact:true}).click();await page.getByRole("button", {name:"진행판 기록",exact:true}).click();
+      await page.locator(".tm-wi", { hasText: "랜딩 시안" }).first().waitFor();await page.keyboard.press("Escape");
     }
     // 문맥 75%(150000/200000)면 압축 예정 표시가 나온다.
-    expect(await memberCard(desk, "민수").locator(".tm-ctx").count()).toBe(0); // core는 토큰 사용량을 추측하지 않는다.
+
     await shotBoth("10-team-waiting");
 
     await goBoth("inbox");
@@ -523,11 +529,11 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
     await sessionGot('메모 \\"로고는 나중에 보낼게요\\"');
 
     await goBoth("team");
-    await memberCard(desk, "민수").locator(".status", { hasText: "일하는 중" }).waitFor();
+    await memberCard(desk, "민수").locator("[data-status=working]").waitFor();
     await shot(desk, "13-team-working");
-    await memberCard(desk, "민수").locator(".status", { hasText: "대기" }).waitFor();
-    await memberCard(phone, "민수").locator(".status", { hasText: "대기" }).waitFor();
-    await memberCard(desk, "민수").getByText("시안 작성 중").waitFor();
+    await memberCard(desk, "민수").locator("[data-status=idle]").waitFor();
+    await memberCard(phone, "민수").locator("[data-status=idle]").waitFor();
+    await memberCard(desk, "민수").locator(".to-person").click();await desk.getByRole("dialog").getByText("시안 작성 중").waitFor();await desk.keyboard.press("Escape");
 
     // 다시 답하면 거부된다(멱등이 아닌 다른 답).
     const decided = (await projectState()).decisions.find((d) => d.title.startsWith("랜딩 색"))!;
@@ -581,7 +587,9 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
     const minsu = await memberNamed("민수");
     await goBoth("team", minsu.id);
     for (const page of [desk, phone]) {
+      await page.locator(".tm-detail-tabs").getByRole("button", {name:"활동",exact:true}).click();
       await page.locator(".tm-acts .tm-act").first().waitFor();
+      await page.locator(".tm-detail-tabs").getByRole("button", {name:"실행·설정",exact:true}).click();
       await page.locator(".tm-copy__cmd").waitFor();
     }
     await shotBoth("17-member-detail");
@@ -603,19 +611,19 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
     await goBoth("team");
 
     for (const page of [desk, phone]) {
-      const fold = page.locator("details.tm-fold");
-      await fold.waitFor();
-      await fold.locator("summary").click();
-      await fold.getByRole("button", { name: "다시 열기" }).waitFor();
+      await memberCard(page, "민수").locator("[data-status=asleep]").waitFor();
+      await memberCard(page, "민수").locator(".to-person").click();
+      await page.locator(".tm-detail-tabs").getByRole("button", {name:"실행·설정",exact:true}).click();
+      await page.getByRole("button", {name:"깨우기",exact:true}).waitFor();
     }
     await shotBoth("18-team-asleep");
 
     // 새로고침: 코드를 다시 묻지 않고 주소·잠든 상태가 그대로다.
     await desk.reload();
-    await desk.locator("details.tm-fold").waitFor();
+    await desk.locator(".tm-detail-tabs").waitFor();
     expect(await desk.evaluate(() => location.hash)).toContain(`${projectId}/team`);
-    await desk.locator("details.tm-fold summary").click();
-    await desk.getByRole("button", { name: "다시 열기" }).click();
+    await desk.locator(".tm-detail-tabs").getByRole("button", {name:"실행·설정",exact:true}).click();
+    await desk.getByRole("button", { name: "깨우기",exact:true }).click();
     const reopened = await until("다시 열림", () => memberNamed("민수"), (m) => m.status !== "asleep");
     expect(reopened.sessionId).toBe(before.sessionId);
     await memberCard(desk, "민수").waitFor();
@@ -782,7 +790,7 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
     await phone.locator(".th-card", { hasText: "긴 보고" }).last().waitFor();
     await shotBoth("26-long-thread");
     await goBoth("team");
-    await phone.locator(".tm-card").first().waitFor();
+    await phone.locator(".to-row").first().waitFor();
     await shotBoth("27-long-team");
     await goBoth("files", fileId);
     await phone.locator(".fl-doc__body table").waitFor();
@@ -791,6 +799,7 @@ describe("전 과정(가짜 claude, 데스크톱+폰)", () => {
     expect(await phone.locator(".fl-doc__body table").evaluate((t) => t.scrollWidth > t.clientWidth)).toBe(true);
     expect(await phone.locator(".fl-doc__body th").first().evaluate((c) => c.scrollHeight <= 2 * Number.parseFloat(getComputedStyle(c).fontSize) + 16)).toBe(true);
     await goBoth("team", minsu.id);
+    await phone.locator(".tm-detail-tabs").getByRole("button", {name:"활동",exact:true}).click();
     await phone.locator(".tm-acts").waitFor();
     await shotBoth("29-long-member");
     for (const page of [desk, phone]) {

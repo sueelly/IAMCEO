@@ -229,6 +229,8 @@ export interface OverlayProps {
 export const Modal = (p: OverlayProps) => <Dialog {...p} className="dialog--modal" />;
 /** 아래에서 올라오는 판(폰) */
 export const Sheet = (p: OverlayProps) => <Dialog {...p} className="dialog--sheet" />;
+/** Team inspectors retain the native dialog focus and close semantics. */
+export const Drawer = (p: OverlayProps) => <Dialog {...p} className="dialog--drawer" />;
 
 // ---- 한 번 더 눌러 확인 ----
 

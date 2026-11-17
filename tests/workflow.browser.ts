@@ -58,10 +58,16 @@ afterAll(async () => {
   console.log(`workflow screenshots: ${SHOTS}`);
 });
 
-async function open(page: Page, tab = "team") {
+async function open(page: Page, tab = "thread") {
   await page.addInitScript((code) => localStorage.setItem("iamceo.accessCode", code), CODE);
   await page.goto(`${base}/#/p/${project.id}/${tab}`);
-  await page.locator(".tm-card").first().waitFor({ timeout: 20_000 });
+  if (tab === "team") { await page.locator(".to-row").first().waitFor(); return; }
+  await openFlow(page);
+}
+async function openFlow(page: Page) {
+  const chip = page.locator('.cmp-task[data-id]:not([aria-hidden="true"])').first();
+  await chip.waitFor({timeout:20000});await chip.click();
+  await page.getByRole("button", {name:"업무 흐름",exact:true}).click();await page.locator('.wf-node').first().waitFor();
 }
 const node = (page: Page, taskId: string, memberId: string | null) => page.locator(`.wf-node[data-task-id="${taskId}"][data-member-id="${memberId ?? "unassigned"}"]`);
 
@@ -90,7 +96,7 @@ test("직원별 실제 배정 순서와 파생 관계를 표시하고 노드에�
   await detail.getByRole("link", { name: "업무 대화" }).click();
   await page.locator(".th-task").waitFor();
   expect(await page.locator(".th-task").textContent()).toContain(current.title);
-  await page.getByRole("button", { name: "업무 흐름", exact: true }).click();
+  if(await page.getByRole("button", { name: "업무 흐름", exact: true }).getAttribute("aria-expanded") === "false") await page.getByRole("button", { name: "업무 흐름", exact: true }).click();
   expect(await page.getByRole("region", { name: "업무 흐름", exact: true }).count()).toBe(1);
   await node(page, current.id, reviewer.id).click();
   expect(await page.getByRole("dialog", { name: current.title, exact: true }).isVisible()).toBe(true);
@@ -172,8 +178,9 @@ test("긴 완료 이력은 최근 세 개부터 보이고 모두 펼치거나 �
   expect(await row.locator(".wf-node").count()).toBe(6);
   await node(page, completed[0].id, member.id).click();
   await page.getByRole("dialog").getByRole("link", { name: "업무 대화" }).click();
-  await page.getByRole("button", { name: "업무 흐름", exact: true }).click();
+  if(await page.getByRole("button", { name: "업무 흐름", exact: true }).getAttribute("aria-expanded") === "false") await page.getByRole("button", { name: "업무 흐름", exact: true }).click();
   expect(await node(page, completed[0].id, member.id).count()).toBe(1);
+  await page.getByRole("button", { name: "완료 모두", exact: true }).click();
   expect(await row.locator(".wf-node").count()).toBe(4);
   await page.close();
 }, 60_000);
@@ -215,7 +222,8 @@ test("프로젝트를 바꾼 뒤 늦은 업무 상세 응답이 새 프로젝트
   await node(page, current.id, worker.id).click();
   await seen;
   await page.keyboard.press("Escape");
-  await page.evaluate((id) => { location.hash = `#/p/${id}/team`; }, other.id);
+  await page.evaluate((id) => { location.hash = `#/p/${id}/thread`; }, other.id);
+  await openFlow(page);
   await node(page, otherTask.id, null).waitFor();
   await node(page, otherTask.id, null).click();
   const detail = page.getByRole("dialog", { name: otherTask.title, exact: true });
@@ -233,8 +241,10 @@ test("직원 카드가 실제 전달 대기와 조용한 알림을 같은 실행
   store.enqueue({ projectId: project.id, memberId: member.id, taskId: task.id, kind: "instruction", text: "실행할 지시", wake: true });
   store.enqueue({ projectId: project.id, memberId: member.id, taskId: task.id, kind: "report", text: "조용한 참조 알림", wake: false });
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
-  await open(page);
-  const facts = page.locator(".tm-card").filter({ has: page.getByRole("heading", { name: member.name }) }).locator(".tm-facts");
+  await open(page, "team");
+  await page.locator(`[data-member-id="${member.id}"] .to-person`).click();
+  const facts = page.locator(".tm-detail .tm-facts");
+  await facts.waitFor();
   expect(await facts.textContent()).toContain("전달 대기 1 · 알림 1");
   await page.close();
 }, 60_000);

@@ -44,6 +44,7 @@ test("Team copies freshly managed SSH settings and never copies stale text after
     const page = await context.newPage(), errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`${origin}/#/p/${project.id}/team/${member.id}`);
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     const copy = page.getByRole("button", { name: "터미널로 열기 명령 복사" });
     await copy.waitFor({ state: "visible", timeout: 15000 });
     const patch = await fetch(`http://127.0.0.1:${server.port}/api/connection`, { method: "PATCH", headers: { Authorization: "Bearer isolated-browser-connection", "Content-Type": "application/json" }, body: JSON.stringify({ sshHost: "renamed.tail1234.ts.net", sshUser: "operator", sshPort: 2222 }) });

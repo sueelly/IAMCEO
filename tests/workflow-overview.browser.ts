@@ -17,7 +17,7 @@ let isolated:ReturnType<typeof createIsolatedRuntime>,store:Store,orch:Orchestra
 let project:Project,other:Project,lead:Member,worker:Member,reviewer:Member,web:Member,current:Task,next:Task,derived:Task,done:Task,unassigned:Task;
 let seq=0;
 function makeTask(title:string,parentTaskId?:string){return store.ensureSourceTask({projectId:project.id,sourceRef:`overview-${++seq}`,title,origin:"owner",parentTaskId}).task}
-function ready(title:string){const t=makeTask(title);store.createMessage({projectId:project.id,taskId:t.id,mine:true,who:"대표",kind:"나",body:"원문과 완료 조건을 보존해 구현하세요"});store.saveTaskContract(t.id,{kind:"coding",goal:title,acceptance:["브라우저에서 검증한다"],forbidden:["승인 자동 응답 금지"]},{author:"대표",authorMemberId:null,authorKind:"owner"});return t}
+function ready(title:string){const t=makeTask(title);store.createMessage({projectId:project.id,taskId:t.id,mine:true,who:"대표",kind:"나",body:"원문과 완료 조건을 보존해 구현하세요"});store.saveTaskContract(t.id,{kind:"coding",goal:title,acceptance:["브라우저에서 검증한다"],scope:"웹 화면",inputs:["기존 업무 연결"],outputs:["검증한 화면"],constraints:["기존 승인 보존"],exclusions:["자동 승인"],forbidden:["승인 자동 응답 금지"]},{author:"대표",authorMemberId:null,authorKind:"owner"});return t}
 
 beforeAll(async()=>{
   isolated=createIsolatedRuntime();
@@ -39,32 +39,34 @@ beforeAll(async()=>{
   server=await startServer({config,store,bus,orch});base=server.urls[0]!;browser=await chromium.launch();mkdirSync(SHOTS,{recursive:true});
 });
 afterAll(async()=>{await browser?.close();await orch?.shutdown();await server?.stop();store?.db.close();await isolated?.stop()});
-async function open(width=1440){const page=await browser.newPage({viewport:{width,height:1000}});page.setDefaultTimeout(8000);await page.addInitScript(code=>localStorage.setItem("iamceo.accessCode",code),CODE);await page.goto(`${base}/#/p/${project.id}/team`);await page.locator('.wf-node').first().waitFor({timeout:20000});await page.locator('.wf-connection').waitFor({state:"hidden"});return page}
-const card=(p:Page,id:string)=>p.locator(`.wf-node[data-task-id="${id}"]`).first();
-async function assignMenu(p:Page,t:Task){await p.getByRole("button",{name:`${t.title} 메뉴`,exact:true}).click();await p.getByRole("menuitem",{name:"배정",exact:true}).click();await p.getByLabel("담당 직원",{exact:true}).selectOption(web.id);await p.getByRole("dialog").getByText("승인 자동 응답 금지",{exact:true}).waitFor()}
+async function open(width=1440){const page=await browser.newPage({viewport:{width,height:1000}});page.setDefaultTimeout(8000);await page.addInitScript(code=>localStorage.setItem("iamceo.accessCode",code),CODE);await page.goto(`${base}/#/p/${project.id}/team`);await page.locator('.to-row').first().waitFor({timeout:20000});await page.locator('.wf-connection').waitFor({state:"hidden"});return page}
+const card=(p:Page,id:string)=>p.locator(`.to-task[data-task-id="${id}"],.to-free[data-task-id="${id}"]`).first();
+async function freeTray(p:Page){if(!await p.locator('.to-unassigned').count())await p.getByRole('button',{name:/^미배정/}).click()}
+async function assignMenu(p:Page,t:Task){await freeTray(p);await p.getByRole("button",{name:`${t.title} 배정`,exact:true}).click();await p.getByLabel("담당 직원",{exact:true}).selectOption(web.id);await p.getByRole("dialog").getByText("승인 자동 응답 금지",{exact:true}).waitFor()}
+
 
 test("고정 열과 Glass 구성요소로 현재 업무와 다음 업무를 비교한다",async()=>{
  const p=await open();
- expect(await p.locator('.wf-column[data-column="now"]').count()).toBeGreaterThanOrEqual(4);
- expect(await p.locator(`.wf-row[data-member-id="${worker.id}"] [data-column="now"] .wf-node[data-task-id="${current.id}"]`).count()).toBe(1);
+ expect(await p.locator('.to-row .to-now').count()).toBeGreaterThanOrEqual(4);
+ expect(await p.locator(`.to-row[data-member-id="${worker.id}"] .to-now .to-task[data-task-id="${current.id}"]`).count()).toBe(1);
  expect(await p.locator('.glass.wf .gbtn').count()).toBeGreaterThan(0);
- expect(await card(p,done.id).locator('time').getAttribute('datetime')).toBe(store.taskProgress(done.id).since);
- const lefts=await p.locator('.wf-column[data-column="now"]').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().left));expect(Math.max(...lefts)-Math.min(...lefts)).toBeLessThan(1);
+ expect(await p.locator(`[data-member-id="${worker.id}"] .to-done time`).getAttribute('datetime')).toBe(store.taskProgress(done.id).since);
+ const lefts=await p.locator('.to-row .to-now').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().left));expect(Math.max(...lefts)-Math.min(...lefts)).toBeLessThan(1);
  expect(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await p.locator('.wf').screenshot({path:join(SHOTS,"product-overview.png")});await p.close();
 },30000);
 
 test("우클릭과 메뉴로 연결된 업무를 집중하고 전체 보기로 복원한다",async()=>{
- const p=await open();const before=await p.locator('.wf-node').count();
- await card(p,current.id).click({button:"right"});await p.getByRole("button",{name:"전체 보기",exact:true}).waitFor();
- expect(await card(p,derived.id).count()).toBe(1);expect(await card(p,unassigned.id).count()).toBe(0);
+ const p=await open();const before=await p.locator('.to-row').count();
+ await card(p,current.id).click({button:"right"});await p.locator('.map-task[data-center]').waitFor();
+ expect(await p.locator(`.map-task[data-task-id="${derived.id}"]`).count()).toBe(1);expect(await p.locator(`.map-task[data-task-id="${unassigned.id}"]`).count()).toBe(0);
  await p.locator('.wf').screenshot({path:join(SHOTS,"product-focus.png")});
- await p.getByRole("button",{name:"전체 보기",exact:true}).click();expect(await p.locator('.wf-node').count()).toBe(before);
- await card(p,current.id).focus();await p.keyboard.press("Shift+F10");await p.getByRole("button",{name:"전체 보기",exact:true}).click();await p.close();
+ await p.getByRole("button",{name:"← 이전 보기",exact:true}).click();expect(await p.locator('.to-row').count()).toBe(before);
+ await card(p,current.id).focus();await p.keyboard.press("Shift+F10");await p.getByRole("button",{name:"← 이전 보기",exact:true}).click();await p.close();
 },30000);
 
 test("드래그 후 인계 확인과 취소를 거쳐 지정한 직원에게 한 번만 배정한다",async()=>{
- const p=await open();await card(p,unassigned.id).dragTo(p.locator(`[data-drop-member="${web.id}"]`));
+ const p=await open();await freeTray(p);await card(p,unassigned.id).dragTo(p.locator(`[data-drop-member="${web.id}"]`));
  const dialog=p.getByRole("dialog",{name:"업무 배정",exact:true});await dialog.getByText("승인 자동 응답 금지",{exact:true}).waitFor();
  expect(await p.getByLabel("담당 직원",{exact:true}).inputValue()).toBe(web.id);
  expect(await dialog.getByText("관련 동작 시험",{exact:true}).count()).toBe(1);
@@ -77,7 +79,7 @@ test("드래그 후 인계 확인과 취소를 거쳐 지정한 직원에게 한
 },30000);
 
 test("확정 조건이 없는 후보는 배정할 수 없다",async()=>{
- const p=await open();await p.getByRole("button",{name:"자동 반복 실행 후보 메뉴",exact:true}).click();await p.getByRole("menuitem",{name:"배정",exact:true}).click();await p.getByLabel("담당 직원",{exact:true}).selectOption(web.id);
+ const p=await open();await freeTray(p);await p.getByRole("button",{name:"자동 반복 실행 후보 배정",exact:true}).click();await p.getByLabel("담당 직원",{exact:true}).selectOption(web.id);
  const d=p.getByRole("dialog");await d.getByText("업무의 목표와 완료 조건이 아직 확정되지 않았습니다",{exact:true}).waitFor();expect(await d.getByRole("button",{name:"배정",exact:true}).isDisabled()).toBe(true);await p.close();
 },30000);
 
@@ -97,7 +99,7 @@ test("응답 유실은 영수증을 확인하고 새 배정 요청을 보내지 
 
 test("390px에서 세로로 재배치하고 메뉴와 초점을 유지한다",async()=>{
  const p=await open(390);expect(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
- expect(await p.locator('.wf-scroll').evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
+ expect(await p.locator('.to-table').evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
  await card(p,current.id).focus();await p.keyboard.press("Enter");await p.getByRole("dialog").waitFor();await p.keyboard.press("Escape");expect(await card(p,current.id).evaluate(e=>document.activeElement===e)).toBe(true);
  await p.screenshot({path:join(SHOTS,"product-mobile.png")});await p.close();
 },30000);

@@ -73,6 +73,7 @@ async function openMember(page: Page) {
   await page.goto(`${base}/api/health`);
   await page.evaluate((code) => localStorage.setItem("iamceo.accessCode", code), CODE);
   await page.goto(`${base}/#/p/${encodeURIComponent(project.id)}/team/${encodeURIComponent(member.id)}`);
+  await page.getByRole("button", { name: /전달 알림 \d+건/ }).click();
   try { await page.locator(".tm-delivery").waitFor({ timeout: 20_000 }); }
   catch (e) { await page.screenshot({ path: join(SHOTS, "fail.png"), fullPage: true }); console.log(await page.locator("body").innerText()); throw e; }
 }
@@ -128,6 +129,7 @@ describe("웹 전달 알림과 '다시 확인'", () => {
     expect(store.getDeliveryRetry(a!.d.id).retryReason).toBe("rejected_limit");
     expect(() => orch.deliveryRecovery.prepareDispatch([a!.d.id], identity(member), baseline())).toThrow();
     await page.reload();
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     await page.locator(".tm-delivery").waitFor({ timeout: 20_000 });
     await expect(item(page, a!.d.id).getByRole("button", { name: "다시 확인" }).count()).resolves.toBe(1);
     await page.close();

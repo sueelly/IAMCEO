@@ -302,6 +302,7 @@ describe("전체 통합", () => {
     // Imported terminal identities are legacy data. Explicitly hand them to fresh owned core sessions.
     for (const imported of (await projectState()).members.filter((member) => member.origin === "adopted")) {
       await page.goto(`${base}/${hash("team", imported.id)}`);
+      await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
       await page.getByRole("button", { name: "새 세션으로 이어가기" }).click();
       await until("명시적 core 인계", () => memberNamed(imported.name), (member) => member.backend === "core" && member.origin === "runner");
       await settled();
@@ -443,6 +444,7 @@ describe("전체 통합", () => {
   test("팀: 기존 편입을 노출하지 않고 CLI·모델을 정해 직원을 만든다", async () => {
     const page = await open(deskCtx, hash("team"));
     expect(await page.getByRole("button", { name: "기존 세션 편입" }).count()).toBe(0);
+    await page.getByLabel("팀 메뉴", { exact: true }).click();
     await page.getByRole("button", { name: "직원 추가" }).click();
     const form = page.locator("form.form");
     await form.getByLabel("이름", { exact: true }).fill("결제 조사");
@@ -454,7 +456,8 @@ describe("전체 통합", () => {
     await until("직원 생성", projectState, (state) => state.members.some((member) => member.name === "결제 조사"));
     const added = await memberNamed("결제 조사");
     expect(added).toMatchObject({ role: "PG사 문서 조사", cli: "claude", modelOverride: "haiku", backend: "core" });
-    await page.locator(".tm-card", { hasText: "결제 조사" }).getByText("Claude Code", { exact: true }).waitFor();
+    await page.locator(".to-person", { hasText: "결제 조사" }).click();
+    await page.getByRole("dialog").getByText("Claude Code", { exact: true }).waitFor();
     await page.close();
   }, 40_000);
 
@@ -541,6 +544,7 @@ describe("전체 통합", () => {
     await settled();
     const seoyun = await memberNamed("서윤");
     const page = await open(deskCtx, hash("team", seoyun.id));
+    await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
     const model = page.getByLabel("모델", { exact: true });
     await model.waitFor();
     expect(await model.getAttribute("placeholder")).toContain("sonnet");
@@ -595,9 +599,9 @@ describe("전체 통합", () => {
       ["phone-home", hash("home"), phoneCtx, (p) => p.locator(".hm-todo").first().waitFor()],
       ["desk-inbox", hash("inbox"), deskCtx, (p) => p.locator(".ibx-card").first().waitFor()],
       ["phone-inbox", hash("inbox"), phoneCtx, (p) => p.locator(".ibx-card").first().waitFor()],
-      ["desk-team", hash("team"), deskCtx, (p) => p.locator(".tm-card").first().waitFor()],
-      ["phone-team", hash("team"), phoneCtx, (p) => p.locator(".tm-card").first().waitFor()],
-      ["desk-member", hash("team", seoyun.id), deskCtx, (p) => p.getByRole("combobox", { name: "모델" }).waitFor()],
+      ["desk-team", hash("team"), deskCtx, (p) => p.locator(".to-row").first().waitFor()],
+      ["phone-team", hash("team"), phoneCtx, (p) => p.locator(".to-row").first().waitFor()],
+      ["desk-member", hash("team", seoyun.id), deskCtx, async (p) => { await p.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click(); await p.getByRole("combobox", { name: "모델" }).waitFor(); }],
       ["desk-thread", hash("thread"), deskCtx, (p) => p.locator(".th-card").first().waitFor()],
       ["phone-thread", hash("thread"), phoneCtx, (p) => p.locator(".th-card").first().waitFor()],
       ["desk-files", hash("files"), deskCtx, (p) => p.locator(".fl-row").first().waitFor()],

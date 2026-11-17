@@ -69,6 +69,7 @@ for (const [name, width, height] of [['desktop', 1440, 1000], ['narrow', 390, 84
       terminal.status = { state: 'error', app: 'claude-code', msg: "You've hit your weekly limit · resets 7am (Asia/Seoul)" };
       await page.goto(`${base}/#/p/${f.project.id}/team/${f.member.id}`);
       await page.locator('.tm-detail .tm-status').filter({ hasText: '사용량 한도' }).waitFor({ timeout: 15_000 });
+      await page.locator(".tm-detail-tabs").getByRole("button", { name: "실행·설정", exact: true }).click();
       await page.getByRole('button', { name: '다시 확인', exact: true }).waitFor();
       expect(await page.locator('.tm-detail .tm-error').textContent()).toContain('weekly limit');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
