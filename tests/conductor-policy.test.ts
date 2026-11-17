@@ -10,6 +10,7 @@ import { openDb } from "../server/db.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
 import { exportRoles, renderRole } from "../server/roles.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
+import { buildClaudeArgs } from "../server/runner/headless.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "../server/runner/types.ts";
 import { Store } from "../server/store.ts";
 import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
@@ -18,6 +19,58 @@ const vars = { PROJECT: "시험", NAME: "총괄", ROLE: "조정", CONDUCTOR: "�
 const POLICY = "## 총괄의 필수 조정 규칙";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+
+test("총괄의 직접 제작·터미널 입력·강제 해제 호출은 서버에서 거절하고 직원 제작은 유지한다", async () => {
+  const f = fixture();
+  const worker = f.store.createMember({ projectId: f.project.id, handle: "writer", name: "작성", kind: "worker" });
+  const tools = agentTools.listAgentTools(f.lead).map(tool => tool.name);
+  for (const name of ["file", "server_backup", "terminal_input", "team_close"]) {
+    expect(tools).not.toContain(name);
+    const result = await agentTools.handleAgentTool(f.orch, f.lead, name, { title: "직접 제작", content: "내용", member: worker.handle, text: "touch product.md", operation_key: "escape" });
+    expect(result).toMatchObject({ isError: true, text: expect.stringContaining("쓸 수 없는 도구") });
+  }
+  expect(tools).toEqual(expect.arrayContaining(["task", "team_assign", "team_sleep", "team_resume", "post", "task_trace", "terminal_read", "roster"]));
+  const force = await agentTools.handleAgentTool(f.orch, f.lead, "team_sleep", { member: worker.handle, force: true });
+  expect(force.isError).toBe(true);
+  expect(f.store.requireMember(worker.id)).toMatchObject({ status: worker.status, origin: worker.origin });
+  expect(agentTools.listAgentTools(worker).map(tool => tool.name)).toContain("file");
+  const { task } = f.store.saveTask({ projectId: f.project.id, title: "직원 자료", memberId: worker.id, who: worker.name });
+  const published = await agentTools.handleAgentTool(f.orch, worker, "file", { title: "직원 제작", content: "직원이 작성한 자료", task_id: task.id });
+  expect(published.isError, published.text).toBeUndefined();
+});
+
+test("조정 전용 CLI는 권한 우회 설정에서도 직접 제작과 하위 에이전트를 노출하지 않는다", () => {
+  const isolated = createIsolatedRuntime(); cleanups.push(() => isolated.stop());
+  const opts = { systemPromptFile: join(isolated.paths.configDir, "rules.md"), mcpConfigFile: join(isolated.paths.configDir, "mcp.json"), resume: false, projectName: "조정" };
+  writeFileSync(opts.systemPromptFile, "조정 규칙");
+  writeFileSync(opts.mcpConfigFile, JSON.stringify({ mcpServers: { iamceo: { command: "/fake/bridge", args: [], env: {} } } }));
+  writeFileSync(isolated.bins.codexBin, '#!/bin/sh\nprintf \'[{"name":"external","enabled":true},{"name":"iamceo","enabled":true}]\\n\'\n', { mode: 0o700 });
+  const member: RunnerMember = { id: "lead", projectId: "p", handle: "lead", name: "총괄", cli: "claude", kind: "conductor", cwd: isolated.paths.work, sessionId: null, paneId: null, model: null, effort: null, subagentModel: "child", permissionMode: "bypassPermissions" };
+  for (const args of [providerLaunch(member, opts, isolated.bins).argv, buildClaudeArgs({ ...member, sessionId: "existing" }, opts, true)]) {
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read,Glob,Grep");
+    expect(args).toContain("--strict-mcp-config");
+    expect(args).not.toContain("bypassPermissions");
+  }
+  for (const resume of [false, true]) {
+    const launch = providerLaunch({ ...member, cli: "codex", sessionId: resume ? "existing" : null }, { ...opts, resume }, isolated.bins);
+    expect(launch.argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(launch.argv).toContain("features.shell_tool=false");
+    expect(launch.argv).toContain("features.multi_agent=false");
+    expect(launch.argv).toContain("features.plugins=false");
+    expect(launch.argv).toContain("features.apps=false");
+    expect(launch.argv).toContain("mcp_servers.external.enabled=false");
+    expect(launch.argv[launch.argv.indexOf("--sandbox") + 1]).toBe("read-only");
+    expect(launch.argv[launch.argv.indexOf("--ask-for-approval") + 1]).toBe("never");
+  }
+  expect(() => providerLaunch({ ...member, cli: "antigravity" }, opts, { antigravityBin: "/fake/agy" })).toThrow("조정 전용");
+  const worker = providerLaunch({ ...member, kind: "worker", cli: "codex" }, opts, isolated.bins);
+  expect(worker.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
+  expect(worker.argv).toContain("features.multi_agent=true");
+  for (const output of ['[{"name":"unsafe.name"}]', 'not json']) {
+    writeFileSync(isolated.bins.codexBin, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, { mode: 0o700 });
+    expect(() => providerLaunch({ ...member, cli: "codex" }, opts, isolated.bins)).toThrow("조정 전용 MCP 목록");
+  }
+});
 
 // A custom role replaces the normal template; it must not remove the mandatory
 // responsibility boundary. These exercise the rendered prompt, not source files.
@@ -40,7 +93,7 @@ test("맞춤 총괄 템플릿과 내보낸 예시에도 필수 조정 규칙을 
   expect(renderRole("conductor", vars, rolesDir).split(POLICY)).toHaveLength(2);
 });
 
-test("세 제공자의 새 세션과 이어 열기에 맞춤 총괄의 필수 조정 규칙을 전달한다", () => {
+test("지원하는 제공자의 새 세션과 이어 열기에 맞춤 총괄의 필수 조정 규칙을 전달한다", () => {
   const isolated = createIsolatedRuntime();
   cleanups.push(() => isolated.stop());
   writeFileSync(join(isolated.paths.work, "conductor.md"), "{{NAME}} 맞춤 승인 규칙");
@@ -49,17 +102,16 @@ test("세 제공자의 새 세션과 이어 열기에 맞춤 총괄의 필수 �
   const mcpConfigFile = join(isolated.paths.configDir, "mcp.json");
   writeFileSync(systemPromptFile, prompt);
   writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: { iamceo: { command: "/fake/bridge", args: [], env: {} } } }));
+  writeFileSync(isolated.bins.codexBin, "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 });
   const bins = { ...isolated.bins, antigravityBin: "/fake/agy", antigravityRoot: join(isolated.paths.configDir, "agy"), antigravityUserRoot: join(isolated.paths.configDir, "no-user") };
-  for (const cli of ["claude", "codex", "antigravity"] as const) for (const resume of [false, true]) {
+  for (const cli of ["claude", "codex"] as const) for (const resume of [false, true]) {
     const sessionId = resume ? "6f1c2b9e-1111-4222-8333-944455556666" : null;
     const member: RunnerMember = { id: `lead-${cli}`, projectId: "project", handle: "lead", name: "총괄", cli, kind: "conductor", cwd: isolated.paths.work,
       sessionId, paneId: null, model: null, effort: null, subagentModel: null, permissionMode: "default" };
     const launch = providerLaunch(member, { systemPromptFile, mcpConfigFile, resume, projectName: "시험" }, bins);
     const received = cli === "claude"
       ? readFileSync(launch.argv[launch.argv.indexOf("--append-system-prompt-file") + 1]!, "utf8")
-      : cli === "codex"
-        ? JSON.parse(launch.argv.find(arg => arg.startsWith("developer_instructions="))!.slice("developer_instructions=".length)) as string
-        : readFileSync(join(bins.antigravityRoot, member.id, "GEMINI.md"), "utf8");
+      : JSON.parse(launch.argv.find(arg => arg.startsWith("developer_instructions="))!.slice("developer_instructions=".length)) as string;
     expect(received).toContain(POLICY);
     expect(received).toContain("총괄 맞춤 승인 규칙");
     expect(launch.argv.includes(cli === "claude" ? "--resume" : cli === "codex" ? "resume" : "--conversation")).toBe(resume);
@@ -73,6 +125,7 @@ class PolicyRunner implements Runner {
   busy = new Set<string>();
   starts: { id: string; resume: boolean; sessionId: string | null; rules: string }[] = [];
   stops: string[] = [];
+  failStop = false;
   sent: { id: string; text: string }[] = [];
   callback: (event: RunnerEvent) => void = () => {};
   async available() { return { ok: true }; }
@@ -87,7 +140,7 @@ class PolicyRunner implements Runner {
   async compact(): Promise<SendResult> { return { ok: true }; }
   async setParallel(): Promise<SendResult> { return { ok: true }; }
   async interrupt() {}
-  async stop(member: RunnerMember) { this.stops.push(member.id); this.busy.delete(member.id); }
+  async stop(member: RunnerMember) { this.stops.push(member.id); if (this.failStop) throw new Error("fixture stop failed"); this.busy.delete(member.id); }
   async screen() { return ""; }
   async shutdown() {}
   on(callback: (event: RunnerEvent) => void) { this.callback = callback; }
@@ -186,4 +239,25 @@ test("대표에게 넘겨받은 총괄 세션은 규칙 갱신을 위해 자동�
   await f.wake();
   expect(f.runner.stops).toHaveLength(0);
   expect(f.runner.starts).toHaveLength(0);
+  expect(f.runner.sent).toHaveLength(0);
+  expect(f.store.listPending(f.lead.id)).toHaveLength(1);
+  expect(f.store.requireMember(f.lead.id).lastError).toContain("조정 전용");
+});
+
+test("총괄의 권한 갱신 실패 뒤에도 옛 권한으로 새 입력을 보내지 않는다", async () => {
+  const f = fixture(); f.runner.failStop = true;
+  await f.wake(); await f.orch.pump(f.lead.id);
+  expect(f.runner.sent).toHaveLength(0);
+  expect(f.store.listPending(f.lead.id)).toHaveLength(1);
+  expect(f.store.requireMember(f.lead.id).lastError).toContain("조정 전용");
+});
+
+test("옛 권한으로 일하는 총괄은 긴급 입력도 갱신 뒤까지 보존한다", async () => {
+  const f = fixture();
+  f.store.patchMember(f.lead.id, { status: "working" }); f.runner.busy.add(f.lead.id);
+  const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "system", text: "긴급 개입", urgent: true, wake: true });
+  await f.orch.pump(f.lead.id);
+  expect(f.runner.sent).toHaveLength(0);
+  expect(f.runner.stops).toHaveLength(0);
+  expect(f.store.listPending(f.lead.id).map(d => d.id)).toContain(delivery.id);
 });

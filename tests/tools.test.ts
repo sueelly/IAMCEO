@@ -98,6 +98,13 @@ async function setup() {
   return { home, store, bus, orch, runner, server, project, lead, call };
 }
 
+/** Product publication is a worker capability; keep all filesystem/storage regressions exercised. */
+async function setupForFiles() {
+  const f = await setup();
+  const writer = f.store.createMember({ projectId: f.project.id, handle: "writer", name: "자료 작성", kind: "worker", cwd: f.home });
+  return { ...f, writer };
+}
+
 /** 표식을 제거해 비교하는 대신, 저장 봉투와 송신 문자열도 일치해야 한다. */
 function deliveryBody(store: Store, sent: { memberId: string; text: string }): string {
   const dispatch = store.listDispatches(sent.memberId).find(d => d.wireText === sent.text)!;
@@ -148,7 +155,7 @@ describe("도구 목록", () => {
     const manual = store.createMember({ projectId: project.id, handle: "m", name: "손", kind: "worker", origin: "manual" });
     const root = store.createMember({ projectId: "hq", handle: "root", name: "본사 AI", kind: "root" });
     expect(names(worker)).toEqual([...WORKER_TOOLS]);
-    expect(names(lead)).toEqual([...WORKER_TOOLS, ...CONDUCTOR_TOOLS]);
+    expect(names(lead)).toEqual([...WORKER_TOOLS, ...CONDUCTOR_TOOLS].filter(name => !["file", "server_backup", "terminal_input", "team_close"].includes(name)));
     expect(names(root)).toEqual([...WORKER_TOOLS, ...ROOT_TOOLS]);
     expect(names(manual)).toEqual([...WORKER_TOOLS, ...MANUAL_TOOLS]);
     for (const t of listAgentTools(lead)) {
@@ -336,18 +343,18 @@ describe("공통 도구", () => {
   });
 
   test("file: 마크다운 자료의 글 검사 경고는 결과에만 붙는다", async () => {
-    const { store, lead, call } = await setup();
-    const r = await call(lead, "file", { title: "테스트 결과", content: "바뀐 파일은 server/roles.ts 입니다." });
+    const { store, writer, call } = await setupForFiles();
+    const r = await call(writer, "file", { title: "테스트 결과", content: "바뀐 파일은 server/roles.ts 입니다." });
     expect(r.isError).toBeUndefined();
     expect(r.text.split("\n")[0]).toMatch(/^자료를 올렸습니다 #/);
     expect(r.text).toContain("글 검사 경고");
-    const clean = await call(lead, "file", { title: "시험 결과", content: "시험으로 확인했습니다." });
+    const clean = await call(writer, "file", { title: "시험 결과", content: "시험으로 확인했습니다." });
     expect(clean.text).not.toContain("글 검사 경고");
-    expect(store.listFiles(lead.projectId).some(f => f.body.includes("글 검사"))).toBe(false);
+    expect(store.listFiles(writer.projectId).some(f => f.body.includes("글 검사"))).toBe(false);
   });
 
   test("file: 글·md 경로·첨부·이미지", async () => {
-    const { home, store, project, lead, call } = await setup();
+    const { home, store, project, writer, call } = await setupForFiles();
     const docs = join(home, "docs");
     mkdirSync(docs);
     writeFileSync(join(docs, "r.md"), "# 보고서 본문");
@@ -355,39 +362,39 @@ describe("공통 도구", () => {
     writeFileSync(join(docs, "p.png"), Buffer.from("89504e470d0a1a0a", "hex"));
     const id = (r: AgentToolResult) => /#(f_\S+?)\./.exec(r.text)![1]!;
 
-    const a = store.getFile(id(await call(lead, "file", { title: "글", summary: "요약", content: "전문" })))!;
-    expect(a).toMatchObject({ title: "글", summary: "요약", body: "전문", who: lead.name, path: null, memberId: lead.id });
+    const a = store.getFile(id(await call(writer, "file", { title: "글", summary: "요약", content: "전문" })))!;
+    expect(a).toMatchObject({ title: "글", summary: "요약", body: "전문", who: writer.name, path: null, memberId: writer.id });
 
-    const b = store.getFile(id(await call(lead, "file", { title: "md", path: join(docs, "r.md") })))!;
+    const b = store.getFile(id(await call(writer, "file", { title: "md", path: join(docs, "r.md") })))!;
     expect(b).toMatchObject({ body: "# 보고서 본문", path: join(docs, "r.md"), attachments: [] });
 
-    const c = store.getFile(id(await call(lead, "file", { title: "표", path: "docs/d.csv", images: [join(docs, "p.png")] })))!;
+    const c = store.getFile(id(await call(writer, "file", { title: "표", path: "docs/d.csv", images: [join(docs, "p.png")] })))!;
     expect(c.kind).toBe("table");
     expect(c.body).toBe("a,b\n");
     expect(c.attachments.map((x) => [x.name, x.isImage])).toEqual([["d.csv", false], ["p.png", true]]);
     expect(existsSync(c.attachments[0]!.path)).toBe(true);
     expect(c.attachments[0]!.path).toStartWith(join(home, "..", "state", "uploads"));
 
-    expect(await call(lead, "file", { title: "둘 다", path: "docs/r.md", content: "x" })).toMatchObject({ isError: true });
-    expect(await call(lead, "file", { title: "없음" })).toMatchObject({ isError: true });
-    expect(await call(lead, "file", { title: "없는 파일", path: "없다.png" })).toMatchObject({ isError: true });
-    expect(await call(lead, "file", { title: "그림 아님", images: [join(docs, "d.csv")] })).toMatchObject({ isError: true });
+    expect(await call(writer, "file", { title: "둘 다", path: "docs/r.md", content: "x" })).toMatchObject({ isError: true });
+    expect(await call(writer, "file", { title: "없음" })).toMatchObject({ isError: true });
+    expect(await call(writer, "file", { title: "없는 파일", path: "없다.png" })).toMatchObject({ isError: true });
+    expect(await call(writer, "file", { title: "그림 아님", images: [join(docs, "d.csv")] })).toMatchObject({ isError: true });
     expect(store.listFiles(project.id)).toHaveLength(3);
   });
 
   test("file 도구 설명은 자료 한 개 기준이고 같은 본문의 html·md 짝을 요구하지 않는다", async () => {
-    const { lead } = await setup();
-    const file = listAgentTools(lead).find((t) => t.name === "file")!;
+    const { writer } = await setupForFiles();
+    const file = listAgentTools(writer).find((t) => t.name === "file")!;
     for (const old of ["md 짝", "글로 읽기", "짝을 함께"]) expect(JSON.stringify(file)).not.toContain(old);
     expect(file.description).toContain("대표용 자료는 기본 한 개다. 같은 본문을 html 과 md 로 두 번 올리지 않는다");
     expect(file.description).toContain("내용이 다른 원기록·이미지·납품물은 따로 올려도 된다");
   });
 
   test("file: html 한 번은 자료 하나만 만들고 글 판을 따로 만들지 않는다. 글·이미지·서로 다른 원기록은 각각 남는다", async () => {
-    const { home, store, project, lead, call } = await setup();
+    const { home, store, project, writer, call } = await setupForFiles();
     const id = (r: AgentToolResult) => /#(f_\S+?)\./.exec(r.text)![1]!;
     const html = "<main class=\"page\"><h1>결론: 같은 본문</h1><p>비교 그림과 핵심 글이 한 자료에 있다.</p></main>";
-    const visual = await call(lead, "file", { title: "비교 결과", html });
+    const visual = await call(writer, "file", { title: "비교 결과", html });
     expect(visual.isError).toBeUndefined();
     expect(visual.text).not.toMatch(/짝|글로 읽기/);
     expect(store.listFiles(project.id)).toHaveLength(1);
@@ -395,13 +402,13 @@ describe("공통 도구", () => {
     expect(store.getFileHtml(id(visual))).toBe(html);
 
     writeFileSync(join(home, "page.html"), html);
-    const fromPath = await call(lead, "file", { title: "경로 자료", path: join(home, "page.html") });
+    const fromPath = await call(writer, "file", { title: "경로 자료", path: join(home, "page.html") });
     expect(store.listFiles(project.id)).toHaveLength(2);
     expect(store.getFile(id(fromPath))).toMatchObject({ kind: "artifact", body: "" });
 
-    const raw = await call(lead, "file", { title: "실행 원기록", content: "# 실행 원기록\n- 시험 3건 통과" });
+    const raw = await call(writer, "file", { title: "실행 원기록", content: "# 실행 원기록\n- 시험 3건 통과" });
     writeFileSync(join(home, "shot.png"), Buffer.from("89504e470d0a1a0a", "hex"));
-    const shot = await call(lead, "file", { title: "화면 캡처", images: [join(home, "shot.png")] });
+    const shot = await call(writer, "file", { title: "화면 캡처", images: [join(home, "shot.png")] });
     const all = store.listFiles(project.id);
     expect(all).toHaveLength(4);
     expect(all.map((f) => f.id).sort()).toEqual([visual, fromPath, raw, shot].map(id).sort());
@@ -412,21 +419,21 @@ describe("공통 도구", () => {
   });
 
   test("file: 후반의 잘못된 이미지·없는 경로는 첨부와 staging을 전혀 만들지 않는다", async () => {
-    const { home, store, lead, call } = await setup();
+    const { home, store, writer, call } = await setupForFiles();
     const image = join(home, "ok.png");
     const csv = join(home, "data.csv");
     writeFileSync(image, "image");
     writeFileSync(csv, "a,b");
     const before = existsSync(join(home, "..", "state", "uploads")) ? readdirSync(join(home, "..", "state", "uploads")) : [];
     for (const images of [[image, csv], [image, join(home, "missing.png")]]) {
-      expect(await call(lead, "file", { title: "거부", path: csv, images })).toMatchObject({ isError: true });
+      expect(await call(writer, "file", { title: "거부", path: csv, images })).toMatchObject({ isError: true });
     }
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
     expect(readdirSync(join(home, "..", "state", "uploads"))).toEqual(before);
   });
 
   test("file: 두 번째 복사 실패는 게시하지 않고 실패 staging만 남긴다", async () => {
-    const { home, store, lead, orch, project } = await setup();
+    const { home, store, writer, orch, project } = await setupForFiles();
     const images = [join(home, "first.png"), join(home, "second.png")];
     for (const path of images) writeFileSync(path, "image");
     const original = FilePublication.prototype.stagePath;
@@ -436,7 +443,7 @@ describe("공통 도구", () => {
       if (++count === 1) unlinkSync(images[1]!);
       return saved;
     });
-    try { await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow(); }
+    try { await expect(handleAgentTool(orch, writer, "file", withDefaultTask(store, writer, "file", { title: "실패", images }))).rejects.toThrow(); }
     finally { stage.mockRestore(); }
     expect(store.listFiles(project.id)).toHaveLength(0);
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
@@ -448,7 +455,7 @@ describe("공통 도구", () => {
   });
 
   test("file: 자료 INSERT 실패는 첨부 INSERT도 rollback하고 기존 초안을 보존한다", async () => {
-    const { home, store, bus, lead, orch, project } = await setup();
+    const { home, store, bus, writer, orch, project } = await setupForFiles();
     const priorPath = join(home, "prior.png");
     writeFileSync(priorPath, "draft");
     const prior = store.createAttachment({ id: "a_draft", name: "prior.png", path: priorPath, size: 5, mime: "image/png" });
@@ -458,7 +465,7 @@ describe("공통 도구", () => {
     const events: unknown[] = [];
     const emit = spyOn(bus, "emit").mockImplementation((event) => { events.push(event); });
     store.db.exec("CREATE TRIGGER fail_file BEFORE INSERT ON files BEGIN SELECT RAISE(ABORT, 'publication failure'); END");
-    try { await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow("publication failure"); }
+    try { await expect(handleAgentTool(orch, writer, "file", withDefaultTask(store, writer, "file", { title: "실패", images }))).rejects.toThrow("publication failure"); }
     finally { emit.mockRestore(); }
     expect(events).toEqual([]);
     expect(store.listFiles(project.id)).toHaveLength(0);
@@ -469,22 +476,22 @@ describe("공통 도구", () => {
   });
 
   test("file: 두 번째 첨부 INSERT 실패도 앞 첨부와 자료를 모두 rollback한다", async () => {
-    const { home, store, lead, orch } = await setup();
+    const { home, store, writer, orch } = await setupForFiles();
     const images = [join(home, "one.png"), join(home, "two.png")];
     for (const path of images) writeFileSync(path, "image");
     store.db.exec("CREATE TRIGGER fail_second_attachment BEFORE INSERT ON attachments WHEN (SELECT COUNT(*) FROM attachments) > 0 BEGIN SELECT RAISE(ABORT, 'second attachment failure'); END");
-    await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", images }))).rejects.toThrow("second attachment failure");
+    await expect(handleAgentTool(orch, writer, "file", withDefaultTask(store, writer, "file", { title: "실패", images }))).rejects.toThrow("second attachment failure");
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
     expect(readdirSync(join(home, "..", "state", "uploads")).filter((name) => !name.startsWith("."))).toEqual([]);
   });
 
   test("file: SQLITE_FULL은 성공이 아닌 storage_full로 남고 새 파일은 staging으로 복귀한다", async () => {
-    const { home, store, lead, orch } = await setup();
+    const { home, store, writer, orch } = await setupForFiles();
     const path = join(home, "full.png");
     writeFileSync(path, "image");
     const insert = spyOn(store, "createFile").mockImplementation(() => { throw Object.assign(new Error("full"), { code: "SQLITE_FULL" }); });
     try {
-      await expect(handleAgentTool(orch, lead, "file", withDefaultTask(store, lead, "file", { title: "실패", path }))).rejects.toBeInstanceOf(StorageError);
+      await expect(handleAgentTool(orch, writer, "file", withDefaultTask(store, writer, "file", { title: "실패", path }))).rejects.toBeInstanceOf(StorageError);
     } finally { insert.mockRestore(); }
     expect(store.db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
     expect(readdirSync(join(home, "..", "state", "uploads")).filter((name) => !name.startsWith("."))).toEqual([]);
@@ -694,7 +701,6 @@ describe("총괄 도구", () => {
       ["team_compact", { member: "stranger" }],
       ["team_sleep", { member: "stranger" }],
       ["team_resume", { member: "stranger" }],
-      ["team_close", { member: "stranger" }],
     ] as const) {
       const r = await call(lead, name, args);
       expect(r.isError).toBe(true);
@@ -706,7 +712,7 @@ describe("총괄 도구", () => {
 
   test("자기 자신에게 시키거나 재우거나 닫을 수 없다", async () => {
     const { store, lead, call } = await setup();
-    for (const name of ["team_sleep", "team_close", "team_resume"]) {
+    for (const name of ["team_sleep", "team_resume"]) {
       expect(await call(lead, name, { member: "lead" })).toMatchObject({ isError: true, text: "자기 자신은 지정할 수 없습니다" });
     }
     expect(await call(lead, "team_assign", { member: "lead", text: "일" })).toMatchObject({ isError: true, text: "자기 자신은 지정할 수 없습니다" });
@@ -730,8 +736,8 @@ describe("총괄 도구", () => {
     expect(runner.sent.at(-1)!.text).toContain("할 일: 다시");
     runner.end(w.id);
     await Bun.sleep(20);
-    expect((await call(lead, "team_close", { member: "cs" })).isError).toBeUndefined();
-    expect(store.getMember(w.id)).toBeNull();
+    expect((await call(lead, "team_close", { member: "cs" })).isError).toBe(true);
+    expect(store.getMember(w.id)).not.toBeNull();
   });
 
   test("project_now·work_set·roster", async () => {

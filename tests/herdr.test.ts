@@ -1081,7 +1081,7 @@ describe("격리 herdr 서버", () => {
     expect(ws.label).toBe("배치 시험");
     const argv = argvLog().find((a) => a.sessionId === r.sessionId)!;
     expect(argv.cwd).toBe(work);
-    expect(argv.args).toEqual(["--session-id", r.sessionId, "-n", "총괄", "--append-system-prompt-file", join(h.dir, "rules.md"), "--mcp-config", join(h.dir, "mcp.json"), "--permission-mode", "bypassPermissions", "--allowedTools", "mcp__iamceo", "--add-dir", join(h.dir, "inbox", m.id)]);
+    expect(argv.args).toEqual(["--session-id", r.sessionId, "-n", "총괄", "--append-system-prompt-file", join(h.dir, "rules.md"), "--mcp-config", join(h.dir, "mcp.json"), "--permission-mode", "default", "--tools", "Read,Glob,Grep", "--strict-mcp-config", "--allowedTools", "mcp__iamceo,Read,Glob,Grep", "--add-dir", join(h.dir, "inbox", m.id)]);
     await waitEvent((e) => e.type === "session" && e.memberId === m.id && e.sessionId === r.sessionId, "session");
     await waitEvent((e) => e.type === "pane" && e.memberId === m.id && e.paneId === r.paneId && e.tabId === r.tabId, "pane");
     expect((await listAgents(h.socketPath)).find((a) => a.paneId === r.paneId)).toMatchObject({ name: "lead", agent: "claude", sessionId: r.sessionId, adopted: false });
