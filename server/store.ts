@@ -2016,6 +2016,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   projectWorkflow(projectId: string, tasks = this.listTasks(projectId), members = this.listMembers(projectId)): ProjectWorkflow {
+    return this.buildProjectWorkflow(projectId, tasks, members, this.workflowAssignments(projectId));
+  }
+
+  private buildProjectWorkflow(projectId: string, tasks: Task[], members: Member[], assignments: WorkflowAssignment[]): ProjectWorkflow {
     const reports = this.rows(`SELECT m.task_id, m.member_id, m.kind, m.title, m.at, latest.participated_at FROM messages m
       JOIN (SELECT MAX(rowid) AS rid, MIN(CASE WHEN kind IN ('진행','막힘','완료') THEN at END) AS participated_at
         FROM messages WHERE project_id = ? AND mine = 0 AND task_id IS NOT NULL GROUP BY task_id, member_id) latest ON m.rowid = latest.rid
@@ -2025,21 +2029,21 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       JOIN (SELECT MAX(a.id) AS id FROM activity a JOIN members m ON m.id = a.member_id
         WHERE m.project_id = ? AND a.member_id IN (${runningIds.map(() => '?').join(',')}) AND a.kind IN ('tool','text','error') GROUP BY a.member_id) latest ON latest.id = a.id`, projectId, ...runningIds)
       .map(r => ({ memberId: r.member_id as string, kind: r.kind as string, title: redactHarnessText(decodeStoredText(r.text)).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").slice(0, 180), at: r.at as string })) : [];
-    return buildWorkflow(tasks, members, this.workflowAssignments(projectId), reports, Date.now(), activity, this.listWork(projectId), this.taskContinuationPauses(projectId));
+    return buildWorkflow(tasks, members, assignments, reports, Date.now(), activity, this.listWork(projectId), this.taskContinuationPauses(projectId));
   }
 
   /** Simulate display order without enrolling anything; admission uses the same worker policy as pump. */
   workflowAssignmentPlacement(taskId: string, memberId: string) {
     const member = this.requireMember(memberId), task = this.requireTask(taskId);
     if (task.projectId !== member.projectId) throw new ApiError(404, "업무와 직원의 프로젝트가 다릅니다");
-    const tasks = new Map(this.listTasks(task.projectId).map(t => [t.id, t]));
+    const tasks = this.listTasks(task.projectId), byId = new Map(tasks.map(t => [t.id, t]));
     const existing = this.workflowAssignments(task.projectId, memberId);
     const candidate: WorkflowAssignment = { taskId, memberId, order: Math.max(0, ...existing.map(a => a.order)) + 1, assignedAt: task.createdAt,
       eligible: true, enrolled: true, queued: 1, held: 0, notices: 0, protected: 0, retryAt: null };
-    const row = orderAssignments([...existing.filter(a => a.taskId !== taskId), candidate], tasks)
-      .filter(a => a.enrolled && tasks.has(a.taskId) && !tasks.get(a.taskId)!.mergedInto && tasks.get(a.taskId)!.progress?.stage !== "done");
+    const row = this.buildProjectWorkflow(task.projectId, tasks, this.listMembers(task.projectId), [...existing.filter(a => a.taskId !== taskId), candidate]).nodes
+      .filter(n => n.memberId === memberId && n.state !== "done");
     return { position: row.findIndex(a => a.taskId === taskId) + 1, blocker: this.taskSequenceBlocker(memberId, taskId),
-      continuation: row.some(a => a.taskId !== taskId && relatedWork(a.taskId, taskId, tasks)) };
+      continuation: existing.some(a => a.enrolled && a.taskId !== taskId && byId.get(a.taskId)?.progress?.stage !== "done" && relatedWork(a.taskId, taskId, byId)) };
   }
 
   /** Bounded task evidence, independent of the latest message window. Ancestors stay in-project. */

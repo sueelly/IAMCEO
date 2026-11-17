@@ -196,7 +196,10 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };
   };
   for (const [memberId, originalRow] of rows) {
-    const row = orderAssignments(originalRow, taskMap);
+    // Report/board ancestors provide context, never an execution-order anchor.
+    const inferred = (a: WorkflowAssignment) => a.source === "report" || a.source === "board";
+    const row = [...orderAssignments(originalRow.filter(a => !inferred(a)), taskMap),
+      ...orderAssignments(originalRow.filter(inferred), taskMap)].map((a, order) => ({ ...a, order }));
     const first = row.find(a => a.eligible && taskMap.get(a.taskId)?.progress?.stage !== "done");
     let prev: WorkflowNode | undefined;
     for (const a of row) {

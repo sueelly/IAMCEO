@@ -187,3 +187,33 @@ test("report and board assignees are not treated as unassigned by the assignment
     expect(()=>commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:p.revision})).toThrow();
   }
 });
+
+test.each(["report", "board"])("a %s-only ancestor cannot invert the displayed execution order", evidence => {
+  const f=setup(),parent=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"기록으로 연결된 부모",origin:"owner"}).task;
+  const child=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"먼저 배정된 파생 업무",origin:"owner",parentTaskId:parent.id}).task;
+  if(evidence==="report")f.store.createMessage({projectId:f.project.id,taskId:parent.id,memberId:f.worker.id,who:f.worker.name,mine:false,kind:"진행",body:"부모 업무 기록"});
+  else f.store.upsertWork({projectId:f.project.id,taskId:parent.id,title:parent.title,sec:"doing",who:f.worker.name});
+  f.store.enqueue({projectId:f.project.id,memberId:f.worker.id,taskId:child.id,kind:"instruction",text:"먼저 진행"});
+  const preview=f.preview();
+  expect(preview.startCondition).toContain(child.title);
+  commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:preview.revision});
+  const row=f.store.projectWorkflow(f.project.id).nodes.filter(n=>n.memberId===f.worker.id&&n.state!=="done");
+  expect(row.filter(n=>n.assignmentSource==="delivery").map(n=>n.taskId)).toEqual([child.id,f.task.id]);
+  expect(row.find(n=>n.taskId===child.id)).toMatchObject({current:true,label:"전달 대기"});
+  expect(row.find(n=>n.taskId===f.task.id)).toMatchObject({current:false,label:"선행 업무 대기"});
+  expect(preview.position).toBe(row.findIndex(n=>n.taskId===f.task.id)+1);
+  expect(f.store.taskSequenceBlocker(f.worker.id,child.id)).toBeNull();
+  expect(f.store.taskSequenceBlocker(f.worker.id,f.task.id)?.taskId).toBe(child.id);
+});
+
+test("assignment preview counts unfinished historical deliveries that remain on the board", () => {
+  const f=setup(),previous=f.store.ensureSourceTask({projectId:f.project.id,sourceRef:randomUUID(),title:"완료 확인이 남은 이전 입력",origin:"owner"}).task;
+  const d=f.store.enqueue({projectId:f.project.id,memberId:f.worker.id,taskId:previous.id,kind:"instruction",text:"옛 지시"});
+  f.store.markDelivered(d.id);f.store.db.query("DELETE FROM task_sequence WHERE task_id=?").run(previous.id);
+  const preview=f.preview();
+  commitWorkflowAssignment(f.store,f.project.id,f.task.id,{operationId:randomUUID(),memberId:f.worker.id,revision:preview.revision});
+  const row=f.store.projectWorkflow(f.project.id).nodes.filter(n=>n.memberId===f.worker.id&&n.state!=="done");
+  expect(preview.position).toBe(2);
+  expect(preview.position).toBe(row.findIndex(n=>n.taskId===f.task.id)+1);
+  expect(f.store.taskSequenceBlocker(f.worker.id,f.task.id)).toBeNull();
+});
