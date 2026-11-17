@@ -10,7 +10,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { z } from "zod";
 import { CLI_PROVIDERS, fileKindOf, memberRank, PERMISSION_MODES, type Bootstrap, type FileKind, type HerdrInfo, type Member, type MessagePageOptions, type SyncCursor, type SyncSnapshot } from "../shared/types.ts";
-import { compressJsonRead } from "./http-compression.ts";
+import { compressJsonRead, compressWebAssetRead } from "./http-compression.ts";
 import type { OperationReceipt, ServerCapabilities } from "../shared/operations.ts";
 import type { DeliveryRecoveryService } from "./service-contracts.ts";
 import { ARTIFACT_CSP } from "../shared/artifact-kit.ts";
@@ -1219,7 +1219,7 @@ async function proxyWeb(origin: string, req: Request, url: URL): Promise<Respons
   const headers = new Headers(res.headers);
   for (const name of ["content-encoding", "content-length", "transfer-encoding"]) headers.delete(name);
   for (const [k, v] of Object.entries(pageHeaders(req.headers.get("host") ?? url.host))) headers.set(k, v);
-  return new Response(res.body, { status: res.status, headers });
+  return compressWebAssetRead(req, new Response(res.body, { status: res.status, headers }));
 }
 
 async function loadWebIndex(): Promise<Bun.HTMLBundle | null> {
