@@ -303,6 +303,7 @@ export function findMember(p: ProjectState | null, id: string | null | undefined
 const MSG_PAGE = 200;
 let wanted = false;
 let sessionGeneration = 0;
+let sessionStart: { generation: number; credentialGeneration: number; projectId: string; promise: Promise<void> } | null = null;
 let buffered: WsEvent[] | null = null;
 let historyRange: CursorHistory | null = null;
 let remoteEvents: WsEvent[] = [];
@@ -461,7 +462,13 @@ async function readLegacy(projectId: string, context: SyncContext): Promise<void
 }
 
 const coordinator = new BrowserSyncCoordinator({
-  capabilities: (signal) => api.capabilities(signal),
+  capabilities: async (signal) => {
+    // Both use the same credential and cancellation generation. Await cookie setup
+    // before rendering media, while avoiding a separate discovery round trip.
+    const [capabilities] = await Promise.allSettled([api.capabilities(signal), api.filesSession(signal)]);
+    if (capabilities.status === "rejected") throw capabilities.reason;
+    return capabilities.value;
+  },
   realtimeSession: (signal) => api.realtimeSession(signal),
   socket: (protocol) => new WebSocket(wsUrl(protocol)) as unknown as SyncSocket,
   readSnapshot: (projectId, signal) => { buffered = []; return api.sync(projectId, signal, state.capabilities?.capabilities.compactState === true); },
@@ -510,15 +517,18 @@ function disconnect(): void {
 }
 
 async function startSession(): Promise<void> {
+  const credentialGeneration = getCredentialGeneration();
+  if (sessionStart && wanted && sessionStart.generation === sessionGeneration
+    && sessionStart.credentialGeneration === credentialGeneration && sessionStart.projectId === state.route.projectId) return sessionStart.promise;
   for (const fn of sessionInvalidationHooks) fn();
   const generation = ++sessionGeneration;
   wanted = true; coordinator.stop(); clearRemoteEvents(); historyRange?.cancel(); historyRange = null;
   if (typeof document !== "undefined" && document.visibilityState !== "visible") { coordinator.suspend(); return; }
   coordinator.resume();
-  // Keep an old login's cookie completion from starting a new session after logout.
-  await api.filesSession().catch(() => {});
-  if (!wanted || generation !== sessionGeneration) return;
-  await coordinator.start(state.route.projectId);
+  const start = { generation, credentialGeneration, projectId: state.route.projectId, promise: Promise.resolve() };
+  sessionStart = start;
+  start.promise = coordinator.start(start.projectId).finally(() => { if (sessionStart === start) sessionStart = null; });
+  return start.promise;
 }
 
 // ---- 동작 ----

@@ -175,7 +175,7 @@ export const api = {
   },
   file: (id: string, signal?: AbortSignal) => get<FileDoc>(`/api/files/${seg(id)}`, signal),
   /** <img>·<video> 가 쓸 첨부 쿠키를 받는다. 화면을 그리기 전에 부른다. */
-  filesSession: () => post<void>("/api/files-session"),
+  filesSession: (signal?: AbortSignal) => request<void>("POST", "/api/files-session", undefined, WRITE_TIMEOUT_MS, { signal }),
 
   projectState: (id: string, signal?: AbortSignal) => get<ProjectState>(`/api/projects/${seg(id)}/state`, signal),
   archivedProjects: () => get<Project[]>("/api/projects/archived"),
