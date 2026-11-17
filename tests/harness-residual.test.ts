@@ -26,7 +26,7 @@ for(const [name,arg] of [['다중 공백',"'x  y'"],['탭',"'x\ty'"],['줄바꿈
   expect((await actual(f,command)).exit).toBe(0);
   const result=await done(f,task,command);expect(result.isError).toBeUndefined();
   const message=result.text.match(/#(msg_[\w-]+)/)![1]!;
-  expect(f.store.getReportHarness(message)!.checks[0]).toMatchObject({command,name:'동작 검사',evidence:'실행 결과'});
+  expect(f.store.getReportHarness(message)!.checks[0]).toMatchObject({command,name:'동작 검사',evidence:'실행\n 결과'});
   writeExec(f.isolated.paths.claudeHome,f.worker,command,1,'의도한 마지막 실패 기록');
   expect((await done(f,task,command)).isError).toBe(true);
 });

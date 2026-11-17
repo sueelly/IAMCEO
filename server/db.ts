@@ -999,6 +999,8 @@ export const MIGRATIONS: string[] = [
      trigger_message_id TEXT,
      created_at TEXT NOT NULL
    );`,
+  // v41: persistent CLI failure prevents automatic restart loops.
+  `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

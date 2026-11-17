@@ -129,6 +129,21 @@ test("deployed v38 continuation state survives the additive workflow receipt mig
   expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
+test("deployed v39 workflow receipts and queued work survive the failure-state migration", () => {
+  expect(MIGRATIONS[38]).toContain("CREATE TABLE workflow_assignment_receipts");
+  const { path } = fixture("deployed-v39.db"), old = historicalDb(path, 39);
+  old.query("INSERT INTO workflow_assignment_receipts VALUES (?,?,?,?,?,?,?)").run("keep-operation", "p", "task", "m", "delivery", '{"preserve":true}', at);
+  const before = old.query("SELECT id, status, text FROM deliveries ORDER BY id").all();
+  old.close();
+  const migrated = track(openDb(path));
+  expect(version(migrated)).toBe(MIGRATIONS.length);
+  expect(migrated.query("SELECT request_json FROM workflow_assignment_receipts WHERE operation_id = ?").get("keep-operation")).toEqual({ request_json: '{"preserve":true}' });
+  expect(migrated.query("SELECT id, status, text FROM deliveries ORDER BY id").all()).toEqual(before);
+  expect(columns(migrated, "members")).toContain("execution_issue_json");
+  expect(migrated.query("SELECT execution_issue_json FROM members WHERE id = 'm'").get()).toEqual({ execution_issue_json: null });
+  expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+
 test("v39의 업무 배정 영수증을 보존하며 실행 상한과 반복 실패 결재를 추가한다", () => {
   expect(MIGRATIONS[38]).toContain("CREATE TABLE workflow_assignment_receipts");
   const { path } = fixture("deployed-v39.db"), old = historicalDb(path, 39);
@@ -601,4 +616,19 @@ describe("persistence contracts", () => {
     reopened.query("INSERT INTO push_report_groups (id,project_id,member_id,opened_at,closes_at,last_message_id) VALUES ('next','p','m',?,?,'report-3')").run(closesAt, new Date(Date.parse(closesAt) + PUSH_REPORT_GROUP_WINDOW_MS).toISOString());
     expect(reopened.query("SELECT * FROM push_report_group_recipients WHERE group_id='next'").all()).toEqual([]);
   });
+});
+
+test("v40 upgrade and Store reconstruction preserve an existing global concurrency of twenty", () => {
+  expect(MIGRATIONS[39]).toContain("ALTER TABLE projects ADD COLUMN max_concurrent_turns");
+  const { path } = fixture("global-limit-20.db"), old = historicalDb(path, 40);
+  old.query("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)").run("maxConcurrentTurns", "20");
+  old.query("UPDATE projects SET max_concurrent_turns = 2 WHERE id = 'p'").run();
+  old.close();
+  const migrated = track(openDb(path));
+  const store = new Store(migrated, new Bus());
+  expect(store.getSettings().maxConcurrentTurns).toBe(20);
+  expect(store.requireProject("p").maxConcurrentTurns).toBe(2);
+  expect(migrated.query("SELECT value FROM settings WHERE key = 'maxConcurrentTurns'").get()).toEqual({ value: "20" });
+  expect(columns(migrated, "members")).toContain("execution_issue_json");
+  expect(new Store(migrated, new Bus()).getSettings().maxConcurrentTurns).toBe(20);
 });

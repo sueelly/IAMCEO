@@ -1,9 +1,9 @@
 import { capturedContext } from "./statusline.ts";
 import { readCodexContextFile } from "./codex-context.ts";
 import { createHash } from "node:crypto";
-import { constants, closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, opendirSync, openSync, readSync, readdirSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { ApprovalPrompt, Backend, NativePrompt } from "../../shared/types.ts";
 import { claudeFolderTrust, codexFolderTrust } from "./core-approval.ts";
 import { antigravityDraft, antigravityExactComposer, antigravityFolderTrust, antigravityMemberHome, discoverAntigravityConversation, existingAntigravityTranscript, readAntigravityContext } from "./antigravity.ts";
@@ -218,10 +218,13 @@ export class CoreRunner implements Runner {
     if (laterNativeId(providerFor(member)) && (member.paneId || (this.lostCodex.has(member.id) && this.lostCodex.get(member.id) === member.sessionGeneration)) && !member.sessionId) throw new CoreError("session_unknown", "The previous Codex/Antigravity terminal is gone and its native session id is unknown; explicitly start a fresh session with context handoff");
     const launch = providerLaunch(member, opts, this.options);
     // Rejoin a live holder first: a new conversation may not have written its
-    // transcript yet. Only a conclusively absent local Claude log lets the
-    // orchestrator use its existing missing-conversation handoff path.
+    // transcript yet. Only a conclusively absent local log lets the
+    // orchestrator use its existing missing-session handoff path.
     if (opts.resume && member.sessionId && providerFor(member) === "claude" && this.missingClaudeTranscript(member.sessionId)) {
       throw new CoreError("session_missing", `No conversation found with session ID: ${member.sessionId}`, false, "not_written");
+    }
+    if (opts.resume && member.sessionId && providerFor(member) === "codex" && this.missingCodexTranscript(member.sessionId)) {
+      throw new CoreError("session_missing", `Codex session ${member.sessionId} not found in saved or archived sessions`, false, "not_written");
     }
     const env = childEnv();
     for (const key of Object.keys(env)) if (/^(HC_|HERDR_)/.test(key)) delete env[key];
@@ -259,6 +262,62 @@ export class CoreRunner implements Runner {
       }
     }
     return true;
+  }
+  /** False includes inconclusive inspection: never rotate a session on an unreadable or partial scan. */
+  private missingCodexTranscript(sessionId: string): boolean {
+    const home = this.options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+    if (!isAbsolute(home) || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(sessionId)) return false;
+    const directories = new Map<string, Stats>(), absent = new Set<string>();
+    let entries = 0;
+    const unchanged = () => {
+      for (const [path, before] of directories) {
+        const after = lstatSync(path);
+        if (!after.isDirectory() || after.dev !== before.dev || after.ino !== before.ino || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) return false;
+      }
+      for (const path of absent) {
+        try { lstatSync(path); return false; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
+      }
+      return true;
+    };
+    const scan = (path: string, depth: number): boolean => {
+      let stat: Stats;
+      try { stat = lstatSync(path); }
+      catch (error) {
+        // Only a missing root is expected; a disappearing descendant invalidates the scan.
+        if (depth !== 0 || (error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        absent.add(path); return true;
+      }
+      if (!stat.isDirectory() || depth > 8) return false;
+      directories.set(path, stat);
+      // Stream entries with explicit errors. Glob can silently skip unreadable directories.
+      const directory = opendirSync(path);
+      try {
+        for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+          if (++entries > 10_000) return false;
+          if (entry.isDirectory()) { if (!scan(join(path, entry.name), depth + 1)) return false; }
+          // Symlinks and other special entries leave the scan incomplete; never follow them.
+          else if (!entry.isFile() || (entry.name.startsWith("rollout-") && entry.name.endsWith(`-${sessionId}.jsonl`))) return false;
+        }
+      } finally { directory.closeSync(); }
+      return true;
+    };
+    try {
+      let stat: Stats;
+      try { stat = lstatSync(home); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        // ENOENT can also mean a dangling ancestor symlink. Require an inspectable parent.
+        const parent = dirname(home), parentStat = lstatSync(parent);
+        if (!parentStat.isDirectory()) return false;
+        directories.set(parent, parentStat); absent.add(home);
+        return unchanged();
+      }
+      if (!stat.isDirectory()) return false;
+      directories.set(home, stat);
+      // Native session IDs are independent of the current workspace and may be archived.
+      return scan(join(home, "sessions"), 0) && scan(join(home, "archived_sessions"), 0) && unchanged();
+    } catch { return false; }
   }
   async reattachOwned(member: RunnerMember): Promise<RunnerReattachResult> {
     const release = this.reserve(member.id);
@@ -326,7 +385,7 @@ export class CoreRunner implements Runner {
     if (statusKey !== track.statusKey || track.failure) {
       track.status = status;
       track.statusKey = statusKey;
-      if (state === "error") return; // Keep the error result from being overwritten by idle in the same observation.
+      if (state === "error" && status !== "gone") return; // Keep the error result from being overwritten by idle in the same observation.
       this.event(track, { type: "status", memberId: track.member.id, status, blockedReason, observation: { source: "core", observedAt: track.observedAt, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: track.setupError }, ...(status === "gone" ? { exit: { reason: terminal.reason ?? null, exitCode: terminal.exit_code ?? null } } : {}) });
     }
   }

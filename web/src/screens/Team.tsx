@@ -1,3 +1,4 @@
+import { deliveryWaitText, memberIssueLabel, providerIssueKind } from "@shared/execution-issues";
 // 팀 화면(spec §10): 지금 상황 · 총괄 · 직원 · 잠든 직원 · 일 목록. 직원 상세는 주소의 <sub>(직원 id)로 열린다.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { EFFORTS, memberRank, type Activity, type DeliveryNoticeItem, type DeliveryNoticePage, type ActivityKind, type CliProvider, type Effort, type Member, type MemberStatus, type PatchMemberReq, type Project, type Task, type WorkItem, type WorkSec } from "@shared/types";
@@ -206,6 +207,9 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
   const state = useProject();
   const current = state?.workflow?.nodes.find((node) => node.memberId === m.id && node.current);
   const task = current ? state?.tasks?.find((item) => item.id === current.taskId) : null;
+  const waitReason = !memberIssueLabel(m) && m.queuedCount > 0
+    ? current?.inputBlock ? current.reason : m.deliveryWait ? deliveryWaitText(m.deliveryWait).reason : current?.state === "waiting" || current?.state === "blocked" ? current.reason : null
+    : null;
   return (
     <dl className="tm-facts">
       {extra}
@@ -215,6 +219,7 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
       {m.next ? <Row label="다음">{m.next}</Row> : null}
       {/* 보류(보호·수신 불확실·보관)는 자동으로 들어가지 않는다. 실행할 입력과 나눠 센다. */}
       {m.queuedCount > 0 ? <Row label="입력"><span className="t-tabular">{queueText(m, state?.workflow?.nodes)}</span></Row> : null}
+      {waitReason ? <Row label="대기 이유">{waitReason}</Row> : null}
       {m.contextPct !== null ? (
         <Row label="문맥">
           <ContextMeter pct={m.contextPct} compactAt={compactAt} />
@@ -229,6 +234,12 @@ function MemberFacts({ m, compactAt, openAsks, extra }: { m: Member; compactAt: 
       ) : null}
     </dl>
   );
+}
+
+function StaffStatus({ m, label = false }: { m: Member; label?: boolean }) {
+  const issue = memberIssueLabel(m);
+  const wait = m.status === "idle" && m.queuedCount && m.deliveryWait ? deliveryWaitText(m.deliveryWait).label : undefined;
+  return <StatusDot status={issue ? "error" : m.status} label={label} text={issue ?? wait} className="tm-status" />;
 }
 
 function Subagents({ n }: { n: number }) {
@@ -248,7 +259,7 @@ function MemberCard({ m, compactAt, openAsks, extra, lead }: { m: Member; compac
         </h3>
         <span className="tm-card__status">
           <Subagents n={m.subagents} />
-          <StatusDot status={m.status} label className="tm-status" />
+          <StaffStatus m={m} label />
         </span>
       </header>
       <p className="tm-card__role">
@@ -291,7 +302,7 @@ function AsleepRow({ m, runnerEnabled }: { m: Member; runnerEnabled: boolean }) 
     <li className="tm-asleep__row">
       <a className="tm-asleep__main" href={memberHref(m)}>
         <span className="tm-asleep__name">
-          <StatusDot status={m.status} className="tm-status" />
+          <StaffStatus m={m} />
           {m.name}
           <Badge>{providerName(m.cli ?? "claude")}</Badge>
           {m.role ? <span className="tm-asleep__role">{m.role}</span> : null}
@@ -772,7 +783,7 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
   return (
     <div className="tm tm-detail">
       <div className="tm-detail__top">
-        <StatusDot status={m.status} label className="tm-status" />
+        <StaffStatus m={m} label />
         <Badge>{providerName(m.cli ?? "claude")}</Badge>
         {m.role ? <span className="tm-detail__role">{m.role}</span> : null}
         <Subagents n={m.subagents} />
@@ -808,10 +819,10 @@ function MemberDetailBody({ m, project, compactAt, openAsks }: { m: Member; proj
         </>
       ) : (
         <div className="tm-actions">
-          {asleep ? (
+          {asleep || memberIssueLabel(m) ? (
             project.runnerEnabled ? (
               <GlassButton variant="glass" size="m" disabled={busy !== null || legacy} onClick={() => memberAct("resume", api.resume)}>
-                {busy === "resume" ? "깨우는 중" : "깨우기"}
+                {busy === "resume" ? "여는 중" : providerIssueKind(m.executionIssue?.detail ?? m.lastError) ? "다시 확인" : memberIssueLabel(m) ? "다시 시도" : "깨우기"}
               </GlassButton>
             ) : (
               <p className="tm-note tm-note--left">실행이 꺼져 있어 깨울 수 없습니다. 팀 화면에서 총괄을 시작하세요.</p>

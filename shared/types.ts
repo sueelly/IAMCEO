@@ -147,6 +147,22 @@ export interface CoreContextState {
   compaction: ContextCompaction | null;
 }
 
+export interface ExecutionIssue {
+  kind: "startup_failed" | "session_missing" | "usage_limit" | "authentication";
+  detail: string;
+  at: string;
+  sessionGeneration: number;
+  terminalId: string | null;
+  exitCode: number | null;
+}
+export interface DeliveryWait {
+  kind: "capacity" | "project_capacity" | "working" | "manual_control" | "permission" | "selection" | "setup" | "compact" | "retry" | "runner_disabled" | "archived" | "backend_down" | "session" | "lifecycle" | "delivery_confirmation" | "manual_inbox" | "sequence" | "quiet" | "input";
+  since: string;
+  retryAt?: string;
+  active?: number;
+  limit?: number;
+}
+
 export interface Member {
   id: string;
   projectId: string;
@@ -184,6 +200,8 @@ export interface Member {
   /** queuedCount 중 보류(보호·확인 필요·보관)라 자동으로 들어가지 않는 입력 수. 옛 서버는 보내지 않는다. */
   heldCount?: number;
   lastError: string | null;
+  executionIssue?: ExecutionIssue | null;
+  deliveryWait?: DeliveryWait | null;
   /** CLI가 마지막으로 일한 시각(활동 turn_start/turn_end/tool/tool_result의 최신 ISO 시각). 기록이 없으면 null. */
   lastActiveAt: string | null;
   updatedAt: string;

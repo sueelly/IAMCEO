@@ -41,12 +41,12 @@ function artifactBytes(html: string): number {
 
 const text = z.string().trim().min(1);
 /** 전달 글의 머리나 따옴표 안에 들어가는 값은 한 줄이어야 한다. 줄을 바꿔 출처 접두어를 지어낼 수 있다. */
-const oneLine = (max: number) =>
+const oneLine = (max = Infinity) =>
   text.superRefine((value, ctx) => {
     const problem = oneLineProblem(value, max);
     if (problem) ctx.addIssue({ code: "custom", message: problem });
   });
-const oneLineOpt = (max: number) =>
+const oneLineOpt = (max = Infinity) =>
   z.string().trim().superRefine((value, ctx) => {
     const problem = oneLineProblem(value, max);
     if (problem) ctx.addIssue({ code: "custom", message: problem });
@@ -68,19 +68,19 @@ const contractSchema = z.strictObject({
 }).describe("업무 시작 계약. 계약이 있는 업무의 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
 
 const claimSchema = z.strictObject({
-  text: z.string().trim().min(1).max(400).describe("주장 한 문장"),
+  text: z.string().trim().min(1).describe("주장과 그 조건을 적는다. 필요한 설명은 길어도 그대로 남긴다"),
   basis: z.enum(["fact", "interpretation"]).describe("fact 출처에 그대로 있는 사실 · interpretation 출처를 읽고 낸 해석"),
-  source: z.string().trim().max(500).optional().describe("출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요"),
-  quote: z.string().trim().max(600).optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다"),
+  source: z.string().trim().optional().describe("출처: 연 주소·파일 경로·자료 id(f_...). 사실·해석 모두 필요. 긴 출처도 생략하지 않는다"),
+  quote: z.string().trim().optional().describe("사실 주장의 근거 원문(본 그대로, 8자 이상). 필요한 인용은 자르지 않는다. 서버는 확인한 읽기 도구의 대상·인용 존재만 대조한다. 주장 진위·의미는 별도 검토다"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 주장이 뒷받침하는 합격 기준 번호"),
 });
 
 const checkSchema = z.strictObject({
-  name: z.string().trim().min(1).max(200).describe("검사 이름"),
+  name: z.string().trim().min(1).describe("무엇을 확인한 검사인지 식별할 이름"),
   kind: z.enum(CHECK_KINDS).describe("behavior 관련 동작 · typecheck 코드 검사 · regression 회귀 · real 실제 화면·실행 · source 주장별 출처 · fact 사실과 해석 구분 · unverified 미확인 · other"),
   result: z.enum(["pass", "fail", "not_run"]).describe("실제 결과. 돌리지 않았으면 not_run"),
-  evidence: z.string().trim().min(1).max(1000).describe("근거: 통과·실패 수, 출처, 확인한 화면. 명령이 끝났다는 사실만으로 통과라 하지 않는다"),
-  command: z.string().max(500).optional().describe("실행한 명령. behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)"),
+  evidence: z.string().trim().min(1).describe("근거: 통과·실패 수, 출처, 확인한 화면. 필요한 근거는 그대로 남긴다. 명령이 끝났다는 사실만으로 통과라 하지 않는다"),
+  command: z.string().optional().describe("실행한 명령 원문(길어도 자르지 않는다). behavior·typecheck·regression 통과는 꼭 적는다. 서버가 이 세션 실행 기록에서 계약 뒤 이 명령의 마지막 실행 종료 코드 0 을 찾는다(파이프·;를 뒤에 붙인 실행은 받지 않는다)"),
   criterion: z.number().int().min(1).max(12).optional().describe("이 검사가 확인한 합격 기준 번호"),
 });
 
@@ -431,17 +431,17 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     z.strictObject({
       report_id: text.optional().describe("조회할 보고 원본 메시지 id. 조회할 때는 이 필드만 준다"),
       kind: z.enum(["완료", "진행", "막힘", "알림"]).optional(),
-      title: oneLine(300).optional().describe("보고를 훑어볼 때 알 수 있는 업무 대상과 이번에 달라진 결과. 진행은 변화, 막힘은 장애와 필요한 조건, 완료는 실제 끝낸 범위·확인 단계를 쓴다"),
+      title: oneLine().optional().describe("보고를 훑어볼 때 알 수 있는 업무 대상과 이번에 달라진 결과. 진행은 변화, 막힘은 장애와 필요한 조건, 완료는 실제 끝낸 범위·확인 단계를 쓴다"),
       body: z.string().optional().describe("이 글만 읽어도 이해할 업무·요청 맥락, 핵심 결과, 가까운 근거, 남은 확인 대상과 다음 행동(마크다운). 줄 수 때문에 대상·조건·불확실성을 빼지 않는다. 상세 근거는 실제 자료에 연결한다"),
-      owner_action: oneLineOpt(200).optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
+      owner_action: oneLineOpt().optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
       file_ids: z.array(z.string()).optional().describe("이어 줄 자료 id"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
       contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),
       claims: z.array(claimSchema).max(40).optional().describe("조사 결과의 주장. 조사 계약의 완료에 필요하다. 사실은 출처·원문 인용, 해석은 기댄 출처"),
-      unverified: z.array(z.string().trim().min(1).max(300)).max(20).optional().describe("확인하지 못한 것. 없으면 빈 배열"),
-      review_needed: z.string().trim().min(1).max(600).optional().describe("독립 검토가 필요하면 확인할 변경과 수용 기준. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다"),
+      unverified: z.array(z.string().trim().min(1)).max(20).optional().describe("확인하지 못한 대상과 조건. 필요한 설명은 길어도 남긴다. 없으면 빈 배열"),
+      review_needed: z.string().trim().min(1).optional().describe("독립 검토가 필요하면 확인할 변경과 수용 기준. 필요한 조건은 길어도 남긴다. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다"),
       about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
