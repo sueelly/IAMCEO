@@ -1,0 +1,398 @@
+{
+  "taskId": "tk_w_SoxDmyweQG9B",
+  "contractRev": 2,
+  "recordedAt": "2026-11-17T19:44:18Z",
+  "source": {
+    "readRef": "origin/main",
+    "readCommit": "166c99529eaae584169983049d0058bad78f6e29",
+    "patchHead": "935f2e772e265ef38a7d5243a533e3acd162cdac",
+    "builtCodeCommit": "ec5345164c47365ff8009f3c39fe6c46ff6790a6",
+    "builtSchema": 40
+  },
+  "serverCheck": {
+    "version": "0.1.0",
+    "schema": {
+      "version": 44,
+      "supportedVersion": 44,
+      "ok": true
+    },
+    "harness": {
+      "mode": "required",
+      "requiredSince": null
+    },
+    "execEvidence": "available",
+    "backupSchemas": [
+      {
+        "createdAt": "2026-11-17T10:45:01.205Z",
+        "schemaVersion": 35,
+        "verified": true
+      },
+      {
+        "createdAt": "2026-11-16T13:25:39.268Z",
+        "schemaVersion": 33,
+        "verified": true
+      }
+    ]
+  },
+  "ds": {
+    "taskId": "tk_w_y4SxZgFApDI7",
+    "contract": {
+      "on": "tk_w_y4SxZgFApDI7",
+      "rev": 2,
+      "binding": true,
+      "author": "Novel of the world 총괄",
+      "authorKind": "conductor",
+      "confirmedBy": null
+    },
+    "coverage": {
+      "scope": "task",
+      "observedAt": "2026-11-17T19:42:33.246Z",
+      "limit": 60,
+      "total": 8,
+      "returned": 8,
+      "truncated": false,
+      "historyOrder": "oldest_first",
+      "recentOrder": "latest_sixty_chronological",
+      "unsettledStatuses": [
+        "queued",
+        "held",
+        "delivering"
+      ],
+      "unsettledTotal": 0,
+      "unsettledReturned": 0,
+      "unsettledTruncated": false,
+      "pendingWake": 0,
+      "pendingNotice": 0,
+      "byStatus": {
+        "delivered": 8
+      }
+    },
+    "currentCompletion": {
+      "eligible": true,
+      "sources": [
+        "msg_7oHOhhO9n6Vm"
+      ]
+    },
+    "openDecisions": [],
+    "reports": [
+      {
+        "id": "msg_7oHOhhO9n6Vm",
+        "kind": "완료",
+        "who": "디자인 시스템",
+        "at": "2026-11-17T17:45:59.001Z",
+        "gate": "contract",
+        "evidence": "ok",
+        "correctsMessageId": "msg_WGfLhBHeDFYy",
+        "completionBasis": {
+          "messageId": "msg_7oHOhhO9n6Vm",
+          "eligible": true,
+          "status": "passed",
+          "correctedBy": null
+        },
+        "checks": [
+          {
+            "name": "맥미니·기존 작업 위치와 수정 범위 확인",
+            "kind": "real",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "두 실제 사용처의 부분 영역 변수 조절",
+            "kind": "behavior",
+            "result": "pass",
+            "exec": "matched",
+            "exit": 0
+          },
+          {
+            "name": "기존 ErrorState와 Button의 busy 호환 회귀",
+            "kind": "regression",
+            "result": "pass",
+            "exec": "matched",
+            "exit": 0
+          },
+          {
+            "name": "새 검사 코드의 코드 검사",
+            "kind": "typecheck",
+            "result": "pass",
+            "exec": "matched",
+            "exit": 0
+          },
+          {
+            "name": "실제 부품의 좁은/넓은 화면과 표시 확인",
+            "kind": "real",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "소비 사용법의 CP1 정정과 후속 실제 앱 경계",
+            "kind": "real",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "보완 전후 자료의 독립 HTML 검사",
+            "kind": "real",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "새 보완 단위 커밋·일반 업로드·원격 일치",
+            "kind": "real",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "정주행 최소 수정의 의미·동기화 유지",
+            "kind": "other",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "미확인과 준비 실패의 정확한 구분",
+            "kind": "unverified",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          },
+          {
+            "name": "미확인 항목",
+            "kind": "unverified",
+            "result": "pass",
+            "exec": "not_required",
+            "exit": null
+          }
+        ]
+      },
+      {
+        "id": "msg_oIhaljZVWP3u",
+        "kind": "막힘",
+        "who": "Novel of the world 총괄",
+        "at": "2026-11-17T18:16:36.447Z",
+        "gate": null,
+        "evidence": null,
+        "correctsMessageId": null,
+        "completionBasis": null,
+        "checks": [
+          {
+            "name": "미확인 항목",
+            "kind": "unverified",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          }
+        ]
+      },
+      {
+        "id": "msg_Kf5ZKsRWsAhF",
+        "kind": "알림",
+        "who": "Novel of the world 총괄",
+        "at": "2026-11-17T19:01:37.477Z",
+        "gate": null,
+        "evidence": null,
+        "correctsMessageId": null,
+        "completionBasis": null,
+        "checks": [
+          {
+            "name": "r2 기준1 전용 작업과 소유 근거 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준2 변수와 부분 영역 소비 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준3 공통 부품과 Spinner 보완 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준4 실제 화면 근거 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준5 실험실·견본과 두 앱 후속 분리",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준6 검증 납품과 원격 근거 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          },
+          {
+            "name": "r2 기준7 정주행 문서 조건 수용",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          }
+        ]
+      },
+      {
+        "id": "msg_xGD8HRHVW2jv",
+        "kind": "알림",
+        "who": "Novel of the world 총괄",
+        "at": "2026-11-17T19:03:32.505Z",
+        "gate": null,
+        "evidence": null,
+        "correctsMessageId": "msg_oIhaljZVWP3u",
+        "completionBasis": null,
+        "checks": [
+          {
+            "name": "과거 수신 대기와 현재 r2 납품 수용 분리",
+            "kind": "fact",
+            "result": "pass",
+            "exec": null,
+            "exit": null
+          }
+        ]
+      },
+      {
+        "id": "msg_b1JQS6u7VXlz",
+        "kind": "알림",
+        "who": "Novel of the world 총괄",
+        "at": "2026-11-17T19:03:49.120Z",
+        "gate": null,
+        "evidence": null,
+        "correctsMessageId": null,
+        "completionBasis": null,
+        "checks": []
+      },
+      {
+        "id": "msg_c517w02aHbwl",
+        "kind": "완료",
+        "who": "Novel of the world 총괄",
+        "at": "2026-11-17T19:19:47.273Z",
+        "gate": "contract",
+        "evidence": null,
+        "correctsMessageId": "msg_oIhaljZVWP3u",
+        "completionBasis": {
+          "messageId": "msg_c517w02aHbwl",
+          "eligible": true,
+          "status": "inherited",
+          "correctedBy": null
+        },
+        "checks": []
+      }
+    ],
+    "originalInstruction": [
+      {
+        "id": "dl_MhC4pKO7hcds",
+        "status": "delivered",
+        "at": "2026-11-17T14:39:35.113Z",
+        "attempts": 1,
+        "deliveredAt": "2026-11-17T14:39:35.379Z",
+        "execution": {
+          "runId": "cbea679e-f3f6-4dc4-b677-9b28958809fa",
+          "sessionGeneration": 0,
+          "inputReceivedAt": "2026-11-17T14:39:35.402Z",
+          "startedAt": "2026-11-17T14:39:35.365Z",
+          "endedAt": "2026-11-17T15:03:54.411Z",
+          "phase": "ended",
+          "result": "success"
+        }
+      }
+    ]
+  },
+  "own": {
+    "coverage": {
+      "scope": "task",
+      "observedAt": "2026-11-17T19:42:46.077Z",
+      "limit": 60,
+      "total": 11,
+      "returned": 11,
+      "truncated": false,
+      "historyOrder": "oldest_first",
+      "recentOrder": "latest_sixty_chronological",
+      "unsettledStatuses": [
+        "queued",
+        "held",
+        "delivering"
+      ],
+      "unsettledTotal": 0,
+      "unsettledReturned": 0,
+      "unsettledTruncated": false,
+      "pendingWake": 0,
+      "pendingNotice": 0,
+      "byStatus": {
+        "delivered": 11
+      }
+    },
+    "originals": [
+      {
+        "id": "dl_DPkK7h9osSqt",
+        "status": "delivered",
+        "at": "2026-11-17T17:30:14.439Z",
+        "attempts": 2,
+        "deliveredAt": "2026-11-17T19:42:07.717Z",
+        "recovery": {
+          "phase": "resolved",
+          "reason": null
+        },
+        "execution": {
+          "runId": "c8d215f5-7aee-471a-8df5-ee7fdaa5e960",
+          "sessionGeneration": 0,
+          "inputReceivedAt": "2026-11-17T19:42:07.749Z",
+          "startedAt": "2026-11-17T19:42:07.709Z",
+          "endedAt": null,
+          "phase": "running",
+          "result": null
+        }
+      },
+      {
+        "id": "dl_6rTzQPshPykm",
+        "status": "delivered",
+        "at": "2026-11-17T17:48:21.690Z",
+        "attempts": 2,
+        "deliveredAt": "2026-11-17T19:42:07.721Z",
+        "recovery": {
+          "phase": "resolved",
+          "reason": null
+        },
+        "execution": {
+          "runId": "c8d215f5-7aee-471a-8df5-ee7fdaa5e960",
+          "sessionGeneration": 0,
+          "inputReceivedAt": "2026-11-17T19:42:07.749Z",
+          "startedAt": "2026-11-17T19:42:07.709Z",
+          "endedAt": null,
+          "phase": "running",
+          "result": null
+        }
+      }
+    ]
+  },
+  "observationLimits": [
+    "task_trace omits actual stage marks, last reopen boundary, todo/approval state and completion family facts",
+    "schema equality does not identify deployed source SHA/build ID",
+    "rootcause representative original lookup returned not found; attribution remains conductor-forwarded owner observation",
+    "prior 45-wait count belongs to conductor observation, not this new sample"
+  ],
+  "scope": {
+    "sourceEdits": 0,
+    "operationalWrites": 0,
+    "doneRetries": 0,
+    "newSubagents": 0,
+    "prior331TestsRepeated": false
+  }
+}
