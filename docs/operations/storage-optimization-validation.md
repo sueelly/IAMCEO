@@ -1,6 +1,6 @@
 # Storage optimization validation
 
-The storage changes preserve the already-running pagination source `5fe3fb7`. Pagination remains schema v34; storage optimization follows it as v35. Only the feature branch is changed. Shared main and the running data home have not been modified by this task.
+This document records the pre-rollout validation. The storage changes preserve the already-running pagination source `5fe3fb7` and the subsequent startup improvement `eaa12a7`. Pagination remains schema v34; storage optimization follows it as v35. Shared main is not changed.
 
 ## Passing checks
 
@@ -23,4 +23,6 @@ The broad run began before the final schema-layout hardening; that hardening and
 
 ## Runtime application
 
-Production checks performed by this task were read-only inspection and in-memory transformation/fingerprint calculations. No runtime migration, VACUUM, new production backup, service restart, approval response or main integration was performed. The explicit offline command and release compatibility requirements are in [storage-optimization.md](storage-optimization.md).
+Before rollout authorization, production checks were read-only inspection and in-memory transformation/fingerprint calculations. No runtime migration, VACUUM, new production backup, service restart, approval response or main integration was performed at that stage.
+
+The user subsequently authorized the runtime migration and service update. Preparation preserves startup source `eaa12a7`, uses the running service's pinned Bun 1.3.14, and checks core detachment/reattachment without stopping its CLI holders. The storage/API/migration/lifecycle checks passed 134 tests; the additional core/bridge/state/maintenance checks passed 134 tests. Actual activation, measurements and runtime identities belong in the private operational receipt and release manifest, never source Git. The no-backup offline command and release compatibility requirements are in [storage-optimization.md](storage-optimization.md).
