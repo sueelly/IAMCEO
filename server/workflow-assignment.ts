@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type WorkflowAssignmentPreview, type WorkflowAssignmentRequest, type WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { canonicalAgentRequest } from "./agent-receipts.ts";
-import { bindingContract } from "./harness.ts";
+import { bindingContract, EXECUTION_CONTRACT_LABEL, missingExecutionContractFields } from "./harness.ts";
 import { redactHarnessText } from "./harness-redaction.ts";
 import { ApiError, type Store } from "./store.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
@@ -20,6 +20,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
     ownership: observation?.ownership ?? "unknown", error: observation?.error?.code ?? null };
   const blockers: string[] = [];
   const failureDecision = store.pendingTaskFailureDecision(taskId);
+  const intervention = store.pendingTaskIntervention(taskId);
+  if (intervention) blockers.push(`업무 #${intervention.taskId}의 총괄 점검이 필요합니다: ${intervention.reason}. 바뀐 접근을 기록해 다시 연 뒤 배정하세요`);
   if (failureDecision) blockers.push(`같은 실패 세 번의 결재 #${failureDecision.id}에 대표 판단이 필요합니다. 결재함에서 재개 조건을 정해 주세요`);
   if (project.archived) blockers.push("보관된 프로젝트입니다");
   if (!project.runnerEnabled) blockers.push("프로젝트 실행이 꺼져 있습니다");
@@ -27,6 +29,8 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (context.assigned || flow.nodes.some(n => n.taskId === taskId && n.memberId)) blockers.push("이미 배정된 업무입니다. 기존 담당과 전달을 먼저 확인해 주세요");
   if (pauses.length) blockers.push("대표가 중단한 업무입니다. 같은 업무의 새 지시나 다시 열기 근거를 먼저 확인해 주세요");
   if (!bindingContract(contract) || !contract?.goal.trim() || !contract.acceptance.length) blockers.push("업무의 목표와 완료 조건이 아직 확정되지 않았습니다");
+  const missing = missingExecutionContractFields(contract);
+  if (missing.length) blockers.push(`새 실행 전에 총괄이 업무 계약을 보완해야 합니다: ${missing.map(field => EXECUTION_CONTRACT_LABEL[field]).join(", ")}`);
   if (context.omitted.originals) blockers.push("원래 지시가 100건을 넘습니다. 업무 범위를 정리한 뒤 배정해 주세요");
   if (!context.originals.length && !bindingContract(contract)) blockers.push("확정된 지시를 확인할 수 없습니다");
   const lineage = new Set(context.lineage.map(t => t.id));
@@ -43,13 +47,16 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   const safe = (text: string | null | undefined) => redactHarnessText(text ?? "");
   const startCondition = [member.status === "blocked" ? "직원의 승인·선택 응답이 필요합니다." : "",
     member.kind !== "worker" ? "총괄은 업무 완료 순서와 별개로 입력을 받습니다. 기존 전달·실행 검사를 통과하면 시작합니다"
-      : placement.blocker ? `‘${placement.blocker.title}’ 완료 후 기존 전달·실행 검사를 통과하면 시작합니다`
+      : placement.suspended ? `‘${placement.suspended.title}’의 보류·중단 범위입니다. 이 업무의 재개 조건을 먼저 확인해야 합니다`
+      : placement.blocker ? `‘${placement.blocker.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀린 뒤 기존 전달·실행 검사를 통과하면 시작합니다`
       : placement.continuation ? "부모·파생 업무의 연속 작업입니다. 현재 입력 처리 뒤 기존 전달·실행 검사를 통과하면 시작합니다"
       : "기존 전달·실행 가능 검사를 통과하면 시작합니다"].filter(Boolean).join(" ");
   const preview: Omit<WorkflowAssignmentPreview, "revision"> = {
     projectId, task: { id: task.id, title: task.title, branch: task.branch, worktree: task.worktree, parentTaskId: task.parentTaskId ?? null },
     member: { id: member.id, name: member.name },
-    contract: contract ? { taskId: contract.taskId, rev: contract.rev, goal: safe(contract.goal), scope: contract.scope ? safe(contract.scope) : null, acceptance: contract.acceptance.map(safe), forbidden: contract.forbidden.map(safe), evidence: contract.evidence.map(safe), checks: contract.checks, confirmed: bindingContract(contract) } : null,
+    contract: contract ? { taskId: contract.taskId, rev: contract.rev, goal: safe(contract.goal), scope: contract.scope ? safe(contract.scope) : null,
+      inputs: contract.inputs?.map(safe) ?? null, outputs: contract.outputs?.map(safe) ?? null, constraints: contract.constraints?.map(safe) ?? null, exclusions: contract.exclusions?.map(safe) ?? null,
+      acceptance: contract.acceptance.map(safe), forbidden: contract.forbidden.map(safe), evidence: contract.evidence.map(safe), checks: contract.checks, confirmed: bindingContract(contract) } : null,
     originals: context.originals.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, body: safe(m.body) })),
     reports: context.reports.map(m => ({ id: m.id, taskId: m.taskId ?? null, who: m.who, at: m.at, kind: m.kind, title: safe(m.title), body: safe(m.body), harness: m.harness, correctsMessageId: m.correctsMessageId, correctedBy: m.correctedBy })),
     files: context.files.map(({ fingerprint, ...file }) => ({ ...file, title: safe(file.title), summary: safe(file.summary) })),
@@ -59,7 +66,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
     blockers,
   };
   // Changes not visible in the compact preview still invalidate the reviewed instruction.
-  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, pauses, failureDecision, files: context.files,
+  const revision = createHash("sha256").update(canonicalAgentRequest({ preview, contract, task, progress, watches, decisions, todos, pauses, failureDecision, intervention, files: context.files,
     originals: context.originals, reports: context.reports, lineage: context.lineage,
     member: { revisions: store.memberRevisions(memberId), status: member.status, blockedReason: member.blockedReason, origin: member.origin, cwd: member.cwd, execution: member.executionState, lifecycle: member.lifecycleState, targetTrust },
     queue: queue.map(d => ({id:d.id,taskId:d.taskId,status:d.status,holdReason:d.holdReason})),
@@ -74,6 +81,11 @@ export function workflowHandoffText(p: WorkflowAssignmentPreview): string {
     `대표가 업무 흐름에서 ${p.member.name}에게 이 범위의 실행을 배정했습니다.`,
     `작업 #${p.task.id}: ${p.task.title}`, p.task.parentTaskId ? `부모 업무 #${p.task.parentTaskId}` : "",
     `계약 r${c.rev} · 계약 업무 #${c.taskId}`, `목표: ${c.goal}`, c.scope ? `범위: ${c.scope}` : "",
+    ...(["inputs", "outputs", "constraints", "exclusions"] as const).flatMap(field => {
+      const values = c[field];
+      return values?.length ? values.map(s => `${EXECUTION_CONTRACT_LABEL[field]}: ${s}`)
+        : [`${EXECUTION_CONTRACT_LABEL[field]}: ${values && (field === "constraints" || field === "exclusions") ? "없음" : "미정"}`];
+    }),
     "완료 조건:", ...c.acceptance.map((s,i) => `${i+1}. ${s}`),
     "지켜야 할 조건:", ...c.forbidden.map(s => `- ${s}`),
     "- 기존 승인·중단 보호·선행 업무 조건을 유지합니다. 이 배정은 승인 창 응답이나 반복 감시 해제를 허용하지 않습니다.",

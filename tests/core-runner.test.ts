@@ -76,6 +76,16 @@ async function fixture() {
 afterEach(async () => { for (const f of fixtures.splice(0)) { await Promise.all(f.runners.map((runner) => runner.shutdown())); for (const socket of f.sockets) socket.destroy(); await new Promise<void>((resolve) => f.server.close(() => resolve())); rmSync(f.dir, { recursive: true, force: true }); } });
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 100 && !predicate(); i++) await Bun.sleep(10); expect(predicate()).toBe(true); };
 
+test("coordinator stop preflight refuses a fresh native prompt while owner stop remains available", async () => {
+  const f = await fixture(); const runner = f.runner();
+  const started = await runner.start(member(), f.opts);
+  const terminal = f.terminals.get(started.paneId!)!;
+  terminal.status = { state: "blocked", kind: "permission", app: "claude-code" };
+  await expect(runner.checkStop(member(), { whileWorking: true, preservePrompt: true })).rejects.toThrow("owner");
+  await expect(runner.checkStop(member(), { whileWorking: true })).resolves.toBeUndefined();
+  expect(f.calls.some(request => request.method === "terminal.interrupt" || request.method === "terminal.kill")).toBe(false);
+});
+
 const trustScreen = (cwd = "/tmp", selected = 0) => ` Accessing workspace:\n ${cwd}\n Quick safety check: Is this a project you created or one you trust?\n ${selected === 0 ? "❯" : " "} No, exit\n ${selected === 1 ? "❯" : " "} Yes, I trust this folder\n Enter to confirm · Esc to cancel\n`;
 describe("core Claude missing resume preflight", () => {
   test("confirmed missing transcript refuses before launching a dead resume", async () => {

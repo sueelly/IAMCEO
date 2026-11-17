@@ -57,9 +57,11 @@ describe("터미널 승인 안내: 공통 프롬프트", () => {
     for (const path of exportRoles(join(dir, "export"))) expect(readFileSync(path, "utf8")).toContain("{{TERMINAL_APPROVAL}}");
   });
 
-  test("Claude·Codex·Antigravity 모두 새 세션과 이어 열기에서 안내가 든 역할 글을 받는다", () => {
+  test("지원하는 제공자·역할은 새 세션과 이어 열기에 안내를 받고 미지원 총괄은 실행하지 않는다", () => {
     const root = mkdtempSync(join(tmpdir(), "iamceo-approval-cli-"));
-    const bins = { claudeBin: "/fake/claude", codexBin: "/fake/codex", antigravityBin: "/fake/agy", antigravityRoot: join(root, "agy"), antigravityUserRoot: join(root, "nouser") };
+    const codexBin = join(root, "codex-inventory");
+    writeFileSync(codexBin, '#!/bin/sh\nprintf "[]\\n"\n', { mode: 0o700 });
+    const bins = { claudeBin: "/fake/claude", codexBin, antigravityBin: "/fake/agy", antigravityRoot: join(root, "agy"), antigravityUserRoot: join(root, "nouser") };
     writeFileSync(join(root, "mcp.json"), JSON.stringify({ mcpServers: { iamceo: { command: "/bin/echo", args: ["bridge"], env: { IAMCEO_TOKEN: "t" } } } }));
     const sessions: Record<CliProvider, string> = { claude: "6f1c2b9e-1111-4222-8333-944455556666", codex: "019a0000-aaaa-7bbb-8ccc-dddddddddddd", antigravity: "6f1c2b9e-1111-4222-8333-944455556667" };
     for (const kind of KINDS) {
@@ -79,6 +81,10 @@ describe("터미널 승인 안내: 공통 프롬프트", () => {
         const dev = codex.find((a) => a.startsWith("developer_instructions="))!;
         expect(JSON.parse(dev.slice("developer_instructions=".length))).toContain(HEAD);
 
+        if (kind === "conductor") {
+          expect(() => providerLaunch(member("antigravity"), opts, bins)).toThrow("총괄");
+          continue;
+        }
         const agy = providerLaunch(member("antigravity"), opts, bins).argv;
         expect(agy.includes("--conversation")).toBe(resume);
         const gemini = readFileSync(join(root, "agy", `m-${kind}-antigravity`, "GEMINI.md"), "utf8");

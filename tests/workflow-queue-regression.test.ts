@@ -5,7 +5,7 @@ import { fixture as createReportFixture, until } from "./fixtures/harness-fixtur
 type Fixture = Awaited<ReturnType<typeof createQueueStatusFixture>>;
 const checked = { kind: "other" as const, name: "업무 응답 확인", result: "pass" as const, evidence: "받은 업무의 처리 결과를 확인했다", criterion: 1 };
 function confirm(f: Pick<Fixture, "store">, taskId: string) {
-  f.store.saveTaskContract(taskId, { kind: "other", goal: "받은 업무에 응답한다", acceptance: ["받은 업무의 처리 결과가 확인된다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+  f.store.saveTaskContract(taskId, { kind: "other", goal: "받은 업무에 응답한다", scope: "받은 업무", inputs: ["대표의 업무 지시"], outputs: ["처리 결과 응답"], constraints: [], exclusions: [], acceptance: ["받은 업무의 처리 결과가 확인된다"], checks: [] }, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
 }
 
 function stopRecovery(f: Fixture, deliveryId: string) {

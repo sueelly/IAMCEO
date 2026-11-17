@@ -35,6 +35,47 @@ function fixture() {
   return { store, project, lead, worker, next, coordinator, task, blocked, finish, start };
 }
 
+function contractFor(f: ReturnType<typeof fixture>, task: Task) {
+  const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
+  f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "승인된 결과를 완성한다", acceptance: ["남은 검증을 통과한다"], checks: [] },
+    { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+}
+
+test("an idle assigned worker continues confirmed unfinished work while the conductor is working with queued reports", () => {
+  const f = fixture(), task = f.task("approved remaining work", false); contractFor(f, task);
+  f.store.patchMember(f.lead.id, { status: "working" });
+  f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, taskId: task.id, kind: "report", text: "Review the partial result" });
+  const next = f.next.check(f.start, member => member.id === f.worker.id);
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({ memberId: f.worker.id, taskId: task.id, kind: "system" });
+  expect(next[0]!.text).toContain("남은 조건만");
+  expect(f.next.canDispatch(next[0]!)).toBe(true);
+  expect(f.coordinator().check(f.start + 10_000, () => true)).toHaveLength(0);
+});
+
+test("an explicit blocker retires a queued worker continuation before dispatch", () => {
+  const f = fixture(), task = f.task("approved scope", false); contractFor(f, task);
+  const next = f.next.check(f.start, () => true)[0]!;
+  expect(next.memberId).toBe(f.worker.id);
+  f.blocked(task);
+  expect(f.next.canDispatch(next)).toBe(false);
+  expect(f.store.requireDelivery(next.id)).toMatchObject({ status: "failed", deliveredAt: null });
+  expect(f.next.check(f.start + 10_000, () => true)[0]?.memberId).toBe(f.lead.id);
+});
+
+test("changing the binding contract retires a worker reminder carrying the previous revision", () => {
+  const f = fixture(), task = f.task("contract revision", false); contractFor(f, task);
+  const queued = f.next.check(f.start, () => true)[0]!;
+  const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
+  f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "새 범위만 확인한다", acceptance: ["새로운 검증을 통과한다"], scope: "원본을 바꾸지 않는 조사", checks: [] },
+    { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  expect(f.next.canDispatch(queued)).toBe(false);
+  const [current] = f.next.check(f.start + 10_000, () => true);
+  expect(current?.memberId).toBe(f.worker.id);
+  expect(current?.text).toContain("원본을 바꾸지 않는 조사");
+  expect(current?.text).toContain("새로운 검증을 통과한다");
+});
+
 test("an accepted old instruction with a failed review produces a task-scoped coordinator continuation", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   const queued = f.next.check(f.start, () => true);
@@ -118,7 +159,7 @@ test("persistent user stop cancels only the generated continuation and survives 
   expect(f.next.check(f.start + 30000, () => true)).toHaveLength(1);
 });
 
-test("no-progress retries become an actionable unresolved decision instead of infinite duplicate work or completion", () => {
+test("no-progress retries stop worker repetition and request one conductor intervention", () => {
   const f = fixture(), t = f.task(); f.blocked(t);
   let now = f.start;
   for (let i = 0; i < 3; i++) {
@@ -127,14 +168,16 @@ test("no-progress retries become an actionable unresolved decision instead of in
     f.store.patchMember(f.worker.id, { now: "같은 자기 보고 " + i }); // heartbeat must not count as progress.
     now += 10000;
   }
-  expect(f.next.check(now, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
-  expect(f.store.taskProgress(t.id).stage).toBe("owner");
+  const intervention = f.next.check(now, () => true);
+  expect(intervention).toHaveLength(1);
+  expect(intervention[0]?.memberId).toBe(f.lead.id);
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
+  expect(f.store.taskProgress(t.id).stage).toBe("check");
   expect(f.coordinator().check(now + 10000, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
 });
 
-test("후속 조정 결재와 총괄 입력은 업무·원문 요청·최근 보고·완료 기준을 자체적으로 설명한다", () => {
+test("후속 조정 알림과 총괄 입력은 업무·원문 요청·최근 보고·완료 기준을 자체적으로 설명한다", () => {
   const f = fixture(), task = f.task("로그인 재개 오류 조사");
   const source = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "user_message", text: "IAMCEO 로그인 재개 실패의 전달 기록을 조사하고 실패한 원본 세션을 구분해 주세요. 운영 재시작은 하지 마세요." });
   f.store.markDelivered(source.id);
@@ -147,15 +190,15 @@ test("후속 조정 결재와 총괄 입력은 업무·원문 요청·최근 보
     expect(delivery.text).toContain(report.body);
     f.finish(delivery, now + 100); now += 10000;
   }
-  f.next.check(now, () => true);
-  const decision = f.store.listDecisions(f.project.id).find(d => d.status === "open")!;
-  for (const part of [f.project.name, task.title, source.text, source.createdAt, report.title, report.body, report.at, "실패한 전달과 세션의 관계를 확인한다"]) expect(decision.detail).toContain(part);
-  expect(decision.detail).toContain("조정 요청 3회");
-  expect(decision.detail).toContain("구현이나 검사 횟수");
-  expect(decision.detail).toContain("실패 원인은 아직 미확인");
+  const notice = f.next.check(now, () => true)[0]!;
+  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(0);
+  for (const part of [f.project.name, task.title, source.text, source.createdAt, report.title, report.body, report.at, "실패한 전달과 세션의 관계를 확인한다"]) expect(notice.text).toContain(part);
+  expect(notice.text).toContain("조정 요청 3회");
+  expect(notice.text).toContain("구현이나 검사 횟수");
+  expect(notice.text).toContain("실패 원인은 아직 미확인");
   expect(f.store.requireMessage(report.id)).toEqual(report);
   expect(f.store.requireDelivery(source.id).text).toBe(source.text);
-  expect(f.store.taskProgress(task.id).stage).toBe("owner");
+  expect(f.store.taskProgress(task.id).stage).toBe("check");
 });
 
 test("직원이 제안한 완료 기준을 확정 기준으로 표시하지 않고 누락된 보고를 추측하지 않는다", () => {
@@ -166,8 +209,8 @@ test("직원이 제안한 완료 기준을 확정 기준으로 표시하지 않�
     const d = f.next.check(now, () => true)[0]!; expect(d).toBeDefined();
     f.finish(d, now + 100); now += 10000;
   }
-  f.next.check(now, () => true);
-  const detail = f.store.listDecisions(f.project.id).find(d => d.status === "open")!.detail;
+  const detail = f.next.check(now, () => true)[0]!.text;
+  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(0);
   expect(detail).toContain("직원 제안");
   expect(detail).toContain("미확정");
   expect(detail).toContain("이 업무에 연결된 보고가 없습니다");
@@ -322,8 +365,9 @@ test("reassigning identical downstream instructions does not reset the no-progre
     const same = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: original.text, taskId: t.id });
     f.store.markDelivered(same.id); now += 10000;
   }
-  expect(f.next.check(now, () => true)).toHaveLength(0);
-  expect(f.store.listDecisions(f.project.id).filter(d => d.status === "open")).toHaveLength(1);
+  expect(f.next.check(now, () => true)).toHaveLength(1);
+  expect(f.store.taskProgress(t.id).stage).toBe("check");
+  expect(f.store.listDecisions(f.project.id)).toHaveLength(0);
 });
 
 test("an unrelated input at its rejection limit does not starve followthrough", () => {
@@ -370,4 +414,81 @@ test.each(["pause", "done"] as const)("new owner input survives delivery deletio
   const resume = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: child.id, kind: "user_message", text: "새로 확인할 범위를 진행하세요" });
   f.store.markDelivered(resume.id);
   expect(f.next.check(f.start, () => true)).toHaveLength(1);
+});
+
+function sequenceBlockedFixture() {
+  const f = fixture(), earlier = f.task("earlier still assigned", false);
+  // Existing work occupies the predecessor; it must not create a second request.
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Finish earlier work", taskId: earlier.id });
+  const task = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "queued-later", title: "Later authorized work", origin: "owner" }).task;
+  f.store.saveTaskContract(task.id, { kind: "other", goal: "Later work", acceptance: ["Verified result"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Perform later authorized work", taskId: task.id });
+  return { ...f, earlier, task, input };
+}
+
+test("safe queued work blocked by a predecessor receives scoped coordination instead of being considered occupied", () => {
+  const f = sequenceBlockedFixture();
+  expect(f.store.taskSequenceBlocker(f.worker.id, f.task.id)?.taskId).toBe(f.earlier.id);
+  const requests = f.next.check(f.start, () => true);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ memberId: f.lead.id, taskId: f.task.id, kind: "system" });
+  expect(requests[0]!.text).toContain(f.input.id);
+  expect(requests[0]!.text).toContain(f.earlier.id);
+  expect(f.next.canDispatch(requests[0]!)).toBe(true);
+  expect(f.store.requireDelivery(f.input.id)).toEqual(f.input);
+  expect(f.coordinator().check(f.start + 60000, () => true)).toHaveLength(0);
+  expect(f.store.listDeliveryDispatches(f.input.id)).toEqual([]);
+});
+
+test.each(["stopped", "waiting", "checking", "needs_owner", "resolved"] as const)("a sequence-blocked input with %s recovery cannot authorize new coordination", phase => {
+  const f = sequenceBlockedFixture();
+  f.store.updateDeliveryRecovery(f.input.id, f.store.getDeliveryRecovery(f.input.id)!.version, { phase, reason: "session_lost" });
+  expect(f.next.check(f.start, () => true)).toEqual([]);
+});
+
+test("a generated sequence request is retired once the original input can proceed", () => {
+  const f = sequenceBlockedFixture();
+  const request = f.next.check(f.start, () => true)[0]!; expect(request).toBeDefined();
+  f.store.addStageMark({ projectId: f.project.id, taskId: f.earlier.id, stage: "hold", who: f.lead.name, memberId: f.lead.id, evidence: "Only predecessor on hold" });
+  expect(f.next.canDispatch(request)).toBe(false);
+  expect(f.store.requireDelivery(request.id).status).toBe("failed");
+  expect(f.store.requireDelivery(f.input.id)).toEqual(f.input);
+});
+
+test("a queued sequence reminder is retired when a different predecessor becomes responsible", () => {
+  const f = sequenceBlockedFixture();
+  const middle = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "middle", title: "Different predecessor", origin: "owner" }).task;
+  // The middle assignment arrived before the target; make its initial sequence explicit.
+  const d = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", taskId: middle.id, text: "Existing middle work" });
+  f.store.db.query("UPDATE deliveries SET rowid=rowid+10000 WHERE id=?").run(f.input.id);
+  const request = f.next.check(f.start, () => true)[0]!; expect(request).toBeDefined();
+  f.store.addStageMark({ projectId: f.project.id, taskId: f.earlier.id, stage: "hold", who: f.lead.name, memberId: f.lead.id, evidence: "Old blocker is held" });
+  expect(f.store.taskSequenceBlocker(f.worker.id, f.task.id)?.taskId).toBe(middle.id);
+  expect(f.next.canDispatch(request)).toBe(false);
+  expect(f.store.requireDelivery(request.id).status).toBe("failed");
+  expect(f.store.requireDelivery(d.id).attempts).toBe(0);
+});
+
+test("an owner-resumed child continues its remaining work without resuming the stopped parent", () => {
+  const f = fixture(), parent = f.task("stopped parent", false), child = f.task("resumed child", false, parent.id);
+  f.next.pause([parent.id], "stop-parent", "Stop parent scope");
+  const resume = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "user_message", taskId: child.id, text: "Continue only the child task" });
+  f.store.markDelivered(resume.id); f.blocked(child);
+  const request = f.next.check(f.start, () => true);
+  expect(request).toHaveLength(1);
+  expect(request[0]!.taskId).toBe(child.id);
+  expect(f.next.canDispatch(request[0]!)).toBe(true);
+  expect(f.store.taskContinuationPauses(f.project.id).map(p => p.taskId)).toContain(parent.id);
+});
+
+test("a stranded repair with a complete contract still goes to the conductor instead of the blocked worker", () => {
+  const f = sequenceBlockedFixture();
+  f.store.saveTaskContract(f.task.id, { kind: "other", goal: "Finish authorized repair", inputs: ["Prior result"], outputs: ["Verified repair"], scope: "Assigned repair", constraints: [], exclusions: [], acceptance: ["Repair verified"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  f.store.markDelivered(f.input.id);
+  const repair = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: f.task.id, kind: "instruction", text: "Continue the accepted repair" });
+  const request = f.next.check(f.start, () => true)[0]!;
+  expect(request).toMatchObject({ memberId: f.lead.id, taskId: f.task.id });
+  expect(request.text).toContain(repair.id);
+  expect(f.next.canDispatch(request)).toBe(true);
+  expect(f.store.requireDelivery(repair.id).attempts).toBe(0);
 });

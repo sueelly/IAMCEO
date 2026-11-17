@@ -55,6 +55,10 @@ function fixture(kind: "conductor" | "root" = "conductor") {
   let orch = makeOrch();
   const taskId = defaultTaskId(store, project.id);
   orch.saveTask(lead, { taskId, contract: { kind: "other", goal: "결제 오류의 재현 결과와 수정 필요 여부를 보고한다",
+    inputs: ["대표의 결제 오류 검토 요청", "격리 실행기에서 얻은 결제 오류와 재현 결과"],
+    outputs: ["확인한 오류·재현 결과·수정 필요 여부를 구분한 결제 검토 보고"],
+    scope: "대표가 요청한 결제 오류를 검토하고 그 결과에 따른 직원 배정과 후속 지시를 기록한다",
+    constraints: [], exclusions: [],
     acceptance: ["결제 요청에서 확인한 오류와 재현 결과를 구분해 보고한다"], checks: ["real"] } });
   const reviewChecks = [{ name: "결제 오류 재현", kind: "real" as const, result: "pass" as const, evidence: "격리 실행기에서 결제 요청의 오류와 재현 결과를 확인", criterion: 1 }];
   let seq = 0;

@@ -64,8 +64,8 @@ function fixture() {
   const emit = async (e: RunnerEvent) => { fake.callback(e); await Bun.sleep(3); };
   const gen = (id = member.id) => store.memberRevisions(id).sessionGeneration;
   /** 일을 맡기고 그 턴이 '일하는 중'이 되게 한다. */
-  const startWork = async (text: string, id = member.id) => {
-    store.enqueue({ projectId: project.id, memberId: id, kind: "instruction", text });
+  const startWork = async (text: string, id = member.id, taskId?: string) => {
+    store.enqueue({ projectId: project.id, memberId: id, taskId, kind: "instruction", text });
     await orch.pump(id);
     await until("첫 전달", () => fake.sent.some(s => s.memberId === id && s.text.includes(text)));
     await emit({ type: "status", memberId: id, status: "working", observation: { source: "core", observedAt: new Date().toISOString(), freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: null } });
@@ -196,9 +196,10 @@ describe("멈추고 이어서 지시", () => {
 describe("총괄 도구와 화면이 같은 경로", () => {
   test("team_stop(then): 지시를 먼저 대기열에 넣고 멈추며, 총괄 자신에게 중단 알림을 다시 보내지 않는다", async () => {
     const f = fixture();
-    const run = await f.startWork("잘못 맡긴 일");
     const lead = f.store.requireMember(f.lead.id);
-    f.store.saveTaskContract(defaultTaskId(f.store, f.project.id), { kind: "other", goal: "수정한 방향으로 처리한다", acceptance: ["수정된 지시가 처리되었는지 확인한다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
+    const taskId = defaultTaskId(f.store, f.project.id);
+    f.store.saveTaskContract(taskId, { kind: "other", goal: "수정한 방향으로 처리한다", inputs: ["총괄의 수정 지시"], outputs: ["수정된 지시 처리 결과"], scope: "총괄이 지정한 수정 범위", constraints: [], exclusions: [], acceptance: ["수정된 지시가 처리되었는지 확인한다"], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
+    const run = await f.startWork("잘못 맡긴 일", f.member.id, taskId);
     const out = await handleAgentTool(f.orch, lead, "team_stop", withDefaultTask(f.store, lead, "team_stop", { member: "w1", expect_run_id: run.runId, then: "방향을 바꿔 이렇게 해" }));
     expect(out.isError).toBeFalsy();
     expect(out.text).toContain(`실행 ${run.runId}을 멈췄습니다`);

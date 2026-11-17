@@ -7,11 +7,12 @@ import { CoreError } from "./core-client.ts";
 import { writeStatuslineWrapper } from "./statusline.ts";
 import { subagentEnv } from "./headless.ts";
 import { antigravityMemberHome, prepareAntigravityHome, ANTIGRAVITY_CONVERSATION_RE } from "./antigravity.ts";
+import { claudeRoleArgs, codexRoleArgs } from "./role-policy.ts";
 
 export type CoreProvider = "claude" | "codex" | "antigravity";
 export interface ProviderLaunch { argv: string[]; env: Record<string, string>; sessionId: string | null }
 /** antigravityRoot: IAMCEO-owned folder holding one agy configuration root per member. */
-export interface ProviderBins { claudeBin?: string; codexBin?: string; antigravityBin?: string; antigravityRoot?: string; antigravityUserRoot?: string; contextHome?: string }
+export interface ProviderBins { claudeBin?: string; codexBin?: string; codexHome?: string; antigravityBin?: string; antigravityRoot?: string; antigravityUserRoot?: string; contextHome?: string }
 export function providerBin(provider: CoreProvider, bins: ProviderBins): string {
   return provider === "claude" ? bins.claudeBin || "claude" : provider === "codex" ? bins.codexBin || "codex" : bins.antigravityBin || "agy";
 }
@@ -32,6 +33,8 @@ const toml = (value: unknown) => JSON.stringify(value);
 export function providerFor(member: RunnerMember): CoreProvider { return member.cli ?? "claude"; }
 export function providerLaunch(member: RunnerMember, opts: StartOpts, bins: ProviderBins = {}): ProviderLaunch {
   const provider = providerFor(member);
+  // agy currently has no verified native tool allowlist. A prompt or plan mode is not enforcement.
+  if (member.kind === "conductor" && provider === "antigravity") throw new CoreError("role_policy", "Antigravity의 조정 전용 도구 제한을 지원하지 않습니다. 총괄은 Codex 또는 Claude로 설정하세요");
   if (member.sessionId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(member.sessionId)) throw new CoreError("invalid_session", "Invalid CLI session id");
   const configured = providerBin(provider, bins);
   const bin = configured.includes("/") ? configured : Bun.which(configured);
@@ -42,14 +45,14 @@ export function providerLaunch(member: RunnerMember, opts: StartOpts, bins: Prov
     const sessionId = member.sessionId || crypto.randomUUID();
     args.push(opts.resume && member.sessionId ? "--resume" : "--session-id", sessionId,
       "--append-system-prompt-file", opts.systemPromptFile, "--mcp-config", opts.mcpConfigFile,
-      "--permission-mode", member.permissionMode, "--allowedTools", "mcp__iamceo", "-n", member.name);
+      ...claudeRoleArgs(member), "-n", member.name);
     if (member.model) args.push("--model", member.model);
     if (member.effort) args.push("--effort", member.effort);
     if (bins.contextHome) {
       const settings = opts.settingsFile ? JSON.parse(readFileSync(opts.settingsFile, "utf8")) : {};
       args.push("--settings", JSON.stringify({ ...settings, statusLine: writeStatuslineWrapper(bins.contextHome) }));
     } else if (opts.settingsFile) args.push("--settings", opts.settingsFile);
-    Object.assign(env, subagentEnv(member.subagentModel));
+    if (member.kind !== "conductor") Object.assign(env, subagentEnv(member.subagentModel));
     // Claude Code 2.1.3xx shows a dim follow-up suggestion inside an empty composer. core's terminal.read is plain
     // text, so the suggestion reads exactly like a half-typed draft and blocks safe input. Off for this process only.
     env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION = "false";
@@ -58,12 +61,15 @@ export function providerLaunch(member: RunnerMember, opts: StartOpts, bins: Prov
   if (provider === "antigravity") return antigravityLaunch(bin, member, opts, bins);
   // Codex owns its native id; inventing one would make resume silently wrong.
   if (opts.resume && !member.sessionId) throw new CoreError("session_unknown", "Codex session id is unknown; reattach the existing core terminal or explicitly start a fresh session");
-  if (member.subagentModel) args.push("-c", `agents.default_subagent_model=${toml(member.subagentModel)}`);
-  args.push("-c", "features.multi_agent=true");
+  if (member.kind !== "conductor") {
+    if (member.subagentModel) args.push("-c", `agents.default_subagent_model=${toml(member.subagentModel)}`);
+    args.push("-c", "features.multi_agent=true");
+  }
   // Codex 0.166 opens an "Update available" menu on start whose default item runs `npm install -g @openai/codex`.
   // Under IAMCEO that menu only stalls the member (and one stray Enter would upgrade a global CLI). Off per process.
   args.push("-c", "check_for_update_on_startup=false");
-  if (member.permissionMode === "bypassPermissions") args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (member.kind === "conductor") args.push(...codexRoleArgs(bin, member, bins.codexHome));
+  else if (member.permissionMode === "bypassPermissions") args.push("--dangerously-bypass-approvals-and-sandbox");
   else if (member.permissionMode === "auto") args.push("--approve-for-me");
   else args.push("--ask-for-approval", "on-request");
   if (member.model) args.push("--model", member.model);

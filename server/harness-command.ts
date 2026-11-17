@@ -58,7 +58,7 @@ function sequence(src:string,base:string|null): {commands:(Command & {cwd:string
 }
 
 /** 인자 전체·명령을 실행한 위치·종료 의미를 함께 대조. 불명확한 셸은 통과시키지 않는다. */
-export function commandProof(executed:string,want:string,actualCwd:string|null=null,wantedCwd:string|null=actualCwd):'ok'|'absent'|'masked'{
+export function commandProof(executed:string,want:string,actualCwd:string|null=null,wantedCwd:string|null=actualCwd,allowedCwd?:(cwd:string|null)=>boolean):'ok'|'absent'|'masked'{
   const actual=sequence(executed,actualCwd),expected=sequence(want,wantedCwd);
   if(!actual || !expected?.commands.length)return 'absent';
   const a=actual.commands,w=expected.commands;
@@ -66,6 +66,7 @@ export function commandProof(executed:string,want:string,actualCwd:string|null=n
   if(a.length<w.length)return 'absent';
   for(let i=0;i<w.length;i++){
     const x=a[i]!,y=w[i]!;
+    if(allowedCwd && !allowedCwd(x.cwd))return 'absent';
     if(x.cwd!==y.cwd || x.words.length!==y.words.length || !y.words.every((v,j)=>v===x.words[j]))return 'absent';
     if(i<w.length-1 && x.sep!==y.sep)return 'absent';
   }
@@ -78,11 +79,11 @@ export function commandProof(executed:string,want:string,actualCwd:string|null=n
 }
 
 /** 진단 전용 관찰. 같은 파서로 인자와 위치를 나눠 설명하며 성공 판정 함수는 바꾸지 않는다. */
-export function commandObservation(executed:string,want:string,actualCwd:string|null,wantedCwd:string|null){
+export function commandObservation(executed:string,want:string,actualCwd:string|null,wantedCwd:string|null,allowedCwd?:(cwd:string|null)=>boolean){
   const actual=sequence(executed,actualCwd),expected=sequence(want,wantedCwd);
   if(!actual?.commands.length || !expected?.commands.length)return {commandMatch:executed===want?true:null,sameExecutable:false,cwdMatch:'unknown' as const,proof:'absent' as const};
   const a=actual.commands,w=expected.commands;
   const commandMatch=a.length>=w.length && w.every((y,i)=>{const x=a[i]!;return x.words.length===y.words.length && y.words.every((v,j)=>v===x.words[j]) && (i===w.length-1 || x.sep===y.sep);});
   const cwdMatch=actualCwd===null && wantedCwd!==null?'missing' as const:!commandMatch?'unknown' as const:w.every((y,i)=>a[i]!.cwd===y.cwd)?'match' as const:'different' as const;
-  return {commandMatch,sameExecutable:a[0]!.words[0]===w[0]!.words[0],cwdMatch,proof:actualCwd===null && wantedCwd!==null?'absent' as const:commandProof(executed,want,actualCwd,wantedCwd)};
+  return {commandMatch,sameExecutable:a[0]!.words[0]===w[0]!.words[0],cwdMatch,proof:actualCwd===null && wantedCwd!==null?'absent' as const:commandProof(executed,want,actualCwd,wantedCwd,allowedCwd)};
 }

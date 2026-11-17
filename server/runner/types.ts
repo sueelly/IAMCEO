@@ -86,7 +86,7 @@ export interface RunnerStartResult {
 export type RunnerReattachResult =
   | { outcome: "rejoined"; started: RunnerStartResult }
   | { outcome: "not_found" | "conflict" | "unknown"; code: string; detail?: string };
-export interface RunnerStopOptions { whileWorking?: boolean }
+export interface RunnerStopOptions { whileWorking?: boolean; /** Agent coordination must not dismiss a native approval/selection dialog. */ preservePrompt?: boolean }
 export interface DeliveryLogBaseline {
   /** 검증된 provider 루트 내부 경로. HTTP 응답에 직렬화하지 않는다. */
   path: string;
@@ -102,6 +102,8 @@ export interface DeliveryBaseline {
   logs: DeliveryLogBaseline[];
   /** native ID 미확정 후보 탐색도 재시작 때 같은 기준선을 사용한다. */
   capturedAt: string;
+  /** Immutable execution context, separate from the original input revision. */
+  executionContracts?: { taskId: string; contractTaskId: string; rev: number; context: string }[];
 }
 export interface DeliveryProbe {
   dispatchId: string;

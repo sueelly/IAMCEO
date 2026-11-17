@@ -1,3 +1,4 @@
+import { executionPath, executionExpectedCwd, executionCwdAllowed } from "./harness-worktree.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 // 완료 검사의 실행 증거. 직원 세션의 제공자 기록(Claude 세션 기록·Codex rollout)을 읽기만 한다.
 // 서버가 실행을 지어내지 않고, 기록에 남은 명령·종료 코드·출력만 본다. 기록 형식을 모르는 제공자(Antigravity)는 '지원 안 함'이다.
@@ -175,7 +176,7 @@ export function parseCodexLog(text: string, since: string | null): Pick<Provider
       const code = Number.isSafeInteger(item.exit_code) && (item.exit_code as number) >= 0 ? item.exit_code as number : null;
       const exitCode = item.status === "completed" || (item.status === "failed" && code !== 0) ? code : null;
       texts.push({ tool: "CommandExecution", input: command, text: output, at });
-      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: typeof item.cwd === "string" ? item.cwd : null, exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: 0 } });
+      execs.push({ ref: `codex:${typeof payload!.thread_id === "string" ? payload!.thread_id : "?"}:${item.id}`, command, cwd: executionPath(item.cwd), exitCode, at, outputSha: sha(output), outputHead: head(output), origin: { line, item: 0 } });
     } else if (item.type === "McpToolCall") {
       const result = jsonObject(item.result);
       texts.push({ tool: `${String(item.server ?? "")}/${String(item.tool ?? "")}`, input: JSON.stringify(item.arguments ?? {}), text: contentText(result?.content), at, successful: result?.isError !== true });
@@ -196,7 +197,7 @@ export function readProviderEvidence(cli: CliProvider, log: { path: string; home
 }
 
 /** 조회 범위만 관찰한다. 기존 증거 수집/완료 판정에 이 1MiB 제한을 적용하거나 결과를 커밋하지 않는다. */
-export function inspectProviderEvidence(cli: CliProvider, log: { path: string; home: string; root: string } | null, since: string, command: string, cwd: string, usedElsewhere: (ref: string) => string | null) {
+export function inspectProviderEvidence(cli: CliProvider, log: { path: string; home: string; root: string } | null, since: string, command: string, cwd: string, usedElsewhere: (ref: string) => string | null, taskWorktree?: string | null) {
   const empty = { read: { limitBytes: DIAGNOSTIC_LOG_BYTES, gateLimitBytes: MAX_LOG_BYTES, fileBytes: null, bytesRead: 0,
     startOffset: null, endOffset: null, headTruncated: false, leadingFragmentDiscarded: false, complete: false, tail: "unknown", invalidLines: 0, stable: null },
     events: { kinds: {}, candidates: [], omittedCandidates: 0, orphanResults: 0 } };
@@ -211,9 +212,9 @@ export function inspectProviderEvidence(cli: CliProvider, log: { path: string; h
   const parse = cli === "codex" ? parseCodexLog : parseClaudeLog;
   const current = parse(text, since), all = parse(text, null);
   const commandRedacted = redactHarnessText(command) !== command || command.includes("[가림]");
-  const match = commandRedacted ? null : matchExecChecks([{ name: "진단", kind: "behavior", result: "pass", command, evidence: "읽기 조회" }], { status: "ok", code: "ok", ...current }, usedElsewhere, cwd);
+  const match = commandRedacted ? null : matchExecChecks([{ name: "진단", kind: "behavior", result: "pass", command, evidence: "읽기 조회" }], { status: "ok", code: "ok", ...current }, usedElsewhere, cwd, taskWorktree);
   return observeExecWindow({ cli, text, range: { ...window.range, wholeWindowFragment }, all: all.execs, current: current.execs, command,
-    cwd, since, commandRedacted, matched: !!match?.results.some(r => r.status === "matched") });
+    cwd, taskWorktree, since, commandRedacted, matched: !!match?.results.some(r => r.status === "matched") });
 }
 
 export interface CheckEvidence {
@@ -231,7 +232,7 @@ export interface CheckEvidence {
  * 실행 검사(behavior·typecheck·regression)의 통과 주장을 기록과 대조한다. 통과마다 command 가 있어야 하고,
  * 계약 시각 뒤 그 명령을 품은 마지막 실행이 종료 코드 0 이어야 한다. 다른 업무에 이미 쓴 실행은 쓰지 않는다.
  */
-export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEvidence, usedElsewhere: (ref: string) => string | null, expectedCwd: string | null = null): { reasons: string[]; results: CheckEvidence[] } {
+export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEvidence, usedElsewhere: (ref: string) => string | null, expectedCwd: string | null = null, taskWorktree?: string | null): { reasons: string[]; results: CheckEvidence[] } {
   const reasons: string[] = [];
   const results: CheckEvidence[] = [];
   checks.forEach((c, idx) => {
@@ -241,7 +242,7 @@ export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEv
     const want = c.command ? normalizeCommand(c.command) : "";
     if (want.length < 3) { reasons.push(`${label}에 실제로 돌린 명령(command)이 없습니다. 실행 기록과 대조할 명령을 적으세요`); return; }
     if (evidence.status === "missing") { reasons.push(`${label}을 대조할 세션 실행 기록을 찾지 못했습니다(${evidence.code}). 증거 없는 통과는 받지 않습니다. 막힘으로 올리고 unverified 에 적으세요`); return; }
-    const runs = evidence.execs.map(e => ({ e, proof: e.cwd === null && expectedCwd !== null ? "absent" as const : execProves(e.command, want, e.cwd ?? null, expectedCwd) })).filter(r => r.proof !== "absent");
+    const runs = evidence.execs.map(e => ({ e, proof: e.cwd === null && expectedCwd !== null ? "absent" as const : execProves(e.command, want, executionPath(e.cwd), executionExpectedCwd(e.cwd, expectedCwd, taskWorktree), cwd => executionCwdAllowed(cwd, expectedCwd, taskWorktree)) })).filter(r => r.proof !== "absent");
     const last = runs[runs.length - 1];
     if (!last) { reasons.push(`${label}의 명령 '${redactHarnessText(want).slice(0, 80)}'을 계약 뒤 실행 기록에서 찾지 못했습니다(명령 자리에서 찾습니다. echo 안의 글은 치지 않습니다). 지금 판 기준으로 실제로 돌린 뒤 올리세요`); return; }
     if (last.proof === "masked") { reasons.push(`${label}의 마지막 실행은 뒤에 붙은 파이프·;·& 명령의 종료 코드라 검사 결과가 아닙니다. 그 명령만(또는 &&로, 파이프면 명시적인 set -o pipefail 로) 다시 돌리세요`); return; }
@@ -254,8 +255,8 @@ export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEv
 }
 
 /** 셸의 인자·위치·종료 의미를 보수적으로 대조한다. */
-export function execProves(executed: string, want: string, actualCwd: string | null = null, expectedCwd: string | null = actualCwd): "ok" | "absent" | "masked" {
-  return commandProof(executed, want, actualCwd, expectedCwd);
+export function execProves(executed: string, want: string, actualCwd: string | null = null, expectedCwd: string | null = actualCwd, allowedCwd?: (cwd: string | null) => boolean): "ok" | "absent" | "masked" {
+  return commandProof(executed, want, actualCwd, expectedCwd, allowedCwd);
 }
 
 export interface ClaimInput {

@@ -88,6 +88,50 @@ function fixture(timings: Partial<OrchestratorTimings> = {}) {
   return { isolated, config, store, runner, project, lead, worker, other, get orch() { return orch; }, pendingRun, end, task, unfinished, check, restart };
 }
 
+function approvedUnfinished(f: ReturnType<typeof fixture>) {
+  const task = f.task();
+  const execution = { inputs: ["승인된 요청과 기존 결과"], outputs: ["검증한 결과"], scope: "승인된 업무의 남은 조건", constraints: [], exclusions: [] };
+  f.store.saveTaskContract(task.id, { ...execution, kind: "other", goal: "승인된 결과를 완성한다", acceptance: ["남은 검증을 통과한다"], checks: [] },
+    { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
+  const source = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "instruction", text: "승인된 결과와 남은 검증을 완료하세요" });
+  f.store.markDelivered(source.id);
+  return task;
+}
+
+test("confirmed unfinished work reaches its worker through the real pump while the conductor reviews its report", async () => {
+  const f = fixture(), task = approvedUnfinished(f);
+  f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, taskId: task.id, kind: "report", text: "Review the partial outcome", wake: true });
+  await f.orch.pump(f.lead.id);
+  expect(f.pendingRun(f.lead)).toBeDefined();
+  const scheduled = f.check(Date.now() + 120_000);
+  expect(scheduled).toHaveLength(1);
+  expect(scheduled[0]!.memberId).toBe(f.worker.id);
+  await f.orch.pump(f.worker.id);
+  expect(f.store.requireDelivery(scheduled[0]!.id).status).toBe("delivered");
+  expect(f.pendingRun(f.worker)?.deliveryIds).toContain(scheduled[0]!.id);
+  expect(f.pendingRun(f.lead)).toBeDefined();
+  expect(f.check(Date.now() + 180_000)).toHaveLength(0);
+});
+
+test.each(["approval", "manual-control", "unknown-write", "usage-limit"] as const)("worker continuation respects its recipient's %s fence", async fence => {
+  const f = fixture(), task = approvedUnfinished(f);
+  if (fence === "approval") f.store.patchMember(f.worker.id, { status: "blocked", blockedReason: "permission" });
+  if (fence === "manual-control") f.store.saveLease({ memberId: f.worker.id, claimId: "manual-claim", leaseId: "manual-lease",
+    identity: { terminalId: f.worker.paneId, sessionId: f.worker.sessionId, sessionGeneration: 0, process: null }, expiresAt: Date.now() + 180_000, lastInputSequence: 0 });
+  if (fence === "unknown-write") {
+    const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "system", text: "Unknown physical write", wake: false });
+    const dispatch = f.orch.deliveryRecovery.prepareDispatch([input.id], { terminalId: f.worker.paneId, sessionId: f.worker.sessionId, sessionGeneration: 0, process: null },
+      { serverEpoch: "worker-continuation", turn: 0, inputEpoch: 0, logs: [], capturedAt: new Date().toISOString() });
+    f.store.updateDispatch(dispatch.dispatchId, "prepared", "unknown");
+  }
+  if (fence === "usage-limit") f.store.patchMember(f.worker.id, { lastError: "weekly usage limit reached" });
+  const scheduled = f.check(Date.now() + 120_000);
+  await f.orch.pump(f.worker.id);
+  expect(f.runner.to(f.worker)).toHaveLength(0);
+  expect(f.store.doneMark(task.id)).toBeNull();
+  if (fence !== "usage-limit") expect(scheduled).toHaveLength(0);
+});
+
 test("unfinished work wakes the conductor through one durable ordinary delivery after both turns end", async () => {
   const f = fixture(), task = await f.unfinished(), now = Date.now() + 120_000;
   const before = f.store.listDeliveries();

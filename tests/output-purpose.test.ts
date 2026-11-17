@@ -38,7 +38,7 @@ test.each([
 
 test("직원에게 전달되는 도구 필드는 제목·요약·본문과 상태의 서로 다른 목적을 설명한다", () => {
   const f = fixture();
-  const tools = new Map(listAgentTools(f.lead).map(t => [t.name, t]));
+  const tools = new Map([...listAgentTools(f.worker), ...listAgentTools(f.lead)].map(t => [t.name, t]));
   const description = (name: string, field: string) => ((tools.get(name)!.inputSchema as any).properties[field].description as string);
   expect(description("task", "title")).toContain("대상과 목표");
   expect(description("ask", "title")).toContain("결정할 질문");

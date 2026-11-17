@@ -1005,6 +1005,26 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE members ADD COLUMN execution_issue_json TEXT;`,
   // v42: archive provenance and explicit memory-use assessments survive restart.
   `${MEMORY_ARCHIVE_SCHEMA}\n${MEMORY_FEEDBACK_SCHEMA}`,
+  // 옛 계약의 미정 항목은 NULL로 보존한다. 빈 배열은 작성자가 명시한 해당 없음이다.
+  `ALTER TABLE task_contracts ADD COLUMN inputs TEXT;
+   ALTER TABLE task_contracts ADD COLUMN outputs TEXT;
+   ALTER TABLE task_contracts ADD COLUMN constraints_json TEXT;
+   ALTER TABLE task_contracts ADD COLUMN exclusions TEXT;`,
+  `CREATE TABLE task_completion_reviews (
+     report_id TEXT NOT NULL REFERENCES messages(id),
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     contract_task_id TEXT NOT NULL REFERENCES tasks(id),
+     contract_rev INTEGER NOT NULL,
+     mark_id INTEGER NOT NULL REFERENCES task_stage_marks(id),
+     status TEXT NOT NULL CHECK(status IN ('pending','confirmed','changes_requested')),
+     completed_at TEXT NOT NULL,
+     reviewed_at TEXT,
+     reviewer_id TEXT REFERENCES members(id),
+     delivery_id TEXT REFERENCES deliveries(id),
+     evidence TEXT,
+     PRIMARY KEY(task_id, report_id)
+   );
+   CREATE INDEX task_completion_reviews_task ON task_completion_reviews(task_id);`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
