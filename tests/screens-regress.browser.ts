@@ -1,6 +1,7 @@
 // 화면 쪽 회귀 시험: 실제 서버 + Playwright chromium + 가짜 claude. 라이브 herdr·실제 ~/.iamceo·실제 claude 를 쓰지 않는다.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
+import { createTestServerScope } from "./fixtures/test-server-scope";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { updateConfigFile } from "../server/config.ts";
 import { httpDefaultTask } from "./fixtures/default-task.ts";
 
 const core = await startBrowserCore();
-afterAll(async () => { await core.stop(); });
+const servers = createTestServerScope();
 
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
@@ -37,7 +38,7 @@ let phone: BrowserContext;
 
 async function startServer(port: number) {
   updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: HOME });
-  const proc = Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   const url = `http://127.0.0.1:${port}`;
   const end = Date.now() + 15000;
   while (Date.now() < end) {
@@ -144,9 +145,11 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await browser?.close();
-  server?.kill("SIGTERM");
-  await server?.exited;
+  try { await browser?.close(); }
+  finally {
+    try { await servers.stop(); }
+    finally { await core.stop(); }
+  }
 });
 
 describe("마크다운", () => {
@@ -517,7 +520,7 @@ describe("연결", () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-code-")));
     const homeEnv = { IAMCEO_HOME: home };
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, homeEnv);
-    const spawn = () => Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ ...homeEnv, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const spawn = () => servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ ...homeEnv, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const first = { proc: spawn(), url: `http://127.0.0.1:${port}` };
     await until("서버", () => fetch(`${first.url}/api/health`).then((r) => r.ok, () => false), 15000);
     await fetch(`${first.url}/api/settings`, { method: "PUT", headers: { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" }, body: JSON.stringify({ backend: "core" }) });
@@ -606,7 +609,7 @@ describe("연결", () => {
     const port = freePort();
     const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-cwd-")));
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
-    const proc = Bun.spawn([process.execPath, CLI, "serve"], { cwd: WORK, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: WORK, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
       const url = `http://127.0.0.1:${port}`;
       await until("서버", () => fetch(`${url}/api/health`).then((r) => r.ok, () => false), 15000);
@@ -634,7 +637,7 @@ describe("연결", () => {
     const port = freePort();
     const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-hosts-")));
     updateConfigFile({ accessCode: CODE, port, hosts: ["0.0.0.0"] }, { IAMCEO_HOME: home });
-    const open0 = Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const open0 = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
       await until("서버", () => fetch(`http://127.0.0.1:${port}/api/health`).then((r) => r.ok, () => false), 15000);
       expect((await fetch(`http://${lan}:${port}/`)).status).toBe(403);
@@ -892,7 +895,7 @@ describe("서버 강제 종료", () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-hup-")));
     const log = join(home, "fake.jsonl");
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
-    const proc = Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port), FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_SESSIONS: join(home, "s") }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port), FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_SESSIONS: join(home, "s") }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const url = `http://127.0.0.1:${port}`;
     const h = { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" };
     await until("서버", () => fetch(`${url}/api/health`).then((r) => r.ok, () => false), 15000);
@@ -920,7 +923,7 @@ describe("서버 강제 종료", () => {
     const log = join(home, "fake.jsonl");
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
     const childEnv = env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port), FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_SESSIONS: join(home, "sessions") });
-    const spawn = () => Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: childEnv, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const spawn = () => servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: childEnv, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const url = `http://127.0.0.1:${port}`;
     const h = { Authorization: `Bearer ${CODE}`, "Content-Type": "application/json" };
     const proc = spawn();
@@ -973,7 +976,7 @@ describe("서버 강제 종료", () => {
     const innocent = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     writeFileSync(join(home, "run", "m_x.turn.json"), JSON.stringify({ pid: innocent.pid, sessionId: "11111111-1111-4111-8111-111111111111" }));
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
-    const proc = Bun.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
       await until("서버", () => fetch(`http://127.0.0.1:${port}/api/health`).then((r) => r.ok, () => false), 15000);
       await Bun.sleep(300);
