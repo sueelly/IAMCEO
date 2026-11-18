@@ -100,6 +100,7 @@ import { coreContextMeasurement, observeCompactBoundary, type CompactBoundaryBas
 import { readJsonlRange, parseCodexSessionMeta, jsonObject, providerLogRoot } from "./runner/delivery-evidence.ts";
 import { ANTIGRAVITY_MODEL_RE, antigravityMemberHome, existingAntigravityTranscript } from "./runner/antigravity.ts";
 import { defaultClaudeHome, findSessionFile } from "./runner/herdr.ts";
+import { codexCoordinationTools } from "./runner/role-policy.ts";
 import { providerLaunch } from "./runner/providers.ts";
 import { CoreRunner, ensureCoreServer, type CoreCompactState, type CoreRunnerDeps } from "./runner/core.ts";
 import { isMissingSessionError } from "./runner/headless.ts";
@@ -5759,7 +5760,8 @@ export class Orchestrator implements OrchestratorApi {
     const tools = this.agentTools.listAgentTools(member, { memory: this.memoryEnabledFor(member) });
     const rules = this.rulesFor(member, this.store.requireProject(member.projectId));
     const reviewToolPolicy = member.finalReviewer && member.cli === "codex" ? 1 : undefined;
-    return createHash("sha256").update(JSON.stringify({ tools, rules, reviewToolPolicy })).digest("hex").slice(0, 16);
+    const coordinationTools = codexCoordinationTools(member);
+    return createHash("sha256").update(JSON.stringify({ tools, rules, reviewToolPolicy, coordinationTools })).digest("hex").slice(0, 16);
   }
 
   /**

@@ -9,6 +9,15 @@ export function claudeRoleArgs(member: RunnerMember): string[] {
     : ["--permission-mode", member.permissionMode, "--allowedTools", "mcp__iamceo"];
 }
 
+const COORDINATION_TOOLS = ["board", "roster", "task_trace", "status", "post", "team_assign"] as const;
+
+/** This subset also forms part of the managed session's policy fingerprint. */
+export function codexCoordinationTools(member: Pick<RunnerMember, "kind" | "cli" | "origin" | "finalReviewer">) {
+  if (member.cli === "codex" && member.kind === "conductor" && member.origin === "runner" && !member.finalReviewer) {
+    return COORDINATION_TOOLS;
+  }
+}
+
 /** Codex maps merge across config layers, so an empty mcp_servers table is NOT an allowlist. */
 export function codexRoleArgs(bin: string, member: RunnerMember, codexHome?: string): string[] {
   if (member.kind !== "conductor") return [];
@@ -35,10 +44,9 @@ export function codexRoleArgs(bin: string, member: RunnerMember, codexHome?: str
   // Codex splits -c keys on literal dots; TOML-quoted segments are not decoded here.
   for (const server of servers) if (server.name !== "iamceo") args.push("-c", `mcp_servers.${server.name}.enabled=false`);
   args.push("-c", "mcp_servers.iamceo.enabled=true");
-  if (member.finalReviewer) {
-    for (const tool of FINAL_REVIEWER_TOOLSET) {
-      args.push("-c", `mcp_servers.iamceo.tools.${tool}.approval_mode="approve"`);
-    }
+  const tools = member.finalReviewer ? FINAL_REVIEWER_TOOLSET : codexCoordinationTools(member);
+  for (const tool of tools ?? []) {
+    args.push("-c", `mcp_servers.iamceo.tools.${tool}.approval_mode="approve"`);
   }
   return args;
 }

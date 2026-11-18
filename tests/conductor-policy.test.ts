@@ -18,7 +18,7 @@ import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 const vars = { PROJECT: "시험", NAME: "총괄", ROLE: "조정", CONDUCTOR: "총괄" };
 const POLICY = "## 총괄의 필수 조정 규칙";
 
-test("only the managed Codex reviewer can call its five IAMCEO review tools without an interactive prompt", () => {
+test("Codex per-tool approval is limited to routine coordination or the separate dedicated review role", () => {
   const f = fixture();
   const isolated = createIsolatedRuntime();
   cleanups.push(() => isolated.stop());
@@ -29,12 +29,15 @@ test("only the managed Codex reviewer can call its five IAMCEO review tools with
   writeFileSync(isolated.bins.codexBin, '#!/bin/sh\necho "[]"\n', { mode: 0o700 });
   const reviewer = f.store.ensureFinalReviewer(f.project.id)!;
   const worker = f.store.createMember({ projectId: f.project.id, handle: "writer", name: "작성", kind: "worker" });
-  for (const member of [reviewer, f.lead, worker]) {
+  const adopted = { ...f.lead, origin: "adopted" as const };
+  for (const member of [reviewer, f.lead, worker, adopted]) {
     const runner = { ...f.orch["runnerMember"](member, f.project), cli: "codex" as const, cwd: isolated.paths.work };
     const args = providerLaunch(runner, { mcpConfigFile: config, systemPromptFile: prompt, resume: false, projectName: "검수" }, isolated.bins).argv;
     const allowed = args.filter(a => a.endsWith('.approval_mode="approve"')).sort();
     const names = ["status", "task_trace", "post", "task_review_evidence", "task_review"];
-    expect(allowed).toEqual(member.finalReviewer ? names.map(n => `mcp_servers.iamceo.tools.${n}.approval_mode="approve"`).sort() : []);
+    const approved = member.finalReviewer ? names : member === f.lead ? ["board", "roster", "task_trace", "status", "post", "team_assign"] : [];
+    expect(allowed).toEqual(approved.map(n => `mcp_servers.iamceo.tools.${n}.approval_mode="approve"`).sort());
+    for (const name of approved) expect(agentTools.listAgentTools(member).some(tool => tool.name === name)).toBe(true);
     if (member.finalReviewer) {
       expect(args).toContain("read-only");
       expect(args).toContain("features.shell_tool=false");
@@ -221,6 +224,46 @@ for (const cli of ["claude", "codex", "antigravity"] as const) {
     expect(f.runner.sent).toHaveLength(2);
   });
 }
+
+test("기존 Codex 총괄은 예전 지문과 같은 도구·역할 글이어도 다음 안전한 입력 전에 한 번만 이어 연다", async () => {
+  const f = fixture();
+  const tools = agentTools.listAgentTools(f.lead, { memory: false });
+  const rules = f.orch["rulesFor"](f.lead, f.project);
+  const previous = createHash("sha256").update(JSON.stringify({ tools, rules })).digest("hex").slice(0, 16);
+  f.store.setAppliedConfig(f.lead.id, { model: null, effort: null, staffModel: null, staffEffort: null, toolsSig: previous });
+  await f.wake();
+  expect(f.runner.starts).toHaveLength(1);
+  expect(f.runner.starts[0]).toMatchObject({ resume: true, sessionId: f.lead.sessionId });
+  expect(f.store.getAppliedConfig(f.lead.id)?.toolsSig).not.toBe(previous);
+  await f.idle();
+  await f.wake();
+  expect(f.runner.starts).toHaveLength(1);
+  expect(f.runner.sent).toHaveLength(2);
+});
+
+test.each(["write_started", "starting"] as const)("총괄 권한 갱신은 %s 근거가 남은 기존 세션을 보존한다", async fence => {
+  const f = fixture();
+  const d = f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "system", text: "이전 지시", wake: true });
+  const identity = { terminalId: f.lead.paneId, sessionId: f.lead.sessionId,
+    sessionGeneration: f.store.memberRevisions(f.lead.id).sessionGeneration, process: null };
+  const at = new Date().toISOString();
+  if (fence === "write_started") {
+    const dispatch = f.orch.deliveryRecovery.prepareDispatch([d.id], identity,
+      { serverEpoch: "past", turn: 1, inputEpoch: 1, logs: [], capturedAt: at });
+    f.store.updateDispatch(dispatch.dispatchId, "prepared", "write_started");
+  } else {
+    f.store.saveExecutionJournal({ runId: "pending-start", memberId: f.lead.id, projectId: f.project.id, identity,
+      turn: null, deliveryIds: [d.id], phase: "starting", inputReceivedAt: null, startedAt: null, endedAt: null, result: null,
+      lastProgressAt: null, reason: null, exitCode: null, interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at });
+  }
+  const next = await f.wake();
+  expect(f.runner.stops).toHaveLength(0);
+  expect(f.runner.starts).toHaveLength(0);
+  expect(f.runner.sent).toHaveLength(0);
+  expect(f.store.requireDelivery(next.id).status).toBe("queued");
+  if (fence === "write_started") expect(f.store.inputState(f.lead.id).unresolvedDispatches[0]?.transportState).toBe("write_started");
+  else expect(f.store.getExecutionJournal("pending-start")?.phase).toBe("starting");
+});
 
 test("도구만 저장한 기존 지문도 역할 글을 다시 받고, 맞춤 역할 변경도 다음 쉬는 틈에 받는다", async () => {
   const f = fixture();
