@@ -92,7 +92,13 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   expect(latestCompletionReview(f.store, f.task.id)).toMatchObject({ status: "pending", main_base: f.base, main_commit: main });
   const due = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
   expect(due.some(d => d.memberId === f.reviewer.id && d.text.includes(f.reportId))).toBe(true);
-  expect((await f.tool(f.reviewer, "task_review_evidence", { task_id:f.task.id, report_id:f.reportId, path:"verify.py" })).isError).toBeUndefined();
+  const observed = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.task.id, report_id: f.reportId });
+  expect(observed.isError, observed.text).toBeUndefined();
+  expect(JSON.parse(observed.text)).toMatchObject({
+    integration: { mainBase: f.base, mainCommit: main, reportId: latestCompletionReview(f.store, f.task.id)!.integration_report_id },
+    patch: { state: "observed", comparison: f.base, files: ["settings.py", "verify.py"] },
+  });
+  expect(JSON.parse(observed.text).integration.reportId).toBeString();
   const defect = spawnSync("/usr/bin/python3", ["verify.py", ""], { cwd: f.project.cwd, encoding: "utf8" });
   expect(defect.status).toBe(1);
   expect(defect.stderr).toContain("('default', '')");

@@ -5045,7 +5045,9 @@ export class Orchestrator implements OrchestratorApi {
       this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
       throw new ApiError(409, "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요");
     }
-    const patch = artifact.artifactCommit ? await readFinalReviewPatch(project.cwd, artifact.artifactCommit, path, offset) : null;
+    const patch = artifact.artifactCommit
+      ? await readFinalReviewPatch(project.cwd, artifact.artifactCommit, path, offset, artifact.artifactBase ?? review.main_base)
+      : null;
     if (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0)) {
       this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
         .run(member.id, task.id, report.id);
@@ -5053,6 +5055,7 @@ export class Orchestrator implements OrchestratorApi {
     return publicHarness({ task: { id: task.id, title: task.title, branch: task.branch }, contract,
       report: { id: report.id, title: report.title, body: report.body, who: report.who, taskId: report.taskId,
         checks: artifact.checks, claims: artifact.claims, artifactBranch: artifact.artifactBranch, artifactCommit: artifact.artifactCommit },
+      integration: review.main_commit ? { mainBase: review.main_base, mainCommit: review.main_commit, reportId: review.integration_report_id } : null,
       patch });
   }
 
