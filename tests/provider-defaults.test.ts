@@ -97,8 +97,8 @@ describe("new provider defaults", () => {
     const project = f.store.listProjects().find(project => project.name === "MCP 팀")!;
     expect(f.store.chiefCli(project.id)).toBe("codex");
     const chief = await f.orch.ensureConductor(project.id);
-    expect((await handleAgentTool(f.orch, chief, "team_add", { name: "MCP 직원", role: "검토", model: "gpt-6-luna" })).isError).toBeUndefined();
-    expect(f.store.findMember(project.id, "MCP 직원")?.cli).toBe("codex");
+    expect((await handleAgentTool(f.orch, chief, "team_add", { name: "MCP 직원", role: "검토", model: "gpt-6-luna", parallel: false })).isError).toBeUndefined();
+    expect(f.store.findMember(project.id, "MCP 직원")).toMatchObject({ cli: "codex", parallel: true });
   });
 
   test("opening an original-schema database preserves implicit Claude chiefs and session identity", () => {

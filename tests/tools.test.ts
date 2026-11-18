@@ -683,9 +683,9 @@ describe("총괄 도구", () => {
     expect(runner.sent[1]!.text).toContain("셋째 일");
   });
 
-  test("team_assign: parallel 이 다를 때만 먼저 바꾼다", async () => {
+  test("team_assign: 저장된 병렬 선호를 처음 전달할 때 한 번만 적용한다", async () => {
     const { store, project, runner, lead, call } = await setup();
-    await call(lead, "team_add", { name: "철수", role: "개발", handle: "cs" });
+    await call(lead, "team_add", { name: "철수", role: "개발", handle: "cs", cli: "claude" });
     const w = store.findMember(project.id, "cs")!;
     const taskId = defaultTaskId(store, project.id);
     store.saveTaskContract(taskId, { kind: "other", goal: "병렬 실행 확인", inputs: ["대표의 지시"], outputs: ["실행 근거"], scope: "테스트",
@@ -696,7 +696,7 @@ describe("총괄 도구", () => {
     expect(store.requireMember(w.id).parallel).toBe(true);
     runner.end(w.id);
     await Bun.sleep(20);
-    expect((await call(lead, "team_assign", { member: "cs", text: "또 큰 일", task_id: taskId, parallel: true })).isError).not.toBe(true);
+    expect((await call(lead, "team_assign", { member: "cs", text: "또 큰 일", task_id: taskId, parallel: false })).isError).not.toBe(true);
     expect(runner.parallel).toHaveLength(1);
   });
 

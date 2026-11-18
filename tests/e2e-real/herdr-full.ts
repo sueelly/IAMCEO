@@ -382,26 +382,26 @@ async function run(): Promise<void> {
     await waitIdle(worker);
   });
 
-  await step("병렬 켜고 끄기(team_assign parallel, /effort ultracode)", async () => {
+  await step("총괄 지시가 직원의 병렬 설정을 보존한다", async () => {
     const db = new Database(join(home, "iamceo.db"), { readonly: true });
     const token = (db.query("SELECT token FROM members WHERE id = ?").get(conductor.id) as { token: string }).token;
     db.close();
     const tool = async (name: string, args: unknown) => {
       const r = await fetch(`${base}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args }) });
       if (!r.ok) throw new Error(`${name} ${r.status}: ${await r.text()}`);
-      return r.json();
+      const result = await r.json() as { text: string; isError?: boolean };
+      if (result.isError) throw new Error(result.text);
     };
-    await tool("team_assign", { member: worker.handle, text: "도구를 더 쓰지 말고 post 를 kind 완료, 제목 '병렬 켜짐 확인' 으로 한 번만 부르세요.", parallel: true });
-    await waitFor("parallel=true", () => memberOf((m) => m.id === worker.id && m.parallel));
-    const scr = tail(await screenOf(worker), 40);
-    check("/effort 응답을 화면에서 판별", /Ultracode on/.test(scr), scr.split("\n").find((l) => /Ultracode/.test(l)) ?? "");
-    await waitFor("병렬 완료 보고", async () => (await state()).messages.find((x) => x.memberId === worker.id && (x.title ?? "").includes("병렬 켜짐")));
-    await waitIdle(worker);
-    await tool("team_assign", { member: worker.handle, text: "도구를 더 쓰지 말고 post 를 kind 완료, 제목 '병렬 꺼짐 확인' 으로 한 번만 부르세요.", parallel: false });
-    await waitFor("parallel=false", () => memberOf((m) => m.id === worker.id && !m.parallel));
-    await waitFor("끔 보고", async () => (await state()).messages.find((x) => x.memberId === worker.id && (x.title ?? "").includes("병렬 꺼짐")));
+    const title = "업무 배정 뒤 병렬 유지 확인";
+    await tool("task", { title, contract: { kind: "other", goal: title, scope: "직원 실행 설정", inputs: ["배정 지시"],
+      outputs: ["수신 알림"], constraints: [], exclusions: [], acceptance: ["직원이 알림을 보낸다"] } });
+    const task = (await state()).tasks?.find(t => t.title === title);
+    if (!task) throw new Error("배정할 업무를 찾을 수 없습니다");
+    await tool("team_assign", { member: worker.handle, task_id: task.id, text: `post 도구로 kind 알림, 제목 '${title}'을 한 번 남기세요.`, parallel: false });
+    await waitFor("배정 수신 알림", async () => (await state()).messages.find(x => x.taskId === task.id && x.memberId === worker.id && x.title === title));
+    check("총괄이 false를 보내도 병렬 켜짐", (await memberOf(m => m.id === worker.id))?.parallel === true);
     const act = await api<any[]>(`/api/members/${worker.id}/activity?limit=50`);
-    check("병렬 활동 기록", act.some((a) => a.text === "병렬 켬") && act.some((a) => a.text === "병렬 끔"));
+    check("배정 중 병렬 해제 없음", !act.some(a => a.text === "병렬 끔"));
     check("병렬 설정 실패 없음", !act.some((a) => /병렬 설정 실패/.test(a.text)), act.filter((a) => /병렬 설정 실패/.test(a.text)).map((a) => a.text).join(";"));
     await waitIdle(worker);
     await waitIdle(conductor);

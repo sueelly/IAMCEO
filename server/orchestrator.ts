@@ -3653,6 +3653,7 @@ export class Orchestrator implements OrchestratorApi {
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
     const quote = input.userQuote?.trim() ? { text: input.userQuote, verified: source !== null, source } : null;
     const firstTask = input.firstInstruction ? this.instructionTaskFor(projectId, input.taskId) : null;
+    const ownerParallel = assignedBy ? undefined : input.parallel;
     if (input.firstInstruction && assignedBy) this.requireInstructionContract(assignedBy, firstTask?.id ?? null);
     const { value: { member, ready }, deliveries } = this.store.transaction(() => {
       const spawned = this.store.withDeliveryIntents(() => this.beginSpawn(project, {
@@ -3663,7 +3664,7 @@ export class Orchestrator implements OrchestratorApi {
         cli,
         modelOverride: input.modelOverride,
         effortOverride: input.effortOverride,
-        parallel: input.parallel,
+        parallel: ownerParallel,
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
@@ -3673,7 +3674,7 @@ export class Orchestrator implements OrchestratorApi {
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
       return spawned;
     });
-    if (input.parallel !== undefined) this.runtime(member.id).wantParallel = input.parallel;
+    if (ownerParallel !== undefined) this.runtime(member.id).wantParallel = ownerParallel;
     await ready;
     await this.pump(member.id);
     const assigned = deliveries[0] ? { delivery: this.store.requireDelivery(deliveries[0].id), position: 0,
@@ -3799,6 +3800,7 @@ export class Orchestrator implements OrchestratorApi {
 
   async assign(projectId: string, memberRef: string, input: AssignInput, assignedBy?: Member): Promise<AssignResult> {
     const target = this.requireInProject(projectId, memberRef);
+    const ownerParallel = assignedBy ? undefined : input.parallel;
     if (target.finalReviewer) throw new ApiError(409, "최종 검수 직원은 수행 완료 보고의 검수만 받습니다");
     const source = input.userQuote?.trim() ? this.findQuoteSource(projectId, input.userQuote) : null;
     const quote = input.userQuote?.trim() ? { text: input.userQuote, verified: source !== null, source } : null;
@@ -3828,11 +3830,11 @@ export class Orchestrator implements OrchestratorApi {
         taskId: task?.id ?? null,
       });
       if (assignedBy) this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent);
-      if (input.parallel !== undefined && input.parallel !== target.parallel) this.store.patchMember(target.id, { parallel: input.parallel });
+      if (ownerParallel !== undefined && ownerParallel !== target.parallel) this.store.patchMember(target.id, { parallel: ownerParallel });
       return delivery;
     });
     // 거절된 지시는 병렬 설정도 바꾸지 않는다.
-    if (input.parallel !== undefined) this.runtime(target.id).wantParallel = input.parallel;
+    if (ownerParallel !== undefined) this.runtime(target.id).wantParallel = ownerParallel;
     const position = busy ? this.store.listPending(target.id).length : 0;
     await this.pump(target.id);
     return { delivery: this.store.requireDelivery(delivery.id), position, verified: quote?.verified ?? null, needsContext: quote ? quoteNeedsContext(quote) : false };
