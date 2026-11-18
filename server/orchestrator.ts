@@ -86,7 +86,7 @@ import { josa, renderFinalReviewer, renderRole } from "./roles.ts";
 import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
-import { relatedWork } from "./workflow.ts";
+import { orderAssignments, relatedWork } from "./workflow.ts";
 import { STAGE_LABEL } from "../shared/task-stage.ts";
 import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
@@ -611,11 +611,16 @@ const WAKE_POST_KINDS = new Set<string>(["완료", "막힘", "질문"]);
 /** 보고 의무를 마감할 수 있는 도구. 실행이 끝날 때 결과가 안 돌아왔으면 보고 판정을 미룬다. */
 const REPORT_CLOSING_TOOLS = new Set<string>(["post", "ask", "ask_close", "team_assign", "team_add", "team_resume"]);
 
+/** Existing answers must reach the worker even when another decision is still open. */
+function startsTaskWork(delivery: Delivery): boolean {
+  return delivery.wake && (delivery.kind === "user_message" || delivery.kind === "instruction");
+}
+
 /** Domain references also include orphan answers and todo correction notices. */
 class OrchestratorDeliveryRecovery extends DeliveryRecovery {
   constructor(private readonly sourceStore: Store, runner: (member: Member) => Pick<Runner, "inspectDelivery" | "repairDelivery"> | null) {
     super({ store: sourceStore, runner,
-      canRepair: (member, deliveries) => deliveries.every(d => sourceStore.taskSequenceBlocker(member.id, sourceStore.deliveryTaskId(d.id)) === null),
+      canRepair: (member, deliveries) => deliveries.every(d => sourceStore.taskSequenceBlocker(member.id, sourceStore.deliveryTaskId(d.id), undefined, { checkOwner: startsTaskWork(d) }) === null),
     });
   }
   override executionContextValid(dispatch: DeliveryDispatch): boolean {
@@ -3568,7 +3573,7 @@ export class Orchestrator implements OrchestratorApi {
       if (signal?.aborted || this.store.requireProject(member.projectId).archived || this.archiving.has(member.projectId) || decision.status === "open") return null;
       const answered = decision.status === "answered" || decision.status === "delivered";
       if (decision.status === "answered") {
-        if (this.store.taskSequenceBlocker(current.id, decision.taskId ?? null)) return null;
+        if (this.store.taskSequenceBlocker(current.id, decision.taskId ?? null, undefined, { checkOwner: false })) return null;
         this.materializeManualAnswers(current);
         // An unacknowledged wait batch owns its items. askWait must not consume it.
         if (this.store.manualInbox(member.id, [])?.items.some(item => item.ref?.type === "decision" && item.ref.id === decisionId)) return null;
@@ -5389,8 +5394,10 @@ export class Orchestrator implements OrchestratorApi {
 
   /** Protected history stays visible, but cannot be included in a new input envelope. */
   private pendingInputs(memberId: string): Delivery[] {
-    const pending = this.admittedInputs(memberId, this.store.listPending(memberId));
-    return this.store.requireMember(memberId).kind === "conductor"
+    const member = this.store.requireMember(memberId);
+    const holdingAtTerminal = member.origin !== "manual" && member.status === "blocked";
+    const pending = this.admittedInputs(memberId, this.store.listPending(memberId), holdingAtTerminal);
+    return member.kind === "conductor"
       ? selectConductorInputs(pending, taskId => !!this.store.getTaskWatch(taskId)?.trippedAt)
       : pending;
   }
@@ -5401,23 +5408,31 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.unconfirmedDelegatedTask(delivery.id) === null;
   }
 
-  /** Each admission pass reads the worker's order only if a scoped input reaches that check. */
-  private sequenceCheck(member: Member): (taskId: string) => boolean {
+  /** Snapshot only when this batch contains task-scoped worker input. */
+  private sequenceCheck(member: Member) {
     let snapshot: ReturnType<Store["taskSequenceSnapshot"]> | undefined;
-    return taskId => {
-      snapshot ??= this.store.taskSequenceSnapshot(member.projectId, member.id);
-      return this.store.taskSequenceBlocker(member.id, taskId, snapshot) !== null;
+    const state = () => snapshot ??= this.store.taskSequenceSnapshot(member.projectId, member.id);
+    return {
+      blocked: (taskId: string, d: Delivery, holdingAtTerminal = false) => {
+        const snapshot = state();
+        // The blocked pump records these originals as held. Every physical write
+        // still checks the full task gate, including terminal approval.
+        const checkOwner = startsTaskWork(d) && !(holdingAtTerminal && snapshot.awaitingOwner.get(taskId)?.terminal);
+        return this.store.taskSequenceBlocker(member.id, taskId, snapshot, { checkOwner }) !== null;
+      },
+      order: () => orderAssignments(state().assignments, state().byId),
     };
   }
 
-  private admittedInputs(memberId: string, deliveries: Delivery[]): Delivery[] {
+  private admittedInputs(memberId: string, deliveries: Delivery[], holdingAtTerminal = false): Delivery[] {
     const member = this.store.requireMember(memberId), worker = member.kind === "worker";
     for (const taskId of new Set(deliveries.map(d => this.store.deliveryTaskId(d.id)))) {
       if (taskId) holdStaleIntegration(this.store, taskId);
     }
-    const blockedBySequence = this.sequenceCheck(member);
+    const sequence = this.sequenceCheck(member);
+    const activeTasks = member.executionState && !member.executionState.endedAt ? member.executionState.taskIds : null;
     const blocked = new Map<string, boolean>();
-    return deliveries.filter(d => {
+    const admitted = deliveries.filter(d => {
       if (!ordinaryInputAdmitted(this.store, d.id)) return false;
       // Recheck at envelope preparation too: a human instruction, completion,
       // or user stop may have superseded this reminder while it waited.
@@ -5428,9 +5443,17 @@ export class Orchestrator implements OrchestratorApi {
       if (!worker || !taskId) return true;
       // Independent order permission never resolves an intervention or owner decision.
       if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
-      if (!blocked.has(taskId)) blocked.set(taskId, blockedBySequence(taskId));
-      return !blocked.get(taskId) || independentDeliveryAuthorized(this.store, d);
+      if (d.urgent && activeTasks?.length && !activeTasks.includes(taskId)) return false;
+      const key = `${taskId}:${startsTaskWork(d)}`;
+      if (!blocked.has(key)) blocked.set(key, sequence.blocked(taskId, d, holdingAtTerminal));
+      return !blocked.get(key) || independentDeliveryAuthorized(this.store, d);
     });
+    // One waking task per worker turn preserves report ownership and scoped stops.
+    // Quiet context and unscoped notifications continue to travel with that turn.
+    const tasks = new Set(admitted.flatMap(d => d.wake && d.taskId ? [d.taskId] : []));
+    if (!worker || tasks.size < 2) return admitted;
+    const next = sequence.order().find(a => tasks.has(a.taskId))?.taskId ?? tasks.values().next().value;
+    return admitted.filter(d => !d.wake || !d.taskId || d.taskId === next);
   }
 
   private async pumpOnce(memberId: string): Promise<void> {
@@ -5859,10 +5882,10 @@ export class Orchestrator implements OrchestratorApi {
     if (project.archived || this.archiving.has(project.id) || this.coreCompactFenced(member) || !deliveries.length || this.deliveryRecovery.fenced(member.id)) return { ok: false, reason: "busy", retryable: false, deliveryEffect: "not_written" };
     // Retain which permission admitted this envelope. A later reparenting can
     // remove the row blocker, but must not discard the review used for this write.
-    const blockedBySequence = this.sequenceCheck(member);
+    const sequence = this.sequenceCheck(member);
     const independentIds = new Set(member.kind === "worker" ? deliveries.filter(d => {
       const taskId = this.store.deliveryTaskId(d.id);
-      return taskId && blockedBySequence(taskId);
+      return taskId && sequence.blocked(taskId, d);
     }).map(d => d.id) : []);
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
@@ -6165,7 +6188,7 @@ export class Orchestrator implements OrchestratorApi {
       this.waiting.add(member.id);
       return false;
     }
-    const blockedBySequence = this.sequenceCheck(member);
+    const sequence = this.sequenceCheck(member);
     return deliveries.every(delivery => {
       // The current reservation is the occupied run, but its authorization and
       // contract may have changed while the runner was inspecting the terminal.
@@ -6173,7 +6196,7 @@ export class Orchestrator implements OrchestratorApi {
       const taskId = this.store.deliveryTaskId(delivery.id);
       if (!integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
-      if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || blockedBySequence(taskId))
+      if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || sequence.blocked(taskId, delivery))
         && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;
       return this.instructionCriteriaAllow(delivery);
     });

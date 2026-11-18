@@ -19,6 +19,9 @@ export interface WorkflowAssignment {
   inputBlocks?: WorkflowInputBlock[];
   continuation?: boolean;
   blocksSequence?: boolean;
+  /** The representative reviewed placement on the worker's ordered workflow. */
+  reviewedOrder?: boolean;
+  awaitingOwner?: { taskId: string; title: string; terminal: boolean } | null;
   suspendedBy?: { taskId: string; title: string } | null;
 }
 export interface WorkflowReport { taskId: string; memberId: string | null; kind: string; title: string; at: string; participatedAt?: string | null }
@@ -69,6 +72,37 @@ export function relatedWork(a: string, b: string, tasks: ReadonlyMap<string, Pic
     return false;
   };
   return under(a, b) || under(b, a);
+}
+
+/** Unrelated deliveries share an inbox, not a prerequisite. A reviewed row
+ * placement retains its order, as do separate branches of a single task family. */
+export function assignmentPredecessor(targetId: string, ordered: readonly WorkflowAssignment[],
+  tasks: ReadonlyMap<string, Pick<Task, "parentTaskId">>, reviewedOrder: boolean, nearest = false): WorkflowAssignment | undefined {
+  const ancestors = new Set<string>();
+  let id: string | null | undefined = targetId;
+  while (id && !ancestors.has(id)) {
+    ancestors.add(id);
+    id = tasks.get(id)?.parentTaskId;
+  }
+  // A standalone task has no family-specific predecessors.
+  if (!reviewedOrder && ancestors.size === 1) return;
+  let prior: WorkflowAssignment | undefined;
+  for (const item of ordered) {
+    if (item.taskId === targetId) break;
+    if (ancestors.has(item.taskId)) continue;
+    const visited = new Set<string>();
+    let parent = tasks.get(item.taskId)?.parentTaskId;
+    while (parent && !visited.has(parent)) {
+      visited.add(parent);
+      if (ancestors.has(parent)) break;
+      parent = tasks.get(parent)?.parentTaskId;
+    }
+    if (parent !== targetId && (reviewedOrder || !!parent && ancestors.has(parent))) {
+      if (!nearest) return item;
+      prior = item;
+    }
+  }
+  return prior;
 }
 
 /** Keep a parent's later continuations beside it, ahead of unrelated queued work. */
@@ -142,7 +176,7 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
   const assigned = new Set<string>();
   const lastReports = new Map<string, WorkflowReport>();
   for (const r of reports) lastReports.set(`${r.taskId}:${r.memberId ?? ""}`, r);
-  const make = (task: Task, a: WorkflowAssignment | null, m: Member | undefined, first: WorkflowAssignment | undefined): WorkflowNode => {
+  const make = (task: Task, a: WorkflowAssignment | null, m: Member | undefined, first: WorkflowAssignment | undefined, blocker?: WorkflowAssignment): WorkflowNode => {
     const p = task.progress;
     const w = board.get(task.id);
     const own = m ? lastReports.get(`${task.id}:${m.id}`) : undefined;
@@ -191,7 +225,13 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
     if (a?.suspendedBy) return { ...n, current: inRun, state: "blocked", label: "보류", reason: `‘${a.suspendedBy.title}’의 보류·중단 범위에 포함됩니다` };
-    if (m?.kind === "worker" && a?.eligible && a.blocksSequence !== false && first && first.taskId !== task.id && !relatedWork(first.taskId, task.id, taskMap)) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(first.taskId)?.title ?? "앞선 업무"}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다` };
+    if (a?.awaitingOwner && a.awaitingOwner.taskId !== task.id) {
+      const gate = a.awaitingOwner;
+      return { ...n, state: "blocked", label: gate.terminal ? "승인 응답 대기" : "대표 확인",
+        reason: `‘${gate.title}’에서 ${gate.terminal ? "직원 터미널의 승인 응답" : "대표의 결정"}을 기다립니다`,
+        action: gate.terminal ? { label: "업무 보기", tab: "thread", sub: gate.taskId } : { label: "결재함 열기", tab: "inbox", sub: null } };
+    }
+    if (blocker) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(blocker.taskId)!.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
     if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
@@ -201,7 +241,7 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     if (a.source === "board" && (!p || p.stage === "new")) return { ...n, label: "착수 대기", reason: "진행판에 담당이 지정되어 있습니다. 실행 지시의 전달은 아직 확인되지 않았습니다" };
     const issue = memberIssueLabel(m);
     if (issue) return { ...n, state: "blocked", label: issue, reason: m.executionIssue?.detail ?? m.lastError, action: memberAction };
-    if (a.queued && m.deliveryWait) return { ...n, state: "queued", ...deliveryWaitText(m.deliveryWait) };
+    if (a.queued && m.deliveryWait && m.deliveryWait.kind !== "sequence") return { ...n, state: "queued", ...deliveryWaitText(m.deliveryWait) };
     if (m.status === "asleep" || m.status === "offline" || m.status === "error") return { ...n, state: "blocked", label: m.status === "asleep" ? "직원 잠듦" : "연결 확인", reason: "직원 화면에서 연결 상태와 실행 가능 여부를 확인해 주세요", action: memberAction };
     if (a.queued) return { ...n, state: "queued", label: a.retryAt ? "재시도 대기" : "전달 대기", reason: a.retryAt ? `다음 전달 시각: ${a.retryAt}` : null };
     return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };
@@ -211,18 +251,23 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     const inferred = (a: WorkflowAssignment) => a.source === "report" || a.source === "board";
     const row = [...orderAssignments(originalRow.filter(a => !inferred(a)), taskMap),
       ...orderAssignments(originalRow.filter(inferred), taskMap)].map((a, order) => ({ ...a, order }));
-    const first = row.find(a => a.eligible && a.blocksSequence !== false && taskMap.get(a.taskId)?.progress?.stage !== "done");
-    let prev: WorkflowNode | undefined;
+    const enrolled = row.filter(a => a.eligible && a.blocksSequence !== false);
+    const open = enrolled.filter(a => taskMap.get(a.taskId)?.progress?.stage !== "done");
+    const blockers = new Map(open.map(a => [a.taskId, memberMap.get(memberId)?.kind === "worker"
+      ? assignmentPredecessor(a.taskId, open, taskMap, !!a.reviewedOrder) : undefined]));
+    const first = open.find(a => a.queued && !a.awaitingOwner && !blockers.get(a.taskId)) ?? open[0];
     for (const a of row) {
-      const t = taskMap.get(a.taskId)!;
-      const node = make(t, a, memberMap.get(memberId), first);
-      if (first && memberMap.get(memberId)?.kind === "worker" && a.eligible && a.blocksSequence !== false && !pausedTasks.has(t.id) && node.state !== "running" && node.state !== "starting" && node.state !== "done") {
-        const predecessor = row.find(x => x.order < a.order && x.eligible && x.blocksSequence !== false && taskMap.get(x.taskId)?.progress?.stage !== "done" && relatedWork(first.taskId, x.taskId, taskMap) && !relatedWork(x.taskId, a.taskId, taskMap));
-        if (predecessor) { node.state = "waiting"; node.label = "선행 업무 대기"; node.reason = `‘${taskMap.get(predecessor.taskId)!.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다`; }
-      }
+      const t = taskMap.get(a.taskId)!, blocker = blockers.get(a.taskId);
+      const node = make(t, a, memberMap.get(memberId), first, blocker);
       assigned.add(t.id); nodes.push(node);
-      if (prev && a.eligible && a.blocksSequence !== false && memberMap.get(memberId)?.kind === "worker" && !relatedWork(prev.taskId, t.id, taskMap)) edges.push({ id: `seq:${prev.id}:${node.id}`, from: prev.id, to: node.id, kind: "sequence" });
-      if (a.eligible && a.blocksSequence !== false) prev = node;
+      // Show adjacent ordered assignments, including completed history. The
+      // waiting label above instead identifies the earliest unfinished blocker.
+      const prior = a.eligible && a.blocksSequence !== false && memberMap.get(memberId)?.kind === "worker"
+        ? assignmentPredecessor(t.id, enrolled, taskMap, !!a.reviewedOrder, true) : undefined;
+      if (prior) {
+        const from = `${memberId}:${prior.taskId}`;
+        edges.push({ id: `seq:${from}:${node.id}`, from, to: node.id, kind: "sequence" });
+      }
     }
   }
   for (const t of taskMap.values()) if (!assigned.has(t.id)) nodes.push(make(t, null, undefined, undefined));

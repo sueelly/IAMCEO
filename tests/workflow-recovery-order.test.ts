@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { Bus } from "../server/bus.ts";
 import { openDb } from "../server/db.ts";
@@ -15,6 +16,7 @@ function fixture() {
   const second = store.saveTask({ projectId: project.id, memberId: member.id, who: member.name, title: "Second task", branch: "test/second" }).task;
   store.markDelivered(store.enqueue({ projectId: project.id, memberId: member.id, kind: "instruction", text: "First unfinished work", taskId: first.id }).id);
   const later = store.enqueue({ projectId: project.id, memberId: member.id, kind: "instruction", text: "Later work awaiting receipt", taskId: second.id });
+  reviewedPlacement(store, later);
   let at = Date.now(), received = false, repairs = 0;
   let beforePrepare = () => {};
   let service: DeliveryRecovery;

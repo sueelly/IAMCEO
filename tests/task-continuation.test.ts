@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { openDb } from "../server/db.ts";
 import { Store } from "../server/store.ts";
@@ -424,6 +425,7 @@ function sequenceBlockedFixture() {
   const task = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: "queued-later", title: "Later authorized work", origin: "owner" }).task;
   f.store.saveTaskContract(task.id, { kind: "other", goal: "Later work", acceptance: ["Verified result"], checks: [] }, { author: f.lead.name, authorMemberId: f.lead.id, authorKind: "conductor" });
   const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Perform later authorized work", taskId: task.id });
+  reviewedPlacement(f.store, input);
   return { ...f, earlier, task, input };
 }
 

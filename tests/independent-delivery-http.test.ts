@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { startServer } from "../server/http.ts";
@@ -27,6 +28,7 @@ async function fixture(options: { readOnly?: boolean; unsupported?: boolean } = 
   }, { author: "Fixture", authorMemberId: null, authorKind: "owner" });
   const selected = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId: nextTask.id,
     kind: "instruction", text: "Selected existing original instruction", wake: true });
+  reviewedPlacement(f.store, selected);
   const unselected = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId: nextTask.id,
     kind: "instruction", text: "Unselected original on the same independent task", wake: true });
   await f.orch.pump(f.member.id);

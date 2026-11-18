@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { Bus } from "../server/bus.ts";
@@ -22,6 +23,7 @@ function setup() {
   store.markDelivered(old.id);
   store.addStageMark({ projectId: project.id, taskId: oldTask.id, stage: "review", evidence: "원래 검토 조건을 유지합니다", who: "대표", memberId: null });
   const next = store.enqueue({ projectId: project.id, memberId: worker.id, taskId: nextTask.id, kind: "instruction", text: "독립된 새 지시" });
+  reviewedPlacement(store, next);
   const source = store.createMessage({ projectId: project.id, taskId: nextTask.id, mine: true, who: "대표", kind: "나", body: "이 지시를 이전 업무와 별개로 실행하세요", targetMemberId: worker.id, at: new Date(Date.parse(next.createdAt) + 1).toISOString() });
   const request: IndependentDeliveryRequest = { operationId: randomUUID(), sourceMessageId: source.id, expectedSessionGeneration: 0, expectedBlockerTaskId: oldTask.id };
   const authorize = (r: IndependentDeliveryRequest = request) => authorizeIndependentDelivery(store, project.id, next.id, r);
@@ -51,7 +53,7 @@ test("a repeated operation survives Store recreation and cannot reauthorize chan
   expect(authorizeIndependentDelivery(reopened, f.project.id, f.next.id, { ...f.request })).toEqual(result);
   expect(independentDeliveryAuthorized(reopened, reopened.requireDelivery(f.next.id))).toBe(false);
   expect(reopened.listDeliveries()).toHaveLength(2);
-  expect(reopened.db.query("SELECT COUNT(*) AS n FROM workflow_assignment_receipts").get()).toEqual({ n: 1 });
+  expect(reopened.db.query("SELECT COUNT(*) AS n FROM workflow_assignment_receipts WHERE json_extract(request_json, '$.kind') = 'independent_delivery'").get()).toEqual({ n: 1 });
 });
 
 test.each(["source", "generation", "blocker", "delivery", "project"])("operation reuse conflicts on a different %s", change => {
@@ -62,7 +64,7 @@ test.each(["source", "generation", "blocker", "delivery", "project"])("operation
   if (change === "generation") request.expectedSessionGeneration++;
   if (change === "blocker") request.expectedBlockerTaskId = "different-task";
   expect(() => authorizeIndependentDelivery(f.store, change === "project" ? other.id : f.project.id, change === "delivery" ? f.old.id : f.next.id, request)).toThrow();
-  expect(f.store.db.query("SELECT COUNT(*) AS n FROM workflow_assignment_receipts").get()).toEqual({ n: 1 });
+  expect(f.store.db.query("SELECT COUNT(*) AS n FROM workflow_assignment_receipts WHERE json_extract(request_json, '$.kind') = 'independent_delivery'").get()).toEqual({ n: 1 });
 });
 
 test("an ordinary assignment receipt cannot be reused as independent authorization", () => {

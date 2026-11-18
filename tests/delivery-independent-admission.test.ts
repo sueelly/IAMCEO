@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
 
@@ -34,8 +35,8 @@ function task(f: Fixture, sourceRef: string, title: string) {
 }
 
 function instruction(f: Fixture, taskId: string, text: string) {
-  return f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId,
-    kind: "instruction", text, wake: true });
+  return reviewedPlacement(f.store, f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId,
+    kind: "instruction", text, wake: true }));
 }
 
 function unresolvedPredecessor(f: Fixture, parallel: boolean) {

@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -521,7 +522,7 @@ function reviewFixture() {
       kind: "instruction",
       text: t.title,
     });
-    store.markDelivered(d.id);
+    return store.markDelivered(d.id);
   };
   const mark = (t: Task, stage: "hold" | "review" | "done") =>
     store.addStageMark({
@@ -612,7 +613,7 @@ test("review: an open relation scope replaces obsolete sequence edges after a li
   const tasks = ["선행 A", "중간 B", "후행 C"].map((s) => f.task(s));
   for (const t of tasks) {
     f.task(t.title + " 하위", t.id);
-    f.assign(m, t);
+    reviewedPlacement(store, f.assign(m, t));
   }
   const p = await open(1440, undefined, f.pr.id);
   try {
@@ -744,12 +745,12 @@ test("review: crossed group relations remain clickable without overlapping count
   ).sort((a, b) => a.id.localeCompare(b.id));
   for (const r of roots) f.task(r.title + " 자식", r.id);
   f.assign(m, roots[0]);
-  f.assign(m, roots[4]);
+  reviewedPlacement(store, f.assign(m, roots[4]));
   f.assign(n, roots[1]);
-  f.assign(n, roots[3]);
+  reviewedPlacement(store, f.assign(n, roots[3]));
   const later = f.staff("셋째 직원");
   f.assign(later, roots[0]);
-  f.assign(later, roots[6]);
+  reviewedPlacement(store, f.assign(later, roots[6]));
   const p = await open(1440, undefined, f.pr.id);
   try {
     await p.getByRole("button", { name: "전체 지도", exact: true }).click();

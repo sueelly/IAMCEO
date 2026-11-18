@@ -1,4 +1,5 @@
 // Actual HTTP/snapshot/UI exercise in an owned DB. No CLI, worker, live socket or approval is used.
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +42,7 @@ beforeAll(async () => {
   };
   assign(done, worker, true);
   store.addStageMark({ projectId: project.id, taskId: done.id, stage: "done", evidence: "확인 완료", memberId: registrar.id, who: registrar.name });
-  currentDeliveryId = assign(current, worker, true).id; assign(next, worker); assign(derived, reviewer); assign(current, reviewer);
+  currentDeliveryId = assign(current, worker, true).id; reviewedPlacement(store, assign(next, worker)); assign(derived, reviewer); assign(current, reviewer);
   store.createMessage({ projectId: project.id, taskId: current.id, mine: true, who: "대표", kind: "나", title: "", body: "결제 화면에 접근 가능한 확인 버튼을 추가해 주세요.", targetMemberId: worker.id });
   store.createMessage({ projectId: project.id, taskId: current.id, memberId: worker.id, who: worker.name, kind: "진행", title: "결제 버튼 구현 중", body: "키보드 초점 이동을 검사하고 있습니다." });
   server = await startServer({ config, store, bus, orch, delivery: orch.deliveryRecovery });

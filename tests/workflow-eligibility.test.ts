@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { MIGRATIONS } from "../server/db.ts";
 import { fixture } from "./fixtures/harness-fixture.ts";
@@ -29,7 +30,7 @@ test.each(cases)("migration 37 keeps task-sequence eligibility for $name", scena
   const recovery = f.store.getDeliveryRecovery(old.id)!;
   f.store.updateDeliveryRecovery(old.id, recovery.version, { phase: scenario.phase, reason: scenario.reason });
   if (scenario.active) f.store.saveExecutionJournal({ runId: "legacy-active", memberId: f.worker.id, projectId: f.project.id, identity, turn: 0, deliveryIds: [old.id], phase: "received", inputReceivedAt: at, startedAt: null, lastProgressAt: null, endedAt: null, result: null, reason: null, exitCode: null, interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at });
-  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: nextTask.id, kind: "instruction", text: "Next input", wake: true });
+  reviewedPlacement(f.store, f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: nextTask.id, kind: "instruction", text: "Next input", wake: true }));
   // A post-migration delivered assignment remains a predecessor. Adoption of
   // older data only enrolls one with a current execution, not all old receipts.
   const currentBlocker = f.store.taskSequenceBlocker(f.worker.id, nextTask.id)?.taskId ?? null;

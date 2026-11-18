@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, spyOn, test } from "bun:test";
 import { checkCompletionReviews, completionReviewAllowsDelivery, reconcileNextCompletionFamily, synchronizeTaskCompletion } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
@@ -19,6 +20,7 @@ test("검사 통과는 총괄이 일하는 동안에도 후속 업무를 열고 
   const first = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, kind: "instruction", text: "첫 인계" });
   f.store.markDelivered(first.id);
   const later = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: next.id, kind: "instruction", text: "다음 인계" });
+  reviewedPlacement(f.store, later);
   f.runner.busy.add(f.lead.id);
   f.store.patchMember(f.lead.id, { status: "working" });
   expect(f.store.taskSequenceBlocker(f.worker.id, next.id)?.taskId).toBe(task.id);

@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixtures/harness-fixture.ts";
 import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
@@ -11,6 +12,7 @@ function setup() {
   };
   const input = (taskId: string) => f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "Carry out this task", taskId });
   const a = task("Earlier work"), b = task("Independent next work"), first = input(a.id), second = input(b.id);
+  reviewedPlacement(f.store, second);
   f.store.markDelivered(first.id);
   const mark = (stage: "hold" | "reopen") => f.store.addStageMark({ projectId: f.project.id, taskId: a.id, stage, who: f.lead.name, memberId: f.lead.id, evidence: "Scoped coordination decision" });
   const complete = async () => {

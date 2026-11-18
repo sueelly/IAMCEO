@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
@@ -22,6 +23,7 @@ function setupWork(f: Fixture) {
   }, { author: "Fixture", authorMemberId: null, authorKind: "owner" });
   const selected = f.store.enqueue({ projectId: f.project.id, memberId: f.member.id, taskId: target.id,
     kind: "instruction", text: "Selected original at the physical write boundary", wake: true });
+  reviewedPlacement(f.store, selected);
   const source = f.store.createMessage({ projectId: f.project.id, taskId: previous.id, targetMemberId: f.member.id,
     mine: true, who: "대표", kind: "나", body: "앞선 업무와 결재는 보존하고 선택한 독립 업무의 기존 지시만 먼저 받으세요." });
   const before = { previousInput: f.store.requireDelivery(previousInput.id), previousDecision: f.store.getDecision(previousDecision.id),

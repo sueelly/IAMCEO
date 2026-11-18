@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixtures/harness-fixture.ts";
 import { newerProgress } from "../shared/task-stage.ts";
@@ -25,7 +26,7 @@ test("unfinished historical work keeps its real blocker without enrolling or red
 
 test("flow uses delivery recipients, keeps unassigned work and distinguishes derived edges from row order", () => {
   const f = fixture(), a = task(f, "대표 지시"), b = task(f, "다음 지시"), child = task(f, "파생 확인", a.id), unassigned = task(f, "아직 배정 전");
-  assign(f, a.id); assign(f, b.id); assign(f, child.id, f.worker2.id);
+  assign(f, a.id); reviewedPlacement(f.store, assign(f, b.id)); assign(f, child.id, f.worker2.id);
   const flow = f.store.projectState(f.project.id, { compact: true }).workflow!;
   const aNode = flow.nodes.find(n => n.taskId === a.id)!;
   const bNode = flow.nodes.find(n => n.taskId === b.id)!;
@@ -40,7 +41,7 @@ test("flow uses delivery recipients, keeps unassigned work and distinguishes der
 
 test("ending a turn does not complete the left task; completing it releases the right task and a new instruction reopens it", () => {
   const f = fixture(), a = task(f, "먼저 끝낼 일"), b = task(f, "다음 일");
-  const delivery = assign(f, a.id); f.store.markDelivered(delivery.id); assign(f, b.id);
+  const delivery = assign(f, a.id); f.store.markDelivered(delivery.id); reviewedPlacement(f.store, assign(f, b.id));
   expect(f.store.taskSequenceBlocker(f.worker.id, b.id)?.taskId).toBe(a.id);
   expect(f.store.taskSequenceBlocker(f.lead.id, b.id)).toBeNull();
   f.store.patchMember(f.worker.id, { status: "idle", now: "끝냈다고 적은 오래된 상태" });
@@ -55,7 +56,7 @@ test("ending a turn does not complete the left task; completing it releases the 
 
 test("a derived continuation can run without treating its unfinished parent as a prerequisite", () => {
   const f = fixture(), a = task(f, "부모 업무"), child = task(f, "같은 업무 보완", a.id), next = task(f, "별개 업무");
-  assign(f, a.id); assign(f, next.id); assign(f, child.id);
+  assign(f, a.id); reviewedPlacement(f.store, assign(f, next.id)); assign(f, child.id);
   expect(f.store.taskSequenceBlocker(f.worker.id, child.id)).toBeNull();
   expect(f.store.taskSequenceBlocker(f.worker.id, next.id)?.taskId).toBe(a.id);
   const nodes = f.store.projectWorkflow(f.project.id).nodes.filter(n => n.memberId === f.worker.id).sort((x, y) => x.order - y.order);
@@ -73,7 +74,7 @@ test("derived siblings still obey their employee row order", () => {
 test("adoption enrolls pending and current work without making old delivered history a prerequisite", () => {
   const f = fixture(), history = task(f, "지난 작업"), pending = task(f, "현재 대기"), later = task(f, "후속 지시"), stopped = task(f, "재생 금지 과거 입력");
   f.store.markDelivered(assign(f, history.id).id);
-  assign(f, pending.id); assign(f, later.id);
+  assign(f, pending.id); reviewedPlacement(f.store, assign(f, later.id));
   const protectedInput = assign(f, stopped.id);
   f.store.db.query("UPDATE delivery_recovery SET phase = 'stopped' WHERE delivery_id = ?").run(protectedInput.id);
   const originals = f.store.listDeliveries();
@@ -172,7 +173,7 @@ test.each(["input", "owner", "failure"])("parent completion cannot hide an activ
 
 test("workflow distinguishes capacity and provider limits without hiding protected inputs or prior work", () => {
   const f = fixture(), current = task(f, "실행 자리를 기다리는 지시"), later = task(f, "후속 지시");
-  const delivery = assign(f, current.id); assign(f, later.id);
+  const delivery = assign(f, current.id); reviewedPlacement(f.store, assign(f, later.id));
   f.store.patchMember(f.worker.id, { status: "idle" });
   f.store.setDeliveryWait(f.worker.id, { kind: "capacity", active: 20, limit: 20 });
   const node = () => f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === current.id)!;

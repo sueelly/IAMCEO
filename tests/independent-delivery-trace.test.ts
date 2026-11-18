@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixtures/harness-fixture.ts";
 
@@ -8,6 +9,7 @@ test("task trace identifies the exact sequence boundary without changing or expo
   const prior = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: old.id, kind: "instruction", text: "SECRET_OLD_INPUT" });
   f.store.markDelivered(prior.id);
   const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId: next.id, kind: "instruction", text: "SECRET_NEW_INPUT" });
+  reviewedPlacement(f.store, input);
   const changes = () => f.store.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
   const before = changes();
   const result = f.orch.taskTrace(f.worker, next.id);

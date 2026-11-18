@@ -1,5 +1,5 @@
 import { describeTaskContext } from "./task-context.ts";
-import { buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
+import { assignmentPredecessor, buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
 import { activeTaskContinuationPauses, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
@@ -2072,27 +2072,33 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** A hold/owner stop fences its descendants, not unrelated assignments. */
-  private taskSequenceSuspensions(projectId: string, facts = this.taskProgressFacts(projectId)): Map<string, { taskId: string; title: string }> {
+  private taskSequenceGates(projectId: string, facts = this.taskProgressFacts(projectId)) {
     const tasks = this.rows("SELECT id,title,parent_task_id FROM tasks WHERE project_id=? AND merged_into IS NULL", projectId);
     const byId = new Map(tasks.map(t => [t.id as string, t]));
     const paused = new Set(this.taskContinuationPauses(projectId).map(p => p.taskId));
     const held = new Set([...facts].filter(([, f]) => deriveProgress(f).stage === "hold").map(([id]) => id));
-    const out = new Map<string, { taskId: string; title: string }>();
+    const suspended = new Map<string, { taskId: string; title: string }>();
+    const awaitingOwner = new Map<string, { taskId: string; title: string; terminal: boolean }>();
     for (const task of tasks) {
-      if (paused.has(task.id)) { out.set(task.id, { taskId: task.id, title: task.title }); continue; }
+      if (paused.has(task.id)) suspended.set(task.id, { taskId: task.id, title: task.title });
       const seen = new Set<string>(); let current: Row | undefined = task;
       while (current && !seen.has(current.id)) {
         seen.add(current.id);
-        if (held.has(current.id)) { out.set(task.id, { taskId: current.id, title: current.title }); break; }
+        const scope = { taskId: current.id as string, title: current.title as string };
+        const fact = facts.get(current.id);
+        if (fact && (fact.decisions.length || fact.todos.length || fact.approvals.length) && !awaitingOwner.has(task.id)) {
+          awaitingOwner.set(task.id, { ...scope, terminal: !fact.decisions.length && !fact.todos.length });
+        }
+        if (held.has(current.id) && !suspended.has(task.id)) suspended.set(task.id, scope);
         current = byId.get(current.parent_task_id);
       }
     }
-    return out;
+    return { suspended, awaitingOwner };
   }
 
   /** Actual recipients and queue classes, one aggregate query regardless of task count. */
-  private workflowAssignments(projectId: string, memberId?: string, facts = this.taskProgressFacts(projectId)): WorkflowAssignment[] {
-    const suspended = this.taskSequenceSuspensions(projectId, facts);
+  private workflowAssignments(projectId: string, memberId?: string, facts = this.taskProgressFacts(projectId), gates = this.taskSequenceGates(projectId, facts)): WorkflowAssignment[] {
+    const { suspended, awaitingOwner } = gates;
     const running = new Set<string>();
     for (const run of this.rows(`SELECT e.member_id,e.delivery_ids_json FROM execution_journal e JOIN members m ON m.id=e.member_id
       WHERE e.project_id=? AND e.generation=m.session_generation AND e.ended_at IS NULL
@@ -2119,6 +2125,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       json_group_array(json_object('deliveryId', d.id, 'phase', COALESCE(r.phase,'none'), 'reason', r.reason,
         'holdReason', d.hold_reason, 'retryReason', d.retry_reason, 'lastCheckedAt', r.last_checked_at, 'nextCheckAt', r.next_check_at))
         FILTER (WHERE (d.status IN ('queued','held','delivering') OR (d.status = 'failed' AND r.phase = 'stopped')) AND d.wake = 1 AND (${protectedInput} OR d.status = 'held')) AS input_blocks_json,
+      EXISTS(SELECT 1 FROM workflow_assignment_receipts w
+        WHERE w.project_id = d.project_id AND w.member_id = d.member_id AND w.task_id = d.task_id) AS reviewed_order,
       MIN(CASE WHEN d.status = 'queued' THEN d.next_attempt_at END) AS retry_at
       FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id = d.id
       LEFT JOIN task_sequence q ON q.member_id = d.member_id AND q.task_id = d.task_id
@@ -2137,7 +2145,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         queued: Number(r.queued), held: Number(r.held), notices: Number(r.notices), protected: Number(r.protected), retryAt: r.retry_at ?? null,
         inputBlocks: JSON.parse(r.input_blocks_json ?? "[]"), continuation: !!r.continuation,
         blocksSequence: !suspended.has(r.task_id) && !delivered,
-        suspendedBy: suspended.get(r.task_id) ?? null,
+        reviewedOrder: !!r.reviewed_order, suspendedBy: suspended.get(r.task_id) ?? null,
+        awaitingOwner: awaitingOwner.get(r.task_id) ?? null,
       }); });
   }
 
@@ -2162,30 +2171,27 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     const tasks = this.rows(`SELECT t.id,t.title,t.parent_task_id,t.merged_into FROM tasks t WHERE t.project_id=?`, projectId);
     const byId = new Map(tasks.map(t => [t.id as string, { title: t.title as string, done: deriveProgress(facts.get(t.id) ?? emptyFacts()).stage === "done",
       merged_into: t.merged_into as string | null, parentTaskId: t.parent_task_id as string | null }]));
-    return { projectId, memberId, byId, suspended: this.taskSequenceSuspensions(projectId, facts), assignments: this.workflowAssignments(projectId, memberId, facts) };
+    const gates = this.taskSequenceGates(projectId, facts);
+    return { projectId, memberId, byId, ...gates, assignments: this.workflowAssignments(projectId, memberId, facts, gates) };
   }
 
-  /** Worker row order is executable policy. A stopped historical input never becomes a predecessor. */
-  taskSequenceBlocker(memberId: string, taskId: string | null, snapshot?: ReturnType<Store["taskSequenceSnapshot"]>, prospective = false): { taskId: string; title: string } | null {
+  /** A reviewed workflow placement and related continuations retain their order. */
+  taskSequenceBlocker(memberId: string, taskId: string | null, snapshot?: ReturnType<Store["taskSequenceSnapshot"]>,
+    { prospective = false, checkOwner = true }: { prospective?: boolean; checkOwner?: boolean } = {}): { taskId: string; title: string } | null {
     if (!taskId) return null;
     const m = this.requireMember(memberId);
     if (m.kind !== "worker") return null;
     const state = snapshot && snapshot.projectId === m.projectId && (!snapshot.memberId || snapshot.memberId === memberId)
       ? snapshot : this.taskSequenceSnapshot(m.projectId, memberId);
     const suspended = state.suspended.get(taskId); if (suspended) return suspended;
+    if (checkOwner && state.awaitingOwner.has(taskId)) return state.awaitingOwner.get(taskId)!;
     const byId = state.byId;
     const row = orderAssignments(state.assignments.filter(a => a.memberId === memberId), byId);
     if (!prospective && row.some(a => a.taskId === taskId && a.eligible && a.blocksSequence === false)) return null;
     const open = row.filter(a => a.eligible && (a.blocksSequence !== false || prospective && a.taskId === taskId) && byId.has(a.taskId) && !byId.get(a.taskId)!.done && !byId.get(a.taskId)!.merged_into);
-    const first = open[0];
-    if (!first) return null;
-    if (!relatedWork(first.taskId, taskId, byId)) return { taskId: first.taskId, title: byId.get(first.taskId)!.title };
-    // A descendant may continue its parent, but two sibling continuations still run in row order.
-    for (const a of open) {
-      if (a.taskId === taskId) break;
-      if (relatedWork(first.taskId, a.taskId, byId) && !relatedWork(a.taskId, taskId, byId)) return { taskId: a.taskId, title: byId.get(a.taskId)!.title };
-    }
-    return null;
+    const target = row.find(a => a.taskId === taskId);
+    const blocker = assignmentPredecessor(taskId, open, byId, prospective || !!target?.reviewedOrder);
+    return blocker ? { taskId: blocker.taskId, title: byId.get(blocker.taskId)!.title } : null;
   }
 
   /** Executable predecessors only: projection-only reports cannot authorize an order exception. */
@@ -2230,7 +2236,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       eligible: true, enrolled: true, queued: 1, held: 0, notices: 0, protected: 0, retryAt: null };
     const row = this.buildProjectWorkflow(task.projectId, tasks, this.listMembers(task.projectId), [...existing.filter(a => a.taskId !== taskId), candidate]).nodes
       .filter(n => n.memberId === memberId && n.state !== "done");
-    return { position: row.findIndex(a => a.taskId === taskId) + 1, suspended: this.taskSequenceSuspensions(task.projectId).get(taskId) ?? null, blocker: this.taskSequenceBlocker(memberId, taskId, undefined, true),
+    return { position: row.findIndex(a => a.taskId === taskId) + 1, suspended: this.taskSequenceGates(task.projectId).suspended.get(taskId) ?? null, blocker: this.taskSequenceBlocker(memberId, taskId, undefined, { prospective: true }),
       continuation: existing.some(a => a.enrolled && a.taskId !== taskId && byId.get(a.taskId)?.progress?.stage !== "done" && relatedWork(a.taskId, taskId, byId)) };
   }
 

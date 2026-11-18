@@ -1,3 +1,4 @@
+import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { expect, test } from "bun:test";
 import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
 
@@ -79,6 +80,7 @@ test("a manual worker receives only the current task until it is completed", asy
     const a = task(f, "first", member.id), b = task(f, "second", member.id);
     const first = instruction(f, a.id, "Manual first", member.id);
     const second = instruction(f, b.id, "Manual second", member.id);
+    reviewedPlacement(f.store, second);
     const batch = await f.orch.manualInbox(member.id, 0);
     expect(batch?.items.map(i => i.deliveryId)).toEqual([first.id]);
     expect(await f.orch.manualInbox(member.id, 0)).toEqual(batch);
@@ -118,7 +120,7 @@ test("a direct manual answer wait cannot bypass the worker's earlier unfinished 
     const a = task(f, "first", member.id), b = task(f, "second", member.id);
     const first = instruction(f, a.id, "Earlier work", member.id);
     f.store.markDelivered(first.id);
-    instruction(f, b.id, "Later work", member.id);
+    reviewedPlacement(f.store, instruction(f, b.id, "Later work", member.id));
     const decision = f.store.createDecision({ projectId: f.project.id, memberId: member.id, who: member.name, title: "Second task question", taskId: b.id });
     f.store.answerDecision(decision.id, { note: "Isolated answer" });
     expect(await f.orch.askWait(member, decision.id, 0)).toEqual({ done: false });
