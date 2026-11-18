@@ -137,3 +137,27 @@ test("a migrated zero-count current queue cannot erase prior delivery of that sa
   expect(f.store.listMembers(f.project.id).filter(m=>m.standbyReviewer)).toHaveLength(0);
   expect(f.bind(hold).id).toBe(blocked.id);
 });
+
+test("a later fence on the opposite reviewer isolates only related cases in an existing healthy queue",async()=>{
+  const f=scenario(), old=await f.add("원 담당 수신 확인");
+  f.schedule(); f.fence(f.bind(old).id);
+  const uncertain=await f.add("예비 담당 원 업무");
+  f.schedule(); const risk=f.bind(uncertain);
+  f.store.db.query("UPDATE delivery_recovery SET phase='resolved' WHERE delivery_id=?").run(f.bind(old).id);
+  const child=await f.add("예비 담당의 파생"), independent=await f.add("독립 검수");
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(uncertain.task_id,child.task_id);
+  f.schedule(); const mixed=f.bind(child);
+  expect(f.bind(independent).id).toBe(mixed.id);
+  expect(mixed.memberId).toBe(f.primary.id);
+  f.fence(risk.id);
+  expect(completionReviewAllowsDelivery(f.store,mixed)).toBe(false);
+  expect((await f.tool(f.primary,"task_review_evidence",child)).isError).toBe(true);
+  f.schedule();
+  expect(f.store.requireDelivery(mixed.id).status).toBe("failed");
+  expect(f.bind(independent).memberId).toBe(f.primary.id);
+  expect(f.bind(independent).text).not.toContain(child.report_id);
+  expect(completionReviewAllowsDelivery(f.store,f.bind(independent))).toBe(true);
+  expect(completionReviewAllowsDelivery(f.store,f.bind(child))).toBe(false);
+  expect(f.bind(uncertain).id).toBe(risk.id);
+  expect(f.schedule()).toHaveLength(0);
+});

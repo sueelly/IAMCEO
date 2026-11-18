@@ -276,8 +276,10 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
       }
       if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase))) continue;
       if (last && assigned && ["queued","held"].includes(last.status)) {
-        if (ownFence && !review.evidence_reader_id && review.review_dispatch_count <= 1 &&
-            isCompletionReviewDelivery(last) && last.status === "queued" && ownFence(review) && !previousLegacyReviewAttempt(store,review,last)) {
+        const mayTransfer = ownFence && !review.evidence_reader_id && review.review_dispatch_count <= 1 &&
+          ownFence(review) && !previousLegacyReviewAttempt(store,review,last);
+        const maySplit = !ownFence && !last.taskId && otherFence && otherFence(review);
+        if (isCompletionReviewDelivery(last) && last.status === "queued" && (mayTransfer || maySplit)) {
           const entries = group.transfers.get(last.id) ?? [];
           entries.push(entry); group.transfers.set(last.id, entries);
         }
@@ -309,17 +311,25 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
     for (const [projectId, group] of projects) {
       for (const [oldId, entries] of group.transfers) {
         const old = store.requireDelivery(oldId);
-        if (!untouchedReviewBatch(store, old)) continue;
         const fromStandby = old.memberId === group.standby?.id;
-        if (fromStandby ? group.primaryScope : group.standbyScope) {
-          group.attention.push(...entries.filter(entry => !entry.review.attention_delivery_id));
-          continue;
-        }
-        group.standby ??= store.ensureStandbyReviewer(projectId);
-        if (!group.standby) continue;
+        const owner = fromStandby ? group.standby! : group.primary;
+        const ownFence = fromStandby ? group.standbyScope : group.primaryScope;
+        const otherFence = fromStandby ? group.primaryScope : group.standbyScope;
         const pending = store.db.query<CompletionReviewRow,[string]>("SELECT * FROM task_completion_reviews WHERE delivery_id=? AND status='pending'").all(oldId);
+        if (!ownFence && (!otherFence || !pending.some(row => currentReview(store,row) && !otherFence(row)))) continue;
+        if (!untouchedReviewBatch(store, old)) continue;
+        let recipient = owner;
+        if (ownFence) {
+          if (otherFence) {
+            group.attention.push(...entries.filter(entry => !entry.review.attention_delivery_id));
+            continue;
+          }
+          group.standby ??= store.ensureStandbyReviewer(projectId);
+          if (!group.standby) continue;
+          recipient = fromStandby ? group.primary : group.standby;
+        }
         const moved = new Set(entries.map(entry => entry.taskId));
-        const alternate = createReviewBatch(store, fromStandby ? group.primary : group.standby, entries, true);
+        const alternate = createReviewBatch(store, recipient, entries, true);
         out.push(alternate);
         // Only an untouched envelope can be superseded. Retain each remaining
         // case with its primary on its own delivery so a paused case cannot ride
@@ -327,7 +337,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
         for (const row of pending) {
           if (moved.has(row.task_id) || !currentReview(store,row)) continue;
           const task = store.requireTask(row.task_id);
-          out.push(createReviewBatch(store,fromStandby ? group.standby : group.primary,[{taskId:task.id,title:task.title,review:row,lastChecked:now}],true));
+          out.push(createReviewBatch(store,owner,[{taskId:task.id,title:task.title,review:row,lastChecked:now}],true));
         }
         store.markFailed(oldId, `입력 전 검수 대상을 분리해 다시 배정했습니다 · 새 검수 전달 #${alternate.id}`);
       }

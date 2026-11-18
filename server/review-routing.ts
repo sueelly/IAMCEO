@@ -47,7 +47,12 @@ export function assignedReviewMember(store: Store, member: Member, review: Compl
   if (!member.finalReviewer || !review || store.getTask(review.task_id)?.projectId !== member.projectId) return false;
   if (review.status !== "pending" && review.reviewer_id) return review.reviewer_id === member.id;
   const d = review.delivery_id ? store.getDelivery(review.delivery_id) : null;
-  if (d && d.projectId === member.projectId && d.kind === "system" && store.getMember(d.memberId)?.finalReviewer) return d.memberId === member.id;
+  if (d && d.projectId === member.projectId && d.kind === "system" && store.getMember(d.memberId)?.finalReviewer) {
+    if (d.memberId !== member.id) return false;
+    if (d.status !== "queued") return true;
+    const other = oppositeReviewScope(store, member);
+    return !other || other(review) || !untouchedReviewBatch(store, d);
+  }
   if (store.getFinalReviewer(member.projectId)?.id !== member.id) return false;
   const other = oppositeReviewScope(store, member);
   return !other || other(review);
