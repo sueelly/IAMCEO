@@ -1,0 +1,1509 @@
+# Novel 검수 도구 진단의 원본 파일·실행 결과·관련 소스
+
+업무 tk_34o1KVuzwy5Z / 계약 r1. 저장소 https://github.com/sueelly/IAMCEO.git의 검토 대상 679b10d99da712ff95eef7c6cdaa3437eb30be06에서 읽은 원문입니다.
+
+기준 제품 소스 27ec070c1c83acbe0229c53ddccf278ad15d7965, 최초 합성 근거 커밋 71bc06099d79d5bb834d355940b59d4e68ba969d, 후속 문서 커밋 679b10d99da712ff95eef7c6cdaa3437eb30be06를 구분합니다. 각 파일의 Git blob과 SHA-256을 함께 제공합니다.
+
+기존 실행 원자료는 아래 synthetic-codex-results.json의 toolOutputs·toolEvents·errors·호출 수·제한 설정과 synthetic-server-results.json의 역할/사람 결재 결과입니다. 당시 stdout/stderr 전체나 실서비스 원시 실행 기록을 수집한 자료가 아닙니다. CLI 공지 두 건도 생략하지 않았습니다. 이번에는 합성 시험·실제 모델·운영 호출·지정 검수 판정을 다시 실행하지 않았습니다.
+
+## 총괄의 실서비스 관측 보고 원문
+
+post(report_id=msg_joLOlvnUy3GJ)로 다시 조회해 필요한 필드만 보존했습니다. 총괄의 실제 터미널 관측 보고이며 이 직원의 직접 터미널 관측으로 바꾸지 않습니다.
+
+~~~~~~json
+{
+  "sourceMessageId": "msg_joLOlvnUy3GJ",
+  "authoredAt": "2026-11-17T22:03:06.311Z",
+  "sequence": 1209,
+  "source": {
+    "id": "msg_joLOlvnUy3GJ",
+    "who": "Novel of the world 총괄",
+    "kind": "진행",
+    "title": "지정 검수 직원의 배치 수신과 도구 실행 거절을 확인했습니다",
+    "body": "06:39 KST 지정 검수 직원의 실제 터미널에서 “MCP tool call requires approval, but approval policy is never”로 검수 근거 조회가 거절되는 것을 확인했습니다. 당시 네 완료 보고는 실제 배치로 수신됐습니다. 이후 공개 발행 검수도 하네스에 수행 완료로 접수되어 새 배치에 포함됐습니다. 06:55:53과 06:57:04에 서버가 다섯 건을 전달해 실행을 시작했고, 완료 판정 목록에는 지정 검수가 대기 중입니다. 운영 확인은 화면과 정상 조회로 한정했습니다. 실행 전달 진단 담당이 합성 설정에서 Codex 호출 전 거절과 IAMCEO 서버의 역할 판정을 대조하고 있습니다.",
+    "taskId": "tk_34o1KVuzwy5Z"
+  },
+  "fileIds": []
+}
+~~~~~~
+
+## 검토 대상 커밋의 원본 9개 파일
+
+### docs/diagnostics/review-tool-policy/observations.json
+
+Git blob `002b6de26eafc95dae7c38751537fad683e787bd` · SHA-256 `15f78ba307afff13270b76966c9d95b6172dbe4923ee51e7c8c5d600dbda2111` · 5527 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/observations.json -->
+~~~~~~text
+{
+  "taskId": "tk_34o1KVuzwy5Z",
+  "contractRev": 1,
+  "source": {
+    "sha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+    "registeredReleasePathSha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+    "registeredBinaryBuildId": "6e2371cab9260fd6a97ef706705055b846ada4510cb1e6b0ec7a8918a9c31bec",
+    "schema": 48,
+    "supportedSchema": 48,
+    "harness": "required",
+    "activeReadinessIdentity": "unverified: worker-token HTTP error; no retry or auth expansion"
+  },
+  "liveObservation": {
+    "basis": "최초 조사 당시 총괄이 전달한 관측; 후속 원문 대조는externalReviewReport에 별도 보존",
+    "literalErrorIndependentlyRead": false,
+    "bridgeCallArrivalIndependentlyRead": false,
+    "limit": "지원task_trace는오류문자열/전담검수터미널을노출하지않음"
+  },
+  "targets": [
+    {
+      "reportId": "msg_cW0EDY8b1sJc",
+      "taskId": "tk_CcCxGdmUtcju",
+      "label": "Cc r2",
+      "observedAt": "2026-11-17T21:49:21.807Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 0
+    },
+    {
+      "reportId": "msg_tAVxiIAc1DMx",
+      "taskId": "tk_VBzACjwkhhZ1",
+      "label": "A6",
+      "observedAt": "2026-11-17T21:49:21.880Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 2,
+      "pendingWake": 1
+    },
+    {
+      "reportId": "msg_FxrxRSWpvxw6",
+      "taskId": "tk_w_WoIvxxUlyITh",
+      "label": "Astra 선행",
+      "observedAt": "2026-11-17T21:49:21.937Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 1,
+      "pendingWake": 1
+    },
+    {
+      "reportId": "msg_KxVn7uPOBJrV",
+      "taskId": "tk_pz1kVxp42KsP",
+      "label": "독자 전용 디자인",
+      "observedAt": "2026-11-17T21:49:22.137Z",
+      "completionEligible": true,
+      "finalReview": "pending",
+      "unsettled": 2,
+      "pendingWake": 1
+    }
+  ],
+  "officialDoc": {
+    "url": "https://developers.openai.com/codex/config-reference",
+    "verifiedKeys": [
+      "mcp_servers.<id>.default_tools_approval_mode",
+      "mcp_servers.<id>.tools.<tool>.approval_mode"
+    ],
+    "enum": [
+      "auto",
+      "prompt",
+      "writes",
+      "approve"
+    ]
+  },
+  "commands": [
+    {
+      "command": "bun docs/diagnostics/review-tool-policy/synthetic-codex.ts",
+      "exit": 0,
+      "meaning": "real installed CLI; loopback model and fake MCP only"
+    },
+    {
+      "command": "bun test --preload ./tests/fixtures/preserve-temp.ts ./docs/diagnostics/review-tool-policy/synthetic-server.test.ts",
+      "exit": 0,
+      "pass": 1,
+      "fail": 0,
+      "expectations": 20,
+      "meaning": "synthetic IAMCEO roles and human decision preservation"
+    }
+  ],
+  "preservation": {
+    "productSourceEdits": 0,
+    "operationalCalls": 0,
+    "liveReviewDecisions": 0,
+    "liveApprovalPolicyChanges": 0,
+    "realModelRequests": 0,
+    "tempDeleted": false,
+    "oldDeliveryDiagnosisRestarted": false,
+    "modelsEffortFastChanged": false
+  },
+  "independentReview": {
+    "roleSources": "review_policy_sources",
+    "liveRead": "review_error_evidence",
+    "syntheticCli": "review_synthetic_design",
+    "rootReexecutedCli": true
+  },
+  "externalReviewReport": {
+    "reportId": "msg_joLOlvnUy3GJ",
+    "author": "Novel of the world 총괄",
+    "authoredAt": "2026-11-17T22:03:06.311Z",
+    "sequence": 1209,
+    "title": "지정 검수 직원의 배치 수신과 도구 실행 거절을 확인했습니다",
+    "literalError": "MCP tool call requires approval, but approval policy is never",
+    "quotes": [
+      "06:39 KST 지정 검수 직원의 실제 터미널에서 “MCP tool call requires approval, but approval policy is never”로 검수 근거 조회가 거절되는 것을 확인했습니다.",
+      "당시 네 완료 보고는 실제 배치로 수신됐습니다.",
+      "06:55:53과 06:57:04에 서버가 다섯 건을 전달해 실행을 시작했고, 완료 판정 목록에는 지정 검수가 대기 중입니다."
+    ],
+    "observationDateKst": "2026-11-18",
+    "readVia": "post(report_id)",
+    "claimAttribution": "총괄의 실제 터미널·활동표 관측을 담은 보고를 이 직원이 조회함; 이 직원의 직접 터미널 관측은 아님",
+    "bridgeArrival": "unverified: report has no per-call tools/call or /agent/tool record",
+    "laterTurnEnd": "이번 총괄 입력에는 턴 종료도 명시됨; 조회한 보고 본문은 실행 시작과 검수 대기까지 명시하므로 출처를 구분함",
+    "supersedesGapIn": "msg_MIZPFwVIlBux / f_WFX4ivF2m0mP",
+    "originalSyntheticCommit": "71bc06099d79d5bb834d355940b59d4e68ba969d",
+    "newSyntheticExecution": false,
+    "liveRecoveryApplied": false,
+    "literalErrorReadFromReport": true
+  },
+  "remainingUnverified": [
+    "실서비스 최초 개별 호출의 tools/call·bridge /agent/tool 도달 여부와 operation ID는 보고에 없음",
+    "06:55:53/06:57:04 배치의 각 입력과 개별 검수 도구·최종 판정의 연결은 보고에 없음",
+    "등록 실행 파일과 실제 프로세스의 동일성은 종전 미확인을 보존함",
+    "설정 후보의 운영 적용·무중단 반영·실제 검수 복구는 미실행이며 이번 범위 밖"
+  ],
+  "minimumMissingLiveEvidenceAtInitialReport": [
+    "최초06:39 KST의지정검수도구명과오류한줄",
+    "같은호출이MCP tools/call 또는bridge /agent/tool에도달했는지",
+    "내용/접속정보없이세대·실행역할·정책이읽은릴리스와같은지"
+  ]
+}
+~~~~~~
+### docs/diagnostics/review-tool-policy/plan.md
+
+Git blob `cf342a445cf937c79ec2dc75982de3bb679d0e0e` · SHA-256 `67f232915a2ebba479697bda4ba6b88f3c0ea5331528c8438158400d7839055f` · 3515 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/plan.md -->
+~~~~~~text
+# Novel 전담 검수 도구 승인 경계 진단 계획
+
+업무 tk_34o1KVuzwy5Z의 확정 계약 r1을 따릅니다. 기존 전달 지연 진단이나 실제 최종 검수 판정을 다시 수행하지 않습니다.
+
+## 고정 기준과 관측
+
+읽은 원격 소스와 운영 등록 릴리스 경로의 SHA는 모두 27ec070c1c83acbe0229c53ddccf278ad15d7965입니다. 현재 지원 server_check는 schema48/supported48/ok=true, harness required입니다. 등록된 실행 파일 build-id는 6e2371cab9260fd6a97ef706705055b846ada4510cb1e6b0ec7a8918a9c31bec입니다. 이 직원 토큰으로 readiness는 HTTP 오류여서 반복하거나 인증을 넓히지 않았습니다. 현재 실행 중 프로세스의 신원과 등록 파일의 동일성까지 독립 확인한 것은 아닙니다.
+
+실제 최초06:39 KST의 MCP 승인 never 거절은 총괄이 전달한 관측입니다. 지원task_trace 네 건은 현재finalReview pending을 확인하지만 오류문자열을 노출하지 않습니다. 이 직원에게 전담 검수 실행 출력·터미널 읽기 도구는 없습니다. 원문 오류를 합성 오류로 대체하지 않습니다.
+
+## 단일 가설
+
+최종 검수 직원은 서버에서는worker+finalReviewer이지만 실행용변환에서conductor가되어read-only/approval never/쉘·외부MCP차단을 받습니다. IAMCEO도구는 서버에서허용되지만Codex MCP 승인방식은 고정하지 않습니다. 이 조합이 도구 호출 전에 거절할 수 있는지를 실제설치CLI0.167과합성모델응답으로확인합니다.
+
+## 최소 실험과 분담
+
+1. native read관점3개: 역할·설정전파/실제오류노출범위/합성CLI설계.
+2. root는격리IAMCEO fixture에서지정역할의post조회·task_review_evidence·task_review와잘못된역할·보고작성·일반도구거절을대조합니다. 실제검수대상은사용하지않습니다.
+3. 합성CLI담당은별도CODEX_HOME과loopbackfakeResponses·fakeMCP만사용합니다. 현재launch와동일한never/read-only/IAMCEO전용정책에서기본상태와정식per-tool approval_mode=approve 설정후보만대조합니다. 실제계정·OAuth·과금호출은0입니다.
+4. 일반쉘·외부MCP미노출과never유지를검증합니다. 상태를쓰는tool을readOnlyHint=true로가장하지않습니다.
+
+## 보존·판정
+
+task_review_evidence는근거읽기뒤evidence_reader_id를갱신합니다. 운영대상에대신호출하지않습니다. 실제승인정책·세션·권한·대기열·운영소스·서비스변경은금지합니다. 임시루트는삭제하지않습니다.
+
+실제오류·합성오류·서버역할거절·미확인을분리합니다. 합성시험에서정상호출가능여부와허용된설정범위를판정하고, 필요한최소설정/소스후보와운영별도조건만인계합니다. 제품코드수정이나main통합·배포는하지않습니다. 자료는검증·문서커밋·작업브랜치일반업로드·원격일치후file/post로인계합니다.
+
+## 후속 근거 보완 범위
+
+총괄의 새 지시는 msg_joLOlvnUy3GJ의 실서비스 오류·배치 활동을 기존 msg_MIZPFwVIlBux/f_WFX4ivF2m0mP에 연결하는 일입니다. 기존 합성 및 제품 시험은 재실행하지 않고, 최초 오류 원문 대조만 갱신합니다. 서버 호출 도달 정보가 없는 한계를 명시하고 문서의 정합성·독립 열람·원격 일치만 새로 검증합니다. 승인 정책·세션·운영 서비스·지정 역할은 변경하지 않습니다.
+~~~~~~
+### docs/diagnostics/review-tool-policy/report.html
+
+Git blob `297641eb378975aa5720a35728f0e888378a7489` · SHA-256 `6fdca470bce7dce01d38608dccad4d114a52300f8b56b4748c2d765ff09a4c84` · 20057 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/report.html -->
+~~~~~~text
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>실서비스 검수 오류를 합성 승인 경계에 연결했습니다</title><style>*{box-sizing:border-box}body{margin:0;background:#f3f5f7;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;line-height:1.75}.page{max-width:1100px;margin:auto;padding:32px 20px 64px}h1{font-size:clamp(27px,4vw,38px);line-height:1.4}h2{font-size:23px;line-height:1.5;margin-top:38px}p,li{overflow-wrap:anywhere}.lead{background:#fff;border-left:5px solid #315e78;padding:20px;font-size:18px}.owner{background:#e5eef3;padding:16px}.toc{border-block:1px solid #cbd5dc;padding:14px}.toc p{margin:4px 0}.table-wrap{overflow:auto;margin:20px 0}table{border-collapse:collapse;width:100%;background:#fff;font-size:14px}th,td{border:1px solid #d5dde3;padding:11px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#e9eff3}td:first-child{min-width:110px}.find{font-size:14px;color:#344957}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#172b38;color:#f5fafc;padding:16px}a{color:#215778}@media(max-width:600px){.page{padding:20px 14px}h2{font-size:21px}th,td{font-size:13px;padding:8px}}</style></head><body><main class="page"><h1>실서비스 검수 오류를 합성 승인 경계에 연결했습니다</h1><p class="lead">총괄의 외부 검수 보고 msg_joLOlvnUy3GJ에서 실서비스06:39 KST 오류 원문을 확인했습니다. 기존 합성 실행의 오류와 정확히 일치하여 Codex의 MCP 호출 전 승인 거절이라는 진단을 뒷받침합니다. 실제 개별 호출의 브리지·서버 도달 기록은 확인되지 않았으며, 뒤이은 배치 수신을 도구 성공으로 해석하지 않습니다.</p><p class="owner">대표님이 지금 승인하실 새 운영 변경은 없습니다. 이번 인계는 실제 오류 보고와 기존 합성 근거의 연결까지입니다. 설정 후보를 적용하려면 IAMCEO 실행 설정 소유자의 별도 범위에서 지정 역할·사람 결재·쉘 차단을 유지하는 검증이 필요합니다.</p><p>현재 단계: 실서비스 오류 보고 대조와 진단 자료 보완 완료. 기존 합성 시험은 재실행하지 않았습니다. 실제 정책·세션·검수 판정·서비스 변경과 운영 복구 적용은0건입니다.</p><p class="find">찾는 말: approval policy never, per-tool approval_mode, 전담 검수, task_review_evidence, post 조회, Codex0.167, 사람 결재 보호.</p><nav class="toc" aria-label="글 목차"><p>① 결론: 전담 검수의 실행 역할과 MCP 승인 방식이 충돌합니다</p><p>② 실서비스 대조: 오류 원문과 배치 활동을 연결했습니다</p><p>③ 요청 경계: 호출 전 거절과 서버 역할 거절은 다릅니다</p><p>④ 합성 실행: 역할 제한과 사람 결재를 보존했습니다</p><p>⑤ 설정 후보: 지정 실행의 기존 다섯 도구만 명시합니다</p><p>⑥ 실제 네 건: 납품 합격과 검수 대기를 분리해 보존합니다</p><p>⑦ 세부: 릴리스와 근거의 관측 범위를 고정했습니다</p></nav><section><h2>① 결론: 전담 검수의 실행 역할과 MCP 승인 방식이 충돌합니다</h2><p>합성 환경에서 확정한 원인은 클라이언트 승인 경계입니다. 서버는 지정 직원에게 해당 조회 도구를 허용합니다. 그러나 실행용 역할 변환은 Codex에 never를 강제하고, IAMCEO 도구의 승인 방식은 별도로 고정하지 않습니다.</p><p>기본 조건의 정확한 합성 오류는 다음과 같습니다. 후속 조회한 총괄 보고의 실서비스 오류도 같은 문자열입니다. 합성 관측과 총괄의 터미널 관측은 출처를 구분합니다.</p><pre><code>MCP tool call requires approval, but approval policy is never</code></pre><div class="table-wrap"><table><thead><tr><th scope="col">같은 실제 Codex0.167 실행</th><th scope="col">기본 설정</th><th scope="col">지정 도구별 approve 후보</th></tr></thead><tbody><tr><td>approval / sandbox</td><td>never / read-only</td><td>never / read-only</td></tr><tr><td>task_review_evidence / post</td><td>둘 다 호출 전 거절</td><td>둘 다 완료</td></tr><tr><td>MCP tools/call 도달</td><td>0건</td><td>2건</td></tr><tr><td>일반 쉘·패치·외부 MCP</td><td>노출 0 / 외부 시작 0</td><td>노출 0 / 외부 시작 0</td></tr><tr><td>실제 모델·계정·운영 호출</td><td>0건</td><td>0건</td></tr></tbody></table></div><p>최초 보고 msg_MIZPFwVIlBux는 실서비스 오류 원문 대조를 미확인으로 남겼습니다. 이번에는 총괄의 실제 관측 보고를 조회해 오류 문자열을 대조했습니다. 이 직원이 실서비스 터미널이나 서버 로그를 직접 읽었다는 뜻은 아닙니다. 호출 도달 정보는 여전히 보고에 없으며 같은 실패 조회나 원본 실행 기록 열람은 하지 않았습니다.</p></section><section><h2>② 실서비스 대조: 오류 원문은 일치하고 배치 활동은 별도 단계입니다</h2>
+<p>총괄의 외부 검수 보고 msg_joLOlvnUy3GJ(작성2026-11-18 07:03:06.311 KST / 2026-11-17T22:03:06.311Z, sequence1209)를 post(report_id)로 조회했습니다. 이것은 총괄의 실제 터미널·활동표 관측 보고이며 이 직원이 터미널을 직접 읽은 기록은 아닙니다. 원문은 다음과 같습니다.</p>
+<blockquote>
+<p>06:39 KST 지정 검수 직원의 실제 터미널에서 “MCP tool call requires approval, but approval policy is never”로 검수 근거 조회가 거절되는 것을 확인했습니다.</p>
+</blockquote>
+<blockquote>
+<p>당시 네 완료 보고는 실제 배치로 수신됐습니다.</p>
+</blockquote>
+<blockquote>
+<p>06:55:53과 06:57:04에 서버가 다섯 건을 전달해 실행을 시작했고, 완료 판정 목록에는 지정 검수가 대기 중입니다.</p>
+</blockquote>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th scope="col">관측 단계</th>
+<th scope="col">확인한 근거</th>
+<th scope="col">판정과 남은 한계</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>2026-11-18 06:39 KST 도구 실패</td>
+<td>총괄이 실제 터미널에서 확인한 영문 오류</td>
+<td>기존 합성 오류와 정확히 일치. Codex 승인 거절로 분류할 근거이며 서버 역할 거절 문자열과 다름</td>
+</tr>
+<tr>
+<td>당시 네 완료 보고 수신</td>
+<td>같은 보고의 실제 배치 수신 기록</td>
+<td>입력 전달은 이뤄짐. 검수 근거 도구 성공을 뜻하지 않음</td>
+</tr>
+<tr>
+<td>06:55:53·06:57:04 KST 후속 활동</td>
+<td>보고에 다섯 건 전달·실행 시작과 검수 대기 명시</td>
+<td>배치의 입력 수신/턴 실행과 개별 MCP 호출/최종 검수 성공을 구분</td>
+</tr>
+<tr>
+<td>뒤이은 턴 종료</td>
+<td>이번 총괄 입력에는 활동표의 턴 종료도 명시</td>
+<td>조회한 보고 본문은 실행 시작까지만 명시. 턴 종료가 도구 또는 판정 성공을 증명하지 않음</td>
+</tr>
+<tr>
+<td>개별 MCP·서버 도달</td>
+<td>보고에 tools/call·/agent/tool·operation ID 없음</td>
+<td>미확인. 실서비스 서버 로그에서 호출0이었다고 단정하지 않음</td>
+</tr>
+</tbody></table></div>
+<p>오류의 발생 계층을 설명하기에는 이 원문과 기존 합성 결과가 충분합니다. 기존 합성은 같은 오류가 MCP tools/call 전에 발생하고 호출 수가0임을 직접 측정했습니다. 실서비스도 같은 클라이언트 승인 경계라는 해석이 강해지지만, 합성의 호출0을 실서비스 서버 로그 사실로 옮기지는 않습니다. 뒤이은 배치 활동 역시 승인 경계를 통과했다는 반례가 아닙니다.</p>
+<p>기존 msg_MIZPFwVIlBux와 f_WFX4ivF2m0mP의 ‘실서비스 최초 오류 원문 미확인’만 이 보고로 보완합니다. 브리지 도달·개별 입력과 검수 호출의 연결·운영 후보 적용은 확인했다고 바꾸지 않습니다. 기존 합성 자료는 커밋71bc06099d79d5bb834d355940b59d4e68ba969d의 결과이며 이번에 합성·제품 검수·운영 복구를 다시 실행하지 않았습니다.</p>
+</section><section><h2>③ 요청 경계: 호출 전 거절과 서버 역할 거절은 다릅니다</h2><p>최종 검수 직원은 서버에서 worker+finalReviewer입니다. 실행 인자를 만들 때만 kind=conductor로 바뀝니다. 그 결과 read-only·never와 쉘·다른 MCP 차단을 받습니다.</p><p>고정 판의 Codex 경로는 IAMCEO enabled·command·args·env_vars를 설정하지만 해당 MCP의 도구 승인 방식은 고정하지 않습니다. 일반 직원 기본 실행은 on-request이며, Claude 제한 역할은 allowedTools에 IAMCEO를 명시합니다. 현재 진단 직원의 지원 post 조회도 네 원보고에서 성공했습니다. 각 경로의 실행 설정을 동일하다고 보지 않습니다.</p><p>Codex의 도구 목록에는 IAMCEO 외에 기존 읽기·질문 보조 도구도 남습니다. IAMCEO만 허용했다는 말은 외부 MCP와 일반 실행 도구의 제한 범위입니다. 모델에 정확히 다섯 도구만 보인다고 과장하지 않습니다.</p><div class="table-wrap"><table><thead><tr><th scope="col">경계</th><th scope="col">관측 결과</th><th scope="col">오류·근거</th></tr></thead><tbody><tr><td>Codex → MCP tools/call</td><td>기본 합성에서 호출0</td><td>영문 never 오류 / IAMCEO 도구 목록은 이미 조회됨</td></tr><tr><td>MCP bridge → /agent/tool</td><td>호출을 받은 뒤 operation ID를 만들고 전달</td><td>실서비스 최초 호출 도달은 미확인</td></tr><tr><td>서버의 직원 역할 검사</td><td>지정 검수는 다섯 도구만 허용</td><td>쓸 수 없는 도구입니다: task_review_evidence / file</td></tr><tr><td>서버의 post 분기</td><td>report_id 조회는 허용, 보고 작성은 거절</td><td>최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다</td></tr><tr><td>서버의 대상·계약 검사</td><td>잘못된 검수 대상은 거절</td><td>현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요</td></tr></tbody></table></div><p>task_review_evidence는 완전한 읽기 전용 도구가 아닙니다. 근거를 읽은 뒤 evidence_reader_id를 갱신합니다. 실제 네 대상에 진단용으로 대신 호출하지 않았습니다. 모든 도구를 readOnlyHint=true로 표시해 승인층을 통과시키는 후보도 사용하지 않습니다.</p><p>지정 검수의 최종 글·턴 오류는 일반 직원처럼 자동 보고로 전환되지 않는 소스 분기가 있습니다. task_trace의 실행 ended/success만으로 검수 도구 성공이나 최종 판정 완료를 말할 수 없습니다.</p></section><section><h2>④ 합성 실행: 역할 제한과 사람 결재를 보존했습니다</h2><p>실제 설치된 Codex0.167.0을 새 CODEX_HOME·작업 폴더·loopback 합성 Responses 서버·가짜 MCP로 실행했습니다. 계정·IAMCEO·OAuth 환경은 전달하지 않았습니다. 모델 응답은 스크립트가 제공했으며 실제 모델 또는 과금 호출은 없습니다.</p><p>기본 조건과 후보 조건은 기존 providerLaunch의 같은 never/read-only/쉘·외부 MCP 제한을 사용했습니다. 차이는 지정된 다섯 IAMCEO 도구의 per-tool approval_mode=approve뿐입니다. Codex를 통한 실제 호출 검증은 문제의 두 도구에 한정했습니다.</p><p>처음에는 Codex0.167의 namespace 형식 때문에 합성 응답이 도구를 호출하지 못했습니다. 이를 승인 실패로 세지 않고 합성 프로토콜을 맞춘 뒤 정확한 오류 두 건·MCP 호출0/2·정책 불변을 다시 확인했습니다.</p><div class="table-wrap"><table><thead><tr><th scope="col">실제 실행 명령</th><th scope="col">결과</th><th scope="col">검증 범위</th></tr></thead><tbody><tr><td>bun docs/diagnostics/review-tool-policy/synthetic-codex.ts</td><td>exit 0 / 검증3항목 true</td><td>기본 거절·후보 성공·제한 유지</td></tr><tr><td>bun test --preload ./tests/fixtures/preserve-temp.ts ./docs/diagnostics/review-tool-policy/synthetic-server.test.ts</td><td>1 pass / 0 fail / 20 expectations</td><td>역할·조회·판정·사람 결재 보존</td></tr></tbody></table></div><p>서버 합성 fixture에서는 지정 직원의 post 조회와 증거 조회·판정이 성공했습니다. 일반 직원의 증거 도구, 지정 직원의 보고 작성·file 도구, 잘못된 대상, 근거를 읽지 않은 판정은 거절됐습니다.</p><p>열린 사람 결재를 만든 뒤 지정 직원이 판정을 시도하면 거절됐고 결재는 열린 상태로 남았습니다. 실제 사람의 승인에 답하거나 승인 정책을 바꾼 결과가 아닙니다.</p><p>합성 CLI의 가짜 MCP는 전송 계층만 검사합니다. IAMCEO 서버 역할 검사는 별도 실제 서버 코드의 격리 fixture로 확인했습니다. 두 실험을 실서비스 검수 대행으로 바꾸지 않습니다. 임시 폴더와 가짜 구성은 삭제하지 않았습니다.</p></section><section><h2>⑤ 설정 후보: 지정 실행의 기존 다섯 도구만 명시합니다</h2><p>공식 Codex 설정 문서는 mcp_servers.&lt;id&gt;.tools.&lt;tool&gt;.approval_mode를 지원하며 auto·prompt·writes·approve를 나열합니다. 실제 설치된 CLI의 합성 실행에서도 approve 후보를 확인했습니다. 전역 approval_policy를 바꾸는 후보가 아닙니다.</p><p>다음은 합성 후보에서 사용한 invocation 인자입니다. 실제 직원의 공유 CODEX_HOME 설정에 쓰거나 운영 세션을 다시 열라는 명령이 아닙니다. 일반 쉘·다른 MCP·사람 결재는 기존대로 둡니다.</p><pre><code>-c 'mcp_servers.iamceo.tools.status.approval_mode=&quot;approve&quot;'
+-c 'mcp_servers.iamceo.tools.task_trace.approval_mode=&quot;approve&quot;'
+-c 'mcp_servers.iamceo.tools.post.approval_mode=&quot;approve&quot;'
+-c 'mcp_servers.iamceo.tools.task_review_evidence.approval_mode=&quot;approve&quot;'
+-c 'mcp_servers.iamceo.tools.task_review.approval_mode=&quot;approve&quot;'</code></pre><p>바로 재현할 수 있는 경로는 위의 합성 실행 명령입니다. 실제 운영 적용은 이 계약 밖입니다. 지정 직원만의 실행 구성에 같은 인자를 전달할 정식 후속 범위와 관리 정책의 허용 여부를 먼저 확인해야 합니다. 현재 세션에 중단 없이 적용 가능한 지원 경로는 검증하지 않았습니다.</p><p>최소 소스 후보는 세 곳입니다. server/runner/types.ts의 RunnerMember에 기존 finalReviewer 표지를 선택 항목으로 전달하고, server/orchestrator.ts의 runnerMember가 그 표지를 보존하며, server/runner/role-policy.ts의 codexRoleArgs가 지정 검수일 때만 다섯 인자를 생성하는 방식입니다. 현재 kind 변환만으로는 일반 총괄과 구분할 표지가 실행 객체에 없습니다.</p><p>이 후보는 구현하지 않았습니다. 기존 권한과 서버 도구 목록·post 작성 금지·검수 대상/계약/사람 결재 검사를 바꾸지 않는 것이 수용 조건입니다. 일반 총괄·일반 직원·다른 프로젝트·기존 MCP의 승인 방식을 함께 바꾸면 범위를 벗어납니다.</p><p>실행 주체는 별도 범위를 받은 IAMCEO 실행 설정 소유자입니다. 성공은 지정 직원의 현재 대상에서 정상 조회와 올바른 판정이 연결되고, 기존 제한과 사람 결재가 보존되는 것입니다. 새 권한 노출·승인 자동 응답·다른 역할 영향·세션/대기열 유실은 실패입니다.</p><p>설정 키의 공식 근거: <a href="https://developers.openai.com/codex/config-reference">OpenAI Codex 설정 참조</a>. 키 지원과 값 목록은 공식 문서, 호출 결과는 위 합성 실행에 근거합니다.</p></section><section><h2>⑥ 실제 네 건: 납품 합격과 검수 대기를 분리해 보존합니다</h2><p>최초 조사에서 네 원보고를 post 조회로 읽고, 독립 직원이 task_trace를 각 한 번 조회했습니다. 아래 고정 시점에는 모두 currentCompletion.eligible=true, finalReview=pending, 열린 결재0이었습니다. 이번에 상태를 재조회하거나 제품 납품 합격을 뒤집지 않았습니다.</p><div class="table-wrap"><table><thead><tr><th scope="col">기존 검수 대상</th><th scope="col">관측 시각(2026-11-17 UTC)</th><th scope="col">당시 최소 상태</th></tr></thead><tbody><tr><td>Cc r2 / msg_cW0EDY8b1sJc</td><td>21:49:21.807Z</td><td>검수 pending / 업무 미결0</td></tr><tr><td>A6 / msg_tAVxiIAc1DMx</td><td>21:49:21.880Z</td><td>검수 pending / 미결2·wake1</td></tr><tr><td>Astra 선행 / msg_FxrxRSWpvxw6</td><td>21:49:21.937Z</td><td>검수 pending / 미결1·wake1</td></tr><tr><td>독자 전용 디자인 / msg_KxVn7uPOBJrV</td><td>21:49:22.137Z</td><td>검수 pending / 미결2·wake1</td></tr></tbody></table></div><p>후속 총괄 보고로 최초 오류 한 줄과 배치 수신·실행 시작을 연결했습니다. 개별 도구명·operation ID·MCP tools/call 또는 bridge /agent/tool 도달 여부와 실제 프로세스 동일성은 보고에 없습니다. 서버 도달을 감사해야 하는 별도 후속이 생기면 기존 지원 읽기에서 그 최소 연결만 확인합니다. 이번 진단의 결론을 위해 전체 로그나 대화를 추가 수집하지 않습니다.</p><p>실서비스 오류 대조는 마쳤고 위의 개별 호출 정보는 미확인으로 보존합니다. 실제 승인 정책·검수 권한·검수 판정·운영 설정·서비스·기존 대기열 변경은0건입니다. 옛 전달 지연 진단도 재개하지 않았습니다.</p></section><section><h2>⑦ 세부: 릴리스와 근거의 관측 범위를 고정했습니다</h2><p>업무 tk_34o1KVuzwy5Z / 확정 계약 r1입니다. 워크트리는 /Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/review-tool-diagnostics이며 브랜치는 docs-diagnose-review-tools-tk_34o1KVuzwy5Z입니다.</p><p>최초 조사에서 읽은 원격 소스와 운영 등록 릴리스 경로의 SHA는 27ec070c1c83acbe0229c53ddccf278ad15d7965입니다. 당시 지원 server_check는48/48/ok/required이며 등록 실행 파일 build-id는 6e2371cab9260fd6a97ef706705055b846ada4510cb1e6b0ec7a8918a9c31bec입니다. 이번 보완에서 운영 판을 새로 조회한 값은 아닙니다.</p><p>최초 조사에서 직원 토큰의 readiness 조회는 HTTP 오류였습니다. 실패 조회를 반복하거나 인증을 넓히지 않았습니다. 현재 프로세스와 등록 파일의 동일성까지 직접 확정한 것은 아닙니다. 환경 값 대신 등록 존재·공개 이름·종류만 남겼습니다.</p><p>정확한 소스 위치: server/orchestrator.ts:6631~6649(실행 역할), server/runner/role-policy.ts:12~37(never와 MCP 제한), server/runner/providers.ts:74~89(설정 전달), bin/mcp-bridge.ts:88~113(목록/호출 전달), server/agent-tools.ts:465~482,932~953(조회와 역할), server/orchestrator.ts:4900~4918(증거 조회의 갱신),6360~6374(자동 보고 제외)입니다.</p><p>최초 조사의 독립 읽기 세 관점은 역할 소스·실제 오류 노출 범위·합성 CLI를 나눴습니다. root가 최종 CLI 합성을 독립 재실행하고 서버 fixture를 실행했습니다. 제품 소스는 정본과 차이0이며 이 문서·실험 파일만 커밋합니다. 최종 문서 커밋과 원격 일치는 연결 보고에 남깁니다.</p><p>최초 조사의 타 업무 기억 세 건은 사용하지 않았으며 각각 not_used와 이유를 남겼습니다. 이번에 제공된 기억은 같은 업무의 진단서·보고·전달 기록입니다. 기억 발췌를 근거로 승격하지 않고 실제 보고 원문을 조회했으며 자기 업무 기억은 평가하지 않았습니다.</p></section></main></body></html>
+~~~~~~
+### docs/diagnostics/review-tool-policy/report.md
+
+Git blob `36d7cbd87593f8c95db9a3841d5f87a6178930c0` · SHA-256 `cebeb73249345fb5b8849e2bb5067475dd7d9d3cf12de7ce8b103adbc4b298a9` · 16379 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/report.md -->
+~~~~~~text
+# 실서비스 검수 오류를 합성 승인 경계에 연결했습니다
+
+총괄의 외부 검수 보고 msg_joLOlvnUy3GJ에서 실서비스06:39 KST 오류 원문을 확인했습니다. 기존 합성 실행의 오류와 정확히 일치하여 Codex의 MCP 호출 전 승인 거절이라는 진단을 뒷받침합니다. 실제 개별 호출의 브리지·서버 도달 기록은 확인되지 않았으며, 뒤이은 배치 수신을 도구 성공으로 해석하지 않습니다.
+
+대표님이 지금 승인하실 새 운영 변경은 없습니다. 이번 인계는 실제 오류 보고와 기존 합성 근거의 연결까지입니다. 설정 후보를 적용하려면 IAMCEO 실행 설정 소유자의 별도 범위에서 지정 역할·사람 결재·쉘 차단을 유지하는 검증이 필요합니다.
+
+현재 단계: 실서비스 오류 보고 대조와 진단 자료 보완 완료. 기존 합성 시험은 재실행하지 않았습니다. 실제 정책·세션·검수 판정·서비스 변경과 운영 복구 적용은0건입니다.
+
+찾는 말: approval policy never, per-tool approval_mode, 전담 검수, task_review_evidence, post 조회, Codex0.167, 사람 결재 보호.
+
+## ① 결론: 전담 검수의 실행 역할과 MCP 승인 방식이 충돌합니다
+
+합성 환경에서 확정한 원인은 클라이언트 승인 경계입니다. 서버는 지정 직원에게 해당 조회 도구를 허용합니다. 그러나 실행용 역할 변환은 Codex에 never를 강제하고, IAMCEO 도구의 승인 방식은 별도로 고정하지 않습니다.
+
+기본 조건의 정확한 합성 오류는 다음과 같습니다. 후속 조회한 총괄 보고의 실서비스 오류도 같은 문자열입니다. 합성 관측과 총괄의 터미널 관측은 출처를 구분합니다.
+
+```text
+MCP tool call requires approval, but approval policy is never
+```
+
+| 같은 실제 Codex0.167 실행 | 기본 설정 | 지정 도구별 approve 후보 |
+| --- | --- | --- |
+| approval / sandbox | never / read-only | never / read-only |
+| task_review_evidence / post | 둘 다 호출 전 거절 | 둘 다 완료 |
+| MCP tools/call 도달 | 0건 | 2건 |
+| 일반 쉘·패치·외부 MCP | 노출 0 / 외부 시작 0 | 노출 0 / 외부 시작 0 |
+| 실제 모델·계정·운영 호출 | 0건 | 0건 |
+
+최초 보고 msg_MIZPFwVIlBux는 실서비스 오류 원문 대조를 미확인으로 남겼습니다. 이번에는 총괄의 실제 관측 보고를 조회해 오류 문자열을 대조했습니다. 이 직원이 실서비스 터미널이나 서버 로그를 직접 읽었다는 뜻은 아닙니다. 호출 도달 정보는 여전히 보고에 없으며 같은 실패 조회나 원본 실행 기록 열람은 하지 않았습니다.
+
+## ② 실서비스 대조: 오류 원문은 일치하고 배치 활동은 별도 단계입니다
+
+총괄의 외부 검수 보고 msg_joLOlvnUy3GJ(작성2026-11-18 07:03:06.311 KST / 2026-11-17T22:03:06.311Z, sequence1209)를 post(report_id)로 조회했습니다. 이것은 총괄의 실제 터미널·활동표 관측 보고이며 이 직원이 터미널을 직접 읽은 기록은 아닙니다. 원문은 다음과 같습니다.
+
+> 06:39 KST 지정 검수 직원의 실제 터미널에서 “MCP tool call requires approval, but approval policy is never”로 검수 근거 조회가 거절되는 것을 확인했습니다.
+
+> 당시 네 완료 보고는 실제 배치로 수신됐습니다.
+
+> 06:55:53과 06:57:04에 서버가 다섯 건을 전달해 실행을 시작했고, 완료 판정 목록에는 지정 검수가 대기 중입니다.
+
+| 관측 단계 | 확인한 근거 | 판정과 남은 한계 |
+| --- | --- | --- |
+| 2026-11-18 06:39 KST 도구 실패 | 총괄이 실제 터미널에서 확인한 영문 오류 | 기존 합성 오류와 정확히 일치. Codex 승인 거절로 분류할 근거이며 서버 역할 거절 문자열과 다름 |
+| 당시 네 완료 보고 수신 | 같은 보고의 실제 배치 수신 기록 | 입력 전달은 이뤄짐. 검수 근거 도구 성공을 뜻하지 않음 |
+| 06:55:53·06:57:04 KST 후속 활동 | 보고에 다섯 건 전달·실행 시작과 검수 대기 명시 | 배치의 입력 수신/턴 실행과 개별 MCP 호출/최종 검수 성공을 구분 |
+| 뒤이은 턴 종료 | 이번 총괄 입력에는 활동표의 턴 종료도 명시 | 조회한 보고 본문은 실행 시작까지만 명시. 턴 종료가 도구 또는 판정 성공을 증명하지 않음 |
+| 개별 MCP·서버 도달 | 보고에 tools/call·/agent/tool·operation ID 없음 | 미확인. 실서비스 서버 로그에서 호출0이었다고 단정하지 않음 |
+
+오류의 발생 계층을 설명하기에는 이 원문과 기존 합성 결과가 충분합니다. 기존 합성은 같은 오류가 MCP tools/call 전에 발생하고 호출 수가0임을 직접 측정했습니다. 실서비스도 같은 클라이언트 승인 경계라는 해석이 강해지지만, 합성의 호출0을 실서비스 서버 로그 사실로 옮기지는 않습니다. 뒤이은 배치 활동 역시 승인 경계를 통과했다는 반례가 아닙니다.
+
+기존 msg_MIZPFwVIlBux와 f_WFX4ivF2m0mP의 ‘실서비스 최초 오류 원문 미확인’만 이 보고로 보완합니다. 브리지 도달·개별 입력과 검수 호출의 연결·운영 후보 적용은 확인했다고 바꾸지 않습니다. 기존 합성 자료는 커밋71bc06099d79d5bb834d355940b59d4e68ba969d의 결과이며 이번에 합성·제품 검수·운영 복구를 다시 실행하지 않았습니다.
+
+## ③ 요청 경계: 호출 전 거절과 서버 역할 거절은 다릅니다
+
+최종 검수 직원은 서버에서 worker+finalReviewer입니다. 실행 인자를 만들 때만 kind=conductor로 바뀝니다. 그 결과 read-only·never와 쉘·다른 MCP 차단을 받습니다.
+
+고정 판의 Codex 경로는 IAMCEO enabled·command·args·env_vars를 설정하지만 해당 MCP의 도구 승인 방식은 고정하지 않습니다. 일반 직원 기본 실행은 on-request이며, Claude 제한 역할은 allowedTools에 IAMCEO를 명시합니다. 현재 진단 직원의 지원 post 조회도 네 원보고에서 성공했습니다. 각 경로의 실행 설정을 동일하다고 보지 않습니다.
+
+Codex의 도구 목록에는 IAMCEO 외에 기존 읽기·질문 보조 도구도 남습니다. IAMCEO만 허용했다는 말은 외부 MCP와 일반 실행 도구의 제한 범위입니다. 모델에 정확히 다섯 도구만 보인다고 과장하지 않습니다.
+
+| 경계 | 관측 결과 | 오류·근거 |
+| --- | --- | --- |
+| Codex → MCP tools/call | 기본 합성에서 호출0 | 영문 never 오류 / IAMCEO 도구 목록은 이미 조회됨 |
+| MCP bridge → /agent/tool | 호출을 받은 뒤 operation ID를 만들고 전달 | 실서비스 최초 호출 도달은 미확인 |
+| 서버의 직원 역할 검사 | 지정 검수는 다섯 도구만 허용 | 쓸 수 없는 도구입니다: task_review_evidence / file |
+| 서버의 post 분기 | report_id 조회는 허용, 보고 작성은 거절 | 최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다 |
+| 서버의 대상·계약 검사 | 잘못된 검수 대상은 거절 | 현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요 |
+
+task_review_evidence는 완전한 읽기 전용 도구가 아닙니다. 근거를 읽은 뒤 evidence_reader_id를 갱신합니다. 실제 네 대상에 진단용으로 대신 호출하지 않았습니다. 모든 도구를 readOnlyHint=true로 표시해 승인층을 통과시키는 후보도 사용하지 않습니다.
+
+지정 검수의 최종 글·턴 오류는 일반 직원처럼 자동 보고로 전환되지 않는 소스 분기가 있습니다. task_trace의 실행 ended/success만으로 검수 도구 성공이나 최종 판정 완료를 말할 수 없습니다.
+
+## ④ 합성 실행: 역할 제한과 사람 결재를 보존했습니다
+
+실제 설치된 Codex0.167.0을 새 CODEX_HOME·작업 폴더·loopback 합성 Responses 서버·가짜 MCP로 실행했습니다. 계정·IAMCEO·OAuth 환경은 전달하지 않았습니다. 모델 응답은 스크립트가 제공했으며 실제 모델 또는 과금 호출은 없습니다.
+
+기본 조건과 후보 조건은 기존 providerLaunch의 같은 never/read-only/쉘·외부 MCP 제한을 사용했습니다. 차이는 지정된 다섯 IAMCEO 도구의 per-tool approval_mode=approve뿐입니다. Codex를 통한 실제 호출 검증은 문제의 두 도구에 한정했습니다.
+
+처음에는 Codex0.167의 namespace 형식 때문에 합성 응답이 도구를 호출하지 못했습니다. 이를 승인 실패로 세지 않고 합성 프로토콜을 맞춘 뒤 정확한 오류 두 건·MCP 호출0/2·정책 불변을 다시 확인했습니다.
+
+| 실제 실행 명령 | 결과 | 검증 범위 |
+| --- | --- | --- |
+| bun docs/diagnostics/review-tool-policy/synthetic-codex.ts | exit 0 / 검증3항목 true | 기본 거절·후보 성공·제한 유지 |
+| bun test --preload ./tests/fixtures/preserve-temp.ts ./docs/diagnostics/review-tool-policy/synthetic-server.test.ts | 1 pass / 0 fail / 20 expectations | 역할·조회·판정·사람 결재 보존 |
+
+서버 합성 fixture에서는 지정 직원의 post 조회와 증거 조회·판정이 성공했습니다. 일반 직원의 증거 도구, 지정 직원의 보고 작성·file 도구, 잘못된 대상, 근거를 읽지 않은 판정은 거절됐습니다.
+
+열린 사람 결재를 만든 뒤 지정 직원이 판정을 시도하면 거절됐고 결재는 열린 상태로 남았습니다. 실제 사람의 승인에 답하거나 승인 정책을 바꾼 결과가 아닙니다.
+
+합성 CLI의 가짜 MCP는 전송 계층만 검사합니다. IAMCEO 서버 역할 검사는 별도 실제 서버 코드의 격리 fixture로 확인했습니다. 두 실험을 실서비스 검수 대행으로 바꾸지 않습니다. 임시 폴더와 가짜 구성은 삭제하지 않았습니다.
+
+## ⑤ 설정 후보: 지정 실행의 기존 다섯 도구만 명시합니다
+
+공식 Codex 설정 문서는 mcp_servers.<id>.tools.<tool>.approval_mode를 지원하며 auto·prompt·writes·approve를 나열합니다. 실제 설치된 CLI의 합성 실행에서도 approve 후보를 확인했습니다. 전역 approval_policy를 바꾸는 후보가 아닙니다.
+
+다음은 합성 후보에서 사용한 invocation 인자입니다. 실제 직원의 공유 CODEX_HOME 설정에 쓰거나 운영 세션을 다시 열라는 명령이 아닙니다. 일반 쉘·다른 MCP·사람 결재는 기존대로 둡니다.
+
+```text
+-c 'mcp_servers.iamceo.tools.status.approval_mode="approve"'
+-c 'mcp_servers.iamceo.tools.task_trace.approval_mode="approve"'
+-c 'mcp_servers.iamceo.tools.post.approval_mode="approve"'
+-c 'mcp_servers.iamceo.tools.task_review_evidence.approval_mode="approve"'
+-c 'mcp_servers.iamceo.tools.task_review.approval_mode="approve"'
+```
+
+바로 재현할 수 있는 경로는 위의 합성 실행 명령입니다. 실제 운영 적용은 이 계약 밖입니다. 지정 직원만의 실행 구성에 같은 인자를 전달할 정식 후속 범위와 관리 정책의 허용 여부를 먼저 확인해야 합니다. 현재 세션에 중단 없이 적용 가능한 지원 경로는 검증하지 않았습니다.
+
+최소 소스 후보는 세 곳입니다. server/runner/types.ts의 RunnerMember에 기존 finalReviewer 표지를 선택 항목으로 전달하고, server/orchestrator.ts의 runnerMember가 그 표지를 보존하며, server/runner/role-policy.ts의 codexRoleArgs가 지정 검수일 때만 다섯 인자를 생성하는 방식입니다. 현재 kind 변환만으로는 일반 총괄과 구분할 표지가 실행 객체에 없습니다.
+
+이 후보는 구현하지 않았습니다. 기존 권한과 서버 도구 목록·post 작성 금지·검수 대상/계약/사람 결재 검사를 바꾸지 않는 것이 수용 조건입니다. 일반 총괄·일반 직원·다른 프로젝트·기존 MCP의 승인 방식을 함께 바꾸면 범위를 벗어납니다.
+
+실행 주체는 별도 범위를 받은 IAMCEO 실행 설정 소유자입니다. 성공은 지정 직원의 현재 대상에서 정상 조회와 올바른 판정이 연결되고, 기존 제한과 사람 결재가 보존되는 것입니다. 새 권한 노출·승인 자동 응답·다른 역할 영향·세션/대기열 유실은 실패입니다.
+
+설정 키의 공식 근거: [OpenAI Codex 설정 참조](https://developers.openai.com/codex/config-reference). 키 지원과 값 목록은 공식 문서, 호출 결과는 위 합성 실행에 근거합니다.
+
+## ⑥ 실제 네 건: 납품 합격과 검수 대기를 분리해 보존합니다
+
+최초 조사에서 네 원보고를 post 조회로 읽고, 독립 직원이 task_trace를 각 한 번 조회했습니다. 아래 고정 시점에는 모두 currentCompletion.eligible=true, finalReview=pending, 열린 결재0이었습니다. 이번에 상태를 재조회하거나 제품 납품 합격을 뒤집지 않았습니다.
+
+| 기존 검수 대상 | 관측 시각(2026-11-17 UTC) | 당시 최소 상태 |
+| --- | --- | --- |
+| Cc r2 / msg_cW0EDY8b1sJc | 21:49:21.807Z | 검수 pending / 업무 미결0 |
+| A6 / msg_tAVxiIAc1DMx | 21:49:21.880Z | 검수 pending / 미결2·wake1 |
+| Astra 선행 / msg_FxrxRSWpvxw6 | 21:49:21.937Z | 검수 pending / 미결1·wake1 |
+| 독자 전용 디자인 / msg_KxVn7uPOBJrV | 21:49:22.137Z | 검수 pending / 미결2·wake1 |
+
+후속 총괄 보고로 최초 오류 한 줄과 배치 수신·실행 시작을 연결했습니다. 개별 도구명·operation ID·MCP tools/call 또는 bridge /agent/tool 도달 여부와 실제 프로세스 동일성은 보고에 없습니다. 서버 도달을 감사해야 하는 별도 후속이 생기면 기존 지원 읽기에서 그 최소 연결만 확인합니다. 이번 진단의 결론을 위해 전체 로그나 대화를 추가 수집하지 않습니다.
+
+실서비스 오류 대조는 마쳤고 위의 개별 호출 정보는 미확인으로 보존합니다. 실제 승인 정책·검수 권한·검수 판정·운영 설정·서비스·기존 대기열 변경은0건입니다. 옛 전달 지연 진단도 재개하지 않았습니다.
+
+## ⑦ 세부: 릴리스와 근거의 관측 범위를 고정했습니다
+
+업무 tk_34o1KVuzwy5Z / 확정 계약 r1입니다. 워크트리는 /Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/review-tool-diagnostics이며 브랜치는 docs-diagnose-review-tools-tk_34o1KVuzwy5Z입니다.
+
+최초 조사에서 읽은 원격 소스와 운영 등록 릴리스 경로의 SHA는 27ec070c1c83acbe0229c53ddccf278ad15d7965입니다. 당시 지원 server_check는48/48/ok/required이며 등록 실행 파일 build-id는 6e2371cab9260fd6a97ef706705055b846ada4510cb1e6b0ec7a8918a9c31bec입니다. 이번 보완에서 운영 판을 새로 조회한 값은 아닙니다.
+
+최초 조사에서 직원 토큰의 readiness 조회는 HTTP 오류였습니다. 실패 조회를 반복하거나 인증을 넓히지 않았습니다. 현재 프로세스와 등록 파일의 동일성까지 직접 확정한 것은 아닙니다. 환경 값 대신 등록 존재·공개 이름·종류만 남겼습니다.
+
+정확한 소스 위치: server/orchestrator.ts:6631~6649(실행 역할), server/runner/role-policy.ts:12~37(never와 MCP 제한), server/runner/providers.ts:74~89(설정 전달), bin/mcp-bridge.ts:88~113(목록/호출 전달), server/agent-tools.ts:465~482,932~953(조회와 역할), server/orchestrator.ts:4900~4918(증거 조회의 갱신),6360~6374(자동 보고 제외)입니다.
+
+최초 조사의 독립 읽기 세 관점은 역할 소스·실제 오류 노출 범위·합성 CLI를 나눴습니다. root가 최종 CLI 합성을 독립 재실행하고 서버 fixture를 실행했습니다. 제품 소스는 정본과 차이0이며 이 문서·실험 파일만 커밋합니다. 최종 문서 커밋과 원격 일치는 연결 보고에 남깁니다.
+
+최초 조사의 타 업무 기억 세 건은 사용하지 않았으며 각각 not_used와 이유를 남겼습니다. 이번에 제공된 기억은 같은 업무의 진단서·보고·전달 기록입니다. 기억 발췌를 근거로 승격하지 않고 실제 보고 원문을 조회했으며 자기 업무 기억은 평가하지 않았습니다.
+~~~~~~
+### docs/diagnostics/review-tool-policy/synthetic-codex-results.json
+
+Git blob `9fd61d0add36b2bbf23d074f3898d12fb8cd1bb4` · SHA-256 `97f3eec16fffe2a5f7f05f7ec78735410fa9063470e7259fc499bb0dc3213e11` · 4131 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/synthetic-codex-results.json -->
+~~~~~~text
+{
+  "sourceSha": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "checkoutHead": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "binaryVersion": "0.167.0",
+  "realModelRequests": 0,
+  "operationalCalls": 0,
+  "syntheticResponseRequests": 4,
+  "conditions": [
+    {
+      "condition": "baseline",
+      "fixtureRoot": "/private/tmp/iamceo-review-codex-7LYCK9",
+      "exitCode": 0,
+      "requestCount": 2,
+      "injected": true,
+      "tools": [
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+        "request_user_input",
+        "view_image",
+        "mcp__iamceo.post",
+        "mcp__iamceo.status",
+        "mcp__iamceo.task_review",
+        "mcp__iamceo.task_review_evidence",
+        "mcp__iamceo.task_trace"
+      ],
+      "forbiddenTools": [],
+      "externalStarted": false,
+      "calls": [],
+      "callCount": 0,
+      "policy": {
+        "askForApproval": "never",
+        "sandbox": "read-only",
+        "shellDisabled": true,
+        "externalDisabled": true
+      },
+      "toolOutputs": [
+        {
+          "callId": "call_0",
+          "output": "MCP tool call requires approval, but approval policy is never"
+        },
+        {
+          "callId": "call_1",
+          "output": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "toolEvents": [
+        {
+          "tool": "task_review_evidence",
+          "status": "failed",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        },
+        {
+          "tool": "post",
+          "status": "failed",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "errors": [
+        "MCP tool call requires approval, but approval policy is never",
+        "MCP tool call requires approval, but approval policy is never"
+      ],
+      "cliNotices": [
+        "Configured service tier `priority` is not advertised as supported for model `gpt-5-codex` and will be omitted from requests.",
+        "Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+      ]
+    },
+    {
+      "condition": "per-tool-approve",
+      "fixtureRoot": "/private/tmp/iamceo-review-codex-JspLEX",
+      "exitCode": 0,
+      "requestCount": 2,
+      "injected": true,
+      "tools": [
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+        "request_user_input",
+        "view_image",
+        "mcp__iamceo.post",
+        "mcp__iamceo.status",
+        "mcp__iamceo.task_review",
+        "mcp__iamceo.task_review_evidence",
+        "mcp__iamceo.task_trace"
+      ],
+      "forbiddenTools": [],
+      "externalStarted": false,
+      "calls": [
+        {
+          "name": "task_review_evidence"
+        },
+        {
+          "name": "post"
+        }
+      ],
+      "callCount": 2,
+      "policy": {
+        "askForApproval": "never",
+        "sandbox": "read-only",
+        "shellDisabled": true,
+        "externalDisabled": true
+      },
+      "toolOutputs": [
+        {
+          "callId": "call_0",
+          "output": "{\"synthetic\":true,\"tool\":\"task_review_evidence\",\"accepted\":true}"
+        },
+        {
+          "callId": "call_1",
+          "output": "{\"synthetic\":true,\"tool\":\"post\",\"accepted\":true}"
+        }
+      ],
+      "toolEvents": [
+        {
+          "tool": "task_review_evidence",
+          "status": "completed",
+          "error": null
+        },
+        {
+          "tool": "post",
+          "status": "completed",
+          "error": null
+        }
+      ],
+      "errors": [],
+      "cliNotices": [
+        "Configured service tier `priority` is not advertised as supported for model `gpt-5-codex` and will be omitted from requests.",
+        "Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+      ]
+    }
+  ],
+  "verification": {
+    "restrictionsPreserved": true,
+    "baselineDeniedBeforeMcp": true,
+    "candidateAllowedMcp": true
+  },
+  "fixtureRootsPreserved": true
+}
+~~~~~~
+### docs/diagnostics/review-tool-policy/synthetic-codex.ts
+
+Git blob `4d1c4f7a8f73a16bd363efd6d8e870a69f1f87f1` · SHA-256 `0e0ebbf4bb83863127e55709da8824a70e7c34b6cecf4b1f358a6ef2bb60b0b3` · 13805 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/synthetic-codex.ts -->
+~~~~~~text
+// Diagnostic only: every model response and MCP call below is synthetic and local.
+// The operational Codex home, IAMCEO URL, credentials and sessions are never used.
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { providerLaunch } from "../../../server/runner/providers.ts";
+import type { RunnerMember } from "../../../server/runner/types.ts";
+
+const toolNames = ["status", "task_trace", "post", "task_review_evidence", "task_review"];
+
+if (process.argv.includes("--mcp-stub")) {
+  const server = new Server({ name: "iamceo", version: "synthetic" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolNames.map(name => ({
+    name, description: `Synthetic ${name}; no production effect`,
+    inputSchema: { type: "object", properties: {}, additionalProperties: true },
+  })) }));
+  server.setRequestHandler(CallToolRequestSchema, async request => {
+    const path = process.env.SYNTHETIC_CALLS;
+    if (!path) throw new Error("Synthetic call path missing");
+    appendFileSync(path, JSON.stringify({ name: request.params.name }) + "\n");
+    return { content: [{ type: "text", text: JSON.stringify({ synthetic: true, tool: request.params.name, accepted: true }) }] };
+  });
+  process.stdin.on("end", () => process.exit(0));
+  await server.connect(new StdioServerTransport());
+} else if (process.argv.includes("--external-stub")) {
+  const marker = process.env.SYNTHETIC_EXTERNAL;
+  if (marker) writeFileSync(marker, "unexpected external MCP start");
+  throw new Error("External MCP must remain unavailable");
+} else {
+  // This is a separate diagnostic process. Do not forward the caller's account,
+  // IAMCEO or OAuth environment to providerLaunch's MCP-inventory subprocess.
+  for (const key of Object.keys(process.env)) if (key !== "PATH") delete process.env[key];
+  const binary = "/opt/homebrew/Caskroom/codex/0.167.0/bin/codex";
+  if (!existsSync(binary)) throw new Error("Pinned installed Codex 0.167.0 is missing");
+  const sourceSha = "27ec070c1c83acbe0229c53ddccf278ad15d7965";
+  const checkoutHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+  const sourceDiff = Bun.spawnSync(["git", "diff", "--exit-code", sourceSha, "--", "server", "shared", "bin", "scripts", "package.json"], {
+    cwd: process.cwd(), stdout: "pipe", stderr: "pipe",
+  });
+  if (sourceDiff.exitCode !== 0) throw new Error("Diagnostic requires unchanged pinned release source");
+  const results: unknown[] = [];
+
+  function encodeResponse(id: string, outputs: Record<string, unknown>[]) {
+    let seq = 0;
+    const events: Record<string, unknown>[] = [{ type: "response.created", response: { id, object: "response", status: "in_progress", output: [] } }];
+    outputs.forEach((item, output_index) => {
+      const empty = item.type === "function_call" ? { ...item, arguments: "" } : item;
+      events.push({ type: "response.output_item.added", output_index, item: empty });
+      if (item.type === "function_call") {
+        events.push({ type: "response.function_call_arguments.delta", item_id: item.id, output_index, delta: item.arguments });
+        events.push({ type: "response.function_call_arguments.done", item_id: item.id, output_index, arguments: item.arguments });
+      }
+      events.push({ type: "response.output_item.done", output_index, item });
+    });
+    events.push({ type: "response.completed", response: { id, object: "response", status: "completed", output: outputs,
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+    return events.map(event => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number: seq++ })}\n\n`).join("");
+  }
+
+  for (const condition of ["baseline", "per-tool-approve"] as const) {
+    const dir = mkdtempSync("/private/tmp/iamceo-review-codex-");
+    const home = join(dir, "codex"); mkdirSync(home, { mode: 0o700 });
+    const work = join(dir, "work"); mkdirSync(work, { mode: 0o700 });
+    const callsPath = join(dir, "mcp-calls.jsonl"), externalMarker = join(dir, "external-started");
+    let requestCount = 0, observedTools: string[] = [], injected = false;
+    const toolOutputs: { callId: string; output: string }[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+      const body = await req.json() as { tools?: { name?: string; type?: string; tools?: { name?: string; type?: string }[] }[]; input?: unknown };
+      requestCount++;
+      const functions = (body.tools ?? []).flatMap(tool => tool.tools
+        ? tool.tools.map(child => ({ namespace: tool.name, name: child.name }))
+        : [{ namespace: undefined, name: tool.name }]);
+      observedTools = functions.map(tool => [tool.namespace, tool.name].filter(Boolean).join("."));
+      if (Array.isArray(body.input)) for (const item of body.input as Record<string, unknown>[]) {
+        if (item.type === "function_call_output") {
+          let output = typeof item.output === "string" ? item.output : JSON.stringify(item.output);
+          try {
+            const parts: unknown = JSON.parse(output);
+            if (Array.isArray(parts)) output = parts.filter(part => part?.type === "input_text" && typeof part.text === "string" && !part.text.startsWith("Wall time:"))
+              .map(part => part.text).join("\n");
+          } catch { /* Keep the bounded synthetic error text when it is not structured. */ }
+          if (!toolOutputs.some(old => old.callId === item.call_id && old.output === output)) {
+            toolOutputs.push({ callId: String(item.call_id), output: output.slice(0, 1800) });
+          }
+        }
+      }
+      const targets = ["task_review_evidence", "post"].map(short => functions.find(tool => tool.namespace === "mcp__iamceo" && tool.name === short)
+        ?? functions.find(tool => tool.name?.endsWith(`__${short}`)));
+      if (!injected && targets.every(Boolean)) {
+        injected = true;
+        const output = targets.map((target, i) => ({ type: "function_call", id: `fc_${condition}_${i}`,
+          call_id: `call_${i}`, name: target!.name, ...(target!.namespace ? { namespace: target!.namespace } : {}),
+          arguments: JSON.stringify(i === 0 ? { task_id: "tk_synthetic", report_id: "msg_synthetic" } : { report_id: "msg_synthetic" }) }));
+        return new Response(encodeResponse(`resp_${condition}_call`, output), { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (!injected) return Response.json({ error: { message: "Synthetic fixture did not observe expected IAMCEO tools" } }, { status: 400 });
+      const final = { type: "message", id: `msg_${condition}`, status: "completed", role: "assistant",
+        content: [{ type: "output_text", text: "Synthetic policy comparison complete.", annotations: [] }] };
+      return new Response(encodeResponse(`resp_${condition}_done`, [final]), { headers: { "Content-Type": "text/event-stream" } });
+    } });
+    const config = [
+      'model="gpt-5-codex"', 'model_provider="fixture"',
+      '[model_providers.fixture]', 'name="Synthetic local policy fixture"',
+      `base_url="http://127.0.0.1:${server.port}/v1"`, 'wire_api="responses"', 'requires_openai_auth=false',
+      '[mcp_servers.external]', `command=${JSON.stringify(process.execPath)}`,
+      `args=[${JSON.stringify(import.meta.path)},"--external-stub"]`,
+    ].join("\n");
+    writeFileSync(join(home, "config.toml"), config + "\n", { mode: 0o600 });
+    const opts = { systemPromptFile: join(dir, "rules.md"), mcpConfigFile: join(dir, "mcp.json"), resume: false, projectName: "Synthetic review diagnostic" };
+    writeFileSync(opts.systemPromptFile, "Only use the synthetic IAMCEO metadata tools. No shell, filesystem changes, outside network or actual review verdict.");
+    writeFileSync(opts.mcpConfigFile, JSON.stringify({ mcpServers: { iamceo: { command: process.execPath,
+      args: [import.meta.path, "--mcp-stub"], env: { SYNTHETIC_CALLS: callsPath, SYNTHETIC_EXTERNAL: externalMarker } } } }), { mode: 0o600 });
+    const member: RunnerMember = { id: "synthetic-reviewer", projectId: "synthetic", handle: "review", name: "Synthetic final reviewer",
+      kind: "conductor", cli: "codex", cwd: work, sessionId: null, paneId: null,
+      model: null, effort: null, subagentModel: null, permissionMode: "default", codexSpeed: "fast" };
+    const launch = providerLaunch(member, opts, { codexBin: binary, codexHome: home });
+    const extra = condition === "per-tool-approve" ? toolNames.flatMap(name => ["-c", `mcp_servers.iamceo.tools.${name}.approval_mode="approve"`]) : [];
+    const child = Bun.spawn([...launch.argv, ...extra, "exec", "--skip-git-repo-check", "--json", "Run the synthetic review metadata fixture."], {
+      cwd: work, env: { PATH: process.env.PATH, HOME: dir, CODEX_HOME: home, ...launch.env },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const stdout = new Response(child.stdout as ReadableStream<Uint8Array>).text();
+    const stderr = new Response(child.stderr as ReadableStream<Uint8Array>).text();
+    const timeout = setTimeout(() => child.kill(), 25_000);
+    let exitCode: number;
+    try { exitCode = await child.exited; } finally { clearTimeout(timeout); await server.stop(true); }
+    const out = await stdout, err = await stderr;
+    const calls = existsSync(callsPath) ? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { name: string }) : [];
+    const errors: string[] = [];
+    const cliNotices: string[] = [];
+    const toolEvents: { tool: string; status: string; error: string | null }[] = [];
+    for (const line of out.split("\n")) {
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "item.completed" && event.item?.type === "mcp_tool_call") {
+          toolEvents.push({ tool: event.item.tool, status: event.item.status, error: event.item.error?.message ?? null });
+          if (event.item.error?.message) errors.push(event.item.error.message);
+        } else if (event.type === "item.completed" && event.item?.type === "error" && typeof event.item.message === "string") {
+          cliNotices.push(event.item.message.slice(0, 500));
+        } else if (event.type === "turn.failed" || event.type === "error") {
+          errors.push(String(event.error?.message ?? event.message).slice(0, 1800));
+        }
+      } catch { /* Do not retain the raw CLI stream. */ }
+    }
+    if (exitCode !== 0 && errors.length === 0) errors.push(err.split("\n").find(line => /error|Error/i.test(line))?.slice(0, 500) ?? `CLI exited ${exitCode}`);
+    const forbiddenTools = observedTools.filter(name => /exec|patch|shell|agent|imagegen|computer|browser|external/i.test(name));
+    const policy = { askForApproval: launch.argv[launch.argv.indexOf("--ask-for-approval") + 1],
+      sandbox: launch.argv[launch.argv.indexOf("--sandbox") + 1],
+      shellDisabled: launch.argv.includes("features.shell_tool=false"), externalDisabled: launch.argv.includes("mcp_servers.external.enabled=false") };
+    results.push({ condition, fixtureRoot: dir, exitCode, requestCount, injected, tools: observedTools, forbiddenTools,
+      externalStarted: existsSync(externalMarker), calls, callCount: calls.length, policy, toolOutputs, toolEvents, errors, cliNotices });
+  }
+  const [baseline, candidate] = results as { injected: boolean; callCount: number; forbiddenTools: string[];
+    exitCode: number; calls: { name: string }[]; toolEvents: { tool: string; status: string; error: string | null }[];
+    requestCount: number; externalStarted: boolean; toolOutputs: { output: string }[];
+    policy: { askForApproval: string; sandbox: string; shellDisabled: boolean; externalDisabled: boolean } }[];
+  const common = [baseline, candidate].every(item => item.injected && item.forbiddenTools.length === 0 && !item.externalStarted
+    && item.exitCode === 0 && item.policy.askForApproval === "never" && item.policy.sandbox === "read-only" && item.policy.shellDisabled && item.policy.externalDisabled);
+  const exactError = "MCP tool call requires approval, but approval policy is never";
+  const baselineDeniedBeforeMcp = baseline.callCount === 0 && baseline.toolOutputs.length === 2 && baseline.toolOutputs.every(item => item.output === exactError)
+    && baseline.toolEvents.length === 2 && baseline.toolEvents.every(event => event.status === "failed" && event.error === exactError);
+  const candidateAllowedMcp = candidate.callCount === 2 && candidate.calls.map(call => call.name).sort().join(",") === "post,task_review_evidence"
+    && candidate.toolOutputs.length === 2 && candidate.toolOutputs.every(item => item.output.includes('"accepted":true'))
+    && candidate.toolEvents.length === 2 && candidate.toolEvents.every(event => event.status === "completed" && event.error === null);
+  const verification = { restrictionsPreserved: common, baselineDeniedBeforeMcp, candidateAllowedMcp };
+  const result = { sourceSha, checkoutHead, binaryVersion: "0.167.0", realModelRequests: 0, operationalCalls: 0,
+    syntheticResponseRequests: baseline.requestCount + candidate.requestCount, conditions: results, verification, fixtureRootsPreserved: true };
+  const file = join(import.meta.dir, "synthetic-codex-results.json");
+  writeFileSync(file, JSON.stringify(result, null, 2) + "\n");
+  console.log(JSON.stringify(result, null, 2));
+  if (!common || !baselineDeniedBeforeMcp || !candidateAllowedMcp) process.exitCode = 1;
+}
+~~~~~~
+### docs/diagnostics/review-tool-policy/synthetic-server-results.json
+
+Git blob `9a52d2ec0db8662c200c96855f3b2afe5e72e2fc` · SHA-256 `abae8d9cf5aeadf8fe4af1b2d18badb82a077580207e2efadfb5650c4cbc3b85` · 1201 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/synthetic-server-results.json -->
+~~~~~~text
+{
+  "syntheticOnly": true,
+  "tools": [
+    "status",
+    "task_trace",
+    "post",
+    "task_review",
+    "task_review_evidence"
+  ],
+  "annotationsPresent": false,
+  "ordinaryPostRead": {
+    "ok": true
+  },
+  "designatedPostRead": {
+    "ok": true
+  },
+  "unauthorizedEvidence": {
+    "error": "쓸 수 없는 도구입니다: task_review_evidence"
+  },
+  "missingEvidenceDecision": {
+    "error": "task_review_evidence에서 현재 계약과 검사, 해당 커밋의 변경분을 먼저 확인해 주세요"
+  },
+  "designatedEvidence": {
+    "ok": true,
+    "evidenceReaderUpdated": true
+  },
+  "wrongTarget": {
+    "error": "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요"
+  },
+  "forbiddenPost": {
+    "error": "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다",
+    "noNewPosts": true
+  },
+  "forbiddenFile": {
+    "error": "쓸 수 없는 도구입니다: file"
+  },
+  "designatedDecision": {
+    "ok": true
+  },
+  "humanApproval": {
+    "reviewDenied": true,
+    "decisionStillOpen": true,
+    "error": "검수 대상 또는 상태가 바뀌었습니다. 최신 기록을 확인해 주세요"
+  },
+  "liveCalls": 0
+}
+~~~~~~
+### docs/diagnostics/review-tool-policy/synthetic-server.test.ts
+
+Git blob `3085a764520ddf9e18b18a25bf7361be48182e4c` · SHA-256 `cf86c9d32d90144c768102102fa6152e892f9ef76fc767e98d5c66406fa6b6f2` · 5732 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/synthetic-server.test.ts -->
+~~~~~~text
+import { test, expect } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fixture } from "../../../tests/fixtures/harness-fixture.ts";
+import { listAgentTools } from "../../../server/agent-tools.ts";
+
+test("synthetic designated review permits evidence and read-post while rejecting unauthorized roles and writes", async () => {
+  const f = fixture();
+  const reviewer = f.store.ensureFinalReviewer(f.project.id)!;
+  const source = f.orch.saveTask(f.lead, { title: "합성 검수 대상", contract: {
+    kind: "other", goal: "합성 문서 검증", scope: "이 fixture",
+    inputs: ["합성 요청"], outputs: ["합성 결과"], constraints: [], exclusions: ["운영 조작"],
+    acceptance: ["합성 결과의 근거를 읽을 수 있다"], checks: []
+  }}).task;
+  const report = await f.orch.recordPost(f.worker, { taskId: source.id, kind: "완료", title: "합성 근거",
+    contractRev: 1, checks: [{name:"합성 대조",kind:"other",result:"pass",criterion:1,evidence:"합성 자료만 대조"}] });
+  const tools = listAgentTools(reviewer);
+  expect(tools.map(t => t.name).sort()).toEqual(["post","status","task_review","task_review_evidence","task_trace"].sort());
+  expect(tools.every(t => !("annotations" in t))).toBe(true);
+  const ordinaryRead = await f.tool(f.worker,"post",{report_id:report.id});
+  const reviewerRead = await f.tool(reviewer,"post",{report_id:report.id});
+  expect(ordinaryRead.isError).toBeUndefined(); expect(reviewerRead.isError).toBeUndefined();
+  const before = f.store.db.query("SELECT evidence_reader_id FROM task_completion_reviews WHERE report_id=?").get(report.id) as {evidence_reader_id:string|null};
+  expect(before.evidence_reader_id).toBeNull();
+  const unauthorized = await f.tool(f.worker,"task_review_evidence",{task_id:source.id,report_id:report.id});
+  expect(unauthorized.isError).toBe(true); expect(unauthorized.text).toContain("쓸 수 없는 도구");
+  const noEvidenceDecision = await f.tool(reviewer,"task_review",{task_id:source.id,report_id:report.id,result:"confirmed",evidence:"아직 증거를 읽지 않은 합성 요청"});
+  expect(noEvidenceDecision.isError).toBe(true);
+  const evidence = await f.tool(reviewer,"task_review_evidence",{task_id:source.id,report_id:report.id});
+  expect(evidence.isError,evidence.text).toBeUndefined();
+  const after = f.store.db.query("SELECT evidence_reader_id FROM task_completion_reviews WHERE report_id=?").get(report.id) as {evidence_reader_id:string|null};
+  expect(after.evidence_reader_id).toBe(reviewer.id);
+  const wrongTarget = await f.tool(reviewer,"task_review_evidence",{task_id:source.id,report_id:"msg_nonexistent_fixture"});
+  expect(wrongTarget.isError).toBe(true);
+  const beforePosts = f.store.listMessages(f.project.id).length;
+  const forbiddenPost = await f.tool(reviewer,"post",{task_id:source.id,kind:"알림",title:"허용되지 않는 합성 보고",body:"금지 경계"});
+  expect(forbiddenPost.isError).toBe(true);
+  expect(forbiddenPost.text).toContain("최종 검수 직원은 보고를 조회하거나 task_review로");
+  expect(f.store.listMessages(f.project.id).length).toBe(beforePosts);
+  const forbiddenFile = await f.tool(reviewer,"file",{task_id:source.id,title:"금지",content:"쓰지 않음"});
+  expect(forbiddenFile.isError).toBe(true); expect(forbiddenFile.text).toContain("쓸 수 없는 도구");
+  const validDecision = await f.tool(reviewer,"task_review",{task_id:source.id,report_id:report.id,result:"confirmed",evidence:"격리된 합성 계약·근거만 검토했습니다"});
+  expect(validDecision.isError,validDecision.text).toBeUndefined();
+  const humanTask = f.orch.saveTask(f.lead, { title: "합성 사람 승인 보호", contract: {
+    kind: "other", goal: "사람 판단 보존", scope: "이 fixture", inputs: ["합성 요청"],
+    outputs: ["보호 확인"], constraints: [], exclusions: ["운영 조작"], acceptance: ["사람 판단은 열려 있다"], checks: []
+  }}).task;
+  const humanReport = await f.orch.recordPost(f.worker, { taskId: humanTask.id, kind: "완료", title: "합성 납품",
+    contractRev: 1, checks: [{name:"합성 확인",kind:"other",result:"pass",criterion:1,evidence:"격리 대조"}] });
+  const readBeforeDecision = await f.tool(reviewer,"task_review_evidence",{task_id:humanTask.id,report_id:humanReport.id});
+  expect(readBeforeDecision.isError).toBeUndefined();
+  const decision = f.store.createDecision({projectId:f.project.id,taskId:humanTask.id,memberId:f.worker.id,who:f.worker.name,title:"합성 사람 판단 필요"});
+  const blockedHumanReview = await f.tool(reviewer,"task_review",{task_id:humanTask.id,report_id:humanReport.id,result:"confirmed",evidence:"열린 사람 결재를 넘을 수 없어야 함"});
+  expect(blockedHumanReview.isError).toBe(true);
+  expect(f.store.listOpenDecisions(f.project.id).some(d=>d.id===decision.id)).toBe(true);
+  const result = {
+    syntheticOnly:true, tools:tools.map(t=>t.name), annotationsPresent:false,
+    ordinaryPostRead:{ok:!ordinaryRead.isError}, designatedPostRead:{ok:!reviewerRead.isError},
+    unauthorizedEvidence:{error:unauthorized.text}, missingEvidenceDecision:{error:noEvidenceDecision.text},
+    designatedEvidence:{ok:!evidence.isError,evidenceReaderUpdated:true},
+    wrongTarget:{error:wrongTarget.text}, forbiddenPost:{error:forbiddenPost.text,noNewPosts:true},
+    forbiddenFile:{error:forbiddenFile.text}, designatedDecision:{ok:!validDecision.isError},
+    humanApproval:{reviewDenied:!!blockedHumanReview.isError,decisionStillOpen:true,error:blockedHumanReview.text},
+    liveCalls:0
+  };
+  writeFileSync(join(import.meta.dir,"synthetic-server-results.json"),JSON.stringify(result,null,2)+"\n");
+});
+~~~~~~
+### docs/diagnostics/review-tool-policy/verify-report.py
+
+Git blob `42e621c8a86be5b4e773fcbe5ff0678686cf4477` · SHA-256 `8151289148190351300aea51fe4bb2ea0af2361e3aeda19da935c4621f2d0c65` · 4178 bytes
+
+<!-- original:docs/diagnostics/review-tool-policy/verify-report.py -->
+~~~~~~text
+"""Validate diagnostic evidence and standalone documents, without network or runtime data."""
+from pathlib import Path
+from html.parser import HTMLParser
+import json
+root=Path(__file__).resolve().parent
+meta=json.loads((root/"observations.json").read_text())
+cli=json.loads((root/"synthetic-codex-results.json").read_text())
+server=json.loads((root/"synthetic-server-results.json").read_text())
+md=(root/"report.md").read_text().replace("\\|","|")
+html=(root/"report.html").read_text()
+error="MCP tool call requires approval, but approval policy is never"
+assert cli["sourceSha"]==meta["source"]["sha"]==meta["source"]["registeredReleasePathSha"]
+assert cli["binaryVersion"]=="0.167.0"
+assert cli["verification"]=={"restrictionsPreserved":True,"baselineDeniedBeforeMcp":True,"candidateAllowedMcp":True}
+assert cli["operationalCalls"]==0 and cli["realModelRequests"]==0 and cli["fixtureRootsPreserved"]
+a,b=cli["conditions"]
+assert a["callCount"]==0 and a["errors"]==[error,error]
+assert b["callCount"]==2 and b["errors"]==[]
+assert {c["name"] for c in b["calls"]}=={"post","task_review_evidence"}
+for row in (a,b):
+ assert row["policy"]=={"askForApproval":"never","sandbox":"read-only","shellDisabled":True,"externalDisabled":True}
+ assert row["forbiddenTools"]==[] and row["externalStarted"] is False
+assert server["syntheticOnly"] and server["liveCalls"]==0 and server["annotationsPresent"] is False
+assert server["designatedPostRead"]["ok"] and server["ordinaryPostRead"]["ok"]
+assert server["designatedEvidence"]=={"ok":True,"evidenceReaderUpdated":True}
+assert server["designatedDecision"]["ok"] and server["forbiddenPost"]["noNewPosts"]
+assert server["humanApproval"]["reviewDenied"] and server["humanApproval"]["decisionStillOpen"]
+assert set(server["tools"])=={"status","task_trace","post","task_review","task_review_evidence"}
+assert len(meta["targets"])==4 and all(t["finalReview"]=="pending" and t["completionEligible"] for t in meta["targets"])
+assert meta["liveObservation"]["literalErrorIndependentlyRead"] is False
+assert meta["liveObservation"]["bridgeCallArrivalIndependentlyRead"] is False
+external=meta["externalReviewReport"]
+assert external["reportId"]=="msg_joLOlvnUy3GJ"
+assert external["literalError"]==error and external["literalErrorReadFromReport"]
+assert external["authoredAt"]=="2026-11-17T22:03:06.311Z" and external["sequence"]==1209
+assert not external["newSyntheticExecution"] and not external["liveRecoveryApplied"]
+assert external["bridgeArrival"].startswith("unverified:")
+assert len(external["quotes"])==3
+assert len(meta["remainingUnverified"])==4
+class Offline(HTMLParser):
+ def __init__(self):
+  super().__init__(); self.parts=[]; self.h2=0
+ def handle_starttag(self,tag,attrs):
+  assert tag not in {"script","link","iframe","object","embed"}
+  self.h2+=tag=="h2"
+  for name,value in attrs:
+   assert not name.startswith("on")
+   if name in {"src","href"}: assert value==meta["officialDoc"]["url"]
+ def handle_data(self,s): self.parts.append(s)
+p=Offline(); p.feed(html); visible=" ".join(p.parts)
+assert p.h2==7 and "@import" not in html and "url(" not in html
+tokens=[error,meta["source"]["sha"],meta["source"]["registeredBinaryBuildId"],
+        meta["officialDoc"]["url"],"06:39","미확인","20 expectations","msg_joLOlvnUy3GJ","msg_MIZPFwVIlBux","f_WFX4ivF2m0mP",
+        "06:55:53","06:57:04","tools/call","/agent/tool",
+        *[t["reportId"] for t in meta["targets"]],*[c["command"] for c in meta["commands"]]]
+for token in tokens:
+ assert token in md,("markdown",token)
+ assert token in visible or token==meta["officialDoc"]["url"] and token in html,("html",token)
+for quote in external["quotes"]:
+ assert quote in md and quote in visible,quote
+for tool in server["tools"]:
+ flag='mcp_servers.iamceo.tools.'+tool+'.approval_mode="approve"'
+ assert flag in md and flag in visible
+print("PASS: Codex call0/2, exact errors, never/read-only and shell/MCP restrictions preserved")
+print("PASS: synthetic server roles and open human decision protected; external live error matched; per-call server arrival remains unverified")
+print("PASS: seven sections, standalone HTML/Markdown parity, four fixed reports and registered release")
+~~~~~~
+
+## 고정 제품 소스의 관련 경계
+
+다음은 전체 운영 소스 덤프가 아니라 최초 진단이 지정한 관련 줄입니다. 각 범위와 전체 파일 Git blob을 고정했습니다. 운영 파일에 적용할 패치가 아닙니다.
+
+### server/runner/role-policy.ts:12-37
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `4e2781e5f87aba8ab6e73fff8867ea97fbfefe23` · 범위 SHA-256 `d602525ab70e066cd8693c4634623b4eb3ed4951905348989565293b8f3ffd45`
+
+<!-- excerpt:server/runner/role-policy.ts:12-37 -->
+~~~~~~typescript
+export function codexRoleArgs(bin: string, member: RunnerMember, codexHome?: string): string[] {
+  if (member.kind !== "conductor") return [];
+  let servers: { name: string }[];
+  try {
+    const result = Bun.spawnSync([bin, "-c", "features.plugins=false", "-c", "features.apps=false", "mcp", "list", "--json"], {
+      cwd: member.cwd, env: { ...process.env, ...(codexHome ? { CODEX_HOME: codexHome } : {}) },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000,
+    });
+    if (result.exitCode !== 0) throw new Error("discovery failed");
+    const parsed: unknown = JSON.parse(result.stdout.toString());
+    if (!Array.isArray(parsed) || parsed.some(server => !server || typeof server.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(server.name))) throw new Error("invalid inventory");
+    servers = parsed;
+  } catch {
+    // Discovery output can contain server credentials. Never copy it into an error or log.
+    throw new CoreError("role_policy", "총괄의 조정 전용 MCP 목록을 확인하지 못해 실행하지 않았습니다");
+  }
+  const args = ["--sandbox", "read-only", "--ask-for-approval", "never"];
+  // shell_tool removes exec AND apply_patch. Disable alternate executors, native children and external writes.
+  for (const feature of ["shell_tool", "multi_agent", "multi_agent_v2", "apps", "plugins", "hooks", "computer_use", "browser_use", "browser_use_external", "in_app_browser", "image_generation", "code_mode", "goals", "request_permissions_tool"]) {
+    args.push("-c", `features.${feature}=false`);
+  }
+  args.push("-c", 'web_search="disabled"');
+  // Codex splits -c keys on literal dots; TOML-quoted segments are not decoded here.
+  for (const server of servers) if (server.name !== "iamceo") args.push("-c", `mcp_servers.${server.name}.enabled=false`);
+  args.push("-c", "mcp_servers.iamceo.enabled=true");
+  return args;
+~~~~~~
+### server/runner/providers.ts:74-89
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `88de42c06df65797759781bfd66942d326da27aa` · 범위 SHA-256 `ca5daeec8db48e317026fbac195f78a82348e28452502092f8198dba5ac08a87`
+
+<!-- excerpt:server/runner/providers.ts:74-89 -->
+~~~~~~typescript
+  if (member.kind === "conductor") args.push(...codexRoleArgs(bin, member, bins.codexHome));
+  else if (member.permissionMode === "bypassPermissions") args.push("--dangerously-bypass-approvals-and-sandbox");
+  else if (member.permissionMode === "auto") args.push("--approve-for-me");
+  else args.push("--ask-for-approval", "on-request");
+  if (member.model) args.push("--model", member.model);
+  if (member.effort) {
+    args.push("-c", `model_reasoning_effort=${toml(member.effort)}`);
+  }
+  args.push("-c", `developer_instructions=${toml(readFileSync(opts.systemPromptFile, "utf8"))}`);
+  const bridge = readBridge(opts.mcpConfigFile);
+  args.push("-c", `mcp_servers.iamceo.command=${toml(bridge.command)}`, "-c", `mcp_servers.iamceo.args=[${bridge.args.map(toml).join(",")}]`);
+  const bridgeEnvironment = Object.entries(bridge.env);
+  Object.assign(env, bridge.env);
+  // Forward named environment variables instead of exposing bearer tokens in
+  // the CLI argv/process list. Codex's MCP env_vars is invocation-scoped.
+  args.push("-c", `mcp_servers.iamceo.env_vars=[${bridgeEnvironment.map(([key]) => toml(key)).join(",")}]`);
+~~~~~~
+### bin/mcp-bridge.ts:88-113
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `e7d0a97bc705f1cd12dfb15c7a88a2b544f3e5e8` · 범위 SHA-256 `d4ea8a7d0d4f529823115ad8c84839c8c530122a6604c3b35862a8fc6c26432f`
+
+<!-- excerpt:bin/mcp-bridge.ts:88-113 -->
+~~~~~~typescript
+    const tools = await call<AgentToolDef[]>("/agent/tools");
+    return { tools: tools.map((t) => ({ ...t, inputSchema: {
+      ...t.inputSchema, type: "object" as const,
+      properties: { ...t.inputSchema.properties as Record<string, unknown>, operation_id: { type: "string", format: "uuid", description: "응답 유실 재요청 때만 이전 operation ID를 넣는다. 새 호출은 생략한다. 같은 ID의 다른 인자는 거부된다." } },
+    } })) };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const { operation_id, ...args } = request.params.arguments ?? {};
+    if (operation_id !== undefined && !z.uuid().safeParse(operation_id).success) return toolError("operation_id는 UUID여야 합니다");
+    // MCP request ID/본문 해시는 새 호출의 신원이 아니다. 전송 전에 생성하고 재요청에만 재사용한다.
+    const operationId = operation_id === undefined ? randomUUID() : operation_id as string;
+    const progressToken = extra._meta?.progressToken;
+    let progress = 0;
+    const heartbeat =
+      progressToken === undefined
+        ? null
+        : setInterval(() => {
+            const notification: ServerNotification = { method: "notifications/progress", params: { progressToken, progress: ++progress, message: "기다리는 중" } };
+            void extra.sendNotification(notification).catch((e) => console.error("progress 전송 실패:", e));
+          }, progressMs);
+    try {
+      const body = { operationId, name: request.params.name, args: request.params.name === "wait" ? { ...args, batch: true } : args };
+      let result: AgentToolResult;
+      try {
+        result = await call<AgentToolResult>("/agent/tool", body, extra.signal);
+~~~~~~
+### server/agent-tools.ts:465-482
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `8dccd28a43a46893c5c5f53d978b626913bba474` · 범위 SHA-256 `36722b0ef672753a261da1920b058918fe52c8b74b79f38d2ada5f6d1ba8b6cb`
+
+<!-- excerpt:server/agent-tools.ts:465-482 -->
+~~~~~~typescript
+      if (a.report_id !== undefined) {
+        if (!orch.reportReferences) throw new ApiError(501, "보고 참조 조회를 지원하지 않습니다");
+        const refs = orch.reportReferences(member.projectId, a.report_id);
+        const source = orch.store.requireMessage(refs.sourceMessageId);
+        if (source.projectId !== member.projectId) throw new ApiError(404, "보고를 찾을 수 없습니다");
+        const files = refs.fileIds.map(id => {
+          const file = orch.store.getFile(id);
+          if (!file || file.projectId !== member.projectId) throw new ApiError(404, `자료를 찾을 수 없습니다: ${id}`);
+          return { id: file.id, title: file.title, summary: file.summary, body: file.body, kind: file.kind, attachments: file.attachments, ...(file.kind === "artifact" ? { html: orch.store.getFileHtml(file.id) } : {}) };
+        });
+        // 이 보고를 확인한 글(총괄 확인 등)도 함께 돌려준다. 원보고와 확인을 한 결과로 읽게 한다.
+        const confirmations = orch.store.listMessagesAbout(member.projectId, source.id).map(m => ({ id: m.id, who: m.who, kind: m.kind, title: m.title, at: m.at }));
+        // 하네스 기록: 실행·계약 판·검사(작성자 자기 확인)·검토 요청. 계약은 그 보고가 따른 판이다.
+        const harness = orch.store.getReportHarness(source.id);
+        const contract = harness?.contractRev && harness.contractTaskId ? orch.store.getTaskContract(harness.contractTaskId) : null;
+        return reply(JSON.stringify(publicHarness({ ...refs, source, files, confirmations, ...(harness ? { harness: { ...harness, contractRevNow: contract?.rev ?? null } } : {}) })));
+      }
+      if (member.finalReviewer) throw new ApiError(403, "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다");
+~~~~~~
+### server/agent-tools.ts:932-953
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `8dccd28a43a46893c5c5f53d978b626913bba474` · 범위 SHA-256 `1a3d9d014c0836715341eef3074ccef951a3bcbb4d4e43ae0de92d1f1f8ddd5a`
+
+<!-- excerpt:server/agent-tools.ts:932-953 -->
+~~~~~~typescript
+  if (member.finalReviewer) return ["status", "task_trace", "post", ...FINAL_REVIEW_TOOLS];
+  return [
+    ...(member.kind === "conductor" ? CONDUCTOR_ALLOWED_TOOLS : WORKER_TOOLS),
+    ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),
+    ...(opts.memory && member.kind === "conductor" && member.origin !== "manual" ? MEMORY_CONDUCTOR_TOOLS : []),
+    ...(member.kind === "root" ? ROOT_TOOLS : []),
+    ...(member.origin === "manual" ? MANUAL_TOOLS : []),
+  ];
+}
+
+/** Explicit allowlist: adding a worker/native capability must never widen the conductor role. */
+export const CONDUCTOR_ALLOWED_TOOLS = [
+  "status", "task", "ask", "post", "todo", "ask_close", "todo_close", "server_check", "task_trace", "exec_diagnose", "code_read",
+  "team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_config", "terminal_read",
+  "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage", "task_followup",
+] as const satisfies readonly ToolName[];
+
+export function listAgentTools(member: Member, opts: { memory?: boolean } = {}): AgentToolDef[] {
+  return namesFor(member, opts).map((name) => {
+    const { $schema: _, ...inputSchema } = z.toJSONSchema(TOOLS[name].schema) as Record<string, unknown>;
+    return { name, description: TOOLS[name].description, inputSchema };
+  });
+~~~~~~
+### server/orchestrator.ts:4900-4918
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `3057adbe87f20202f65c5da0475d1f7ed68a4b15` · 범위 SHA-256 `5ccca5f235eea059a30034802e26c95a406b4646faab82378d30b03e2cdcae0c`
+
+<!-- excerpt:server/orchestrator.ts:4900-4918 -->
+~~~~~~typescript
+  async finalReviewEvidence(member: Member, taskId: string, reportId: string, path: string | undefined, offset: number) {
+    const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
+    const project = this.store.requireProject(task.projectId);
+    this.requireActive(project);
+    const review = latestCompletionReview(this.store, task.id);
+    const report = this.store.getMessage(reportId), artifact = this.store.getReportHarness(reportId);
+    const contract = this.store.getEffectiveContract(task.id);
+    if (!member.finalReviewer || review?.status !== "pending" || review.report_id !== reportId || !report || !artifact ||
+      contract?.taskId !== review.contract_task_id || contract.rev !== review.contract_rev ||
+      this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
+      throw new ApiError(409, "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요");
+    }
+    const patch = artifact.artifactCommit ? await readFinalReviewPatch(project.cwd, artifact.artifactCommit, path, offset) : null;
+    if (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0)) {
+      this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
+        .run(member.id, task.id, report.id);
+    }
+    return publicHarness({ task: { id: task.id, title: task.title, branch: task.branch }, contract,
+      report: { id: report.id, title: report.title, body: report.body, who: report.who, taskId: report.taskId,
+~~~~~~
+### server/orchestrator.ts:6360-6374
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `3057adbe87f20202f65c5da0475d1f7ed68a4b15` · 범위 SHA-256 `2894aebc509dc1e2bc4dfcb21b7e50e919947b1993612e50fee03db022e45894`
+
+<!-- excerpt:server/orchestrator.ts:6360-6374 -->
+~~~~~~typescript
+      if (!member.finalReviewer && !posted && e.finalText.trim()) {
+        if (tidyOnly) this.store.appendActivity(member.id, "system", `판 정리: ${normalizeSpace(e.finalText).slice(0, 300)}`);
+        else await this.fallbackReport(member, e.finalText, direct, turn?.deliveries);
+      }
+    }
+    await this.pump(member.id);
+    this.releaseSlots();
+  }
+
+  private async onTurnError(member: Member, errorText: string, deliveries?: Delivery[]): Promise<void> {
+    const kind = providerIssueKind(errorText);
+    this.store.patchMember(member.id, { status: "error", lastError: errorText, ...(kind ? { executionIssue: { kind, detail: errorText, at: new Date().toISOString(), sessionGeneration: this.store.memberRevisions(member.id).sessionGeneration, terminalId: member.paneId, exitCode: null } } : {}) });
+    this.memberNotice(member, `${member.name} 오류: ${errorText}`, deliveries);
+    if (member.kind === "worker" && !member.finalReviewer) await this.reportToConductor(member, "막힘", "(자동) 턴 오류", errorText, true);
+  }
+~~~~~~
+### server/orchestrator.ts:6631-6649
+
+기준 `27ec070c1c83acbe0229c53ddccf278ad15d7965` · 전체 파일 Git blob `3057adbe87f20202f65c5da0475d1f7ed68a4b15` · 범위 SHA-256 `c6dba709b7edcf99ef948a3df8dc7d5a1550cbc4e2d8afb06f4ddfab587ab407`
+
+<!-- excerpt:server/orchestrator.ts:6631-6649 -->
+~~~~~~typescript
+  private runnerMember(member: Member, _project: Project): RunnerMember {
+    const settings = this.store.getSettings();
+    return {
+      id: member.id,
+      projectId: member.projectId,
+      handle: member.handle,
+      name: member.name,
+      cli: member.cli,
+      parallel: member.parallel,
+      cwd: member.cwd,
+      sessionId: member.sessionId,
+      paneId: member.paneId,
+      ...this.models.memberLaunchConfig(member, settings),
+      subagentModel: staffSubagent(member.cli, settings.ranks, settings.codexRanks).subagentModel,
+      permissionMode: settings.permissionMode,
+      kind: member.finalReviewer ? "conductor" : member.kind,
+      origin: member.origin,
+      sessionGeneration: this.store.getMember(member.id) ? this.store.memberRevisions(member.id).sessionGeneration : undefined,
+    };
+~~~~~~
+
+## 후속 검토 묶음의 목록과 대조 도구
+
+아래 파일은 이번에 만든 문서 추출·정합성 확인 도구입니다. 위의 기존 합성 실행 원자료와 구분하며, 운영 소스를 수정하거나 옛 합성 시험을 다시 실행하지 않습니다.
+
+### manifest.json
+
+<!-- supplement:manifest.json -->
+~~~~~~text
+{
+  "taskId": "tk_34o1KVuzwy5Z",
+  "contractRev": 1,
+  "repository": "https://github.com/sueelly/IAMCEO.git",
+  "branch": "docs-diagnose-review-tools-tk_34o1KVuzwy5Z",
+  "sourceBase": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "initialEvidenceCommit": "71bc06099d79d5bb834d355940b59d4e68ba969d",
+  "reviewTarget": "679b10d99da712ff95eef7c6cdaa3437eb30be06",
+  "remoteObservation": "679b10d99da712ff95eef7c6cdaa3437eb30be06\trefs/heads/docs-diagnose-review-tools-tk_34o1KVuzwy5Z",
+  "patch": {
+    "path": "original.patch",
+    "sha256": "9765f9d81ab0dc9cdf8eab27348eae76928dd7cbfad04e0aa3176baf8571e3a7",
+    "bytes": 78318
+  },
+  "originalFiles": [
+    {
+      "path": "docs/diagnostics/review-tool-policy/observations.json",
+      "gitBlob": "002b6de26eafc95dae7c38751537fad683e787bd",
+      "sha256": "15f78ba307afff13270b76966c9d95b6172dbe4923ee51e7c8c5d600dbda2111",
+      "bytes": 5527,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/plan.md",
+      "gitBlob": "cf342a445cf937c79ec2dc75982de3bb679d0e0e",
+      "sha256": "67f232915a2ebba479697bda4ba6b88f3c0ea5331528c8438158400d7839055f",
+      "bytes": 3515,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/report.html",
+      "gitBlob": "297641eb378975aa5720a35728f0e888378a7489",
+      "sha256": "6fdca470bce7dce01d38608dccad4d114a52300f8b56b4748c2d765ff09a4c84",
+      "bytes": 20057,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/report.md",
+      "gitBlob": "36d7cbd87593f8c95db9a3841d5f87a6178930c0",
+      "sha256": "cebeb73249345fb5b8849e2bb5067475dd7d9d3cf12de7ce8b103adbc4b298a9",
+      "bytes": 16379,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-codex-results.json",
+      "gitBlob": "9fd61d0add36b2bbf23d074f3898d12fb8cd1bb4",
+      "sha256": "97f3eec16fffe2a5f7f05f7ec78735410fa9063470e7259fc499bb0dc3213e11",
+      "bytes": 4131,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-codex.ts",
+      "gitBlob": "4d1c4f7a8f73a16bd363efd6d8e870a69f1f87f1",
+      "sha256": "0e0ebbf4bb83863127e55709da8824a70e7c34b6cecf4b1f358a6ef2bb60b0b3",
+      "bytes": 13805,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-server-results.json",
+      "gitBlob": "9a52d2ec0db8662c200c96855f3b2afe5e72e2fc",
+      "sha256": "abae8d9cf5aeadf8fe4af1b2d18badb82a077580207e2efadfb5650c4cbc3b85",
+      "bytes": 1201,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-server.test.ts",
+      "gitBlob": "3085a764520ddf9e18b18a25bf7361be48182e4c",
+      "sha256": "cf86c9d32d90144c768102102fa6152e892f9ef76fc767e98d5c66406fa6b6f2",
+      "bytes": 5732,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/verify-report.py",
+      "gitBlob": "42e621c8a86be5b4e773fcbe5ff0678686cf4477",
+      "sha256": "8151289148190351300aea51fe4bb2ea0af2361e3aeda19da935c4621f2d0c65",
+      "bytes": 4178,
+      "endsWithNewline": true
+    }
+  ],
+  "sourceExcerpts": [
+    {
+      "path": "server/runner/role-policy.ts",
+      "startLine": 12,
+      "endLine": 37,
+      "gitBlob": "4e2781e5f87aba8ab6e73fff8867ea97fbfefe23",
+      "sha256": "d602525ab70e066cd8693c4634623b4eb3ed4951905348989565293b8f3ffd45",
+      "bytes": 1871
+    },
+    {
+      "path": "server/runner/providers.ts",
+      "startLine": 74,
+      "endLine": 89,
+      "gitBlob": "88de42c06df65797759781bfd66942d326da27aa",
+      "sha256": "ca5daeec8db48e317026fbac195f78a82348e28452502092f8198dba5ac08a87",
+      "bytes": 1133
+    },
+    {
+      "path": "bin/mcp-bridge.ts",
+      "startLine": 88,
+      "endLine": 113,
+      "gitBlob": "e7d0a97bc705f1cd12dfb15c7a88a2b544f3e5e8",
+      "sha256": "d4ea8a7d0d4f529823115ad8c84839c8c530122a6604c3b35862a8fc6c26432f",
+      "bytes": 1744
+    },
+    {
+      "path": "server/agent-tools.ts",
+      "startLine": 465,
+      "endLine": 482,
+      "gitBlob": "8dccd28a43a46893c5c5f53d978b626913bba474",
+      "sha256": "36722b0ef672753a261da1920b058918fe52c8b74b79f38d2ada5f6d1ba8b6cb",
+      "bytes": 1852
+    },
+    {
+      "path": "server/agent-tools.ts",
+      "startLine": 932,
+      "endLine": 953,
+      "gitBlob": "8dccd28a43a46893c5c5f53d978b626913bba474",
+      "sha256": "1a3d9d014c0836715341eef3074ccef951a3bcbb4d4e43ae0de92d1f1f8ddd5a",
+      "bytes": 1371
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 4900,
+      "endLine": 4918,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "5ccca5f235eea059a30034802e26c95a406b4646faab82378d30b03e2cdcae0c",
+      "bytes": 1618
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 6360,
+      "endLine": 6374,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "2894aebc509dc1e2bc4dfcb21b7e50e919947b1993612e50fee03db022e45894",
+      "bytes": 1043
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 6631,
+      "endLine": 6649,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "c6dba709b7edcf99ef948a3df8dc7d5a1550cbc4e2d8afb06f4ddfab587ab407",
+      "bytes": 818
+    }
+  ],
+  "externalReport": {
+    "path": "external-report.json",
+    "sha256": "6ac3b1c4b746fabbe35142dcca36c334f5c9b5c37c7f79d73133916b0e940ed0"
+  },
+  "executionScope": "Previously saved synthetic tool outputs/results only; no new synthetic, model, production or reviewer verdict execution"
+}
+~~~~~~
+### build-handoff.py
+
+<!-- supplement:build-handoff.py -->
+~~~~~~text
+"""Export only the immutable diagnostic source/evidence for cross-repository review."""
+from pathlib import Path
+import hashlib
+import json
+import re
+import subprocess
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[3]
+BASE = "27ec070c1c83acbe0229c53ddccf278ad15d7965"
+INITIAL = "71bc06099d79d5bb834d355940b59d4e68ba969d"
+TARGET = "679b10d99da712ff95eef7c6cdaa3437eb30be06"
+BRANCH = "docs-diagnose-review-tools-tk_34o1KVuzwy5Z"
+PREFIX = "docs/diagnostics/review-tool-policy/"
+
+
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=ROOT)
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def fence(data, language="text"):
+    text = data.decode()
+    delimiter = "~" * max(6, max((len(x) + 1 for x in re.findall(r"~+", text)), default=0))
+    return delimiter + language + "\n" + text + ("" if text.endswith("\n") else "\n") + delimiter + "\n"
+
+
+paths = git("ls-tree", "-r", "--name-only", TARGET, "--", PREFIX).decode().splitlines()
+assert len(paths) == 9
+patch = git("diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", BASE, TARGET, "--", PREFIX)
+assert not git("diff", "--name-only", BASE, TARGET, "--", "server", "shared", "tests", "bin", "scripts", "package.json")
+(HERE / "original.patch").write_bytes(patch)
+manifest = {
+    "taskId": "tk_34o1KVuzwy5Z", "contractRev": 1,
+    "repository": "https://github.com/sueelly/IAMCEO.git",
+    "branch": BRANCH, "sourceBase": BASE, "initialEvidenceCommit": INITIAL,
+    "reviewTarget": TARGET,
+    "remoteObservation": git("ls-remote", "--heads", "origin", BRANCH).decode().strip(),
+    "patch": {"path": "original.patch", "sha256": sha(patch), "bytes": len(patch)},
+    "originalFiles": [], "sourceExcerpts": [],
+    "externalReport": {"path": "external-report.json", "sha256": sha((HERE / "external-report.json").read_bytes())},
+    "executionScope": "Previously saved synthetic tool outputs/results only; no new synthetic, model, production or reviewer verdict execution",
+}
+parts = [
+    "# Novel 검수 도구 진단의 원본 파일·실행 결과·관련 소스\n\n",
+    f"업무 tk_34o1KVuzwy5Z / 계약 r1. 저장소 {manifest['repository']}의 검토 대상 {TARGET}에서 읽은 원문입니다.\n\n",
+    f"기준 제품 소스 {BASE}, 최초 합성 근거 커밋 {INITIAL}, 후속 문서 커밋 {TARGET}를 구분합니다. 각 파일의 Git blob과 SHA-256을 함께 제공합니다.\n\n",
+    "기존 실행 원자료는 아래 synthetic-codex-results.json의 toolOutputs·toolEvents·errors·호출 수·제한 설정과 synthetic-server-results.json의 역할/사람 결재 결과입니다. 당시 stdout/stderr 전체나 실서비스 원시 실행 기록을 수집한 자료가 아닙니다. CLI 공지 두 건도 생략하지 않았습니다. 이번에는 합성 시험·실제 모델·운영 호출·지정 검수 판정을 다시 실행하지 않았습니다.\n\n",
+    "## 총괄의 실서비스 관측 보고 원문\n\n",
+    "post(report_id=msg_joLOlvnUy3GJ)로 다시 조회해 필요한 필드만 보존했습니다. 총괄의 실제 터미널 관측 보고이며 이 직원의 직접 터미널 관측으로 바꾸지 않습니다.\n\n",
+    fence((HERE / "external-report.json").read_bytes(), "json"),
+    "\n## 검토 대상 커밋의 원본 9개 파일\n\n",
+]
+for path in paths:
+    data = git("show", f"{TARGET}:{path}")
+    blob = git("rev-parse", f"{TARGET}:{path}").decode().strip()
+    entry = {"path": path, "gitBlob": blob, "sha256": sha(data), "bytes": len(data), "endsWithNewline": data.endswith(b"\n")}
+    manifest["originalFiles"].append(entry)
+    parts += [f"### {path}\n\nGit blob `{blob}` · SHA-256 `{sha(data)}` · {len(data)} bytes\n\n", f"<!-- original:{path} -->\n", fence(data)]
+
+specs = [
+    ("server/runner/role-policy.ts", 12, 37),
+    ("server/runner/providers.ts", 74, 89),
+    ("bin/mcp-bridge.ts", 88, 113),
+    ("server/agent-tools.ts", 465, 482),
+    ("server/agent-tools.ts", 932, 953),
+    ("server/orchestrator.ts", 4900, 4918),
+    ("server/orchestrator.ts", 6360, 6374),
+    ("server/orchestrator.ts", 6631, 6649),
+]
+parts += ["\n## 고정 제품 소스의 관련 경계\n\n", "다음은 전체 운영 소스 덤프가 아니라 최초 진단이 지정한 관련 줄입니다. 각 범위와 전체 파일 Git blob을 고정했습니다. 운영 파일에 적용할 패치가 아닙니다.\n\n"]
+for path, start, end in specs:
+    full = git("show", f"{BASE}:{path}")
+    excerpt = b"".join(full.splitlines(keepends=True)[start - 1:end])
+    blob = git("rev-parse", f"{BASE}:{path}").decode().strip()
+    entry = {"path": path, "startLine": start, "endLine": end, "gitBlob": blob, "sha256": sha(excerpt), "bytes": len(excerpt)}
+    manifest["sourceExcerpts"].append(entry)
+    marker = f"{path}:{start}-{end}"
+    parts += [f"### {marker}\n\n기준 `{BASE}` · 전체 파일 Git blob `{blob}` · 범위 SHA-256 `{sha(excerpt)}`\n\n", f"<!-- excerpt:{marker} -->\n", fence(excerpt, "typescript")]
+(HERE / "changes.md").write_text(
+    "# Novel 검수 도구 진단의 전체 변경분\n\n"
+    f"저장소 {manifest['repository']} · 기준 {BASE} → 검토 대상 {TARGET}\n\n"
+    "아래는 해당 진단 디렉터리의 생략 없는 git diff --binary --full-index 결과입니다. 원본 파일 9개는 모두 문서·합성 fixture·저장된 결과이며 제품 소스 변경은0입니다. 운영에 적용하라는 지시가 아닙니다.\n\n"
+    f"패치 SHA-256 `{sha(patch)}` · {len(patch)} bytes. 별도 original.patch와 바이트 단위로 일치합니다.\n\n"
+    + fence(patch, "diff"))
+(HERE / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+parts += ["\n## 후속 검토 묶음의 목록과 대조 도구\n\n", "아래 파일은 이번에 만든 문서 추출·정합성 확인 도구입니다. 위의 기존 합성 실행 원자료와 구분하며, 운영 소스를 수정하거나 옛 합성 시험을 다시 실행하지 않습니다.\n\n"]
+for name in ("manifest.json", "build-handoff.py", "verify-handoff.py"):
+    parts += [f"### {name}\n\n", f"<!-- supplement:{name} -->\n", fence((HERE / name).read_bytes())]
+(HERE / "snapshot.md").write_text("".join(parts))
+print(f"Exported {len(paths)} immutable diagnostic files, {len(specs)} source excerpts, exact patch and existing execution results")
+print(f"snapshot_bytes={(HERE / 'snapshot.md').stat().st_size} patch_bytes={len(patch)}")
+~~~~~~
+### verify-handoff.py
+
+<!-- supplement:verify-handoff.py -->
+~~~~~~~text
+"""Verify exported evidence against immutable Git objects; do not execute old fixtures."""
+from pathlib import Path
+import hashlib
+import json
+import subprocess
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[3]
+m = json.loads((HERE / "manifest.json").read_text())
+snapshot = (HERE / "snapshot.md").read_bytes()
+
+
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=ROOT)
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def exported(marker):
+    prefix = ("<!-- " + marker + " -->\n").encode()
+    assert snapshot.count(prefix) == 1
+    rest = snapshot.split(prefix, 1)[1]
+    first, rest = rest.split(b"\n", 1)
+    delimiter = first[:len(first) - len(first.lstrip(b"~"))]
+    assert len(delimiter) >= 6
+    payload = rest.split(b"\n" + delimiter + b"\n", 1)[0]
+    return payload
+
+
+assert m["taskId"] == "tk_34o1KVuzwy5Z" and m["contractRev"] == 1
+assert m["repository"] == "https://github.com/sueelly/IAMCEO.git"
+assert m["remoteObservation"].split() == [m["reviewTarget"], "refs/heads/" + m["branch"]]
+assert git("cat-file", "-t", m["reviewTarget"]).strip() == b"commit"
+assert git("rev-parse", m["reviewTarget"] + "^").decode().strip() == m["initialEvidenceCommit"]
+assert not git("diff", "--name-only", m["sourceBase"], m["reviewTarget"], "--", "server", "shared", "tests", "bin", "scripts", "package.json")
+assert len(m["originalFiles"]) == 9
+for item in m["originalFiles"]:
+    original = git("show", m["reviewTarget"] + ":" + item["path"])
+    got = exported("original:" + item["path"])
+    if item["endsWithNewline"]:
+        got += b"\n"
+    assert got == original and len(original) == item["bytes"]
+    assert digest(got) == item["sha256"]
+    assert git("rev-parse", m["reviewTarget"] + ":" + item["path"]).decode().strip() == item["gitBlob"]
+for item in m["sourceExcerpts"]:
+    whole = git("show", m["sourceBase"] + ":" + item["path"])
+    original = b"".join(whole.splitlines(keepends=True)[item["startLine"] - 1:item["endLine"]])
+    marker = f"{item['path']}:{item['startLine']}-{item['endLine']}"
+    got = exported("excerpt:" + marker) + b"\n"
+    assert got == original and digest(got) == item["sha256"]
+patch = (HERE / "original.patch").read_bytes()
+expected = git("diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", m["sourceBase"], m["reviewTarget"], "--", "docs/diagnostics/review-tool-policy/")
+assert patch == expected and digest(patch) == m["patch"]["sha256"] and len(patch) == m["patch"]["bytes"]
+wrapper = (HERE / "changes.md").read_bytes().split(b"~~~~~~diff\n", 1)[1].rsplit(b"~~~~~~\n", 1)[0]
+assert wrapper == patch
+report_raw = (HERE / "external-report.json").read_bytes()
+report = json.loads(report_raw)
+assert digest(report_raw) == m["externalReport"]["sha256"] and report_raw in snapshot
+assert report["sourceMessageId"] == "msg_joLOlvnUy3GJ"
+assert report["source"]["who"] == "Novel of the world 총괄"
+assert report["source"]["taskId"] == m["taskId"]
+assert "MCP tool call requires approval, but approval policy is never" in report["source"]["body"]
+assert "06:55:53과 06:57:04" in report["source"]["body"]
+for artifact in ("snapshot.md", "changes.md"):
+    assert (HERE / artifact).stat().st_size < 2_000_000
+for artifact in ("manifest.json", "build-handoff.py", "verify-handoff.py"):
+    assert exported("supplement:" + artifact) + b"\n" == (HERE / artifact).read_bytes()
+print("PASS: original IAMCEO commit/parent, remote observation, 9 exact file snapshots and 8 fixed source excerpts")
+print("PASS: unabridged patch bytes/hash, original saved execution records and attributed external report")
+print("PASS: product sources unchanged; no old fixture, live policy or reviewer verdict executed")
+~~~~~~~

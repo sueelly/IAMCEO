@@ -1,0 +1,151 @@
+{
+  "taskId": "tk_34o1KVuzwy5Z",
+  "contractRev": 1,
+  "repository": "https://github.com/sueelly/IAMCEO.git",
+  "branch": "docs-diagnose-review-tools-tk_34o1KVuzwy5Z",
+  "sourceBase": "27ec070c1c83acbe0229c53ddccf278ad15d7965",
+  "initialEvidenceCommit": "71bc06099d79d5bb834d355940b59d4e68ba969d",
+  "reviewTarget": "679b10d99da712ff95eef7c6cdaa3437eb30be06",
+  "remoteObservation": "679b10d99da712ff95eef7c6cdaa3437eb30be06\trefs/heads/docs-diagnose-review-tools-tk_34o1KVuzwy5Z",
+  "patch": {
+    "path": "original.patch",
+    "sha256": "9765f9d81ab0dc9cdf8eab27348eae76928dd7cbfad04e0aa3176baf8571e3a7",
+    "bytes": 78318
+  },
+  "originalFiles": [
+    {
+      "path": "docs/diagnostics/review-tool-policy/observations.json",
+      "gitBlob": "002b6de26eafc95dae7c38751537fad683e787bd",
+      "sha256": "15f78ba307afff13270b76966c9d95b6172dbe4923ee51e7c8c5d600dbda2111",
+      "bytes": 5527,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/plan.md",
+      "gitBlob": "cf342a445cf937c79ec2dc75982de3bb679d0e0e",
+      "sha256": "67f232915a2ebba479697bda4ba6b88f3c0ea5331528c8438158400d7839055f",
+      "bytes": 3515,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/report.html",
+      "gitBlob": "297641eb378975aa5720a35728f0e888378a7489",
+      "sha256": "6fdca470bce7dce01d38608dccad4d114a52300f8b56b4748c2d765ff09a4c84",
+      "bytes": 20057,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/report.md",
+      "gitBlob": "36d7cbd87593f8c95db9a3841d5f87a6178930c0",
+      "sha256": "cebeb73249345fb5b8849e2bb5067475dd7d9d3cf12de7ce8b103adbc4b298a9",
+      "bytes": 16379,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-codex-results.json",
+      "gitBlob": "9fd61d0add36b2bbf23d074f3898d12fb8cd1bb4",
+      "sha256": "97f3eec16fffe2a5f7f05f7ec78735410fa9063470e7259fc499bb0dc3213e11",
+      "bytes": 4131,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-codex.ts",
+      "gitBlob": "4d1c4f7a8f73a16bd363efd6d8e870a69f1f87f1",
+      "sha256": "0e0ebbf4bb83863127e55709da8824a70e7c34b6cecf4b1f358a6ef2bb60b0b3",
+      "bytes": 13805,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-server-results.json",
+      "gitBlob": "9a52d2ec0db8662c200c96855f3b2afe5e72e2fc",
+      "sha256": "abae8d9cf5aeadf8fe4af1b2d18badb82a077580207e2efadfb5650c4cbc3b85",
+      "bytes": 1201,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/synthetic-server.test.ts",
+      "gitBlob": "3085a764520ddf9e18b18a25bf7361be48182e4c",
+      "sha256": "cf86c9d32d90144c768102102fa6152e892f9ef76fc767e98d5c66406fa6b6f2",
+      "bytes": 5732,
+      "endsWithNewline": true
+    },
+    {
+      "path": "docs/diagnostics/review-tool-policy/verify-report.py",
+      "gitBlob": "42e621c8a86be5b4e773fcbe5ff0678686cf4477",
+      "sha256": "8151289148190351300aea51fe4bb2ea0af2361e3aeda19da935c4621f2d0c65",
+      "bytes": 4178,
+      "endsWithNewline": true
+    }
+  ],
+  "sourceExcerpts": [
+    {
+      "path": "server/runner/role-policy.ts",
+      "startLine": 12,
+      "endLine": 37,
+      "gitBlob": "4e2781e5f87aba8ab6e73fff8867ea97fbfefe23",
+      "sha256": "d602525ab70e066cd8693c4634623b4eb3ed4951905348989565293b8f3ffd45",
+      "bytes": 1871
+    },
+    {
+      "path": "server/runner/providers.ts",
+      "startLine": 74,
+      "endLine": 89,
+      "gitBlob": "88de42c06df65797759781bfd66942d326da27aa",
+      "sha256": "ca5daeec8db48e317026fbac195f78a82348e28452502092f8198dba5ac08a87",
+      "bytes": 1133
+    },
+    {
+      "path": "bin/mcp-bridge.ts",
+      "startLine": 88,
+      "endLine": 113,
+      "gitBlob": "e7d0a97bc705f1cd12dfb15c7a88a2b544f3e5e8",
+      "sha256": "d4ea8a7d0d4f529823115ad8c84839c8c530122a6604c3b35862a8fc6c26432f",
+      "bytes": 1744
+    },
+    {
+      "path": "server/agent-tools.ts",
+      "startLine": 465,
+      "endLine": 482,
+      "gitBlob": "8dccd28a43a46893c5c5f53d978b626913bba474",
+      "sha256": "36722b0ef672753a261da1920b058918fe52c8b74b79f38d2ada5f6d1ba8b6cb",
+      "bytes": 1852
+    },
+    {
+      "path": "server/agent-tools.ts",
+      "startLine": 932,
+      "endLine": 953,
+      "gitBlob": "8dccd28a43a46893c5c5f53d978b626913bba474",
+      "sha256": "1a3d9d014c0836715341eef3074ccef951a3bcbb4d4e43ae0de92d1f1f8ddd5a",
+      "bytes": 1371
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 4900,
+      "endLine": 4918,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "5ccca5f235eea059a30034802e26c95a406b4646faab82378d30b03e2cdcae0c",
+      "bytes": 1618
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 6360,
+      "endLine": 6374,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "2894aebc509dc1e2bc4dfcb21b7e50e919947b1993612e50fee03db022e45894",
+      "bytes": 1043
+    },
+    {
+      "path": "server/orchestrator.ts",
+      "startLine": 6631,
+      "endLine": 6649,
+      "gitBlob": "3057adbe87f20202f65c5da0475d1f7ed68a4b15",
+      "sha256": "c6dba709b7edcf99ef948a3df8dc7d5a1550cbc4e2d8afb06f4ddfab587ab407",
+      "bytes": 818
+    }
+  ],
+  "externalReport": {
+    "path": "external-report.json",
+    "sha256": "6ac3b1c4b746fabbe35142dcca36c334f5c9b5c37c7f79d73133916b0e940ed0"
+  },
+  "executionScope": "Previously saved synthetic tool outputs/results only; no new synthetic, model, production or reviewer verdict execution"
+}
