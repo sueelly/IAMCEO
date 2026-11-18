@@ -1,34 +1,28 @@
 import { useEffect, useRef } from "react";
 import type { ProjectState } from "@shared/types";
 import type { WorkflowNode } from "@shared/workflow";
-import { workflowBucket, workflowCategory } from "@shared/workflow-view";
+import { WORKFLOW_FILTER_LABELS, workflowBucket, workflowCategory } from "@shared/workflow-view";
 import { GlassButton } from "../glass";
 import WorkflowDetail from "./WorkflowDetail";
 export type TeamTaskTab =
-  "all" | "now" | "next" | "checks" | "reviews" | "blocked" | "done";
+  "all" | "now" | "next" | "checks" | "team" | "reviews" | "blocked" | "history" | "done";
 export const TEAM_TASK_TABS: [TeamTaskTab, string][] = [
-  ["all", "전체"],
-  ["now", "지금"],
-  ["next", "다음·대기"],
-  ["checks", "확인 필요"],
-  ["done", "완료"],
+  ["all", "전체"], ["now", "현재"], ["next", WORKFLOW_FILTER_LABELS.next],
+  ["checks", WORKFLOW_FILTER_LABELS.action], ["team", WORKFLOW_FILTER_LABELS.review],
+  ["history", WORKFLOW_FILTER_LABELS.history], ["done", "완료"],
 ];
 export function teamTaskScope(nodes: WorkflowNode[], tab: TeamTaskTab) {
-  return tab === "all"
-    ? nodes
-    : tab === "checks"
-      ? nodes.filter((n) => workflowCategory(n) === "action")
-      : tab === "blocked"
-        ? nodes.filter((n) => n.state === "blocked" || n.state === "unknown")
-        : tab === "reviews"
-          ? nodes.filter(
-              (n) =>
-                workflowCategory(n) === "action" &&
-                n.state !== "blocked" &&
-                n.state !== "unknown",
-            )
-          : nodes.filter((n) => workflowBucket(n) === tab);
+  switch (tab) {
+    case "all": return nodes;
+    case "now": return nodes.filter(n => workflowBucket(n) === "now" && !["history", "next", "done"].includes(workflowCategory(n)));
+    case "checks": return nodes.filter(n => workflowCategory(n) === "action");
+    case "team": return nodes.filter(n => workflowCategory(n) === "review");
+    case "blocked": return nodes.filter(n => workflowCategory(n) === "review" && (n.state === "blocked" || n.state === "unknown"));
+    case "reviews": return nodes.filter(n => workflowCategory(n) === "review" && n.state !== "blocked" && n.state !== "unknown");
+    default: return nodes.filter(n => workflowCategory(n) === tab);
+  }
 }
+
 export default function TeamTaskList({
   state,
   nodes,
@@ -40,10 +34,12 @@ export default function TeamTaskList({
   onFocus,
   onMember,
   onClose,
+  groupOwnerActions = false,
 }: {
   state: ProjectState;
   nodes: WorkflowNode[];
   online: boolean;
+  groupOwnerActions?: boolean;
   tab?: TeamTaskTab;
   onTab?: (tab: TeamTaskTab) => void;
   expanded: string | null;
@@ -73,7 +69,7 @@ export default function TeamTaskList({
               variant="ghost"
               ariaPressed={
                 tab === key ||
-                (["blocked", "reviews"].includes(tab) && key === "checks")
+                (["blocked", "reviews"].includes(tab) && key === "team")
               }
               onClick={() => onTab(key)}
             >
@@ -89,7 +85,7 @@ export default function TeamTaskList({
         <p className="tt-scope">막힘 {visible.length}</p>
       ) : null}
       {tab === "reviews" ? (
-        <p className="tt-scope">막힘 외 확인 필요 {visible.length}</p>
+        <p className="tt-scope">팀 검토 {visible.length}</p>
       ) : null}
       {expanded && !nodes.some((n) => n.id === expanded) ? (
         <p role="status" className="wf-empty">
@@ -141,6 +137,7 @@ export default function TeamTaskList({
                 onClose={onClose}
                 onFocus={onFocus}
                 onMember={onMember}
+                groupOwnerActions={groupOwnerActions}
               />
             ) : null}
           </article>

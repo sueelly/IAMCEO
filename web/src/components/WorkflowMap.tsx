@@ -1,13 +1,14 @@
 import { useLayoutEffect, useId, useMemo, useRef, useState } from "react";
 import type { Member, Task } from "@shared/types";
-import type { ProjectWorkflow, WorkflowNode } from "@shared/workflow";
+import type { ProjectWorkflow } from "@shared/workflow";
 import { GlassButton, glassButtonClass } from "../glass";
 import {
   workflowMap,
   workflowTaskNodes,
   type WorkflowMapScope,
 } from "@shared/workflow-map";
-import { workflowSummary } from "@shared/workflow-view";
+import { WORKFLOW_FILTER_LABELS, workflowBlocked, workflowNodePriority, workflowSummary } from "@shared/workflow-view";
+const GROUP_CATEGORIES = ["action", "review", "running", "next", "done", "history", "unassigned"] as const;
 const GROUP_WIDTH = 310;
 const GROUP_HEIGHT = 220;
 const COLUMN_STEP = 370;
@@ -93,17 +94,6 @@ export default function WorkflowMap({
       .find((m) => m.id === id)
       ?.name.replace("God of the world ", "") ?? "이전 직원";
   const title = (id: string) => model.taskMap.get(id)?.title ?? "업무";
-  const rank = (n: WorkflowNode) =>
-    ({
-      blocked: 0,
-      unknown: 1,
-      running: 2,
-      starting: 2,
-      review: 3,
-      queued: 4,
-      waiting: 4,
-      done: 5,
-    })[n.state];
   const info = (id: string) =>
     workflowTaskNodes(model.occurrences.get(id) ?? [], [id])[0];
   const positions = new Map(
@@ -125,7 +115,7 @@ export default function WorkflowMap({
         counts: workflowSummary(ns),
         blocked: new Set(
           ns
-            .filter((n) => ["blocked", "unknown"].includes(n.state))
+            .filter(workflowBlocked)
             .map((n) => n.taskId),
         ).size,
         members: [
@@ -225,7 +215,7 @@ export default function WorkflowMap({
   const attention = (ids: string[]) =>
     [...ids].sort(
       (a, b) =>
-        rank(info(a)) - rank(info(b)) || title(a).localeCompare(title(b)),
+        workflowNodePriority(info(a)) - workflowNodePriority(info(b)) || title(a).localeCompare(title(b)),
     );
   const left = attention(leftIds.filter((id) => !rightIds.includes(id))).slice(
       0,
@@ -556,7 +546,7 @@ export default function WorkflowMap({
                     data-dim={
                       (member && !g.members.includes(member)) || undefined
                     }
-                    data-blocked={g.blocked > 0 || undefined}
+                    data-owner-action={g.counts.action > 0 || undefined}
                     style={{
                       left: p.x,
                       top: p.y,
@@ -601,17 +591,9 @@ export default function WorkflowMap({
                     </button>
                     <div
                       className="map-progress"
-                      aria-label={`확인 필요 ${g.counts.action}, 실행 중 ${g.counts.running}, 다음 ${g.counts.next}, 완료 ${g.counts.done}, 미배정 ${g.counts.unassigned}`}
+                      aria-label={GROUP_CATEGORIES.map(k => `${WORKFLOW_FILTER_LABELS[k]} ${g.counts[k]}`).join(", ")}
                     >
-                      {(
-                        [
-                          "action",
-                          "running",
-                          "next",
-                          "done",
-                          "unassigned",
-                        ] as const
-                      ).map((k) => (
+                      {GROUP_CATEGORIES.filter(k => g.counts[k] > 0).map((k) => (
                         <i
                           key={k}
                           data-category={k}
@@ -621,7 +603,6 @@ export default function WorkflowMap({
                     </div>
                     <div className="map-group-counts">
                       <button
-                        data-warn={g.blocked > 0 || undefined}
                         onClick={() =>
                           onScope({
                             kind: "tasks",
@@ -633,30 +614,13 @@ export default function WorkflowMap({
                       >
                         막힘 <b>{g.blocked}</b>
                       </button>
-                      <button
-                        onClick={() =>
-                          onScope({
-                            kind: "tasks",
-                            source: "group",
-                            groupId: g.id,
-                            category: "action",
-                          })
-                        }
-                      >
-                        확인 {g.counts.action}
-                      </button>
-                      <span data-category="running">
-                        실행 <b>{g.counts.running}</b>
-                      </span>
-                      <span data-category="next">
-                        다음 <b>{g.counts.next}</b>
-                      </span>
-                      <span data-category="done">
-                        완료 <b>{g.counts.done}</b>
-                      </span>
-                      <span data-category="unassigned">
-                        미배정 <b>{g.counts.unassigned}</b>
-                      </span>
+                      {GROUP_CATEGORIES.filter(k => g.counts[k] > 0).map(k =>
+                        <button key={k} data-category={k} data-warn={k === "action" || undefined} onClick={() => onScope({
+                          kind: "tasks", source: "group", groupId: g.id, category: k,
+                        })}>
+                          {WORKFLOW_FILTER_LABELS[k]} <b>{g.counts[k]}</b>
+                        </button>
+                      )}
                     </div>
                     {participantChips(g.members, 2, {
                       kind: "members",
@@ -750,8 +714,8 @@ export default function WorkflowMap({
             >
               <b>{g.title}</b>
               <span>
-                {g.shown.length}개 · 막힘 {g.blocked} · 확인 {g.counts.action} ·
-                완료 {g.counts.done}
+                {[g.shown.length + "개", ...GROUP_CATEGORIES.filter(k => g.counts[k] > 0)
+                  .map(k => `${WORKFLOW_FILTER_LABELS[k]} ${g.counts[k]}`)].join(" · ")}
               </span>
               <span>{g.members.map(name).join(" · ")}</span>
             </button>

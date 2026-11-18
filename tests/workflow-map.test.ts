@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Task } from "../shared/types";
 import type { ProjectWorkflow, WorkflowNode } from "../shared/workflow";
-import { workflowMap, workflowTaskNodes } from "../shared/workflow-map";
+import { resolveWorkflowMapScope, workflowMap, workflowTaskNodes } from "../shared/workflow-map";
 const task = (id: string, parentTaskId: string | null = null): Task => ({
   id,
   title: id,
@@ -63,7 +63,9 @@ test("parent families and independent tasks cover every identity exactly once wi
   expect(m.groups[0].members).toEqual(["worker", "reviewer"]);
   expect(m.groups[0].counts).toEqual({
     all: 3,
-    action: 1,
+    action: 0,
+    review: 1,
+    history: 0,
     running: 0,
     next: 2,
     done: 0,
@@ -72,6 +74,23 @@ test("parent families and independent tasks cover every identity exactly once wi
   expect(m.groups[0].blocked).toBe(1);
   expect(JSON.stringify({ tasks, flow })).toBe(before);
   expect(m.occurrences.has("record")).toBe(false);
+});
+test("map scopes, counts and selected evidence agree on the person who can act", () => {
+  const flow: ProjectWorkflow = { nodes: [
+    node("internal", "x", { state: "blocked", label: "총괄 점검", ownerActionRequired: false }),
+    node("decision", "x", { memberId: null, state: "blocked", label: "대표 확인", ownerActionRequired: true }),
+    node("review", "r", { state: "review" }), node("history", "h", { historical: true, state: "review" }),
+    node("running", "w", { state: "running" }), node("past", "w", { historical: true, state: "blocked" }),
+  ], edges: [] };
+  const ids = ["x", "r", "h", "w"];
+  const model = workflowMap(ids.map(id => task(id)), flow);
+  const counts = model.groups[0].counts;
+  for (const [category, expected] of [["action", ["x"]], ["review", ["r"]], ["history", ["h"]], ["running", ["w"]]] as const) {
+    const scope = resolveWorkflowMapScope(model, flow, { kind: "tasks", source: "group", groupId: "individual", category }, new Set(ids));
+    expect(scope.kind === "tasks" && scope.ids).toEqual([...expected]);
+    expect(counts[category]).toBe(expected.length);
+  }
+  expect(workflowTaskNodes(flow.nodes, ["x", "w"]).map(n => n.id)).toEqual(["decision", "running"]);
 });
 test("aggregate links retain both original directions and staff provenance", () => {
   const tasks = [task("a"), task("aa", "a"), task("b"), task("bb", "b")];

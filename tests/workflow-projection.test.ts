@@ -209,3 +209,70 @@ test("an earlier worker task cannot overwrite the explicit owner stop on a later
   new TaskContinuationCoordinator(f.store, { intervalMs: 1_000, sameLimit: 3 }).pause([paused.id], "projection-later-stop", "대표가 후속 업무를 중단했습니다");
   expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === paused.id)).toMatchObject({ state: "blocked", label: "대표가 중단" });
 });
+
+test("an open owner request stays visible on its own task, including on a held board card", async () => {
+  const f = fixture(), parent = task(f, "대표가 처리할 원 업무"), child = task(f, "선행 결정을 기다리는 업무");
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id, child.id);
+  assign(f, child.id);
+  const todo = await f.tool(f.worker, "todo", { task_id: parent.id, title: "도메인 인증 기록 변경" });
+  expect(todo.isError).toBeUndefined();
+  f.store.addStageMark({ projectId: f.project.id, taskId: parent.id, stage: "hold", evidence: "별도 선행 결과 대기", memberId: f.lead.id, who: f.lead.name });
+  const nodes = f.store.projectWorkflow(f.project.id).nodes;
+  expect(nodes.find(n => n.taskId === parent.id)).toMatchObject({ ownerActionRequired: true, memberId: null, action: { tab: "home", sub: f.store.listTodos(f.project.id)[0]!.id } });
+  expect(nodes.find(n => n.taskId === child.id)).toMatchObject({ ownerActionRequired: false });
+  expect(f.store.taskProgress(parent.id).stage).toBe("hold");
+});
+
+test("one owner's delivery exception remains visible among ordinary, stopped and checking inputs on the same task", () => {
+  const f = fixture(), t = task(f, "수신 근거 구분");
+  const inputs = ["checking","stopped","needs_owner"].map(phase => {
+    const d = assign(f, t.id);
+    f.store.markHeld(d.id, "delivery_unknown");
+    f.store.db.query("UPDATE delivery_recovery SET phase=? WHERE delivery_id=?").run(phase, d.id);
+    return d;
+  });
+  const node = () => f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === t.id);
+  expect(node()).toMatchObject({ ownerActionRequired: true, inputBlock: { deliveryId: inputs[2]!.id }, action: { tab: "team" } });
+  f.store.db.query("UPDATE delivery_recovery SET phase='stopped' WHERE delivery_id=?").run(inputs[2]!.id);
+  expect(node()).toMatchObject({ ownerActionRequired: false });
+  expect(inputs.map(d => f.store.requireDelivery(d.id).attempts)).toEqual([0, 0, 0]);
+});
+
+test("an old report and a worker review do not request an owner response", () => {
+  const f = fixture(), t = task(f, "직원 검수"), old = task(f, "이전 지시");
+  f.store.markDelivered(assign(f, old.id).id);
+  f.store.db.query("DELETE FROM task_sequence WHERE task_id=?").run(old.id);
+  const progress = { ...f.store.taskProgress(t.id), stage: "review" as const, next: "검수자가 확인합니다" };
+  const nodes = f.store.projectWorkflow(f.project.id, [{ ...t, progress }, old]).nodes;
+  expect(nodes.find(n => n.taskId === t.id)).toMatchObject({ state: "review", ownerActionRequired: false });
+  expect(nodes.find(n => n.taskId === old.id)).toMatchObject({ historical: true, ownerActionRequired: false, label: "이전 지시" });
+});
+
+test("a task with both an owner todo and a protected delivery exposes both response destinations", async () => {
+  const f = fixture(), t = task(f, "전달 확인과 대표 결정");
+  const d = assign(f, t.id);
+  f.store.markHeld(d.id, "delivery_unknown");
+  f.store.db.query("UPDATE delivery_recovery SET phase='needs_owner' WHERE delivery_id=?").run(d.id);
+  await f.tool(f.worker, "todo", { task_id: t.id, title: "담당 범위 확인" });
+  const decision = f.store.createDecision({ projectId: f.project.id, memberId: f.worker.id, who: f.worker.name, title: "비용 결정", taskId: t.id });
+  expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === t.id)).toMatchObject({
+    ownerActionRequired: true, action: { tab: "inbox", sub: decision.id }, additionalOwnerActions: [
+      { tab: "home", sub: f.store.listTodos(f.project.id)[0]!.id }, { tab: "team", sub: f.worker.id }
+    ],
+    inputBlock: { deliveryId: d.id }
+  });
+});
+
+test("an explicit task hold does not ask the owner to retry an input already refused before writing", () => {
+  const f = fixture(), t = task(f, "기존 자료 인계를 기다리는 범위");
+  const d = assign(f, t.id);
+  f.store.markHeld(d.id, "input_busy");
+  f.store.db.query("UPDATE delivery_recovery SET phase='resolved', reason='not_received' WHERE delivery_id=?").run(d.id);
+  f.store.patchDeliveryRetry(d.id, { retryReason: "rejected_limit" });
+  f.store.addStageMark({ projectId: f.project.id, taskId: t.id, stage: "hold", evidence: "선행 검수까지 중단", memberId: f.lead.id, who: f.lead.name });
+  const node = () => f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === t.id);
+  expect(node()).toMatchObject({ ownerActionRequired: false, state: "blocked", label: "보류" });
+  f.store.addStageMark({ projectId: f.project.id, taskId: t.id, stage: "reopen", evidence: "선행 자료 인계", memberId: f.lead.id, who: f.lead.name });
+  expect(node()).toMatchObject({ ownerActionRequired: true, label: "전달 재시도 한도" });
+  expect(f.store.requireDelivery(d.id)).toMatchObject({ status: "held", attempts: 0 });
+});

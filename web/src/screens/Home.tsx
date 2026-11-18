@@ -6,7 +6,7 @@ import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Markdown, StatusDot, Time, useMediaQuery } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
 import { ApiError, errorText, api } from "../lib/api";
-import { applyLocal, getState, refresh, routeHash, useProject } from "../lib/store";
+import { applyLocal, getState, refresh, routeHash, useProject, useRoute } from "../lib/store";
 import { kindTone } from "../lib/tone";
 import { ReviewRequiredError, captureWriteReview, executeReviewedWrite, reviewStillCurrent, rollbackTodo } from "../lib/reviewed-writes";
 import { readWriteContext, useWriteContext } from "../lib/review-context";
@@ -212,6 +212,25 @@ function TodoCard({ todos }: { todos: Todo[] }) {
   const live = sorted.filter((t) => !t.done || settling.has(t.id));
   const done = sorted.filter((t) => t.done && !settling.has(t.id)).reverse();
   const openCount = sorted.filter((t) => !t.done).length;
+  const route = useRoute();
+  const target = sorted.find(todo => todo.id === route.sub && todo.projectId === route.projectId);
+  const targetId = target?.id ?? null;
+  const targetFolded = !!target?.done && !settling.has(target.id) && !showDone;
+  const visitedTarget = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetId) { visitedTarget.current = null; return; }
+    if (visitedTarget.current === targetId) return;
+    if (targetFolded) { setShowDone(true); return; }
+    // Shell finishes tab navigation first. Focus the row title, which never changes completion.
+    const frame = requestAnimationFrame(() => {
+      const title = document.querySelector<HTMLElement>(`[data-todo="${CSS.escape(targetId)}"] .hm-todo__toggle`);
+      if (!title) return;
+      title.scrollIntoView({ block: "center" });
+      title.focus({ preventScroll: true });
+      visitedTarget.current = targetId;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [targetId, targetFolded]);
   if (sorted.length === 0) return null;
 
   return (

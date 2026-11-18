@@ -1,4 +1,5 @@
-import { deliveryWaitText, memberIssueLabel } from "../shared/execution-issues.ts";
+import { deliveryWaitText, memberIssueLabel, providerIssueKind } from "../shared/execution-issues.ts";
+import type { ProgressFacts } from "./task-progress.ts";
 import type { Member, Task, WorkItem } from "../shared/types.ts";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type ProjectWorkflow, type WorkflowInputBlock, type WorkflowNode } from "../shared/workflow.ts";
 import { STAGE_LABEL } from "../shared/task-stage.ts";
@@ -24,6 +25,7 @@ export interface WorkflowAssignment {
   awaitingOwner?: { taskId: string; title: string; terminal: boolean } | null;
   suspendedBy?: { taskId: string; title: string } | null;
 }
+export type WorkflowOwnerFacts = Pick<ProgressFacts, "decisions" | "todos">;
 export interface WorkflowReport { taskId: string; memberId: string | null; kind: string; title: string; at: string; participatedAt?: string | null }
 
 function inputExplanation(block: WorkflowInputBlock | undefined): { label: string; reason: string; thread?: boolean } {
@@ -129,7 +131,11 @@ export function orderAssignments(input: readonly WorkflowAssignment[], tasks: Re
 }
 
 /** Metadata only. No current work is inferred from an employee's old `now` report. */
-export function buildWorkflow(tasks: readonly Task[], members: readonly Member[], assignments: readonly WorkflowAssignment[], reports: readonly WorkflowReport[], now = Date.now(), activity: readonly { memberId: string; kind: string; title: string; at: string }[] = [], work: readonly WorkItem[] = [], pauses: readonly { taskId: string; reason: string; pausedAt: string | null }[] = []): ProjectWorkflow {
+export function buildWorkflow(tasks: readonly Task[], members: readonly Member[], assignments: readonly WorkflowAssignment[], reports: readonly WorkflowReport[], now = Date.now(), activity: readonly { memberId: string; kind: string; title: string; at: string }[] = [], work: readonly WorkItem[] = [], pauses: readonly { taskId: string; reason: string; pausedAt: string | null }[] = [], ownerFacts?: ReadonlyMap<string, WorkflowOwnerFacts>): ProjectWorkflow {
+  const hasOwnerRequest = (id: string) => {
+    const f = ownerFacts?.get(id);
+    return !!(f?.decisions.length || f?.todos.length);
+  };
   const board = new Map(work.map(w => [w.taskId ?? `tk_${w.id}`, w]));
   const pausedTasks = new Map(pauses.map(p => [p.taskId, p]));
   const lastReport = new Map<string, string>();
@@ -143,8 +149,8 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
   }).map(w => `tk_${w.id}`));
   const deliveredTasks = new Set(assignments.map(a => a.taskId));
   const taskMap = new Map(tasks.filter(t => !t.mergedInto
-    && (t.origin !== "server" || deliveredTasks.has(t.id))
-    && !(completedBoardRecords.has(t.id) && !deliveredTasks.has(t.id) && !pausedTasks.has(t.id)))
+    && (t.origin !== "server" || deliveredTasks.has(t.id) || hasOwnerRequest(t.id))
+    && !(completedBoardRecords.has(t.id) && !deliveredTasks.has(t.id) && !pausedTasks.has(t.id) && !hasOwnerRequest(t.id)))
     .map(t => [t.id, t]));
   const memberMap = new Map(members.map(m => [m.id, m]));
   const rows = new Map<string, WorkflowAssignment[]>();
@@ -184,11 +190,10 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     const n: WorkflowNode = { id: `${m?.id ?? "unassigned"}:${task.id}`, taskId: task.id, memberId: m?.id ?? null,
       order: a?.order ?? 0, historical: !!a && !a.enrolled && !a.continuation && (!a.source || a.source === "delivery") && (!p || p.stage === "new"),
       ...(a ? { assignmentSource: a.source ?? "delivery" } : {}),
-      assignedAt: a?.assignedAt ?? task.createdAt, state: "waiting", label: "배정 전", current: false,
+      assignedAt: a?.assignedAt ?? task.createdAt, state: "waiting", label: "배정 전", current: false, ownerActionRequired: false,
       reason: null, action: { label: "대화 열기", tab: "thread", sub: task.id }, observedAt: m?.statusObservation?.observedAt ?? null,
       lastActivity: report ? { kind: report.kind, title: report.title, at: report.at } : null,
       counts: { queued: a?.queued ?? 0, held: a?.held ?? 0, notices: a?.notices ?? 0 } };
-    if (p?.stage === "done") return { ...n, state: "done", label: "완료" };
     const e = m?.executionState;
     const hasRun = !!e && !e.endedAt && !!e.taskIds?.length && ["received", "starting", "running", "unknown"].includes(e.phase);
     const inRun = hasRun && !!e?.taskIds?.includes(task.id);
@@ -200,6 +205,27 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     const verified = obs?.freshness === "fresh" && obs.ownership === "verified" && now - Date.parse(obs.observedAt ?? "") < WORKFLOW_OBSERVATION_MAX_AGE_MS;
     n.current = inRun || (!hasRun && !!first && first.taskId === task.id);
     const memberAction = m ? { label: "직원 확인", tab: "team" as const, sub: m.id } : n.action;
+    const loginRequired = !!m && (m.executionIssue?.kind ?? providerIssueKind(m.lastError)) === "authentication";
+    const nativePrompt = !!m && m.status === "blocked" && !!m.blockedReason && m.blockedReason !== "status_unknown" && verified;
+    const hold = a?.suspendedBy || w?.sec === "hold" || p?.stage === "hold" || pausedTasks.has(task.id);
+    const ownerBlock = a?.inputBlocks?.find(b => b.phase === "needs_owner" || (!hold && b.phase === "resolved" && b.reason === "not_received" && b.retryReason === "rejected_limit"));
+    const fact = ownerFacts?.get(task.id);
+    if (hasOwnerRequest(task.id) || p?.stage === "owner") {
+      const requests = [...(fact?.decisions ?? []).map(d => ({ tab: "inbox" as const, sub: d.id, label: d.title })),
+        ...(fact?.todos ?? []).map(t => ({ tab: "home" as const, sub: t.id, label: t.title }))];
+      const [primary, ...others] = requests;
+      const additional: NonNullable<WorkflowNode["action"]>[] = others;
+      if (m && memberAction && (ownerBlock || n.current && (nativePrompt || loginRequired))) additional.push(memberAction);
+      return { ...n, ownerActionRequired: true, historical: false, state: p?.stage === "done" ? "done" : "blocked",
+        label: p?.stage === "done" ? "완료 · 대표 응답" : "대표 확인", reason: primary?.label ?? p?.next ?? null,
+        action: primary ? { ...primary, label: primary.tab === "home" ? "내 할 일 열기" : "결재 열기" } : { label: "결재함 열기", tab: "inbox", sub: null },
+        ...(ownerBlock ? { inputBlock: ownerBlock } : {}), ...(additional.length ? { additionalOwnerActions: additional } : {}) };
+    }
+    if (p?.stage === "done") return { ...n, state: "done", label: "완료" };
+    if (ownerBlock) {
+      const { label, reason } = inputExplanation(ownerBlock);
+      return { ...n, ownerActionRequired: true, historical: false, state: "blocked", inputBlock: ownerBlock, label, reason, action: memberAction };
+    }
     const pause = pausedTasks.get(task.id);
     if (pause) return { ...n, historical: false, state: "blocked", label: "대표가 중단",
       reason: `${pause.reason.replace(/[.\s]+$/, "")}. 같은 업무에 새 대표 지시가 오거나 다시 열기 전까지 후속 실행을 멈춥니다`,
@@ -207,44 +233,46 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
     // Only current, verified execution evidence earns a running highlight.
     if (inRun && verified && m?.status === "working" && e?.phase === "running") return { ...n, historical: false, state: "running", label: "실행 중", reason: null };
     if (inRun && verified && (e?.phase === "starting" || e?.phase === "received")) return { ...n, state: "starting", label: "시작 중" };
-    if (p?.stage === "owner") return { ...n, state: "blocked", label: "대표 확인", reason: p.next, action: { label: "결재함 열기", tab: "inbox", sub: null } };
     if (inRun && m?.status === "blocked") {
       const realPrompt = verified && m.blockedReason && m.blockedReason !== "status_unknown";
       const prompt = realPrompt ? deliveryWaitText({ kind: m.blockedReason === "permission" || m.blockedReason === "selection" || m.blockedReason === "setup" ? m.blockedReason : "input", since: "" }) : null;
-      return { ...n, state: realPrompt ? "blocked" : "unknown", label: prompt?.label ?? "실행 확인 필요",
+      return { ...n, ownerActionRequired: !!realPrompt, state: realPrompt ? "blocked" : "unknown", label: prompt?.label ?? "실행 상태 미확인",
         reason: prompt?.reason ?? "실행 상태를 확인하지 못했습니다. 직원의 연결 상태를 확인해 주세요", action: memberAction };
     }
-    if (inRun && (!verified || e?.phase === "unknown")) return { ...n, state: "unknown", label: "실행 확인 필요", reason: "마지막 관측으로 현재 실행을 확정할 수 없습니다", action: memberAction };
+    if (inRun && (!verified || e?.phase === "unknown")) return { ...n, state: "unknown", label: "실행 상태 미확인", reason: "마지막 관측으로 현재 실행을 확정할 수 없습니다", action: memberAction };
+    if (hold && a?.inputBlocks?.some(b => b.phase === "resolved" && b.reason === "not_received" && b.retryReason === "rejected_limit")) {
+      return { ...n, historical: false, state: "blocked", label: "보류", reason: p?.next ?? w?.detail ?? "선행 업무의 보류가 풀리면 재시도 조건을 확인합니다" };
+    }
     if (a?.protected || a?.held) {
       const block = a.inputBlocks?.find(b => !["stopped", "resolved"].includes(b.phase)) ?? a.inputBlocks?.[0];
       const ordinaryHold = !a.protected && block?.phase === "none";
       const issue = ordinaryHold && m ? memberIssueLabel(m) : null;
       const explanation = issue ? { label: issue, reason: m!.executionIssue?.detail ?? m!.lastError }
         : ordinaryHold && m?.deliveryWait ? deliveryWaitText(m.deliveryWait) : inputExplanation(block);
-      return { ...n, historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
+      return { ...n, ownerActionRequired: ordinaryHold && n.current && (loginRequired || nativePrompt), historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
     if (a?.suspendedBy) return { ...n, current: inRun, state: "blocked", label: "보류", reason: `‘${a.suspendedBy.title}’의 보류·중단 범위에 포함됩니다` };
     if (a?.awaitingOwner && a.awaitingOwner.taskId !== task.id) {
       const gate = a.awaitingOwner;
-      return { ...n, state: "blocked", label: gate.terminal ? "승인 응답 대기" : "대표 확인",
+      return { ...n, state: "blocked", label: "선행 응답 대기",
         reason: `‘${gate.title}’에서 ${gate.terminal ? "직원 터미널의 승인 응답" : "대표의 결정"}을 기다립니다`,
         action: gate.terminal ? { label: "업무 보기", tab: "thread", sub: gate.taskId } : { label: "결재함 열기", tab: "inbox", sub: null } };
     }
     if (blocker) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(blocker.taskId)!.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다` };
     if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
-    if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
+    if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, ownerActionRequired: p.stage === "approval" && nativePrompt && n.current, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
-    if (n.historical) return { ...n, state: "review", label: "결과 확인 필요", reason: "옛 기록의 완료 근거를 아직 확인하지 못했습니다. 업무 대화에서 결과를 확인해 주세요" };
+    if (n.historical) return { ...n, state: "review", label: "이전 지시", reason: "이전에 전달된 지시입니다. 이 업무의 완료 근거는 아직 기록되지 않았습니다" };
     if (w?.sec === "hold") return { ...n, state: "blocked", label: "보류", reason: w.detail || "진행판에서 보류한 업무입니다. 총괄이 재개 조건을 확인할 차례입니다" };
     if (!m || !a) return { ...n, label: p?.stage === "working" ? "담당 확인" : "배정 전", reason: p?.next ?? (w?.who ? `진행판 담당은 ‘${w.who}’입니다. 현재 직원 한 명과 일치하지 않아 담당을 확인해야 합니다` : "담당 직원이 아직 배정되지 않았습니다") };
     if (a.source === "board" && (!p || p.stage === "new")) return { ...n, label: "착수 대기", reason: "진행판에 담당이 지정되어 있습니다. 실행 지시의 전달은 아직 확인되지 않았습니다" };
     const issue = memberIssueLabel(m);
-    if (issue) return { ...n, state: "blocked", label: issue, reason: m.executionIssue?.detail ?? m.lastError, action: memberAction };
+    if (issue) return { ...n, ownerActionRequired: loginRequired && n.current, state: "blocked", label: issue, reason: m.executionIssue?.detail ?? m.lastError, action: memberAction };
     if (a.queued && m.deliveryWait && m.deliveryWait.kind !== "sequence") return { ...n, state: "queued", ...deliveryWaitText(m.deliveryWait) };
     if (m.status === "asleep" || m.status === "offline" || m.status === "error") return { ...n, state: "blocked", label: m.status === "asleep" ? "직원 잠듦" : "연결 확인", reason: "직원 화면에서 연결 상태와 실행 가능 여부를 확인해 주세요", action: memberAction };
     if (a.queued) return { ...n, state: "queued", label: a.retryAt ? "재시도 대기" : "전달 대기", reason: a.retryAt ? `다음 전달 시각: ${a.retryAt}` : null };
-    return { ...n, state: "waiting", label: "완료 확인 대기", reason: p?.next ?? "실행 턴은 끝났지만 이 업무의 완료는 아직 확인되지 않았습니다" };
+    return { ...n, state: "waiting", label: "결과 기록 대기", reason: p?.next ?? "직원의 실행이 끝났고 업무 결과를 기다리고 있습니다" };
   };
   for (const [memberId, originalRow] of rows) {
     // Report/board ancestors provide context, never an execution-order anchor.

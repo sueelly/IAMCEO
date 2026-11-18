@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ProjectState } from "@shared/types";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type WorkflowEdge, type WorkflowNode } from "@shared/workflow";
+import { workflowNodeAt } from "@shared/workflow-view";
 import { Glass } from "../glass";
 import { useStore } from "../lib/store";
 import { Modal, MQ_DESKTOP, Sheet, useMediaQuery } from "./ui";
@@ -63,10 +64,6 @@ export function useWorkflowNodes(state: ProjectState) {
     const timer = setTimeout(() => setClock(Date.now()), next - now + 1);
     return () => clearTimeout(timer);
   }, [sourceNodes, now]);
-  const nodes = useMemo(() => sourceNodes.map((node): WorkflowNode => {
-    if (!executing(node) || now - Date.parse(node.observedAt ?? "") < WORKFLOW_OBSERVATION_MAX_AGE_MS) return node;
-    return { ...node, state: "unknown", label: "실행 확인 필요", reason: "최근 실행 상태를 확인하지 못했습니다. 직원 화면에서 확인해 주세요.",
-      action: node.memberId ? { label: "직원 확인", tab: "team", sub: node.memberId } : node.action };
-  }), [sourceNodes, now]);
+  const nodes = useMemo(() => sourceNodes.map(node => workflowNodeAt(node, now)), [sourceNodes, now]);
   return nodes;
 }

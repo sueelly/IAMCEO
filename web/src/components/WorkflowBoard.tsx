@@ -1,12 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ProjectState } from "@shared/types";
 import type { WorkflowEdge, WorkflowNode } from "@shared/workflow";
-import { workflowBucket, workflowFocus, workflowSummary, workflowTaskCategories, type WorkflowFilter } from "@shared/workflow-view";
+import { WORKFLOW_FILTER_LABELS, workflowBucket, workflowCategory, workflowFocus, workflowSummary, workflowTaskCategories, type WorkflowFilter } from "@shared/workflow-view";
 import { GlassButton } from "../glass";
 import { useStore } from "../lib/store";
 import { Time } from "./ui";
 
-const FILTERS: [WorkflowFilter, string][] = [["all", "전체"], ["action", "확인 필요"], ["running", "실행 중"], ["next", "다음"], ["done", "완료"], ["unassigned", "미배정"]];
+const FILTERS = Object.entries(WORKFLOW_FILTER_LABELS) as [WorkflowFilter, string][];
 const COLUMNS = [["done", "최근 완료"], ["now", "지금"], ["next", "다음"]] as const;
 const executing = (node: WorkflowNode) => node.state === "running" || node.state === "starting";
 type Focus = { nodeId: string; depth: "direct" | "family" };
@@ -28,12 +28,12 @@ export default function WorkflowBoard({ state, nodes, edges, online, selectedTas
   const counts = useMemo(() => workflowSummary(nodes), [nodes]);
   const categories = useMemo(() => workflowTaskCategories(nodes), [nodes]);
   const focused = useMemo(() => focus ? workflowFocus({ nodes, edges }, focus.nodeId, focus.depth) : null, [nodes, edges, focus]);
-  const matches = (node: WorkflowNode) => focused ? focused.has(node.id) : filter === "all" || categories.get(node.taskId) === filter;
+  const matches = (node: WorkflowNode) => focused ? focused.has(node.id) : filter === "all" || categories.get(node.taskId) === filter && workflowCategory(node) === filter;
   const rows = useMemo(() => {
     const groups = new Map(state.members.map(m => [m.id, { id: m.id, name: m.name, nodes: [] as WorkflowNode[] }]));
     for (const node of nodes) {
-      if (!node.memberId && node.state !== "done") continue;
-      const id = node.memberId ?? "unassigned-done";
+      if (workflowBucket(node) === "unassigned") continue;
+      const id = node.memberId ?? "no-assignee";
       if (!groups.has(id)) groups.set(id, { id, name: node.memberId ? "이전 직원" : "담당 기록 없음", nodes: [] });
       groups.get(id)!.nodes.push(node);
     }
@@ -47,7 +47,7 @@ export default function WorkflowBoard({ state, nodes, edges, online, selectedTas
       return at - bt || a.order - b.order;
     });
     const recent = new Set(done.slice(-3).map(n => n.id));
-    return { ...row, nodes: row.nodes.filter(n => matches(n) && (focused || allDone || n.state !== "done" || recent.has(n.id) || n.taskId === selectedTaskId)) };
+    return { ...row, nodes: row.nodes.filter(n => matches(n) && (focused || allDone || n.state !== "done" || workflowCategory(n) === "action" || recent.has(n.id) || n.taskId === selectedTaskId)) };
   }).filter(row => !focused && filter === "all" || row.nodes.length);
   const unassigned = nodes.filter(n => workflowBucket(n) === "unassigned" && matches(n));
   const showEdges = map || !!focus;

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ProjectState } from "@shared/types";
 import type { WorkflowEdge, WorkflowNode } from "@shared/workflow";
 import {
+  WORKFLOW_FILTER_LABELS,
   workflowBucket,
+  workflowRepresentativeNodes,
   workflowCategory,
   workflowSummary,
   workflowTaskCategories,
@@ -29,14 +31,7 @@ import {
 import WorkflowMap from "./WorkflowMap";
 import TeamTaskList, { teamTaskScope, type TeamTaskTab } from "./TeamTaskList";
 import "../styles/team-overview.css";
-const filters: [WorkflowFilter, string][] = [
-  ["all", "전체"],
-  ["action", "확인 필요"],
-  ["running", "실행 중"],
-  ["next", "다음"],
-  ["done", "완료"],
-  ["unassigned", "미배정"],
-];
+const filters = Object.entries(WORKFLOW_FILTER_LABELS) as [WorkflowFilter, string][];
 type Scope =
   | WorkflowMapScope
   | { kind: "staff"; memberId: string; tab: TeamTaskTab; title: string };
@@ -109,7 +104,7 @@ export default function TeamOverview({
       .toLowerCase()
       .includes(query.toLowerCase());
   const matches = (n: WorkflowNode) =>
-    (filter === "all" || categories.get(n.taskId) === filter) &&
+    (filter === "all" || (categories.get(n.taskId) === filter && workflowCategory(n) === filter)) &&
     matchesQuery(n);
   const visible = new Set(nodes.filter(matches).map((n) => n.taskId));
   const rows = [
@@ -134,9 +129,7 @@ export default function TeamOverview({
         (filter === "all" &&
           (!query || m.name.toLowerCase().includes(query.toLowerCase()))),
     );
-  const unowned = nodes.filter(
-    (n) => !n.memberId && workflowBucket(n) !== "unassigned",
-  );
+  const unowned = nodes.filter(n => !n.memberId && workflowCategory(n) !== "unassigned");
   if (unowned.some(matches))
     rows.push({
       id: "no-assignee",
@@ -144,7 +137,7 @@ export default function TeamOverview({
       member: null,
       nodes: unowned.filter(matches),
     });
-  const free = nodes.filter((n) => workflowBucket(n) === "unassigned");
+  const free = nodes.filter((n) => workflowCategory(n) === "unassigned");
   const matchingFree = free.filter(matchesQuery);
   const unassignedShown =
     unassignedOpen ||
@@ -162,7 +155,7 @@ export default function TeamOverview({
           ids: teamTaskScope(
             nodes.filter((n) =>
               scope.memberId === "no-assignee"
-                ? !n.memberId && workflowBucket(n) !== "unassigned"
+                ? !n.memberId && workflowCategory(n) !== "unassigned"
                 : n.memberId === scope.memberId,
             ),
             scope.tab,
@@ -455,29 +448,39 @@ export default function TeamOverview({
           ) : null}
         </aside>
       ) : null}
-      {mode === "compact" ? (
+      {mode === "compact" && filter === "action" ? (
+        <section aria-label="대표 응답 업무">
+          <TeamTaskList
+            state={{ ...state, workflow: { nodes, edges } }}
+            nodes={[...workflowRepresentativeNodes(nodes.filter(n => workflowCategory(n) === "action" && matchesQuery(n))).values()]}
+            online={online}
+            expanded={expanded}
+            onExpand={setExpanded}
+            onFocus={(id, origin) => concentrate(id, undefined, origin)}
+            onMember={openMember}
+            onClose={() => setExpanded(null)}
+            groupOwnerActions
+          />
+        </section>
+      ) : mode === "compact" ? (
         <div className="to-table" data-filter={filter} data-search={!!query || undefined}>
           <div className="to-columns" aria-hidden="true">
             <span>직원</span>
             <span>현재 업무</span>
             <span>다음·대기</span>
-            <span>확인 필요</span>
+            <span>응답·처리</span>
             <span>최근 완료</span>
           </div>
           <div>
             {rows.map((row) => {
-              const now = row.nodes.filter((n) => workflowBucket(n) === "now"),
-                next = row.nodes.filter((n) => workflowBucket(n) === "next"),
-                checks = row.nodes.filter(
-                  (n) => workflowCategory(n) === "action",
-                ),
-                blocked = checks.filter(
-                  (n) => n.state === "blocked" || n.state === "unknown",
-                ),
-                reviews = checks.filter((n) => !blocked.includes(n)),
-                done = row.nodes
-                  .filter((n) => n.state === "done")
-                  .sort(
+              const now = teamTaskScope(row.nodes, "now"),
+                next = teamTaskScope(row.nodes, "next"),
+                checks = teamTaskScope(row.nodes, "checks"),
+                team = teamTaskScope(row.nodes, "team"),
+                blocked = teamTaskScope(team, "blocked"),
+                reviews = teamTaskScope(team, "reviews"),
+                history = teamTaskScope(row.nodes, "history"),
+                done = teamTaskScope(row.nodes, "done").sort(
                     (a, b) =>
                       (Date.parse(
                         tasks.get(b.taskId)?.progress?.since ?? b.assignedAt,
@@ -498,6 +501,8 @@ export default function TeamOverview({
               const displayName = row.name === state.project.name + " 총괄" ? "총괄" : row.name;
               const lead = !!row.member && row.member.kind !== "worker";
               const role = row.member?.role || (row.member?.kind === "conductor" ? "총괄" : "");
+              const showTasks = (tab: TeamTaskTab, title: string) => row.member ? onMember(row.id, tab)
+                : showScope({ kind: "staff", memberId: row.id, tab, title });
               return (
                 <article
                   className="to-row"
@@ -573,42 +578,19 @@ export default function TeamOverview({
                       summaryTask(next[0], "next", next.length - 1)
                     ) : null}
                   </div>
-                  <div className="to-checks" data-has-checks={!!checks.length || undefined}>
-                    {blocked.length ? (
-                      <button
-                        type="button"
-                        className="to-blocked"
-                        onClick={() =>
-                          row.member
-                            ? onMember(row.id, "blocked")
-                            : showScope({
-                                kind: "staff",
-                                memberId: row.id,
-                                tab: "blocked",
-                                title: "막힘",
-                              })
-                        }
-                      >
-                        막힘 <b>{blocked.length}</b>
-                      </button>
-                    ) : null}
-                    {reviews.length ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          row.member
-                            ? onMember(row.id, "reviews")
-                            : showScope({
-                                kind: "staff",
-                                memberId: row.id,
-                                tab: "reviews",
-                                title: "확인 필요",
-                              })
-                        }
-                      >
-                        확인 필요 <b>{reviews.length}</b>
-                      </button>
-                    ) : null}
+                  <div className="to-checks" data-has-checks={!!(checks.length || team.length || history.length) || undefined}>
+                    {checks.length > 0 && <button type="button" className="to-owner" onClick={() => showTasks("checks", WORKFLOW_FILTER_LABELS.action)}>
+                      대표 응답 <b>{checks.length}</b>
+                    </button>}
+                    {blocked.length > 0 && <button type="button" className="to-blocked" onClick={() => showTasks("blocked", "막힘")}>
+                      막힘 <b>{blocked.length}</b>
+                    </button>}
+                    {reviews.length > 0 && <button type="button" onClick={() => showTasks("reviews", "팀 검토")}>
+                      팀 검토 <b>{reviews.length}</b>
+                    </button>}
+                    {history.length > 0 && <button type="button" onClick={() => showTasks("history", WORKFLOW_FILTER_LABELS.history)}>
+                      이전 기록 <b>{history.length}</b>
+                    </button>}
                   </div>
                   <div className="to-done" data-has-task={!!done[0] || undefined}>
                     {done[0] ? (
@@ -644,7 +626,7 @@ export default function TeamOverview({
                       </button>
                     ) : null}
                   </div>
-                  {row.member && (next.length > 0 || checks.length > 0 || done.length > 0) ? (
+                  {row.member && (next.length || checks.length || team.length || history.length || done.length) > 0 ? (
                     <div className="to-mobile-counts">
                       {next.length > 0 ? <button
                         type="button"
@@ -654,11 +636,13 @@ export default function TeamOverview({
                       </button> : null}
                       {checks.length > 0 ? <button
                         type="button"
-                        data-tone={blocked.length > 0 ? "blocked" : "review"}
+                        data-tone="owner"
                         onClick={() => onMember(row.id, "checks")}
                       >
-                        확인 필요 {checks.length}
+                        대표 응답 {checks.length}
                       </button> : null}
+                      {team.length > 0 && <button type="button" onClick={() => onMember(row.id, "team")}>팀 처리 {team.length}</button>}
+                      {history.length > 0 && <button type="button" onClick={() => onMember(row.id, "history")}>이전 기록 {history.length}</button>}
                       {done.length > 0 ? <button
                         type="button"
                         onClick={() => onMember(row.id, "done")}

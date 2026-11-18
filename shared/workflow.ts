@@ -20,13 +20,17 @@ export interface WorkflowNode {
   label: string;
   /** This is the employee's current position, including unfinished work between turns. */
   current: boolean;
+  /** The task carries a direct owner request or an input requiring operator action.
+   * Older servers omit this field. Waiting on another task does not create a request here. */
+  ownerActionRequired?: boolean;
+  additionalOwnerActions?: NonNullable<WorkflowNode["action"]>[];
   /** Historical deliveries shown as evidence, not retroactively enrolled as prerequisites. */
   historical?: boolean;
   /** Participation evidence, independent of executable sequence enrollment. */
   assignmentSource?: "delivery" | "report" | "board";
   inputBlock?: WorkflowInputBlock;
   reason: string | null;
-  action: { label: string; tab: "team" | "thread" | "inbox"; sub: string | null } | null;
+  action: { label: string; tab: "team" | "thread" | "inbox" | "home"; sub: string | null } | null;
   assignedAt: string;
   observedAt: string | null;
   lastActivity: { kind: string; title: string; at: string } | null;

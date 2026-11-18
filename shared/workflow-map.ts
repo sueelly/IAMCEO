@@ -1,9 +1,12 @@
 import type { Task } from "./types";
 import type { ProjectWorkflow, WorkflowEdge, WorkflowNode } from "./workflow";
 import {
-  workflowCategory,
+  WORKFLOW_FILTER_LABELS,
+  workflowBlocked,
+  workflowRepresentativeNodes,
   workflowSummary,
   workflowTaskCategories,
+  type WorkflowCategory,
 } from "./workflow-view";
 
 /** Collapse presentation identities only. No inferred dependency or enrollment is created. */
@@ -64,7 +67,7 @@ export function workflowMap(tasks: readonly Task[], flow: ProjectWorkflow) {
         counts: workflowSummary(nodes),
         blocked: new Set(
           nodes
-            .filter((n) => n.state === "blocked" || n.state === "unknown")
+            .filter(workflowBlocked)
             .map((n) => n.taskId),
         ).size,
       };
@@ -98,25 +101,7 @@ export function workflowTaskNodes(
   nodes: readonly WorkflowNode[],
   ids: readonly string[],
 ): WorkflowNode[] {
-  const rank = (n: WorkflowNode) =>
-    n.state === "blocked"
-      ? 0
-      : n.state === "unknown"
-        ? 1
-        : workflowCategory(n) === "action"
-          ? 2
-          : n.state === "running" || n.state === "starting"
-            ? 3
-            : n.state === "done"
-              ? 6
-              : n.memberId
-                ? 4
-                : 5;
-  const best = new Map<string, WorkflowNode>();
-  for (const n of nodes) {
-    const previous = best.get(n.taskId);
-    if (!previous || rank(n) < rank(previous)) best.set(n.taskId, n);
-  }
+  const best = workflowRepresentativeNodes(nodes);
   return [...new Set(ids)].flatMap((id) => {
     const node = best.get(id);
     return node ? [node] : [];
@@ -129,7 +114,7 @@ export type WorkflowMapScope =
       kind: "tasks";
       source: "group";
       groupId: string;
-      category?: "blocked" | "action";
+      category?: "blocked" | WorkflowCategory;
     }
   | {
       kind: "tasks";
@@ -223,14 +208,12 @@ export function resolveWorkflowMapScope(
       (group?.title ?? "업무 묶음") +
       (scope.category === "blocked"
         ? " · 막힘"
-        : scope.category === "action"
-          ? " · 확인 필요"
+        : scope.category
+          ? " · " + WORKFLOW_FILTER_LABELS[scope.category]
           : ""),
     ids: ids.filter((id) =>
       scope.category === "blocked"
-        ? (model.occurrences.get(id) ?? []).some(
-            (n) => n.state === "blocked" || n.state === "unknown",
-          )
+        ? (model.occurrences.get(id) ?? []).some(workflowBlocked)
         : !scope.category || categories.get(id) === scope.category,
     ),
   };

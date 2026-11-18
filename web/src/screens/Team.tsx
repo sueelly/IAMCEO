@@ -1041,7 +1041,9 @@ function MemberInspector({
             [
               ["now", "지금"],
               ["next", "다음·대기"],
-              ["blocked", "막힘"],
+              ["checks", "대표 응답"],
+              ["team", "팀 처리"],
+              ["history", "이전 기록"],
               ["done", "완료"],
             ] as const
           ).map(([tab, label]) => (

@@ -202,8 +202,7 @@ test("eleven staff remain compact and employee/task entry share the real protect
   await p
     .locator(".to-row")
     .nth(1)
-    .getByRole("button", { name: /확인 필요/ })
-    .first()
+    .locator(".to-next .to-task")
     .click();
   expect(
     await d.locator('.tm-detail-tabs [aria-pressed="true"]').textContent(),
@@ -413,7 +412,7 @@ test("execution freshness expires in the compact row and shared employee task de
   await p
     .getByRole("dialog")
     .getByText(
-      "최근 실행 상태를 확인하지 못했습니다. 직원 화면에서 확인해 주세요.",
+      "최근 실행 상태를 확인하지 못했습니다.",
       { exact: true },
     )
     .waitFor();
@@ -569,7 +568,7 @@ test("review: the review count excludes blocked tasks in the employee detail", a
   try {
     await p
       .locator(".to-checks")
-      .getByRole("button", { name: "확인 필요 1", exact: true })
+      .getByRole("button", { name: "팀 검토 1", exact: true })
       .click();
     const d = p.getByRole("dialog");
     await d.locator(".tt-item").first().waitFor();
@@ -887,4 +886,109 @@ test("Codex model, Max and Fast are selected and saved in a single reviewed writ
     expect(await speed.inputValue()).toBe("standard");
     expect(await speed.locator('option[value="fast"]').evaluate((option: HTMLOptionElement) => option.disabled)).toBe(true);
   } finally { await p.close(); store.removeMember(m.id); }
+}, 20000);
+
+test("team owner response count includes direct decisions and unassigned owner todos, excluding staff work", async () => {
+  const f = reviewFixture(), m = f.staff("검토 직원"), second = f.staff("공동 담당"), review = f.task("직원이 검수할 결과"), hold = f.task("보류한 작업");
+  const decision = f.task("대표가 정할 대상"), todo = f.task("대표가 전달할 자료");
+  for (const t of [review, hold, decision]) f.assign(m, t);
+  f.assign(second, decision);
+  f.mark(review, "review");
+  f.mark(hold, "hold");
+  store.createDecision({ projectId: f.pr.id, taskId: decision.id, memberId: m.id, who: m.name, title: "대상을 골라 주세요" });
+  const requested = store.createTodo({ projectId: f.pr.id, taskId: todo.id, title: "자료를 전달해 주세요" });
+  const p = await open(1440, undefined, f.pr.id);
+  try {
+    const filters = p.getByRole("navigation", { name: "업무 상태", exact: true });
+    const count = (label: string) => filters.locator("button").filter({ hasText: label }).locator(".wf-count");
+    expect(await count("대표 응답").allTextContents()).toEqual(["2"]);
+    expect(await count("팀 처리").allTextContents()).toEqual(["2"]);
+    await filters.getByRole("button", { name: /^대표 응답/ }).click();
+    const list = p.getByRole("region", { name: "대표 응답 업무" });
+    expect(await list.locator(".tt-item").count()).toBe(2);
+    expect(await list.locator(`.tt-item[data-task-id="${decision.id}"]`).count()).toBe(1);
+    await list.locator(`.tt-item[data-task-id="${todo.id}"] .tt-title`).click();
+    const todoLink = list.getByRole("link", { name: /내 할 일 열기/ });
+    expect(await todoLink.getAttribute("href")).toBe(`#/p/${f.pr.id}/home/${requested.id}`);
+    await todoLink.click();
+    const target = p.locator(`.hm-todo[data-todo="${requested.id}"]`);
+    await target.getByRole("button", { name: requested.title }).waitFor();
+    await p.waitForFunction(id => document.activeElement?.closest("[data-todo]")?.getAttribute("data-todo") === id, requested.id);
+    expect(await target.getByRole("checkbox").getAttribute("aria-checked")).toBe("false");
+    expect(store.requireTodo(requested.id).done).toBe(false);
+    await p.goBack();
+    await filters.getByRole("button", { name: /^전체/ }).click();
+    await p.locator(`.to-row[data-member-id="${m.id}"] .to-checks`).getByRole("button", { name: /^대표 응답/ }).click();
+    const dialog = p.getByRole("dialog");
+    await dialog.locator(`.tt-item[data-task-id="${decision.id}"]`).waitFor();
+    expect(await dialog.locator(".tt-item").count()).toBe(1);
+    await dialog.getByRole("navigation", { name: "직원 업무 상태" }).getByRole("button", { name: /^팀 처리/ }).click();
+    expect(await dialog.locator(".tt-item").count()).toBe(2);
+  } finally { await p.close(); }
+}, 30000);
+
+test("one owner task exposes its inbox and each employee's separate terminal response", async () => {
+  const f = reviewFixture(), first = f.staff("첫 담당"), second = f.staff("둘째 담당"), task = f.task("공동 승인 작업");
+  f.assign(first, task);
+  f.assign(second, task);
+  const decision = store.createDecision({ projectId: f.pr.id, taskId: task.id, memberId: first.id, who: first.name, title: "작업 범위 결정" });
+  const todo = store.createTodo({ projectId: f.pr.id, taskId: task.id, title: "승인에 필요한 원본 전달" });
+  const p = await open(1440, undefined, f.pr.id, async page => {
+    await page.route("**/api/sync?**", async route => {
+      const response = await route.fetch(), body = await response.json();
+      for (const node of body.state.workflow.nodes) {
+        if (node.taskId === task.id) node.additionalOwnerActions = [...(node.additionalOwnerActions ?? []), { label: "승인 창 열기", tab: "team", sub: node.memberId }];
+      }
+      await route.fulfill({ response, json: body });
+    });
+  });
+  try {
+    const filters = p.getByRole("navigation", { name: "업무 상태", exact: true });
+    await filters.getByRole("button", { name: /^대표 응답/ }).click();
+    const list = p.getByRole("region", { name: "대표 응답 업무" });
+    expect(await list.locator(".tt-item").count()).toBe(1);
+    await list.locator(".tt-title").click();
+    const actions = list.locator("a.wf-action");
+    expect(await list.locator(`a.wf-action[href$="/inbox/${decision.id}"]`).count()).toBe(1);
+    expect(await list.locator(`a.wf-action[href$="/home/${todo.id}"]`).count()).toBe(1);
+    expect(await actions.filter({ hasText: "승인 창 열기" }).count()).toBe(2);
+    for (const m of [first, second]) expect(await list.locator(`a.wf-action[href$="/team/${m.id}"]`).count()).toBe(1);
+    await filters.getByRole("button", { name: /^전체/ }).click();
+    await p.locator(`.to-row[data-member-id="${first.id}"] .to-checks`).getByRole("button", { name: /^대표 응답/ }).click();
+    const dialog = p.getByRole("dialog");
+    await dialog.locator(".tt-title").click();
+    expect(await dialog.locator(`a.wf-action[href$="/team/${first.id}"]`).count()).toBe(1);
+    expect(await dialog.locator(`a.wf-action[href$="/home/${todo.id}"]`).count()).toBe(1);
+    const inbox = dialog.getByRole("link", { name: /결재 열기/ });
+    expect(await inbox.getAttribute("href")).toBe(`#/p/${f.pr.id}/inbox/${decision.id}`);
+    await inbox.click();
+    await p.locator(`[data-decision="${decision.id}"]`).waitFor();
+    expect(store.requireDecision(decision.id).status).toBe("open");
+  } finally { await p.close(); }
+}, 30000);
+
+test("a home todo link focuses the requested row and preserves a completed todo", async () => {
+  const f = reviewFixture();
+  f.staff();
+  const pending = store.createTodo({ projectId: f.pr.id, title: "진행 중인 대표 요청" });
+  for (let i = 0; i < 24; i++) store.createTodo({ projectId: f.pr.id, title: `다른 요청 ${i + 1}` });
+  const completed = store.createTodo({ projectId: f.pr.id, title: "이미 처리한 대표 요청" });
+  store.closeTodo(completed.id, { outcome: "done", by: "대표", reason: "처리 완료" });
+  const p = await browser.newPage();
+  try {
+    await p.addInitScript(code => localStorage.setItem("iamceo.accessCode", code), CODE);
+    await p.goto(`${base}/#/p/${f.pr.id}/home/${completed.id}`);
+    const focused = (id: string) => p.waitForFunction(id => {
+      const target = document.activeElement;
+      if (!target?.matches(`[data-todo="${id}"] .hm-todo__toggle`)) return false;
+      const rect = target.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= window.innerHeight;
+    }, id, { timeout: 4500 });
+    await focused(completed.id);
+    expect(await p.locator(`[data-todo="${completed.id}"] [role="checkbox"]`).getAttribute("aria-checked")).toBe("true");
+    await p.evaluate(hash => { location.hash = hash; }, `#/p/${f.pr.id}/home/${pending.id}`);
+    await focused(pending.id);
+    expect(store.requireTodo(completed.id).done).toBe(true);
+    expect(store.requireTodo(pending.id).done).toBe(false);
+  } finally { await p.close(); }
 }, 20000);

@@ -333,12 +333,12 @@
   font-variant-numeric: tabular-nums;
 }
 .to-checks button {
+  color: var(--ink-2);
+  background: var(--btn-soft);
+}
+.to-checks .to-owner {
   color: var(--warn);
   background: rgb(var(--warn-rgb) / 0.14);
-}
-.to-checks .to-blocked {
-  color: var(--danger);
-  background: rgb(var(--danger-rgb) / 0.13);
 }
 .to-done strong {
   color: var(--ink-2);
@@ -721,7 +721,7 @@
   .to-row[data-former] :is(.to-next, .to-done)[data-has-task] {
     display: block;
   }
-  .to-table:is([data-filter="action"], [data-search]) .to-checks[data-has-checks],
+  .to-table:is([data-filter="review"], [data-filter="history"], [data-search]) .to-checks[data-has-checks],
   .to-row[data-former] .to-checks[data-has-checks] {
     display: flex;
     flex-flow: row wrap;
@@ -741,13 +741,9 @@
     background: var(--btn-soft);
     color: var(--ink-2);
   }
-  .to-mobile-counts [data-tone="review"] {
+  .to-mobile-counts [data-tone="owner"] {
     color: var(--warn);
     background: rgb(var(--warn-rgb) / 0.14);
-  }
-  .to-mobile-counts [data-tone="blocked"] {
-    color: var(--danger);
-    background: rgb(var(--danger-rgb) / 0.13);
   }
   .to-unassigned > div {
     grid-template-columns: 1fr;
@@ -871,7 +867,7 @@
 .map-group[data-dim] {
   opacity: 0.4;
 }
-.map-group[data-blocked] {
+.map-group[data-owner-action] {
   border-top: 3px solid var(--danger-dot);
   padding-top: 12px;
 }

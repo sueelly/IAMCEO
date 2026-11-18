@@ -1,6 +1,6 @@
 import { projectMainContract, projectMainPolicyPrefix } from "./project-main-policy.ts";
 import { describeTaskContext } from "./task-context.ts";
-import { assignmentPredecessor, buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
+import { assignmentPredecessor, buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment, type WorkflowOwnerFacts } from "./workflow.ts";
 import { activeTaskContinuationPauses, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import type { ProjectWorkflow, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "../shared/workflow.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
@@ -2246,10 +2246,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   projectWorkflow(projectId: string, tasks?: Task[], members = this.listMembers(projectId), facts = this.taskProgressFacts(projectId)): ProjectWorkflow {
-    return this.buildProjectWorkflow(projectId, tasks ?? this.listTasks(projectId, facts), members, this.workflowAssignments(projectId, undefined, facts));
+    return this.buildProjectWorkflow(projectId, tasks ?? this.listTasks(projectId, facts), members, this.workflowAssignments(projectId, undefined, facts), facts);
   }
 
-  private buildProjectWorkflow(projectId: string, tasks: Task[], members: Member[], assignments: WorkflowAssignment[]): ProjectWorkflow {
+  private buildProjectWorkflow(projectId: string, tasks: Task[], members: Member[], assignments: WorkflowAssignment[], ownerFacts?: ReadonlyMap<string, WorkflowOwnerFacts>): ProjectWorkflow {
     const reports = this.rows(`SELECT m.task_id, m.member_id, m.kind, m.title, m.at, latest.participated_at FROM messages m
       JOIN (SELECT MAX(rowid) AS rid, MIN(CASE WHEN kind IN ('진행','막힘','완료') THEN at END) AS participated_at
         FROM messages WHERE project_id = ? AND mine = 0 AND task_id IS NOT NULL GROUP BY task_id, member_id) latest ON m.rowid = latest.rid
@@ -2259,7 +2259,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       JOIN (SELECT MAX(a.id) AS id FROM activity a JOIN members m ON m.id = a.member_id
         WHERE m.project_id = ? AND a.member_id IN (${runningIds.map(() => '?').join(',')}) AND a.kind IN ('tool','text','error') GROUP BY a.member_id) latest ON latest.id = a.id`, projectId, ...runningIds)
       .map(r => ({ memberId: r.member_id as string, kind: r.kind as string, title: redactHarnessText(decodeStoredText(r.text)).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").slice(0, 180), at: r.at as string })) : [];
-    return buildWorkflow(tasks, members, assignments, reports, Date.now(), activity, this.listWork(projectId), this.taskContinuationPauses(projectId));
+    return buildWorkflow(tasks, members, assignments, reports, Date.now(), activity, this.listWork(projectId), this.taskContinuationPauses(projectId), ownerFacts);
   }
 
   /** Simulate display order without enrolling anything; admission uses the same worker policy as pump. */

@@ -72,6 +72,49 @@ async function openFlow(page: Page) {
 }
 const node = (page: Page, taskId: string, memberId: string | null) => page.locator(`.wf-node[data-task-id="${taskId}"][data-member-id="${memberId ?? "unassigned"}"]`);
 
+test("업무 흐름에서 대표 응답과 팀 처리를 거르고 실제 요청이 닫히면 건수가 갱신된다", async () => {
+  const member = store.createMember({ projectId: project.id, handle: "review-scope", name: "별도 검수 담당", kind: "worker" });
+  const request = store.ensureSourceTask({ projectId: project.id, sourceRef: "board-owner-response", title: "인증 기록 변경", origin: "owner" }).task;
+  const child = store.ensureSourceTask({ projectId: project.id, sourceRef: "board-waiting-on-owner", parentTaskId: request.id,
+    title: "상위 인증 변경 후 검사", origin: "owner" }).task;
+  const team = store.ensureSourceTask({ projectId: project.id, sourceRef: "board-team-review", title: "검수 결과 점검", origin: "owner" }).task;
+  const todo = store.createTodo({ projectId: project.id, taskId: request.id, memberId: member.id, title: "도메인 기록 변경" });
+  const d = store.enqueue({ projectId: project.id, taskId: team.id, memberId: member.id, kind: "instruction", text: team.title });
+  store.markDelivered(d.id);
+  store.enqueue({ projectId: project.id, taskId: child.id, memberId: member.id, kind: "instruction", text: child.title });
+  store.addStageMark({ projectId: project.id, taskId: team.id, stage: "review", evidence: "직원 검수 대기", memberId: member.id, who: member.name });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const operator = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  try {
+    await open(page);
+    await node(page, child.id, member.id).waitFor();
+    expect(await node(page, child.id, member.id).textContent()).toContain("선행 응답 대기");
+    const filters = page.getByRole("navigation", { name: "업무 상태" });
+    await filters.getByRole("button", { name: /^대표 응답/ }).click();
+    await node(page, request.id, null).waitFor();
+    expect(await node(page, team.id, member.id).count()).toBe(0);
+    expect(await node(page, child.id, member.id).count()).toBe(0);
+    const before = Number(await filters.getByRole("button", { name: /^대표 응답/ }).locator(".wf-count").textContent());
+    await open(operator);
+    await node(operator, request.id, null).click();
+    const homeHash = `#/p/${project.id}/home/${todo.id}`;
+    const link = operator.getByRole("dialog").locator(`a[href="${homeHash}"]`);
+    expect(await link.count()).toBe(1);
+    await link.click();
+    await operator.waitForURL(url => url.hash === homeHash);
+    await operator.getByRole("heading", { name: "내가 할 일", exact: true }).waitFor();
+    const checkbox = operator.getByRole("checkbox", { name: todo.title + " 했음", exact: true });
+    expect(await checkbox.getAttribute("aria-checked")).toBe("false");
+    await checkbox.click();
+    await node(page, request.id, null).waitFor({ state: "detached" });
+    expect(store.getTodo(todo.id)?.done).toBe(true);
+    expect(Number(await filters.getByRole("button", { name: /^대표 응답/ }).locator(".wf-count").textContent())).toBe(before - 1);
+    await filters.getByRole("button", { name: /^팀 처리/ }).click();
+    await node(page, team.id, member.id).waitFor();
+    expect(store.requireDelivery(d.id).status).toBe("delivered");
+  } finally { await operator.close(); await page.close(); }
+}, 60_000);
+
 test("직원별 실제 배정 순서와 파생 관계를 표시하고 노드에서 지시·보고와 업무 대화를 연다", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await open(page);
@@ -286,7 +329,7 @@ test("연결이 살아 있어도 새 관측 없이 90초가 지난 실행 강조
   await page.waitForFunction((selector) => document.querySelector(selector)?.getAttribute("data-active") === "true", `.wf-node[data-task-id="${task.id}"]`);
   await page.clock.runFor(90_001);
   expect(await currentNode.getAttribute("data-active")).toBeNull();
-  expect(await currentNode.textContent()).toContain("실행 확인 필요");
+  expect(await currentNode.textContent()).toContain("실행 상태 미확인");
   expect(await currentNode.textContent()).not.toContain("실행 중");
   await currentNode.click();
   expect(await page.getByRole("dialog").getByRole("link", { name: "직원 확인" }).count()).toBe(1);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Message, ProjectState, Task } from "@shared/types";
 import type { WorkflowNode } from "@shared/workflow";
+import { workflowCategory } from "@shared/workflow-view";
 import { STAGE_LABEL } from "@shared/task-stage";
 import { GlassButton } from "../glass";
 import { api, errorText } from "../lib/api";
@@ -9,7 +10,7 @@ import { chooseTask } from "../lib/submission-client";
 import { routeHash } from "../lib/store";
 import { Markdown, Time } from "./ui";
 const executing = (node: WorkflowNode) => node.state === "running" || node.state === "starting";
-export default function WorkflowDetail({ node, task, state, online, onClose, onFocus, onMember }: { node: WorkflowNode; task?: Task; state: ProjectState; online: boolean; onClose: () => void; onFocus?: (taskId: string) => void; onMember?: (memberId: string) => void }) {
+export default function WorkflowDetail({ node, task, state, online, onClose, onFocus, onMember, groupOwnerActions = false }: { groupOwnerActions?: boolean; node: WorkflowNode; task?: Task; state: ProjectState; online: boolean; onClose: () => void; onFocus?: (taskId: string) => void; onMember?: (memberId: string) => void }) {
   const projectId = state.project.id;
   const member = state.members.find((m) => m.id === node.memberId);
   const related = state.workflow?.edges.filter((edge) => edge.kind === "derived" && (edge.from === node.id || edge.to === node.id)) ?? [];
@@ -19,12 +20,24 @@ export default function WorkflowDetail({ node, task, state, online, onClose, onF
     const otherTask = state.tasks?.find((item) => item.id === other?.taskId);
     if (otherTask) relationTasks.set(otherTask.id, { task: otherTask, parent: edge.to === node.id });
   }
+  const actionNodes = groupOwnerActions ? [node, ...(state.workflow?.nodes ?? []).filter(other =>
+    other.taskId === node.taskId && other.id !== node.id && workflowCategory(other) === "action")] : [node];
+  const actions = new Map<string, string>();
+  for (const occurrence of actionNodes) {
+    for (const action of [occurrence.action, ...(occurrence.additionalOwnerActions ?? [])]) {
+      if (!action || action.tab === "thread") continue;
+      const href = routeHash({ projectId, tab: action.tab, sub: action.sub });
+      if (actions.has(href)) continue;
+      const assignee = groupOwnerActions && action.tab === "team" ? state.members.find(m => m.id === occurrence.memberId) : null;
+      actions.set(href, assignee ? `${assignee.name} · ${action.label}` : action.label);
+    }
+  }
   const toThread = () => { chooseTask(projectId, { id: node.taskId }); onClose(); };
   return (
     <div className="wf-detail">
       <p className="wf-detail__state"><b>{member?.name ?? (node.memberId ? "이전 직원" : "미배정")}</b><span>{online ? node.label : `마지막 확인: ${node.label}`}</span></p>
       {node.reason ? <p className="wf-detail__reason">{node.reason}</p> : null}
-      {node.action && node.action.tab !== "thread" ? <a className="wf-action" href={routeHash({ projectId, tab: node.action.tab, sub: node.action.sub })} onClick={onClose}>{node.action.label}<span aria-hidden="true"> →</span></a> : null}
+      {[...actions].map(([href, label]) => <a key={href} className="wf-action" href={href} onClick={onClose}>{label}<span aria-hidden="true"> →</span></a>)}
       <dl className="wf-detail__facts">
         {node.assignmentSource === "report" || node.assignmentSource === "board" ? <><dt>담당 근거</dt><dd>{node.assignmentSource === "report" ? "이 직원이 수행 보고를 남겼습니다" : "진행판에서 이 직원을 담당으로 지정했습니다"}</dd></> : null}
         {task?.progress ? <><dt>업무 단계</dt><dd>{STAGE_LABEL[task.progress.stage]}{task.progress.next ? <p>{task.progress.next}</p> : null}</dd></> : null}
