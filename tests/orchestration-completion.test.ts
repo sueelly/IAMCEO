@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { checkCompletionReviews, completionReviewAllowsDelivery, synchronizeTaskCompletion } from "../server/task-completion.ts";
+import { checkCompletionReviews, completionReviewAllowsDelivery, reconcileNextCompletionFamily, synchronizeTaskCompletion } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
 import type { Runner } from "../server/runner/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -305,4 +305,51 @@ test("업무 없는 직원 알림은 실제 쓰기 직전까지 업무 순서를
     expect(f.store.requireDelivery(delivery.id).status).toBe("delivered");
     expect(sequence).toHaveBeenCalledTimes(0);
   } finally { sequence.mockRestore(); transport.mockRestore(); }
+});
+
+for (const kind of ["막힘", "진행"] as const) {
+  test(`배정 없이 ${kind} 보고를 남긴 직원을 정리하면 그 업무의 완료 조건을 다시 판정한다`, () => {
+    const f = fixture(), task = f.orch.saveTask(f.lead, { title: "인계 확인", contract }).task;
+    const passed = f.store.createMessage({ projectId: f.project.id, memberId: f.worker.id, taskId: task.id, who: f.worker.name, kind: "완료", title: "확인 완료" });
+    f.store.recordReportChecks(passed, f.worker, [{ name: "인계 확인", kind: "other", result: "pass", criterion: 1, evidence: "대조" }],
+      { contractTaskId: task.id, contractRev: 1, gate: "contract" });
+    const later = f.store.createMessage({ projectId: f.project.id, memberId: f.worker2.id, taskId: task.id, who: f.worker2.name, kind, title: "후속 확인" });
+    if (kind === "진행") f.store.recordReportClosure({ memberId: f.worker2.id, kind: "continuing", refType: "message", refId: later.id });
+    while (reconcileNextCompletionFamily(f.store)) { /* drain the initial evidence */ }
+    expect(f.store.doneMark(task.id)).toBeNull();
+    f.store.removeMember(f.worker2.id);
+    while (reconcileNextCompletionFamily(f.store)) { /* drain committed changes */ }
+    expect(f.store.doneMark(task.id)).not.toBeNull();
+    expect(f.store.getMessage(later.id)).not.toBeNull();
+  });
+}
+
+test("a stalled conductor adoption leaves unrelated workers, watchdogs and later ticks running", async () => {
+  const f = fixture();
+  const other = f.store.createProject({ name: "별도 프로젝트", cwd: f.project.cwd });
+  f.store.patchProject(other.id, { runnerEnabled: true });
+  f.store.createMember({ projectId: other.id, kind: "conductor", handle: "other", name: "다른 총괄",
+    origin: "runner", backend: "core", cwd: other.cwd, status: "idle" });
+  f.runner.busy.add(f.worker.id);
+  f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "system", text: "대기" });
+  const orch = f.orch as unknown as { onTick(): Promise<void>; adoptOrphans(projectId: string): Promise<void> };
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const actual = orch.adoptOrphans.bind(orch);
+  const adoption = spyOn(orch, "adoptOrphans").mockImplementation(id => id === other.id ? waiting : actual(id));
+  const pump = spyOn(f.orch, "pump"), watch = spyOn(f.orch, "checkTaskWatches");
+  const first = orch.onTick();
+  try {
+    await until("느린 총괄의 수신자 복구 시작", () => adoption.mock.calls.some(([id]) => id === other.id));
+    await until("독립된 직원의 전달과 주기 감시", () => pump.mock.calls.some(([id]) => id === f.worker.id) && watch.mock.calls.length > 0);
+    await first;
+    await orch.onTick();
+    expect(watch.mock.calls.length).toBe(2);
+    expect(adoption.mock.calls.filter(([id]) => id === other.id)).toHaveLength(1);
+  } finally {
+    release();
+    await first;
+    await Bun.sleep(0);
+    adoption.mockRestore(); pump.mockRestore(); watch.mockRestore();
+  }
 });

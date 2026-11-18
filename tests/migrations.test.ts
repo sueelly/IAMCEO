@@ -132,13 +132,14 @@ test("explicit execution contract migration preserves old revisions and leaves u
   expect(current.listTaskContracts(task.id)).toHaveLength(1);
 });
 
-test("existing completion evidence is queued once and unprocessed changes survive reopening", () => {
+for (const previous of [48, 49]) test(`existing v${previous} completion evidence is queued once and survives reopening`, () => {
   const { path } = fixture("completion-changes.db");
-  const old = historicalDb(path, 48);
+  const old = historicalDb(path, previous);
   const store = new Store(old, new Bus());
   const target = store.ensureSourceTask({ projectId: "p", sourceRef: "existing-report", title: "기존 완료 보고", origin: "owner" }).task;
   old.query("INSERT INTO report_harness(message_id, task_id, member_id, contract_task_id, contract_rev, at) VALUES(?,?,?,?,1,?)")
     .run("report", target.id, "m", target.id, at);
+  if (previous === 49) old.exec("DELETE FROM completion_changes");
   old.close();
   const migrated = openDb(path);
   expect(migrated.query("SELECT task_id FROM completion_changes").all()).toEqual([{ task_id: target.id }]);

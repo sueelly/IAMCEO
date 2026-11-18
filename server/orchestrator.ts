@@ -754,6 +754,7 @@ export class Orchestrator implements OrchestratorApi {
   private readonly unsubscribeCompletion: () => void;
   private scheduledTaskCheck: Promise<void> | null = null;
   private tickInProgress: Promise<void> | null = null;
+  private orphanRetries = new Map<string, Promise<void>>();
   private tick: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private readonly notifier: ((title: string, body: string) => void) | null;
@@ -1906,13 +1907,14 @@ export class Orchestrator implements OrchestratorApi {
     await this.checkScheduledTasks().catch(e => console.warn("미완료 업무 재개 확인 실패:", (e as Error).message));
     if (this.closed) return;
     for (const id of this.store.listUndeliveredMemberIds({ skipInactiveHolds: true })) membersToPump.add(id);
-    await this.retryOrphans(membersToPump).catch(e => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
     for (const id of membersToPump) {
       if (this.closed) return;
       void this.pump(id);
       await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
     if (this.closed) return;
+    // A conductor can wait indefinitely for its runner. Other queues and ticks must keep moving.
+    void this.retryOrphans(membersToPump).catch(e => console.warn("보류된 말 전달 재시도 실패:", (e as Error).message));
     try {
       this.checkBoardTidy();
     } catch (e) {
@@ -2476,6 +2478,7 @@ export class Orchestrator implements OrchestratorApi {
     this.requireActive(this.store.requireProject(projectId));
     this.store.ensureFinalReviewer(projectId);
     await this.adoptOrphans(projectId);
+    if (this.closed) return;
     await Promise.all(this.store.listMembers(projectId).map((m) => this.pump(m.id)));
   }
 
@@ -2483,6 +2486,7 @@ export class Orchestrator implements OrchestratorApi {
   private async adoptOrphans(projectId: string): Promise<void> {
     if (this.orphanMessages(projectId).length + this.orphanAnswers(projectId).length + this.orphanTodos(projectId).length === 0) return;
     const conductor = await this.ensureConductor(projectId);
+    if (this.closed) return;
     // 기다리는 사이 겹친 호출이 이미 넘겼을 수 있다. 여기부터 줄 세우기까지 await 가 없어야 두 번 넘기지 않는다.
     const messages = this.orphanMessages(projectId);
     const answers = this.orphanAnswers(projectId);
@@ -2524,25 +2528,42 @@ export class Orchestrator implements OrchestratorApi {
     });
   }
 
-  private async retryOrphans(membersToPump?: Set<string>): Promise<void> {
+  private async retryOrphans(alreadyPumped?: ReadonlySet<string>): Promise<void> {
     if (this.closed) return;
+    const jobs: Promise<void>[] = [];
     for (const project of this.store.listProjects()) {
-      if (this.closed) return;
       if (!project.runnerEnabled) continue;
-      this.repairSourceIntents(project.id);
-      if (this.store.getConductor(project.id)) {
-        await this.adoptOrphans(project.id);
-        for (const id of this.store.listUndeliveredMemberIds({ projectId: project.id })) {
-          if (membersToPump) membersToPump.add(id);
-          else void this.pump(id);
-        }
+      const current = this.orphanRetries.get(project.id);
+      if (current) {
+        // A periodic tick need not attach another waiter to a stalled startup.
+        if (!alreadyPumped) jobs.push(current);
         continue;
       }
-      // 편입은 세션 하나를 넘겨준 것이다. 대표가 시키지 않은 총괄을 띄워 옛 지시를 실행하지 않는다.
-      if (this.store.runnerByAdopt(project.id)) continue;
-      if (this.orphanMessages(project.id).length + this.orphanAnswers(project.id).length + this.orphanTodos(project.id).length === 0) continue;
-      await this.enableProject(project.id).catch((e) => console.warn(`${project.name} 총괄 띄우기 재시도 실패:`, (e as Error).message));
+      const job = this.retryProjectOrphans(project, alreadyPumped)
+        .finally(() => { this.orphanRetries.delete(project.id); });
+      this.orphanRetries.set(project.id, job);
+      jobs.push(job);
     }
+    await Promise.all(jobs);
+  }
+
+  private async retryProjectOrphans(project: Project, alreadyPumped?: ReadonlySet<string>): Promise<void> {
+    this.repairSourceIntents(project.id);
+    if (this.store.getConductor(project.id)) {
+      await this.adoptOrphans(project.id);
+      if (this.closed) return;
+      for (const id of this.store.listUndeliveredMemberIds({ projectId: project.id })) {
+        if (this.closed) return;
+        if (alreadyPumped?.has(id)) continue;
+        void this.pump(id);
+        if (alreadyPumped) await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+      return;
+    }
+    // 편입만으로 켠 프로젝트의 과거 지시 때문에 새 총괄을 시작하지 않는다.
+    if (this.store.runnerByAdopt(project.id)) return;
+    if (this.orphanMessages(project.id).length + this.orphanAnswers(project.id).length + this.orphanTodos(project.id).length === 0) return;
+    await this.enableProject(project.id).catch(e => console.warn(`${project.name} 총괄 띄우기 재시도 실패:`, (e as Error).message));
   }
 
   /** 전달 항목이 없는 대표 메시지: 총괄이 없을 때 보류됐거나, 총괄을 띄우다 실패해 항목째 사라졌다. */

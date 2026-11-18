@@ -64,3 +64,23 @@ export const COMPLETION_CHANGE_SCHEMA = `
     AND (EXISTS(SELECT 1 FROM report_harness WHERE contract_task_id=tasks.id)
       OR EXISTS(SELECT 1 FROM task_completion_reviews WHERE task_id=tasks.id));
 `;
+
+const enqueueWorkerOutcomes = (row: string) => `INSERT INTO completion_changes(task_id)
+  SELECT DISTINCT t.id FROM messages m JOIN tasks t ON t.id=m.task_id
+  WHERE m.member_id=${row}.id AND m.mine=0 AND m.kind IN ('완료','막힘','진행')
+  ON CONFLICT(task_id) DO NOTHING;`;
+
+// v50. Historical reports survive staff changes. Worker membership determines
+// whether even an unassigned author's blocker or continuation counts.
+export const COMPLETION_WORKER_SCHEMA = `
+  CREATE TRIGGER completion_worker_join AFTER INSERT ON members WHEN NEW.kind='worker'
+    BEGIN ${enqueueWorkerOutcomes("NEW")} END;
+  CREATE TRIGGER completion_worker_leave AFTER DELETE ON members WHEN OLD.kind='worker'
+    BEGIN ${enqueueWorkerOutcomes("OLD")} END;
+  CREATE TRIGGER completion_worker_role AFTER UPDATE OF kind ON members WHEN (OLD.kind='worker')<>(NEW.kind='worker')
+    BEGIN ${enqueueWorkerOutcomes("NEW")} END;
+  INSERT INTO completion_changes(task_id) SELECT id FROM tasks WHERE merged_into IS NULL
+    AND (EXISTS(SELECT 1 FROM report_harness WHERE contract_task_id=tasks.id)
+      OR EXISTS(SELECT 1 FROM task_completion_reviews WHERE task_id=tasks.id))
+    ON CONFLICT(task_id) DO NOTHING;
+`;
