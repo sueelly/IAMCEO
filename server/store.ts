@@ -457,7 +457,8 @@ function toMember(r: Row): Member {
     name: r.name,
     role: r.role,
     kind: r.kind,
-    ...(r.final_reviewer ? { finalReviewer: true } : {}),
+    ...(r.final_reviewer || r.standby_reviewer ? { finalReviewer: true } : {}),
+    ...(r.standby_reviewer ? { standbyReviewer: true } : {}),
     origin: r.origin,
     wasAdopted: r.adopted_info != null,
     cli: r.cli,
@@ -1390,22 +1391,30 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return row ? this.memberWithWait(row) : null;
   }
 
-  ensureFinalReviewer(projectId: string): Member | null {
+  getStandbyReviewer(projectId: string): Member | null {
+    const row = this.row(`${MEMBER_SELECT} WHERE m.project_id=? AND m.standby_reviewer=1`, projectId);
+    return row ? this.memberWithWait(row) : null;
+  }
+
+  ensureFinalReviewer(projectId: string): Member | null { return this.ensureManagedReviewer(projectId, false); }
+  ensureStandbyReviewer(projectId: string): Member | null { return this.ensureManagedReviewer(projectId, true); }
+
+  private ensureManagedReviewer(projectId: string, standby: boolean): Member | null {
     return this.transaction(() => {
       const project = this.requireProject(projectId);
       if (project.isHq || project.archived || !project.runnerEnabled) return null;
-      const existing = this.getFinalReviewer(projectId);
+      const existing = standby ? this.getStandbyReviewer(projectId) : this.getFinalReviewer(projectId);
       if (existing) return existing;
-      let suffix = 0;
-      let handle = "final-review", name = "최종 검수";
+      const baseHandle = standby ? "standby-review" : "final-review";
+      const baseName = standby ? "예비 검수" : "최종 검수";
+      let suffix = 0, handle = baseHandle, name = baseName;
       while (this.findMember(projectId, handle) || this.findMember(projectId, name)) {
         suffix++;
-        handle = `final-review-${suffix}`;
-        name = `최종 검수 ${suffix + 1}`;
+        handle = `${baseHandle}-${suffix}`; name = `${baseName} ${suffix + 1}`;
       }
-      return this.createMember({ projectId, handle, name, role: "완료 조건과 검증 근거의 독립 최종 검수",
-        kind: "worker", origin: "runner", status: "offline", finalReviewer: true,
-        cli: this.defaultMemberCli(projectId) === "claude" ? "claude" : "codex" });
+      return this.insertMember({ projectId, handle, name, role: standby ? "별도로 배정된 완료 보고의 독립 검수" : "완료 조건과 검증 근거의 독립 최종 검수",
+        kind: "worker", origin: "runner", status: "offline", finalReviewer: !standby,
+        cli: this.defaultMemberCli(projectId) === "claude" ? "claude" : "codex" }, standby);
     });
   }
 
@@ -1419,7 +1428,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return r ? this.memberWithWait(r) : null;
   }
 
-  createMember(input: NewMember): Member {
+  createMember(input: NewMember): Member { return this.insertMember(input, false); }
+
+  private insertMember(input: NewMember, standby: boolean): Member {
     return this.transaction(() => {
       const project = this.requireProject(input.projectId);
       checkMemberText(input.name, input.role, input.kind);
@@ -1432,8 +1443,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("m_");
       const at = nowIso();
       this.run(
-        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel_preference, token, updated_at, created_at, cli, model_override, effort_override, final_reviewer)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel_preference, token, updated_at, created_at, cli, model_override, effort_override, final_reviewer, standby_reviewer)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
         input.handle,
@@ -1453,7 +1464,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.cli ?? this.defaultMemberCli(input.projectId),
         input.modelOverride ?? null,
         input.effortOverride ?? null,
-        input.finalReviewer ? 1 : 0,
+        input.finalReviewer ? 1 : 0, standby ? 1 : 0,
       );
       const member = this.requireMember(id);
       this.emit({ type: "member", member });

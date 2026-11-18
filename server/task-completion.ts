@@ -1,3 +1,4 @@
+import { assignedReviewMember, disjointFromFence, oppositeReviewScope, previousLegacyReviewAttempt, untouchedReviewBatch } from "./review-routing.ts";
 import { scheduleVerifiedIntegration } from "./task-main-followup.ts";
 import type { Delivery, Member } from "../shared/types.ts";
 import { bindingContract, missingExecutionContractFields } from "./harness.ts";
@@ -5,7 +6,7 @@ import { ApiError, ASSIGNMENT_HISTORY_MS, type Store } from "./store.ts";
 import { activeTaskContinuationPauses } from "./task-continuation.ts";
 import { latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 
-interface CompletionReviewRow {
+export interface CompletionReviewRow {
   report_id: string; task_id: string; contract_task_id: string; contract_rev: number;
   mark_id: number; status: "pending" | "confirmed" | "changes_requested";
   reviewed_at: string | null; completed_at: string; reviewer_id: string | null; evidence: string | null; delivery_id: string | null;
@@ -131,8 +132,10 @@ export function synchronizeRelatedTaskCompletion(store: Store, taskId: string): 
 function retireReminder(store: Store, review: CompletionReviewRow): void {
   if (!review.delivery_id) return;
   const d = store.getDelivery(review.delivery_id);
-  if (d && d.kind === "system" && !completionReviewAllowsDelivery(store, d) &&
-      ["queued", "held"].includes(d.status) && !d.attempts && !store.listDeliveryDispatches(d.id).length)
+  if (!d || !isCompletionReviewDelivery(d) || !untouchedReviewBatch(store,d)) return;
+  const recipient = store.getMember(d.memberId);
+  const rows = store.db.query<CompletionReviewRow,[string]>("SELECT * FROM task_completion_reviews WHERE delivery_id=?").all(d.id);
+  if (!recipient?.finalReviewer || !rows.some(row => currentReview(store,row) && assignedReviewMember(store,recipient,row)))
     store.markFailed(d.id, "최종 확인 상태가 바뀌어 이 알림을 종료합니다");
 }
 
@@ -217,69 +220,130 @@ export function completionReviewAllowsDelivery(store: Store, delivery: Delivery,
   if (!isCompletionReviewDelivery(delivery)) return !recipient?.finalReviewer;
   if (!recipient?.finalReviewer) return false;
   const rows = store.db.query<CompletionReviewRow, [string]>("SELECT * FROM task_completion_reviews WHERE delivery_id=?").all(delivery.id);
-  return rows.some(row => currentReview(store, row) && !awaitingIntegrationReceipt(store, row) && !completionReviewPaused(store, delivery.projectId, row.task_id));
+  const other = oppositeReviewScope(store, recipient);
+  if (other && rows.some(row => currentReview(store,row) && !other(row))) return false;
+  return rows.some(row => assignedReviewMember(store, recipient, row) && currentReview(store, row) && !awaitingIntegrationReceipt(store, row) && !completionReviewPaused(store, delivery.projectId, row.task_id));
 }
 
-/** Schedule one bounded review batch per project while preserving individual review receipts. */
+type ReviewEntry = { taskId: string; title: string; review: CompletionReviewRow; lastChecked: number };
+
+function createReviewBatch(store: Store, reviewer: Member, entries: ReviewEntry[], replacement = false) {
+  const list = entries.map(({ taskId, title, review }) => `- #${taskId} '${title}' · 계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}`);
+  const delivery = store.enqueue({ projectId: reviewer.projectId, memberId: reviewer.id, taskId: entries.length === 1 ? entries[0]!.taskId : null, kind: "system", wake: true,
+    text: [`${reviewPrefix}${entries.length}건`, ...list,
+      "각 항목의 task_review_evidence와 산출물을 대조한 뒤 task_review에 결과를 남기세요. 대조한 작업 커밋은 reviewed_commit에 적습니다. 원격 main 반영 뒤 발견한 결함은 원 업무에 연결된 새 수정 업무로 보냅니다. 완료 근거가 유효하지만 새 결함이 있으면 confirmed_with_repair를, 원래 완료 조건이나 증거가 성립하지 않으면 changes_requested를 선택합니다."].join("\n") });
+  const link = store.db.query(`UPDATE task_completion_reviews SET review_dispatch_count=CASE WHEN ? THEN review_dispatch_count
+    ELSE 1+MAX(review_dispatch_count,delivery_id IS NOT NULL) END, delivery_id=?,attention_delivery_id=CASE WHEN ? THEN attention_delivery_id ELSE NULL END WHERE task_id=? AND report_id=?`);
+  for (const { review } of entries) link.run(Number(replacement), delivery.id, Number(replacement), review.task_id, review.report_id);
+  return delivery;
+}
+
+/** Recovery retains ownership of uncertain input. Only untouched, disjoint work may
+ * use the project's other review-only session. Assignment and supersession commit together. */
 export function checkCompletionReviews(store: Store, now: number, intervalMs: number): Delivery[] {
   return store.transaction(() => {
     const out: Delivery[] = [];
     const reviews = store.db.query<CompletionReviewRow, []>("SELECT * FROM task_completion_reviews WHERE status='pending' ORDER BY rowid").all();
     const running = new Set(store.listPendingExecutions().flatMap(run => run.deliveryIds));
-    type Entry = { taskId: string; title: string; review: CompletionReviewRow; lastChecked: number };
-    const projects = new Map<string, { reviewer: Member; due: Entry[]; attention: Entry[] }>();
+    function plan(primary: Member) {
+      const standby = store.getStandbyReviewer(primary.projectId);
+      return { primary, standby, primaryScope: disjointFromFence(store,primary), standbyScope: disjointFromFence(store,standby),
+        due: new Map<string, ReviewEntry[]>(), transfers: new Map<string, ReviewEntry[]>(), attention: [] as ReviewEntry[] };
+    }
+    const projects = new Map<string, ReturnType<typeof plan>>();
     for (const review of reviews) {
       const task = store.requireTask(review.task_id), project = store.requireProject(task.projectId);
       if (project.archived || !project.runnerEnabled || task.mergedInto || !currentReview(store, review) || completionReviewPaused(store, project.id, task.id)) continue;
-      if (reviewedWithSource(store, review)) continue;
-      if (awaitingIntegrationReceipt(store, review)) continue;
-      const reviewer = store.getFinalReviewer(project.id);
-      if (!reviewer) continue;
-      const batch = projects.get(project.id) ?? { reviewer, due: [], attention: [] };
-      projects.set(project.id, batch);
+      if (reviewedWithSource(store, review) || awaitingIntegrationReceipt(store, review)) continue;
+      let group = projects.get(project.id);
+      if (!group) {
+        const primary = store.getFinalReviewer(project.id);
+        if (!primary) continue;
+        group = plan(primary); projects.set(project.id,group);
+      }
       const last = review.delivery_id ? store.getDelivery(review.delivery_id) : null;
       const recovery = last && store.getDeliveryRecovery(last.id);
       if (last && (recovery?.phase === "stopped" || store.getDeliveryRetry(last.id).retryReason === "rejected_limit")) continue;
-      const checkedAt = last?.memberId === reviewer.id ? last.deliveredAt ?? last.createdAt : review.completed_at;
-      const lastChecked = Date.parse(checkedAt);
+      const assigned = last && (last.memberId === group.primary.id || last.memberId === group.standby?.id);
+      const owner = last && group.standby && last.memberId === group.standby.id ? group.standby : group.primary;
+      const ownFence = owner.standbyReviewer ? group.standbyScope : group.primaryScope;
+      const otherFence = owner.standbyReviewer ? group.primaryScope : group.standbyScope;
+      const lastChecked = Date.parse(assigned ? last.deliveredAt ?? last.createdAt : review.completed_at);
       const entry = { taskId: task.id, title: task.title, review, lastChecked };
       if (recovery?.phase === "needs_owner") {
-        if (!review.attention_delivery_id) batch.attention.push(entry);
+        if (!review.attention_delivery_id) group.attention.push(entry);
         continue;
       }
-      if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase) ||
-        last.memberId === reviewer.id && ["queued", "held"].includes(last.status))) continue;
-      if (last && last.memberId !== reviewer.id) retireReminder(store, review);
-      const retry = last?.memberId === reviewer.id;
-      if (now - lastChecked < (retry ? Math.max(intervalMs, 5 * 60_000) : intervalMs)) continue;
-      if (retry && review.review_dispatch_count >= 2) {
-        if (!review.attention_delivery_id) batch.attention.push(entry);
-      } else batch.due.push(entry);
+      if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase))) continue;
+      if (last && assigned && ["queued","held"].includes(last.status)) {
+        if (ownFence && !review.evidence_reader_id && review.review_dispatch_count <= 1 &&
+            isCompletionReviewDelivery(last) && last.status === "queued" && ownFence(review) && !previousLegacyReviewAttempt(store,review,last)) {
+          const entries = group.transfers.get(last.id) ?? [];
+          entries.push(entry); group.transfers.set(last.id, entries);
+        }
+        continue;
+      }
+      if (last && !assigned) retireReminder(store, review);
+      if (now - lastChecked < (assigned ? Math.max(intervalMs, 5 * 60_000) : intervalMs)) continue;
+      if (assigned && review.review_dispatch_count >= 2) {
+        if (!review.attention_delivery_id) group.attention.push(entry);
+        continue;
+      }
+      let assignee = owner;
+      if (ownFence) {
+        if (assigned || review.evidence_reader_id || !ownFence(review)) continue;
+        if (otherFence) {
+          if (!review.attention_delivery_id) group.attention.push(entry);
+          continue;
+        }
+        group.standby ??= store.ensureStandbyReviewer(project.id);
+        if (!group.standby) continue;
+        assignee = owner.standbyReviewer ? group.primary : group.standby;
+      } else if (otherFence && !otherFence(review)) {
+        if (!review.attention_delivery_id) group.attention.push(entry);
+        continue;
+      }
+      const due = group.due.get(assignee.id) ?? [];
+      due.push(entry); group.due.set(assignee.id,due);
     }
-    const link = store.db.query(`UPDATE task_completion_reviews SET review_dispatch_count=1+MAX(review_dispatch_count, delivery_id IS NOT NULL),
-      delivery_id=?,attention_delivery_id=NULL WHERE task_id=? AND report_id=?`);
-    for (const [projectId, batch] of projects) {
-      if (!batch.due.length) continue;
-      const entries = batch.due.sort((left, right) => left.lastChecked - right.lastChecked).slice(0, 8);
-      const list = entries.map(({ taskId, title, review }) => `- #${taskId} '${title}' · 계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}`);
-      const delivery = store.enqueue({ projectId, memberId: batch.reviewer.id, taskId: entries.length === 1 ? entries[0]!.taskId : null, kind: "system", wake: true,
-        text: [`${reviewPrefix}${entries.length}건`, ...list,
-          "각 항목의 task_review_evidence와 산출물을 대조한 뒤 task_review에 결과를 남기세요. 대조한 작업 커밋은 reviewed_commit에 적습니다. 원격 main 반영 뒤 발견한 결함은 원 업무에 연결된 새 수정 업무로 보냅니다. 완료 근거가 유효하지만 새 결함이 있으면 confirmed_with_repair를, 원래 완료 조건이나 증거가 성립하지 않으면 changes_requested를 선택합니다."].join("\n") });
-      for (const { review } of entries) link.run(delivery.id, review.task_id, review.report_id);
-      out.push(delivery);
-    }
-    for (const [projectId, batch] of projects) {
-      if (!batch.attention.length) continue;
+    for (const [projectId, group] of projects) {
+      for (const [oldId, entries] of group.transfers) {
+        const old = store.requireDelivery(oldId);
+        if (!untouchedReviewBatch(store, old)) continue;
+        const fromStandby = old.memberId === group.standby?.id;
+        if (fromStandby ? group.primaryScope : group.standbyScope) {
+          group.attention.push(...entries.filter(entry => !entry.review.attention_delivery_id));
+          continue;
+        }
+        group.standby ??= store.ensureStandbyReviewer(projectId);
+        if (!group.standby) continue;
+        const pending = store.db.query<CompletionReviewRow,[string]>("SELECT * FROM task_completion_reviews WHERE delivery_id=? AND status='pending'").all(oldId);
+        const moved = new Set(entries.map(entry => entry.taskId));
+        const alternate = createReviewBatch(store, fromStandby ? group.primary : group.standby, entries, true);
+        out.push(alternate);
+        // Only an untouched envelope can be superseded. Retain each remaining
+        // case with its primary on its own delivery so a paused case cannot ride
+        // with another. Its current contract, stop, and prior attempts still apply.
+        for (const row of pending) {
+          if (moved.has(row.task_id) || !currentReview(store,row)) continue;
+          const task = store.requireTask(row.task_id);
+          out.push(createReviewBatch(store,fromStandby ? group.standby : group.primary,[{taskId:task.id,title:task.title,review:row,lastChecked:now}],true));
+        }
+        store.markFailed(oldId, `입력 전 검수 대상을 분리해 다시 배정했습니다 · 새 검수 전달 #${alternate.id}`);
+      }
+      for (const [reviewerId, due] of group.due) {
+        const entries = due.sort((a,b) => a.lastChecked-b.lastChecked).slice(0,8);
+        out.push(createReviewBatch(store,store.requireMember(reviewerId),entries));
+      }
+      if (!group.attention.length) continue;
       const conductor = store.getConductor(projectId);
       if (!conductor) continue;
-      const entries = batch.attention.slice(0, 8);
-      const delivery = store.enqueue({ projectId, memberId: conductor.id, kind: "system", wake: true,
+      const entries = group.attention.slice(0,8);
+      const delivery = store.enqueue({ projectId, memberId: conductor.id, kind:"system", wake:true,
         text: ["[시스템] 최종 검수 전달을 확인해 주세요. 검수자의 수신 상태·도구 오류·판정 기록을 대조해 해당 업무의 검수를 복구하세요.",
-          ...entries.map(({ title, review }) => `- ${title} · 업무 #${review.task_id} · 보고 #${review.report_id} · 전달 #${review.delivery_id}`)].join("\n") });
-      for (const { review } of entries) {
-        store.db.query("UPDATE task_completion_reviews SET attention_delivery_id=? WHERE task_id=? AND report_id=?")
-          .run(delivery.id, review.task_id, review.report_id);
-      }
+          ...entries.map(({ title, review }) => `- ${title} · 업무 #${review.task_id} · 보고 #${review.report_id} · ${review.delivery_id ? "전달 #"+review.delivery_id : "검수자 전달 대기"}`)].join("\n") });
+      for (const { review } of entries) store.db.query("UPDATE task_completion_reviews SET attention_delivery_id=? WHERE task_id=? AND report_id=?")
+        .run(delivery.id,review.task_id,review.report_id);
       out.push(delivery);
     }
     return out;

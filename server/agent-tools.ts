@@ -1,3 +1,4 @@
+import { mayReadReviewReport } from "./review-routing.ts";
 import { integrationHeadCommand } from "./integration-evidence.ts";
 import { fullCommit, queueIntegrationRepair, queueReviewedIntegration } from "./task-main-followup.ts";
 import { publicHarness } from "./harness-redaction.ts";
@@ -468,6 +469,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }),
     async (orch, member, a) => {
       if (a.report_id !== undefined) {
+        if (member.finalReviewer && !mayReadReviewReport(orch.store, member, a.report_id))
+          throw new ApiError(403, "이 검수자에게 배정한 완료 보고와 통합 보고만 조회할 수 있습니다");
         if (!orch.reportReferences) throw new ApiError(501, "보고 참조 조회를 지원하지 않습니다");
         const refs = orch.reportReferences(member.projectId, a.report_id);
         const source = orch.store.requireMessage(refs.sourceMessageId);

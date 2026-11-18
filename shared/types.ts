@@ -191,6 +191,7 @@ export interface Member {
   kind: MemberKind;
   /** 프로젝트의 독립 최종 검수를 맡는 관리 직원. */
   finalReviewer?: boolean;
+  standbyReviewer?: boolean;
   origin: MemberOrigin;
   /** 편입으로 들어온 세션. 다시 열어 origin 이 runner 가 되어도 남는다. 편입 해제의 근거다. */
   wasAdopted: boolean;

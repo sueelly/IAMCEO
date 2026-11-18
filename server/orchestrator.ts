@@ -1,3 +1,4 @@
+import { assignedReviewMember } from "./review-routing.ts";
 import { providerIssueKind } from "../shared/execution-issues.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { artifactRange, integrationWorktreeAt, isRemoteObservation, verifyIntegrationGraph, witnessedRemoteIntegration } from "./integration-evidence.ts";
@@ -1100,6 +1101,8 @@ export class Orchestrator implements OrchestratorApi {
   /** 업무 한 건의 시작→지시→보고 사슬(읽기만). 계약 판·전달·검사와 실행 증거·조사 주장·열린 결재·개선 후보. 글 본문은 싣지 않는다. */
   taskTrace(member: Member, taskId: string): Record<string, unknown> {
     const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
+    if (member.finalReviewer && !assignedReviewMember(this.store, member, latestCompletionReview(this.store,task.id)))
+      throw new ApiError(403, "이 검수자에게 배정한 업무만 조회할 수 있습니다");
     const name = (id: string | null) => (id ? this.store.getMember(id)?.name : null) ?? id;
     const effective = this.store.getEffectiveContract(task.id);
     const basis = effective ? this.store.completionEvidence(effective.taskId, effective.rev) : [];
@@ -1147,7 +1150,8 @@ export class Orchestrator implements OrchestratorApi {
     const task = this.store.resolveTask(this.requireTaskInProject(caller, taskId));
     const report = this.store.getMessage(reportId), harness = this.store.getReportHarness(reportId);
     if (!report || report.projectId !== caller.projectId || report.mine || report.taskId !== task.id || !harness || harness.memberId !== report.memberId) throw new ApiError(404, "그 업무의 검사 보고를 찾을 수 없습니다");
-    const reviewer = caller.finalReviewer && latestCompletionReview(this.store, task.id)?.report_id === reportId;
+    const currentReview = latestCompletionReview(this.store, task.id);
+    const reviewer = caller.finalReviewer && currentReview?.report_id === reportId && assignedReviewMember(this.store, caller, currentReview);
     if (caller.kind !== "conductor" && !reviewer && caller.id !== harness.memberId) throw new ApiError(403, "배정된 검수 또는 자신의 실패 검사만 진단할 수 있습니다");
     const check = harness.checks[checkIndex];
     if (!check || check.result !== "fail" || !EXEC_CHECKS.has(check.kind) || !check.command) throw new ApiError(400, "명령이 있는 실패 실행 검사 번호를 고르세요(0부터 시작)");
@@ -5062,7 +5066,7 @@ export class Orchestrator implements OrchestratorApi {
     const review = latestCompletionReview(this.store, task.id);
     const report = this.store.getMessage(reportId), artifact = this.store.getReportHarness(reportId);
     const contract = this.store.getEffectiveContract(task.id);
-    if (!member.finalReviewer || review?.status !== "pending" || review.report_id !== reportId || !report || !artifact ||
+    if (review?.status !== "pending" || !assignedReviewMember(this.store, member, review) || review.report_id !== reportId || !report || !artifact ||
       contract?.taskId !== review.contract_task_id || contract.rev !== review.contract_rev ||
       this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
       throw new ApiError(409, "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요");
@@ -5075,6 +5079,12 @@ export class Orchestrator implements OrchestratorApi {
     const patch = tip
       ? await readFinalReviewPatch(project.cwd, tip, path, offset, base)
       : null;
+    if (tip) {
+      const current = latestCompletionReview(this.store, task.id);
+      if (!current || current.status !== "pending" || current.report_id !== reportId || current.delivery_id !== review.delivery_id ||
+          !assignedReviewMember(this.store, member, current) || this.store.doneMark(task.id)?.id !== current.mark_id ||
+          completionReviewPaused(this.store, task.projectId, task.id)) throw new ApiError(409, "변경분을 읽는 동안 검수 대상 또는 담당자가 바뀌었습니다");
+    }
     if ((!review.main_commit || integrated) && (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0))) {
       this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
         .run(member.id, task.id, report.id);
@@ -5093,7 +5103,7 @@ export class Orchestrator implements OrchestratorApi {
     evidence: string; reviewedCommit?: string; repairTitle?: string }): { status: string; followupId?: string } {
     const task = this.store.resolveTask(this.requireTaskInProject(member, input.taskId));
     this.requireActive(this.store.requireProject(task.projectId));
-    if (!member.finalReviewer || this.store.getFinalReviewer(task.projectId)?.id !== member.id) {
+    if (!assignedReviewMember(this.store, member, latestCompletionReview(this.store, task.id))) {
       throw new ApiError(403, "지정된 독립 최종 검수 직원만 이 결과를 남길 수 있습니다");
     }
     const evidence = normalizeSpace(cleanText(input.evidence));

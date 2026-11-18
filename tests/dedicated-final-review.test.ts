@@ -113,7 +113,7 @@ test("uncertain review receipt stays intact while a different report gets its ow
   f.store.db.query("UPDATE delivery_recovery SET phase='needs_owner',reason='complete_range_without_marker' WHERE delivery_id=?").run(unknown!.id);
   const next = await addPendingReview(f);
   const output = checkCompletionReviews(f.store, Date.now() + 120_000, 30_000);
-  const separate = output.find(d => d.memberId === f.reviewer.id);
+  const separate = output.find(d => f.store.getMember(d.memberId)?.standbyReviewer);
   expect(separate?.text).toContain(next.report.id);
   expect(separate?.text).not.toContain(f.report.id);
   expect(latestCompletionReview(f.store, f.source.id)?.delivery_id).toBe(unknown!.id);

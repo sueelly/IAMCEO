@@ -185,7 +185,7 @@ test("deployed v41 memory queues, execution caps and conversations survive archi
   expect(version(migrated)).toBe(MIGRATIONS.length);
   expect(migrated.query("SELECT * FROM memory_outbox ORDER BY event_id").all()).toEqual(queue);
   expect(migrated.query("SELECT * FROM deliveries ORDER BY id").all()).toEqual(deliveries);
-  expect(migrated.query("SELECT * FROM members ORDER BY id").all()).toEqual(members.map((member: any) => ({ ...member, codex_speed: "standard", final_reviewer: 0, parallel_preference: 1 })));
+  expect(migrated.query("SELECT * FROM members ORDER BY id").all()).toEqual(members.map((member: any) => ({ ...member, codex_speed: "standard", final_reviewer: 0, parallel_preference: 1, standby_reviewer: 0 })));
   expect(migrated.query("SELECT * FROM settings").all()).toEqual(settings);
   expect(migrated.query("SELECT max_concurrent_turns FROM projects WHERE id='p'").get()).toEqual({ max_concurrent_turns: 7 });
   expect(migrated.query("SELECT * FROM memory_archive_sources").all()).toEqual([]);

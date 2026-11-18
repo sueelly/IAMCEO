@@ -1046,6 +1046,11 @@ export const MIGRATIONS: string[] = [
   SELF_INTEGRATION_SCHEMA,
   `ALTER TABLE task_completion_reviews ADD COLUMN review_dispatch_count INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE task_completion_reviews ADD COLUMN attention_delivery_id TEXT;`,
+  // v54: a separate review-only session for unrelated cases while primary receipt recovery is fenced.
+  `ALTER TABLE members ADD COLUMN standby_reviewer INTEGER NOT NULL DEFAULT 0
+     CHECK(standby_reviewer IN (0,1) AND (standby_reviewer=0 OR (kind='worker' AND final_reviewer=0)));
+   CREATE UNIQUE INDEX members_project_standby_reviewer ON members(project_id) WHERE standby_reviewer=1;
+   CREATE INDEX task_completion_reviews_delivery ON task_completion_reviews(delivery_id) WHERE delivery_id IS NOT NULL;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {
