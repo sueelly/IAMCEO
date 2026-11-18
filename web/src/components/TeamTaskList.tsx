@@ -95,6 +95,7 @@ export default function TeamTaskList({
       {visible.map((n) => {
         const task = state.tasks?.find((t) => t.id === n.taskId),
           isOpen = expanded === n.id;
+        const requestTitle = groupOwnerActions && (n.action?.tab === "home" || n.action?.tab === "inbox") && n.action.sub ? n.reason : null;
         return (
           <article
             className="tt-item"
@@ -125,7 +126,7 @@ export default function TeamTaskList({
               <span className="to-state" data-state={n.state}>
                 {online ? n.label : `마지막 확인: ${n.label}`}
               </span>
-              <strong>{task?.title ?? "업무"}</strong>
+              <strong>{requestTitle ?? task?.title ?? "업무"}</strong>
               <span aria-hidden="true">{isOpen ? "−" : "+"}</span>
             </button>
             {isOpen ? (

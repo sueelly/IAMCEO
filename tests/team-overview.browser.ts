@@ -907,6 +907,7 @@ test("team owner response count includes direct decisions and unassigned owner t
     const list = p.getByRole("region", { name: "대표 응답 업무" });
     expect(await list.locator(".tt-item").count()).toBe(2);
     expect(await list.locator(`.tt-item[data-task-id="${decision.id}"]`).count()).toBe(1);
+    expect(await list.locator(`.tt-item[data-task-id="${todo.id}"] .tt-title strong`).textContent()).toBe(requested.title);
     await list.locator(`.tt-item[data-task-id="${todo.id}"] .tt-title`).click();
     const todoLink = list.getByRole("link", { name: /내 할 일 열기/ });
     expect(await todoLink.getAttribute("href")).toBe(`#/p/${f.pr.id}/home/${requested.id}`);

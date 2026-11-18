@@ -100,7 +100,7 @@ export default function TeamOverview({
       state.members.find((m) => m.id === id)?.name ?? "이전 직원";
   const matchesQuery = (n: WorkflowNode) =>
     !query ||
-    `${title(n)} ${n.memberId ? name(n.memberId) : "미배정"}`
+    `${title(n)} ${n.ownerActionRequired ? n.reason ?? "" : ""} ${n.memberId ? name(n.memberId) : "미배정"}`
       .toLowerCase()
       .includes(query.toLowerCase());
   const matches = (n: WorkflowNode) =>
