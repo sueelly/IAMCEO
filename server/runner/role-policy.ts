@@ -1,4 +1,5 @@
 import type { RunnerMember } from "./types.ts";
+import { FINAL_REVIEWER_TOOLSET } from "../../shared/types.ts";
 import { CoreError } from "./core-client.ts";
 
 /** Availability, not an approval hint: unlisted built-ins and external MCPs cannot execute. */
@@ -34,5 +35,10 @@ export function codexRoleArgs(bin: string, member: RunnerMember, codexHome?: str
   // Codex splits -c keys on literal dots; TOML-quoted segments are not decoded here.
   for (const server of servers) if (server.name !== "iamceo") args.push("-c", `mcp_servers.${server.name}.enabled=false`);
   args.push("-c", "mcp_servers.iamceo.enabled=true");
+  if (member.finalReviewer) {
+    for (const tool of FINAL_REVIEWER_TOOLSET) {
+      args.push("-c", `mcp_servers.iamceo.tools.${tool}.approval_mode="approve"`);
+    }
+  }
   return args;
 }

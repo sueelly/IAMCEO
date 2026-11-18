@@ -1040,6 +1040,8 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE task_completion_reviews ADD COLUMN evidence_reader_id TEXT;`,
   COMPLETION_CHANGE_SCHEMA,
   COMPLETION_WORKER_SCHEMA,
+  `ALTER TABLE task_completion_reviews ADD COLUMN review_dispatch_count INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE task_completion_reviews ADD COLUMN attention_delivery_id TEXT;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

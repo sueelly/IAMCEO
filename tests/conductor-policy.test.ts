@@ -17,6 +17,31 @@ import { createIsolatedRuntime } from "./fixtures/isolated-runtime.ts";
 
 const vars = { PROJECT: "시험", NAME: "총괄", ROLE: "조정", CONDUCTOR: "총괄" };
 const POLICY = "## 총괄의 필수 조정 규칙";
+
+test("only the managed Codex reviewer can call its five IAMCEO review tools without an interactive prompt", () => {
+  const f = fixture();
+  const isolated = createIsolatedRuntime();
+  cleanups.push(() => isolated.stop());
+  const config = join(isolated.paths.configDir, "review-mcp.json");
+  const prompt = join(isolated.paths.configDir, "review.md");
+  writeFileSync(prompt, "완료 근거 검수");
+  writeFileSync(config, JSON.stringify({ mcpServers: { iamceo: { command: "/fake/bridge", args: [], env: {} } } }));
+  writeFileSync(isolated.bins.codexBin, '#!/bin/sh\necho "[]"\n', { mode: 0o700 });
+  const reviewer = f.store.ensureFinalReviewer(f.project.id)!;
+  const worker = f.store.createMember({ projectId: f.project.id, handle: "writer", name: "작성", kind: "worker" });
+  for (const member of [reviewer, f.lead, worker]) {
+    const runner = { ...f.orch["runnerMember"](member, f.project), cli: "codex" as const, cwd: isolated.paths.work };
+    const args = providerLaunch(runner, { mcpConfigFile: config, systemPromptFile: prompt, resume: false, projectName: "검수" }, isolated.bins).argv;
+    const allowed = args.filter(a => a.endsWith('.approval_mode="approve"')).sort();
+    const names = ["status", "task_trace", "post", "task_review_evidence", "task_review"];
+    expect(allowed).toEqual(member.finalReviewer ? names.map(n => `mcp_servers.iamceo.tools.${n}.approval_mode="approve"`).sort() : []);
+    if (member.finalReviewer) {
+      expect(args).toContain("read-only");
+      expect(args).toContain("features.shell_tool=false");
+      expect(agentTools.listAgentTools(member).map(tool => tool.name).sort()).toEqual(names.sort());
+    }
+  }
+});
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 

@@ -33,6 +33,7 @@ export interface RunnerMember {
   subagentModel: string | null;
   permissionMode: PermissionMode;
   kind: MemberKind;
+  finalReviewer?: boolean;
   /** adopted 는 대표가 쓰던 칸이다. 원래 인자(--mcp-config 등)가 없고, 칸을 옮기거나 닫지 않는다. */
   origin?: MemberOrigin;
   /** 영속 세대. 구형 어댑터에는 강제하지 않으며 미확인을 0으로 복원하지 않는다. */

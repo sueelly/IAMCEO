@@ -902,6 +902,7 @@ export function fileKindOf(name: string, mime = ""): FileKind {
 // ---- 에이전트 도구 이름 ----
 /** ask_close·todo_close: 직원은 자기가 올린 결재·할 일만, 총괄·본사 AI 는 프로젝트 전체를 정리한다. */
 export const FINAL_REVIEW_TOOLS = ["task_review", "task_review_evidence"] as const;
+export const FINAL_REVIEWER_TOOLSET = ["status", "task_trace", "post", ...FINAL_REVIEW_TOOLS] as const;
 export const WORKER_TOOLS = ["status", "task", "ask", "post", "file", "todo", "ask_close", "todo_close", "server_check", "server_backup", "task_trace", "exec_diagnose", "code_read"] as const;
 export const CONDUCTOR_TOOLS = ["team_add", "team_assign", "team_stop", "team_compact", "team_sleep", "team_resume", "team_close", "team_config", "terminal_read", "terminal_input", "roster", "project_now", "work_set", "work_list", "work_remove", "board", "harness_findings", "task_stage", "task_followup"] as const;
 export const ROOT_TOOLS = ["project_create", "project_list", "board"] as const;

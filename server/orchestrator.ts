@@ -5659,7 +5659,8 @@ export class Orchestrator implements OrchestratorApi {
     if (!this.agentTools) return null;
     const tools = this.agentTools.listAgentTools(member, { memory: this.memoryEnabledFor(member) });
     const rules = this.rulesFor(member, this.store.requireProject(member.projectId));
-    return createHash("sha256").update(JSON.stringify({ tools, rules })).digest("hex").slice(0, 16);
+    const reviewToolPolicy = member.finalReviewer && member.cli === "codex" ? 1 : undefined;
+    return createHash("sha256").update(JSON.stringify({ tools, rules, reviewToolPolicy })).digest("hex").slice(0, 16);
   }
 
   /**
@@ -5673,7 +5674,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!want || (!conductor && this.runtime(member.id).toolsGaveUp === want)) return null;
     const have = this.store.getAppliedConfig(member.id)?.toolsSig ?? null;
     if (have === want) return null;
-    if (have === null && member.kind !== "conductor" && !this.memoryEnabledFor(member)) return null;
+    if (have === null && member.kind !== "conductor" && !member.finalReviewer && !this.memoryEnabledFor(member)) return null;
     return want;
   }
 
@@ -6745,6 +6746,7 @@ export class Orchestrator implements OrchestratorApi {
       subagentModel: staffSubagent(member.cli, settings.ranks, settings.codexRanks).subagentModel,
       permissionMode: settings.permissionMode,
       kind: member.finalReviewer ? "conductor" : member.kind,
+      finalReviewer: member.finalReviewer,
       origin: member.origin,
       sessionGeneration: this.store.getMember(member.id) ? this.store.memberRevisions(member.id).sessionGeneration : undefined,
     };

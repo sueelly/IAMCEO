@@ -107,6 +107,39 @@ test("one dedicated reviewer is reused and review is routed there while the cond
   expect(checkCompletionReviews(f.store, Date.now() + 120_000, 30_000)).toHaveLength(0);
 });
 
+test("uncertain review receipt stays intact while a different report gets its own review request", async () => {
+  const f = await pendingReview();
+  const [unknown] = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
+  f.store.db.query("UPDATE delivery_recovery SET phase='needs_owner',reason='complete_range_without_marker' WHERE delivery_id=?").run(unknown!.id);
+  const next = await addPendingReview(f);
+  const output = checkCompletionReviews(f.store, Date.now() + 120_000, 30_000);
+  const separate = output.find(d => d.memberId === f.reviewer.id);
+  expect(separate?.text).toContain(next.report.id);
+  expect(separate?.text).not.toContain(f.report.id);
+  expect(latestCompletionReview(f.store, f.source.id)?.delivery_id).toBe(unknown!.id);
+  expect(f.store.getDeliveryRecovery(unknown!.id)?.phase).toBe("needs_owner");
+  expect(output.filter(d => d.memberId === f.lead.id)).toHaveLength(1);
+  expect(checkCompletionReviews(f.store, Date.now() + 900_000, 30_000)).toHaveLength(0);
+});
+
+test("an acknowledged review without a verdict has a bounded retry and a single actionable escalation", async () => {
+  const f = await pendingReview();
+  const now = Date.now();
+  const schedule = (ms: number) => checkCompletionReviews(f.store, now + ms, 30_000);
+  const [first] = schedule(60_000);
+  f.store.markDelivered(first!.id);
+  expect(schedule(120_000)).toHaveLength(0);
+  const [retry] = schedule(600_000);
+  expect(retry?.memberId).toBe(f.reviewer.id);
+  f.store.markDelivered(retry!.id);
+  const [notice] = schedule(1_200_000);
+  expect(notice?.memberId).toBe(f.lead.id);
+  expect(notice?.text).toContain(f.report.id);
+  expect(schedule(1_800_000)).toHaveLength(0);
+  expect(f.store.requireDelivery(first!.id).status).toBe("delivered");
+  expect(f.store.taskProgress(f.source.id).finalReview?.status).toBe("pending");
+});
+
 test("starting an inactive project provisions its managed reviewer without starting a review", async () => {
   const f = fixture();
   f.store.patchProject(f.project.id, { runnerEnabled: false });

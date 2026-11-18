@@ -10,6 +10,8 @@ interface CompletionReviewRow {
   reviewed_at: string | null; completed_at: string; reviewer_id: string | null; evidence: string | null; delivery_id: string | null;
   reviewed_branch: string | null; reviewed_commit: string | null;
   evidence_reader_id: string | null;
+  review_dispatch_count: number;
+  attention_delivery_id: string | null;
 }
 
 export function latestCompletionReview(store: Store, taskId: string): CompletionReviewRow | null {
@@ -197,36 +199,58 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
     const out: Delivery[] = [];
     const reviews = store.db.query<CompletionReviewRow, []>("SELECT * FROM task_completion_reviews WHERE status='pending' ORDER BY rowid").all();
     const running = new Set(store.listPendingExecutions().flatMap(run => run.deliveryIds));
-    const projects = new Map<string, { reviewer: Member; due: { taskId: string; title: string; review: CompletionReviewRow; lastChecked: number }[]; outstanding: boolean }>();
+    type Entry = { taskId: string; title: string; review: CompletionReviewRow; lastChecked: number };
+    const projects = new Map<string, { reviewer: Member; due: Entry[]; attention: Entry[] }>();
     for (const review of reviews) {
       const task = store.requireTask(review.task_id), project = store.requireProject(task.projectId);
       if (project.archived || !project.runnerEnabled || task.mergedInto || !currentReview(store, review) || completionReviewPaused(store, project.id, task.id)) continue;
       const reviewer = store.getFinalReviewer(project.id);
       if (!reviewer) continue;
-      const batch = projects.get(project.id) ?? { reviewer, due: [], outstanding: false };
+      const batch = projects.get(project.id) ?? { reviewer, due: [], attention: [] };
       projects.set(project.id, batch);
       const last = review.delivery_id ? store.getDelivery(review.delivery_id) : null;
       const recovery = last && store.getDeliveryRecovery(last.id);
       if (last && (recovery?.phase === "stopped" || store.getDeliveryRetry(last.id).retryReason === "rejected_limit")) continue;
-      if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase) ||
-        last.memberId === reviewer.id && ["queued", "held"].includes(last.status))) {
-        batch.outstanding = true;
-        continue;
-      }
-      if (last && last.memberId !== reviewer.id) retireReminder(store, review);
       const checkedAt = last?.memberId === reviewer.id ? last.deliveredAt ?? last.createdAt : review.completed_at;
       const lastChecked = Date.parse(checkedAt);
-      if (now - lastChecked >= intervalMs) batch.due.push({ taskId: task.id, title: task.title, review, lastChecked });
+      const entry = { taskId: task.id, title: task.title, review, lastChecked };
+      if (recovery?.phase === "needs_owner") {
+        if (!review.attention_delivery_id) batch.attention.push(entry);
+        continue;
+      }
+      if (last && (last.status === "delivering" || running.has(last.id) || recovery && !["none", "resolved"].includes(recovery.phase) ||
+        last.memberId === reviewer.id && ["queued", "held"].includes(last.status))) continue;
+      if (last && last.memberId !== reviewer.id) retireReminder(store, review);
+      const retry = last?.memberId === reviewer.id;
+      if (now - lastChecked < (retry ? Math.max(intervalMs, 5 * 60_000) : intervalMs)) continue;
+      if (retry && review.review_dispatch_count >= 2) {
+        if (!review.attention_delivery_id) batch.attention.push(entry);
+      } else batch.due.push(entry);
     }
-    const link = store.db.query("UPDATE task_completion_reviews SET delivery_id=? WHERE task_id=? AND report_id=?");
+    const link = store.db.query(`UPDATE task_completion_reviews SET review_dispatch_count=1+MAX(review_dispatch_count, delivery_id IS NOT NULL),
+      delivery_id=?,attention_delivery_id=NULL WHERE task_id=? AND report_id=?`);
     for (const [projectId, batch] of projects) {
-      if (batch.outstanding || !batch.due.length) continue;
+      if (!batch.due.length) continue;
       const entries = batch.due.sort((left, right) => left.lastChecked - right.lastChecked).slice(0, 8);
       const list = entries.map(({ taskId, title, review }) => `- #${taskId} '${title}' · 계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}`);
       const delivery = store.enqueue({ projectId, memberId: batch.reviewer.id, taskId: entries.length === 1 ? entries[0]!.taskId : null, kind: "system", wake: true,
         text: [`${reviewPrefix}${entries.length}건`, ...list,
           "각 항목의 task_review_evidence와 산출물을 대조한 뒤 task_review에 결과를 남기세요. 통합 가능한 판은 전체 reviewed_commit을 적습니다. 완료 근거가 유효하지만 새 결함이 있으면 confirmed_with_repair를, 원래 완료 조건이나 증거가 성립하지 않으면 changes_requested를 선택합니다."].join("\n") });
       for (const { review } of entries) link.run(delivery.id, review.task_id, review.report_id);
+      out.push(delivery);
+    }
+    for (const [projectId, batch] of projects) {
+      if (!batch.attention.length) continue;
+      const conductor = store.getConductor(projectId);
+      if (!conductor) continue;
+      const entries = batch.attention.slice(0, 8);
+      const delivery = store.enqueue({ projectId, memberId: conductor.id, kind: "system", wake: true,
+        text: ["[시스템] 최종 검수 전달을 확인해 주세요. 검수자의 수신 상태·도구 오류·판정 기록을 대조해 해당 업무의 검수를 복구하세요.",
+          ...entries.map(({ title, review }) => `- ${title} · 업무 #${review.task_id} · 보고 #${review.report_id} · 전달 #${review.delivery_id}`)].join("\n") });
+      for (const { review } of entries) {
+        store.db.query("UPDATE task_completion_reviews SET attention_delivery_id=? WHERE task_id=? AND report_id=?")
+          .run(delivery.id, review.task_id, review.report_id);
+      }
       out.push(delivery);
     }
     return out;

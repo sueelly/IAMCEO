@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { STAGE_LABEL } from "../shared/task-stage.ts";
-import { CLI_PROVIDERS, CONDUCTOR_TOOLS, FINAL_REVIEW_TOOLS, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
+import { CLI_PROVIDERS, CONDUCTOR_TOOLS, FINAL_REVIEW_TOOLS, FINAL_REVIEWER_TOOLSET, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
 import { CHECK_KINDS, formatContract } from "./harness.ts";
@@ -929,7 +929,7 @@ async function memoryCall<T>(run: () => Promise<T>): Promise<T> {
 }
 
 function namesFor(member: Member, opts: { memory?: boolean } = {}): readonly ToolName[] {
-  if (member.finalReviewer) return ["status", "task_trace", "post", ...FINAL_REVIEW_TOOLS];
+  if (member.finalReviewer) return FINAL_REVIEWER_TOOLSET;
   return [
     ...(member.kind === "conductor" ? CONDUCTOR_ALLOWED_TOOLS : WORKER_TOOLS),
     ...(opts.memory && member.origin !== "manual" ? MEMORY_TOOLS : []),

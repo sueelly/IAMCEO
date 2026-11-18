@@ -6,7 +6,7 @@ const run = promisify(execFile);
 const sha = /^(?:[\da-f]{40}|[\da-f]{64})$/i;
 
 /** Read only objects in the project's registered repository. No worktree files, fetches, or user commands. */
-export async function readFinalReviewPatch(cwd: string, commit: string, path: string | undefined, offset: number) {
+export async function readFinalReviewPatch(cwd: string, commit: string, path: string | undefined, offset: number, recordedBase?: string | null) {
   if (!sha.test(commit)) return { state: "missing_commit" as const };
   const git = async (...args: string[]) => {
     try {
@@ -20,10 +20,15 @@ export async function readFinalReviewPatch(cwd: string, commit: string, path: st
   const root = (await git("rev-parse", "--show-toplevel"))?.trim();
   if (!root || await realpath(cwd).catch(() => null) !== await realpath(root).catch(() => null)) return { state: "missing_repository" as const };
   if ((await git("rev-parse", "--verify", commit + "^{commit}"))?.trim() !== commit.toLowerCase()) return { state: "missing_commit" as const };
-  const base = (await git("merge-base", commit, "refs/remotes/origin/main"))?.trim()
-    ?? (await git("merge-base", commit, "refs/heads/main"))?.trim();
+  if (recordedBase && !sha.test(recordedBase)) return { state: "missing_base" as const };
+  const base = recordedBase ? (await git("merge-base", commit, recordedBase))?.trim()
+    : (await git("merge-base", commit, "refs/remotes/origin/main"))?.trim()
+      ?? (await git("merge-base", commit, "refs/heads/main"))?.trim();
   const againstMain = !!base && sha.test(base) && base !== commit;
-  const command = againstMain ? ["diff", base, commit] : ["show", "--format=", "--first-parent", "--root", commit];
+  if (!againstMain && (recordedBase || (await git("rev-list", "--parents", "-n", "1", commit))?.trim() !== commit)) {
+    return { state: "missing_base" as const };
+  }
+  const command = againstMain ? ["diff", base, commit] : ["show", "--format=", "--root", commit];
   const options = ["--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"];
   const names = await git(...command, ...options, "--name-only", "-z", "--");
   if (names === null) return { state: "unavailable" as const };
@@ -32,6 +37,6 @@ export async function readFinalReviewPatch(cwd: string, commit: string, path: st
   const patch = await git(...command, ...options, "--", ...(path === undefined ? [] : [path]));
   if (patch === null) return { state: "select_file" as const, files: files.slice(0, 150), fileCount: files.length };
   const limit = 12_000;
-  return { state: "observed" as const, commit, comparison: againstMain ? base : "first_parent", files: files.slice(0, 150), fileCount: files.length,
+  return { state: "observed" as const, commit, comparison: againstMain ? base : "root", files: files.slice(0, 150), fileCount: files.length,
     patch: patch.slice(offset, offset + limit), offset, nextOffset: patch.length > offset + limit ? offset + limit : null };
 }
