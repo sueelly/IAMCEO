@@ -851,7 +851,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "최종 검수 전담 직원의 판정을 기록한다. confirmed는 현재 완료 근거를 확인한 경우, confirmed_with_repair는 근거가 유효한 업무에서 별도 수정할 새 결함을 찾은 경우, changes_requested는 원래 완료 조건이나 근거가 성립하지 않는 경우에 쓴다.",
     z.strictObject({
       task_id: text, report_id: text, result: z.enum(["confirmed", "changes_requested", "confirmed_with_repair"]), evidence: text,
-      reviewed_commit: z.string().regex(fullCommit).optional(), repair_title: oneLine(120).optional(),
+      reviewed_commit: z.string().regex(fullCommit).optional().describe("완료 보고의 작업 브랜치 전체 SHA. 수정 판정에도 검토 대상을 대조할 때 첨부할 수 있다."),
+      repair_title: oneLine(120).optional().describe("changes_requested와 confirmed_with_repair에 필요한 수정 업무 이름"),
     }),
     (orch, member, a) => {
       const result = orch.finishFinalReview(member, { taskId: a.task_id, reportId: a.report_id, result: a.result,

@@ -5114,14 +5114,22 @@ export class Orchestrator implements OrchestratorApi {
       if (!review || review.report_id !== input.reportId || !report || report.memberId === member.id) {
         throw new ApiError(409, "현재 검수할 다른 직원의 완료 보고를 확인해 주세요");
       }
+      const commit = input.reviewedCommit?.toLowerCase();
+      const confirmingCommit = input.result === "confirmed" ? commit : undefined;
+      if (commit && input.result !== "confirmed") {
+        const artifact = this.store.getReportHarness(report.id);
+        if (!task.branch || artifact?.artifactBranch !== task.branch || artifact.artifactCommit?.toLowerCase() !== commit) {
+          throw new ApiError(409, "reviewed_commit에는 현재 완료 보고의 작업 브랜치 커밋 전체 SHA를 적어 주세요");
+        }
+      }
       if (review.status !== "pending") {
         if (input.result === "confirmed_with_repair" && review.status === "confirmed" &&
-          review.reviewer_id === member.id && !review.reviewed_commit && !input.reviewedCommit) {
+          review.reviewer_id === member.id && !review.reviewed_commit) {
           const existing = findIndependentReviewRepair(this.store, task.projectId, report.id);
           if (existing) return { status: input.result, followup: existing };
         }
         if (review.status === input.result && review.reviewer_id === member.id &&
-          (input.reviewedCommit?.toLowerCase() ?? null) === review.reviewed_commit) return { status: review.status };
+          (confirmingCommit ?? null) === review.reviewed_commit) return { status: review.status };
         throw new ApiError(409, "검수 대상 또는 상태가 바뀌었습니다. 최신 기록을 확인해 주세요");
       }
       if (this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
@@ -5133,17 +5141,17 @@ export class Orchestrator implements OrchestratorApi {
       if (input.result === "confirmed") {
         const artifact = this.store.getReportHarness(report.id);
         if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 현재 계약과 검사, 해당 커밋의 변경분을 먼저 확인해 주세요");
-        if (task.branch && artifact?.artifactBranch === task.branch && artifact.artifactCommit && !input.reviewedCommit) {
+        if (task.branch && artifact?.artifactBranch === task.branch && artifact.artifactCommit && !confirmingCommit) {
           throw new ApiError(409, "작업 브랜치의 검증 커밋을 대조한 뒤 전체 SHA를 적어 주세요");
         }
-        confirmCompletionReview(this.store, task.id, member, evidence, input.reviewedCommit && task.branch
-          ? { branch: task.branch, commit: input.reviewedCommit.toLowerCase() } : undefined);
+        confirmCompletionReview(this.store, task.id, member, evidence, confirmingCommit && task.branch
+          ? { branch: task.branch, commit: confirmingCommit } : undefined);
         text = `${member.name}가 '${task.title}'의 최신 완료 보고 #${review.report_id}를 독립 검수했습니다.`;
       } else if (input.result === "confirmed_with_repair" || review.main_commit || this.store.getEffectiveContract(task.id)?.main_authority ||
                  this.store.listStageMarks(task.id).some(mark => mark.stage === "merged" && mark.id > review.mark_id)) {
         const title = input.repairTitle?.trim();
         if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 원래 완료 근거를 먼저 확인해 주세요");
-        if (!title || input.reviewedCommit) throw new ApiError(400, "별도 수정 업무 이름을 적어 주세요. 통합 검수 커밋은 수정 결과를 확인할 때 기록합니다");
+        if (!title) throw new ApiError(400, "수정 업무 이름을 repair_title에 적어 주세요");
         const existing = findIndependentReviewRepair(this.store, task.projectId, report.id);
         if (existing) followup = existing;
         else {
@@ -5160,7 +5168,7 @@ export class Orchestrator implements OrchestratorApi {
         text = `${member.name}가 '${task.title}'의 완료 보고 #${report.id}에서 결함을 확인하고 수정 업무에 연결했습니다.`;
       } else {
         const title = input.repairTitle?.trim();
-        if (!title || input.reviewedCommit) throw new ApiError(400, "확인된 문제를 고칠 업무 이름을 적어 주세요");
+        if (!title) throw new ApiError(400, "수정 업무 이름을 repair_title에 적어 주세요");
         const issue = this.store.createMessage({ projectId: task.projectId, taskId: task.id, memberId: member.id,
           who: member.name, kind: "알림", title, body: evidence, aboutMessageId: report.id });
         followup = queueIntegrationRepair(this.store, task, issue.id, title, evidence);

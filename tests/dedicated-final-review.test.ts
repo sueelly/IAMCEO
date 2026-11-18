@@ -211,18 +211,32 @@ test("owner stop retains the review and blocks further verdicts and delivery", a
 
 test("a review finding creates one scoped repair and a conductor notification", async () => {
   const f = await pendingReview();
-  const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested",
+  const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested", reviewed_commit: f.head,
     evidence: "재시작 후 설정이 초기화되는 재현을 확인했습니다", repair_title: "재시작 뒤 설정 초기화 수정" };
   expect((await f.tool(f.reviewer, "task_review", args)).isError).toBeUndefined();
   expect((await f.tool(f.reviewer, "task_review", args)).isError).toBeUndefined();
   expect(f.store.taskProgress(f.source.id).finalReview?.status).toBe("changes_requested");
+  expect(latestCompletionReview(f.store, f.source.id)?.reviewed_commit).toBeNull();
   expect(f.store.listWork(f.project.id).filter(w => w.title === args.repair_title)).toHaveLength(1);
   expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id && d.text.includes(args.repair_title))).toHaveLength(1);
 });
 
+test("a repair distinguishes missing titles from a commit on another report", async () => {
+  const f = await pendingReview();
+  const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested", evidence: "검사에서 초기화가 재현됐습니다", reviewed_commit: f.head };
+  const missing = await f.tool(f.reviewer, "task_review", args);
+  expect(missing.isError).toBe(true);
+  expect(missing.text).toContain("repair_title");
+  const second = await addPendingReview(f);
+  const unbound = await f.tool(f.reviewer, "task_review", { ...args, task_id: second.task.id, report_id: second.report.id, repair_title: "초기화 수정" });
+  expect(unbound.isError).toBe(true);
+  expect(unbound.text).toContain("reviewed_commit");
+  expect(latestCompletionReview(f.store, second.task.id)?.status).toBe("pending");
+});
+
 test("a new defect can be recorded as a separate repair without reopening valid completion or authorizing main", async () => {
   const f = await pendingReview();
-  const args = { task_id: f.source.id, report_id: f.report.id, result: "confirmed_with_repair",
+  const args = { task_id: f.source.id, report_id: f.report.id, result: "confirmed_with_repair", reviewed_commit: f.head,
     evidence: "현재 완료 조건의 검증은 통과했고 다른 설정을 열면 추가 초기화가 재현됐습니다", repair_title: "다른 설정의 값 초기화 수정" };
   expect((await f.tool(f.reviewer, "task_review", args)).isError).toBe(true);
   const evidence = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.source.id, report_id: f.report.id, path: "setting.txt" });
@@ -231,6 +245,7 @@ test("a new defect can be recorded as a separate repair without reopening valid 
   expect(first.isError, first.text).toBeUndefined();
   const second = await f.tool(f.reviewer, "task_review", args);
   expect(second.text).toBe(first.text);
+  expect((await f.tool(f.reviewer, "task_review", { ...args, reviewed_commit: "e".repeat(40) })).isError).toBe(true);
   expect(f.store.taskProgress(f.source.id)).toMatchObject({ stage: "done", finalReview: { status: "confirmed" } });
   expect(latestCompletionReview(f.store, f.source.id)?.reviewed_commit).toBeNull();
   const work = f.store.listWork(f.project.id).filter(w => w.sec === "next");

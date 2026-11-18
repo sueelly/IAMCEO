@@ -113,10 +113,15 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   const defect = spawnSync("/usr/bin/python3", ["verify.py", ""], { cwd: f.project.cwd, encoding: "utf8" });
   expect(defect.status).toBe(1);
   expect(defect.stderr).toContain("('default', '')");
-  const issue = { task_id: f.task.id, report_id: f.reportId, result: "changes_requested", repair_title: "빈 설정 저장 복구", evidence: "빈 설정을 저장한 뒤 다시 열면 값이 사라집니다" };
+  const issue = { task_id: f.task.id, report_id: f.reportId, result: "changes_requested", reviewed_commit: f.head, repair_title: "빈 설정 저장 복구", evidence: "빈 설정을 저장한 뒤 다시 열면 값이 사라집니다" };
+  const wrong = { ...issue, reviewed_commit: main };
+  expect((await f.tool(f.reviewer, "task_review", wrong)).isError).toBe(true);
+  expect(latestCompletionReview(f.store, f.task.id)?.status).toBe("pending");
   const repair = await f.tool(f.reviewer, "task_review", issue);
   expect(repair.isError, repair.text).toBeUndefined();
   expect((await f.tool(f.reviewer, "task_review", issue)).isError).toBeUndefined();
+  expect((await f.tool(f.reviewer, "task_review", wrong)).isError).toBe(true);
+  expect(latestCompletionReview(f.store, f.task.id)?.reviewed_commit).toBeNull();
   checkCompletionReviews(f.store, Date.now() + 600_000, 30_000);
   expect(latestCompletionReview(f.store, taskId)).toMatchObject({ status: "changes_requested", reviewer_id: f.reviewer.id });
   expect(f.store.taskProgress(f.task.id).stage).toBe("done");
