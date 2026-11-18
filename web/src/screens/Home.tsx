@@ -221,14 +221,15 @@ function TodoCard({ todos }: { todos: Todo[] }) {
     if (!targetId) { visitedTarget.current = null; return; }
     if (visitedTarget.current === targetId) return;
     if (targetFolded) { setShowDone(true); return; }
-    // Shell finishes tab navigation first. Focus the row title, which never changes completion.
-    const frame = requestAnimationFrame(() => {
+    const focusTitle = () => {
       const title = document.querySelector<HTMLElement>(`[data-todo="${CSS.escape(targetId)}"] .hm-todo__toggle`);
       if (!title) return;
       title.scrollIntoView({ block: "center" });
       title.focus({ preventScroll: true });
       visitedTarget.current = targetId;
-    });
+    };
+    // The shell measures its fixed header and footer after the first layout.
+    let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(focusTitle); });
     return () => cancelAnimationFrame(frame);
   }, [targetId, targetFolded]);
   if (sorted.length === 0) return null;
