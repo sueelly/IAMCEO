@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ const contract = { kind: "other" as const, goal: "변경 검증", scope: "등록
   inputs: ["대표 요청"], outputs: ["검증한 작업 브랜치"], constraints: [], exclusions: [],
   acceptance: ["요청한 조건을 검사한다"], checks: [] };
 
-async function pendingReview() {
+async function pendingReview(alreadyIntegrated = false) {
   const f = fixture(), reviewer = f.store.ensureFinalReviewer(f.project.id)!;
   const git = (...args: string[]) => execFileSync("/usr/bin/git", ["-c", "user.name=Reviewer Test", "-c", "user.email=review@example.invalid", ...args],
     { cwd: f.project.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -24,11 +25,18 @@ async function pendingReview() {
   git("add", "setting.txt");
   git("commit", "-m", "Restore setting");
   const head = git("rev-parse", "HEAD");
-  const source = f.orch.saveTask(f.lead, { title: "색상 설정 복구", branch: "fix/setting", contract }).task;
+  const worktree = alreadyIntegrated ? join(f.project.cwd, "submission") : undefined;
+  if (worktree) {
+    git("checkout", "main");
+    git("merge", "--ff-only", "fix/setting");
+    git("update-ref", "refs/remotes/origin/main", head);
+    git("worktree", "add", worktree, "fix/setting");
+  }
+  const source = f.orch.saveTask(f.lead, { title: "색상 설정 복구", branch: "fix/setting", worktree, contract }).task;
   const report = await f.orch.recordPost(f.worker, { taskId: source.id, kind: "완료", title: "설정 복구 검증", contractRev: 1, artifactCommit: head,
     checks: [{ name: "설정 유지 확인", kind: "other", result: "pass", evidence: "상태를 확인했습니다", criterion: 1 }] });
   expect(f.store.taskProgress(source.id).finalReview?.status).toBe("pending");
-  return { ...f, reviewer, source, report, head };
+  return { ...f, reviewer, source, report, head, git };
 }
 
 async function addPendingReview(f: Awaited<ReturnType<typeof pendingReview>>) {
@@ -302,4 +310,51 @@ test("an old unsent conductor reminder is retired without reusing its receipt", 
   expect(delivery?.memberId).toBe(f.reviewer.id);
   expect(f.store.requireDelivery(old.id).status).toBe("failed");
   expect(completionReviewAllowsDelivery(f.store, old)).toBe(false);
+});
+
+test("after a request for changes the author and assigned reviewer can compare the attached full patch without altering the verdict or main authority", async () => {
+  const f = await pendingReview(true);
+  const base = f.git("rev-parse", f.head + "^");
+  const diff = f.git("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--full-index", base, f.head, "--") + "\n";
+  const digest = createHash("sha256").update(diff).digest("hex");
+  const body = `${base} ${f.head} ${digest}\n\n\`\`\`\`diff\n${diff}\`\`\`\`\n`;
+  const makeFile = (body: string, taskId = f.source.id) => f.store.createFile({
+    projectId: f.project.id, title: "전체 패치", taskId, memberId: f.worker.id, body });
+  const file = makeFile(body);
+  const args = { task_id: f.source.id, report_id: f.report.id, comparison_base: base, comparison_file_id: file.id };
+  const verdict = await f.tool(f.reviewer, "task_review", { task_id: f.source.id, report_id: f.report.id,
+    result: "changes_requested", repair_title: "기존 비교 기준 대조", evidence: "저장된 비교 기준이 없어 제출 범위를 확인해야 합니다" });
+  expect(verdict.isError, verdict.text).toBeUndefined();
+  const previous = latestCompletionReview(f.store, f.source.id);
+  const marks = f.store.listStageMarks(f.source.id);
+  const harness = f.store.getReportHarness(f.report.id);
+  expect(previous).toMatchObject({ status: "changes_requested", evidence_reader_id: null });
+  expect(harness).toMatchObject({ artifactBase: null, artifactCommit: f.head });
+  const attachmentReport = await f.orch.recordPost(f.worker, { taskId: f.source.id, kind: "알림", title: "지적받은 전체 패치 첨부",
+    aboutReportId: f.store.listMessagesAbout(f.project.id, f.report.id).find(m => m.memberId === f.reviewer.id)!.id, fileIds: [file.id] });
+  const compare = { base, file_id: file.id, path: "setting.txt" };
+  for (const result of [await f.tool(f.worker, "post", { report_id: f.report.id, comparison: compare }),
+    await f.tool(f.reviewer, "task_review_evidence", { ...args, path: "setting.txt" })]) {
+    expect(result.isError, result.text).toBeUndefined();
+    expect(JSON.parse(result.text)).toMatchObject({ reportId: f.report.id, fileId: file.id, verdict: "changes_requested",
+      attachmentReportId: attachmentReport.id, sha256: digest, patch: { state: "observed", comparison: base, commit: f.head, files: ["setting.txt"], patch: expect.stringContaining("+after") } });
+  }
+  const changed = makeFile(body.replace("+after", "+other"));
+  await f.orch.recordPost(f.worker, { taskId: f.source.id, kind: "알림", title: "수정 자료", correctsMessageId: f.report.id, fileIds: [changed.id] });
+  const unbound = makeFile(body);
+  const another = f.orch.saveTask(f.lead, { title: "다른 업무", contract }).task;
+  for (const wrong of [{ comparison_file_id: unbound.id }, { comparison_file_id: changed.id }, { comparison_file_id: makeFile(body, another.id).id },
+    { comparison_base: f.head }, { report_id: "another" }, { revision: "main" }]) {
+    expect((await f.tool(f.reviewer, "task_review_evidence", { ...args, ...wrong })).isError).toBe(true);
+  }
+  expect((await f.tool(f.worker2, "post", { report_id: f.report.id, comparison: compare })).isError).toBe(true);
+  expect((await f.tool(f.lead, "task_review_evidence", args)).isError).toBe(true);
+  expect((await f.tool(f.worker, "post", { kind: "진행", title: "검수 비교", comparison: compare })).isError).toBe(true);
+  expect((await f.tool(f.reviewer, "task_review_evidence", { task_id: f.source.id, report_id: f.report.id })).isError).toBe(true);
+  f.git("worktree", "remove", f.source.worktree!);
+  expect((await f.tool(f.worker, "post", { report_id: f.report.id, comparison: compare })).isError).toBe(true);
+  expect(latestCompletionReview(f.store, f.source.id)).toEqual(previous);
+  expect(f.store.getReportHarness(f.report.id)).toEqual(harness);
+  expect(f.store.listStageMarks(f.source.id)).toEqual(marks);
+  expect(f.store.getEffectiveContract(f.source.id)?.main_authority).toBeFalsy();
 });

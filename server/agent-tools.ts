@@ -442,7 +442,9 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   post: tool(
     "대화에 보고를 남긴다. 완료·막힘은 턴을 마치기 전에 꼭 올리고, 진행·알림은 필요할 때 올린다. 대표가 정할 것은 ask 로 올린다. 대표가 할 일은 owner_action 에 한 줄로 쓴다. report_id 만 주면 같은 프로젝트 보고의 원본·전체 자료·결재·작성 순서·정정 관계를 조회한다(게시하지 않는다).",
     z.strictObject({
-      report_id: text.optional().describe("조회할 보고 원본 메시지 id. 조회할 때는 이 필드만 준다"),
+      report_id: text.optional().describe("조회할 원본 보고 ID"),
+      comparison: z.strictObject({ base: z.string().regex(fullCommit), file_id: text, path: z.string().max(1024).optional(),
+        offset: z.number().int().min(0).max(2_097_152).optional() }).optional().describe("보완 요청된 자신의 보고에 제출한 전체 Git 패치를 고정 기준과 대조한다. report_id와 함께 사용한다."),
       kind: z.enum(["완료", "진행", "막힘", "알림"]).optional(),
       title: oneLine().optional().describe("보고를 훑어볼 때 알 수 있는 업무 대상과 이번에 달라진 결과. 진행은 변화, 막힘은 장애와 필요한 조건, 완료는 실제 끝낸 범위·확인 단계를 쓴다"),
       body: z.string().optional().describe("이 글만 읽어도 이해할 업무·요청 맥락, 핵심 결과, 가까운 근거, 남은 확인 대상과 다음 행동(마크다운). 줄 수 때문에 대상·조건·불확실성을 빼지 않는다. 상세 근거는 실제 자료에 연결한다"),
@@ -463,6 +465,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
+      if (a.comparison && !a.report_id) ctx.addIssue({ code: "custom", message: "기존 패치 대조에는 조회할 report_id가 필요합니다" });
       if (a.report_id !== undefined) {
         if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id, a.checks, a.artifact_commit, a.artifact_base, a.main_commit, a.main_base, a.continue_work, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
@@ -475,6 +478,11 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         const refs = orch.reportReferences(member.projectId, a.report_id);
         const source = orch.store.requireMessage(refs.sourceMessageId);
         if (source.projectId !== member.projectId) throw new ApiError(404, "보고를 찾을 수 없습니다");
+        if (a.comparison) {
+          if (!source.taskId) throw new ApiError(409, "업무에 연결된 원본 완료 보고를 지정해 주세요");
+          return reply(JSON.stringify(await orch.attachedReviewEvidence(member, source.taskId, source.id,
+            a.comparison.base.toLowerCase(), a.comparison.file_id, a.comparison.path, a.comparison.offset ?? 0)));
+        }
         const files = refs.fileIds.map(id => {
           const file = orch.store.getFile(id);
           if (!file || file.projectId !== member.projectId) throw new ApiError(404, `자료를 찾을 수 없습니다: ${id}`);
@@ -842,9 +850,16 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_review_evidence: tool(
-    "현재 계약, 검사, 검수할 변경분을 읽습니다. main 통합 업무는 원격 main 전후 차이를 기본으로 보여 주고 revision=branch로 원래 작업 브랜치도 대조할 수 있습니다. 파일과 nextOffset을 지정해 이어 읽습니다.",
-    z.strictObject({ task_id: text, report_id: text, path: z.string().max(1024).optional(), offset: z.number().int().min(0).max(2_097_152).optional(), revision: z.enum(["main", "branch"]).optional() }),
-    async (orch, member, a) => reply(JSON.stringify(await orch.finalReviewEvidence(member, a.task_id, a.report_id, a.path, a.offset ?? 0, a.revision))),
+    "현재 계약, 검사, 검수할 변경분을 읽습니다. main 통합 업무는 원격 main 전후 차이를 기본으로 보여 주고 revision=branch로 원래 작업 브랜치도 대조할 수 있습니다. 파일과 nextOffset을 지정해 이어 읽습니다. 보완 요청된 보고의 제출자와 지정 검수자는 comparison_base와 comparison_file_id로 기존 자료의 전체 패치를 읽기 전용으로 대조할 수 있습니다.",
+    z.strictObject({ task_id: text, report_id: text, path: z.string().max(1024).optional(), offset: z.number().int().min(0).max(2_097_152).optional(), revision: z.enum(["main", "branch"]).optional(),
+      comparison_base: z.string().regex(fullCommit).optional(), comparison_file_id: text.optional() }),
+    async (orch, member, a) => {
+      if (a.comparison_base || a.comparison_file_id) {
+        if (!a.comparison_base || !a.comparison_file_id || a.revision === "main") throw new ApiError(400, "작업 브랜치의 비교 기준과 전체 패치 자료 ID를 함께 적어 주세요");
+        return reply(JSON.stringify(await orch.attachedReviewEvidence(member, a.task_id, a.report_id, a.comparison_base.toLowerCase(), a.comparison_file_id, a.path, a.offset ?? 0)));
+      }
+      return reply(JSON.stringify(await orch.finalReviewEvidence(member, a.task_id, a.report_id, a.path, a.offset ?? 0, a.revision)));
+    },
   ),
 
   task_review: tool(

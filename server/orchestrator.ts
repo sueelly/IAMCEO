@@ -3,7 +3,7 @@ import { assignedReviewMember } from "./review-routing.ts";
 import { providerIssueKind } from "../shared/execution-issues.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 import { artifactRange, integrationWorktreeAt, isRemoteObservation, verifyIntegrationGraph, witnessedRemoteIntegration } from "./integration-evidence.ts";
-import { readFinalReviewPatch } from "./final-review-evidence.ts";
+import { readAttachedReviewPatch, readFinalReviewPatch } from "./final-review-evidence.ts";
 import { UNKNOWN_AGENT_RESULT } from "./agent-receipts.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { readCodeSource, type CodeReadScope } from "./harness-source-read.ts";
@@ -5090,6 +5090,35 @@ export class Orchestrator implements OrchestratorApi {
       done.memberId ? `완료 판단: ${done.who} · ${done.evidence} · ${done.at}` : "완료 기준: 계약·브랜치가 없는 업무라 완료 보고로 끝났습니다",
       ...(unverified.length ? [`미검증: ${unverified.join(", ")}`] : []),
     ];
+  }
+
+  async attachedReviewEvidence(member: Member, taskId: string, reportId: string, base: string, fileId: string, path: string | undefined, offset: number) {
+    const task = this.requireTaskInProject(member, taskId);
+    const project = this.store.requireProject(task.projectId);
+    this.requireActive(project);
+    const review = latestCompletionReview(this.store, task.id), report = this.store.getMessage(reportId);
+    const artifact = this.store.getReportHarness(reportId);
+    if (!review || review.status !== "changes_requested" || review.report_id !== reportId || report?.kind !== "완료" ||
+      report.taskId !== task.id || report.projectId !== project.id || !report.memberId || artifact?.memberId !== report.memberId ||
+      artifact.artifactBase || !artifact.artifactCommit || !task.worktree || !task.branch || artifact.artifactBranch !== task.branch)
+      throw new ApiError(409, "비교 기준이 비어 있는 현재 보완 요청 보고와 등록된 작업 브랜치를 확인해 주세요");
+    if (member.id !== report.memberId && !assignedReviewMember(this.store, member, review))
+      throw new ApiError(403, "제출자와 이 보고에 배정된 검수자만 기존 변경분을 대조할 수 있습니다");
+    const file = this.store.getFile(fileId);
+    if (!file || file.taskId !== task.id || file.projectId !== project.id || file.memberId !== report.memberId)
+      throw new ApiError(400, "같은 업무에 제출자가 등록한 전체 패치 자료를 지정해 주세요");
+    // A later attachment must be the author's correction or their reply to the assigned reviewer's exact finding.
+    const attachment = this.store.db.query<{ id: string }, [string, string, string, string, string, string, string, string]>(`
+      SELECT m.id FROM messages m JOIN report_references refs ON refs.source_message_id=m.id AND refs.project_id=m.project_id
+      LEFT JOIN messages finding ON finding.id=m.about_message_id AND finding.project_id=m.project_id AND finding.task_id=m.task_id
+      WHERE m.project_id=? AND m.task_id=? AND m.member_id=? AND m.mine=0 AND EXISTS (
+        SELECT 1 FROM json_each(refs.file_ids_json) WHERE value=?) AND (
+        m.id=? OR refs.corrects_message_id=? OR (finding.about_message_id=? AND finding.member_id=? AND finding.kind='알림'))
+      ORDER BY m.rowid LIMIT 1`).get(project.id, task.id, report.memberId, fileId, report.id, report.id, report.id, review.reviewer_id ?? "");
+    if (!attachment) throw new ApiError(409, "이 완료 보고 또는 해당 검수 지적에 제출자가 연결한 자료를 지정해 주세요");
+    const evidence = await readAttachedReviewPatch(project.cwd, task.worktree, task.branch, artifact.artifactCommit, base, file.body, path, offset);
+    if (!evidence) throw new ApiError(409, "등록된 워크트리와 기준·제출 커밋, 자료의 패치 전문 및 SHA-256을 대조할 수 없습니다");
+    return publicHarness({ taskId: task.id, reportId, fileId, attachmentReportId: attachment.id, verdict: review.status, ...evidence });
   }
 
   async finalReviewEvidence(member: Member, taskId: string, reportId: string, path: string | undefined, offset: number, revision?: "main" | "branch") {
