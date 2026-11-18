@@ -99,3 +99,33 @@ test("a pending terminal approval on another worker's parent task keeps its chil
     expect(f.writes).toEqual([]);
   } finally { await f.stop(); }
 });
+
+test("finishing the assigned turn starts the worker's next public card without a lead or a polling tick", async () => {
+  const f = await createQueueStatusFixture();
+  try {
+    const terms = { kind: "other" as const, goal: "Inspect the rendering", scope: "The scene preview",
+      inputs: ["Specified scene"], outputs: ["Inspection results"], constraints: [], exclusions: [],
+      acceptance: ["The rendering is checked"] };
+    const task = (title: string) => {
+      const { task } = f.store.ensureSourceTask({ projectId: f.project.id, sourceRef: title, title, origin: "owner" });
+      f.store.saveTaskContract(task.id, terms, { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+      return task;
+    };
+    const first = task("Inspect first scene");
+    await f.orch.assign(f.project.id, f.member.handle, { taskId: first.id, text: first.title });
+    expect(f.writes).toHaveLength(1);
+    const next = task("Inspect remaining preview");
+    const card = f.store.upsertWork({ projectId: f.project.id, taskId: next.id, sec: "next", who: f.member.name,
+      title: next.title, detail: "Inspect the remaining scene in the preview" });
+    await f.orch.recordPost(f.member, { taskId: first.id, kind: "완료", title: "First scene checked", contractRev: 1,
+      checks: [{ name: "Rendered scene", criterion: 1, kind: "other", result: "pass", evidence: "Compared the preview to the specified scene" }] });
+    f.done();
+    for (let i = 0; i < 300 && f.writes.length < 2; i++) await Bun.sleep(10);
+    expect(f.writes).toHaveLength(2);
+    expect(f.writes[1]!.text).toContain(next.title);
+    expect(f.writes[1]!.text).toContain(terms.acceptance[0]!);
+    expect(f.store.doneMark(first.id)?.who).toBe("하네스");
+    expect(f.store.listWork(f.project.id).find(w => w.id === card.id)?.sec).toBe("doing");
+    expect(f.store.listTaskDeliveries(next.id).filter(d => d.kind === "instruction")).toHaveLength(1);
+  } finally { await f.stop(); }
+});

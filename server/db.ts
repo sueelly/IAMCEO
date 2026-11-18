@@ -1051,6 +1051,29 @@ export const MIGRATIONS: string[] = [
      CHECK(standby_reviewer IN (0,1) AND (standby_reviewer=0 OR (kind='worker' AND final_reviewer=0)));
    CREATE UNIQUE INDEX members_project_standby_reviewer ON members(project_id) WHERE standby_reviewer=1;
    CREATE INDEX task_completion_reviews_delivery ON task_completion_reviews(delivery_id) WHERE delivery_id IS NOT NULL;`,
+  // v55: preserve each card's original section so reopening can undo an automatic completion.
+  `ALTER TABLE work ADD COLUMN auto_done_from TEXT CHECK(auto_done_from IN ('doing','next'));
+   UPDATE work AS w SET auto_done_from=w.sec, sec='done', done_at=r.completed_at, updated_at=r.completed_at
+   FROM task_completion_reviews r
+   JOIN task_stage_marks m ON m.id=r.mark_id AND m.task_id=r.task_id AND m.stage='done'
+   JOIN tasks t ON t.id=r.task_id AND t.merged_into IS NULL
+   JOIN projects p ON p.id=t.project_id AND p.archived=0
+   WHERE w.project_id=p.id AND COALESCE(w.task_id,'tk_'||w.id)=t.id
+     AND w.sec IN ('doing','next') AND w.updated_at<r.completed_at
+     AND NOT EXISTS (SELECT 1 FROM task_stage_marks later WHERE later.task_id=t.id
+       AND later.id>m.id AND later.stage IN ('reopen','hold','done'));
+   UPDATE projects SET board_revision=board_revision+1
+   WHERE id IN (SELECT project_id FROM work WHERE auto_done_from IS NOT NULL);`,
+  // v56: owner-sourced main integration scope, independent of historical execution contracts.
+  `CREATE TABLE project_main_policies (
+    id INTEGER PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    root TEXT NOT NULL, origin TEXT NOT NULL, paths TEXT NOT NULL, source TEXT NOT NULL, revoked_at TEXT
+  );
+  CREATE UNIQUE INDEX active_project_main_policy ON project_main_policies(project_id) WHERE revoked_at IS NULL;
+  CREATE TABLE task_main_policy_enrollments (
+    policy_id INTEGER NOT NULL REFERENCES project_main_policies(id) ON DELETE CASCADE, task_id TEXT NOT NULL, rev INTEGER NOT NULL, branch TEXT NOT NULL,
+    PRIMARY KEY(policy_id,task_id,rev,branch), FOREIGN KEY(task_id,rev) REFERENCES task_contracts(task_id,rev) ON DELETE CASCADE
+  );`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

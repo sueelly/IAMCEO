@@ -42,11 +42,31 @@ function tableShape(db: Database): TableShape {
   });
 }
 
-function unaffectedContentDigest(db: Database, shape: TableShape = tableShape(db)): string {
+/** Compute the expected v55 changes on a read-only connection. TEMP copies have
+ * no user triggers, so unintended changes to original fields still fail verification. */
+function expectedTableShape(db: Database, version: number): TableShape {
+  const shape = tableShape(db);
+  const boardCompletionVersion = 55;
+  if (version < boardCompletionVersion && shape.some(table => table.name === "task_completion_reviews")) {
+    db.exec(`PRAGMA temp_store=MEMORY;
+      CREATE TEMP TABLE work AS SELECT * FROM main.work ORDER BY rowid;
+      CREATE TEMP TABLE projects AS SELECT * FROM main.projects ORDER BY rowid;`);
+    db.exec(MIGRATIONS[boardCompletionVersion - 1]!);
+    shape.find(table => table.name === "work")!.columns.push("auto_done_from");
+  }
+  return shape;
+}
+
+function unaffectedContentDigest(db: Database, shape: TableShape): string {
   const hash = createHash("sha256");
+  const priorTables = new Set(shape.map(table => table.name));
   for (const { name, columns, order } of shape) {
     hash.update(name + "\n");
-    for (const row of db.query<Record<string, unknown>, []>(`SELECT ${columns.map(quote).join(",")} FROM ${quote(name)} ORDER BY ${order}`).iterate()) hash.update(canonicalAgentRequest(row) + "\n");
+    for (const row of db.query<Record<string, unknown>, []>(`SELECT ${columns.map(quote).join(",")} FROM ${quote(name)} ORDER BY ${order}`).iterate()) {
+      // New AUTOINCREMENT tables acquire their own counters during migration.
+      if (name === "sqlite_sequence" && !priorTables.has(String(row.name))) continue;
+      hash.update(canonicalAgentRequest(row) + "\n");
+    }
   }
   return hash.digest("hex");
 }
@@ -67,7 +87,7 @@ export function optimizeStorage(home: string, options: { vacuum?: boolean } = {}
     try {
       verifyIntegrity(probe);
       original = storageContentDigest(probe, before.schemaVersion < STORAGE_OPTIMIZATION_VERSION);
-      shape = tableShape(probe);
+      shape = expectedTableShape(probe, before.schemaVersion);
       unaffected = unaffectedContentDigest(probe, shape);
     } finally { probe.close(); }
     const db = openDb(path, { migrationBackup: false });

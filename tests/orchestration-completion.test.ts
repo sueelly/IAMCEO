@@ -355,3 +355,53 @@ test("a stalled conductor adoption leaves unrelated workers, watchdogs and later
     adoption.mockRestore(); pump.mockRestore(); watch.mockRestore();
   }
 });
+
+test("a passing report closes the actual board cards and new instructions restore their original sections", async () => {
+  const f = fixture(), projectId = f.project.id;
+  const legacy = f.store.upsertWork({ projectId, sec: "next", title: "인계", detail: "검토 대상", who: f.worker.name });
+  const taskId = Store.workTaskId(legacy.id);
+  f.orch.saveTask(f.lead, { taskId, contract });
+  const doing = f.store.upsertWork({ projectId, taskId, sec: "doing", title: "인계 담당 기록" });
+  const held = f.store.upsertWork({ projectId, taskId, sec: "hold", title: "인계 보류" });
+  const manuallyDone = f.store.upsertWork({ projectId, taskId, sec: "done", title: "수동 완료" });
+  const untouched = f.store.upsertWork({ projectId, sec: "doing", title: "인계" });
+
+  const posted = await f.tool(f.worker, "post", { task_id: taskId, kind: "완료", title: "인계 확인", contract_rev: 1, checks });
+  expect(posted.isError, posted.text).toBeUndefined();
+  const done = f.store.doneMark(taskId)!;
+  expect(f.store.getWork(legacy.id)).toEqual({ ...legacy, sec: "done", doneAt: done.at, updatedAt: done.at });
+  expect(f.store.getWork(doing.id)).toEqual({ ...doing, sec: "done", doneAt: done.at, updatedAt: done.at });
+  expect(f.store.getWork(held.id)).toEqual(held);
+  expect(f.store.getWork(manuallyDone.id)).toEqual(manuallyDone);
+  expect(f.store.getWork(untouched.id)).toEqual(untouched);
+
+  const revision = f.store.boardRevision(projectId);
+  synchronizeTaskCompletion(f.store, taskId);
+  expect(f.store.boardRevision(projectId)).toBe(revision);
+  f.store.enqueue({ taskId, projectId, memberId: f.worker.id, kind: "instruction", text: "인계 대상을 추가합니다" });
+  expect(f.store.getWork(legacy.id)).toMatchObject({ sec: "next", doneAt: null });
+  expect(f.store.getWork(doing.id)).toMatchObject({ sec: "doing", doneAt: null });
+  expect(f.store.getWork(held.id)).toEqual(held);
+  expect(f.store.getWork(manuallyDone.id)).toEqual(manuallyDone);
+});
+
+test("report invalidation preserves subsequent board moves and restores only automatic completions", async () => {
+  const f = fixture(), projectId = f.project.id;
+  const taskId = f.orch.saveTask(f.lead, { title: "인계 대상", contract }).task.id;
+  const card = (title: string) => f.store.upsertWork({ projectId, taskId, title, sec: "doing" });
+  const keep = card("정정"), hold = card("직접 보류"), manual = card("수동 완료");
+  const posted = await f.tool(f.worker, "post", { task_id: taskId, kind: "완료", title: "인계 확인", contract_rev: 1, checks });
+  expect(posted.isError, posted.text).toBeUndefined();
+  expect([keep, hold, manual].map(item => f.store.getWork(item.id)?.sec)).toEqual(["done", "done", "done"]);
+  f.store.upsertWork({ ...hold, sec: "hold" });
+  f.store.upsertWork({ ...manual, sec: "next" });
+  f.store.upsertWork({ ...manual, sec: "done" });
+  const reportId = f.store.taskProgress(taskId).finalReview!.reportId;
+  const corrected = await f.tool(f.worker, "post", { task_id: taskId, kind: "막힘", title: "정정", contract_rev: 1,
+    corrects_message_id: reportId, checks: [{ ...checks[0], result: "fail" }] });
+  expect(corrected.isError, corrected.text).toBeUndefined();
+  expect(f.store.doneMark(taskId)).toBeNull();
+  expect(f.store.getWork(keep.id)).toMatchObject({ sec: "doing", doneAt: null });
+  expect(f.store.getWork(hold.id)?.sec).toBe("hold");
+  expect(f.store.getWork(manual.id)?.sec).toBe("done");
+});

@@ -1,3 +1,5 @@
+import { MainPolicyRequest, saveProjectMainPolicy } from "./project-main-policy.ts";
+import type { z } from "zod";
 import type { Task, WorkItem } from "../shared/types.ts";
 import { bindingContract, formatContract, type ContractInput, type TaskContract } from "./harness.ts";
 import { ApiError, type Store } from "./store.ts";
@@ -20,7 +22,7 @@ function integrationLink(store: Store, task: Task | null): IntegrationLink | nul
 
 export function currentIntegrationCommit(store: Store, source: Task, reportId?: string): string | null {
   const review = latestCompletionReview(store, source.id);
-  const contract = store.getEffectiveContract(source.id);
+  const contract = store.getEffectiveContract(source.id, review?.report_id);
   if (source.mergedInto || store.requireProject(source.projectId).archived ||
     !review || (reportId && review.report_id !== reportId) ||
     store.doneMark(source.id)?.id !== review.mark_id || !bindingContract(contract) ||
@@ -147,17 +149,20 @@ function dispatchScopedWork(store: Store, source: Task, work: WorkItem, workerId
   const worker = store.getMember(workerId);
   if (!worker || worker.kind !== "worker" || worker.finalReviewer || worker.projectId !== source.projectId) return;
   const original = store.getEffectiveContract(source.id)!;
-  let contract = store.getEffectiveContract(work.taskId);
-  if (!contract) {
-    // This contract derives from the bound source. Keep the actual author and confirmation provenance.
-    contract = store.saveTaskContract(work.taskId, terms, { author: original.author, authorKind: original.authorKind,
-      authorMemberId: original.authorMemberId, sourceMessageId: original.sourceMessageId });
-    if (original.authorKind === "worker" && original.confirmedAt)
-      contract = store.confirmTaskContract(work.taskId, contract.rev, { name: original.confirmedBy!, memberId: original.confirmedByMemberId ?? null });
-  }
+  const contract = bindFollowupContract(store, work.taskId, original, terms);
   if (!bindingContract(contract)) return;
   store.enqueue({ projectId: source.projectId, memberId: worker.id, kind: "instruction", taskId: work.taskId,
     text: [`업무 #${work.taskId} · ${work.title}`, work.detail, formatContract(contract)].join("\n") });
+}
+
+function bindFollowupContract(store: Store, taskId: string, original: TaskContract, terms: ContractInput) {
+  const existing = store.getEffectiveContract(taskId);
+  if (existing) return existing;
+  const saved = store.saveTaskContract(taskId, terms, { author: original.author, authorKind: original.authorKind,
+    authorMemberId: original.authorMemberId, sourceMessageId: original.sourceMessageId });
+  return original.authorKind === "worker" && original.confirmedAt
+    ? store.confirmTaskContract(taskId, saved.rev, { name: original.confirmedBy!, memberId: original.confirmedByMemberId ?? null })
+    : saved;
 }
 
 function followupContract(original: TaskContract, work: WorkItem, scope: string, acceptance: string[]): ContractInput {
@@ -167,8 +172,8 @@ function followupContract(original: TaskContract, work: WorkItem, scope: string,
 
 export function scheduleVerifiedIntegration(store: Store, source: Task): void {
   if (!source.branch || ["main", "master", "HEAD"].includes(source.branch) || source.branch.startsWith("refs/")) return;
-  const original = store.getEffectiveContract(source.id);
   const review = latestCompletionReview(store, source.id);
+  const original = store.getEffectiveContract(source.id, review?.report_id);
   if (!review || !original || (!original.main_authority && !review.legacy_integration) || review.main_commit ||
       !store.requireProject(source.projectId).runnerEnabled) return;
   const artifact = store.getReportHarness(review.report_id);
@@ -236,6 +241,62 @@ export function queueIntegrationRepair(store: Store, source: Task, reportId: str
   });
 }
 
+type ReviewedRepairSource =
+  | { status: "ordinary" | "blocked" }
+  | { status: "ready"; source: Task; original: TaskContract; authorId: string; reportId: string; findingId: string };
+
+/** Read the exact verdict for this finding. A later review of a different report can coexist.
+ * The repair is linked by source_ref, so stops and owner decisions on its source need an explicit check. */
+export function reviewedRepairSource(store: Store, work: WorkItem): ReviewedRepairSource {
+  const ref = work.taskId ? store.taskSourceRef(work.taskId) : null;
+  if (!ref?.startsWith("main-repair:")) return { status: "ordinary" };
+  const [, sourceId, findingId] = ref.split(":");
+  const source = sourceId ? store.getTask(sourceId) : null;
+  const issue = findingId ? store.getMessage(findingId) : null;
+  if (!source || source.mergedInto || source.projectId !== work.projectId || !issue || issue.projectId !== work.projectId)
+    return { status: "blocked" };
+  if (issue.kind !== "알림" || !issue.aboutMessageId) return { status: "ordinary" };
+  const reporter = issue.memberId ? store.getMember(issue.memberId) : null;
+  if (reporter && !reporter.finalReviewer && !reporter.standbyReviewer) return { status: "ordinary" };
+  if (issue.mine || !issue.memberId || issue.taskId !== source.id) return { status: "blocked" };
+  const report = store.getMessage(issue.aboutMessageId);
+  const original = store.getEffectiveContract(source.id);
+  if (!report?.memberId || report.kind !== "완료" || report.taskId !== source.id || !original || !bindingContract(original))
+    return { status: "blocked" };
+  const verdict = store.db.query(`SELECT 1 FROM task_completion_reviews WHERE task_id=? AND report_id=? AND reviewer_id=?
+    AND contract_task_id=? AND contract_rev=? AND status='changes_requested'`)
+    .get(source.id, report.id, issue.memberId, original.taskId, original.rev);
+  const sourceHeld = store.db.query("SELECT 1 FROM work WHERE project_id=? AND sec='hold' AND COALESCE(task_id,'tk_'||id)=? LIMIT 1")
+    .get(source.projectId, source.id);
+  const facts = store.taskProgressFacts(source.projectId, new Set([source.id])).get(source.id);
+  if (!verdict || sourceHeld || facts?.marks.at(-1)?.stage === "hold" || facts?.decisions.length || facts?.todos.length || facts?.approvals.length ||
+      completionReviewPaused(store, source.projectId, source.id) || store.pendingTaskFailureDecision(source.id) ||
+      store.pendingTaskIntervention(source.id)) return { status: "blocked" };
+  const author = store.getMember(report.memberId);
+  if (!author || author.projectId !== source.projectId || author.kind !== "worker" || author.finalReviewer || author.standbyReviewer)
+    return { status: "blocked" };
+  return { status: "ready", source, original, authorId: author.id, reportId: report.id, findingId: issue.id };
+}
+
+export function prepareReviewedRepair(store: Store, work: WorkItem, binding = reviewedRepairSource(store, work)): string | null {
+  if (!work.taskId || work.sec !== "next" || binding.status !== "ready") return null;
+  const { original, source, reportId, findingId } = binding;
+  const terms = reviewRepairContract(original, work, findingId);
+  terms.inputs = [...(terms.inputs ?? []), `검수 대상 완료 보고 #${reportId}`, ...[source.branch, source.worktree].filter((v): v is string => !!v)];
+  bindFollowupContract(store, work.taskId, original, terms);
+  return binding.authorId;
+}
+
+function reviewRepairContract(original: TaskContract, work: WorkItem, findingId: string): ContractInput {
+  const terms = followupContract(original, work, `${original.scope} · 결함 범위: ${work.title}`,
+    [`보고 #${findingId}의 재현 조건에서 ${work.title}의 수정 결과를 검증한다`, "원래 완료 조건의 회귀 검사를 통과한다"]);
+  terms.constraints = [...(original.constraints ?? []), "원래 승인 범위에서만 수행한다. 범위를 넓혀야 할 때는 막힘으로 보고한다."];
+  terms.kind = original.kind;
+  terms.checks = original.checks;
+  if (!original.projectMainPolicy) terms.main_authority = original.main_authority;
+  return terms;
+}
+
 export function findIndependentReviewRepair(store: Store, projectId: string, reportId: string): WorkItem | undefined {
   const sourceRef = `independent-review-repair:${reportId}`;
   return store.listWork(projectId).find(item => item.taskId && store.taskSourceRef(item.taskId) === sourceRef);
@@ -246,13 +307,43 @@ export function queueIndependentReviewRepair(store: Store, source: Task, reportI
     [`원 업무 #${source.id} · 완료 보고 #${reportId} · 사후 검수 결함 보고 #${findingId}`, evidence].join("\n"));
   const original = store.getEffectiveContract(source.id), author = store.getMessage(reportId)?.memberId;
   if (original && author && bindingContract(original)) {
-    const terms = followupContract(original, work, `${original.scope} · 결함 범위: ${title}`,
-      [`보고 #${findingId}의 재현 조건에서 ${title}의 수정 결과를 검증한다`, "원래 완료 조건의 회귀 검사를 통과한다"]);
-    terms.constraints = [...(original.constraints ?? []), "원래 승인 범위에서만 수행한다. 범위를 넓혀야 할 때는 막힘으로 보고한다."];
-    terms.kind = original.kind;
-    terms.checks = original.checks;
-    terms.main_authority = original.main_authority;
+    const terms = reviewRepairContract(original, work, findingId);
     dispatchScopedWork(store, source, work, author, terms);
   }
   return work;
+}
+
+/** Registration uses the owner API. Reconcile only completed reports with a recorded branch and comparison base. */
+export function registerProjectMainPolicy(store: Store, projectId: string, input: z.input<typeof MainPolicyRequest>) {
+  return store.transaction(() => {
+    const request = MainPolicyRequest.parse(input);
+    const policyId = saveProjectMainPolicy(store, projectId, request);
+    const rows = store.db.query<{ task_id: string; report_id: string }, [string]>(`SELECT r.task_id,r.report_id FROM task_completion_reviews r
+      JOIN tasks t ON t.id=r.task_id JOIN report_harness h ON h.message_id=r.report_id
+      WHERE t.project_id=? AND t.merged_into IS NULL AND r.main_commit IS NULL AND h.artifact_base IS NOT NULL
+      AND h.artifact_branch=t.branch AND h.contract_task_id=t.id`).all(projectId);
+    for (const row of rows) {
+      if (store.getEffectiveContract(row.task_id, row.report_id)?.projectMainPolicy) scheduleVerifiedIntegration(store, store.requireTask(row.task_id));
+    }
+    return { projectId, policyId, origin: request.origin, paths: request.paths, source: request.source, contracts: request.contracts };
+  });
+}
+
+export function revokeProjectMainPolicy(store: Store, projectId: string, policyId: number) {
+  return store.transaction(() => {
+    const row = store.db.query<{ revoked_at: string | null }, [number, string]>(
+      "SELECT revoked_at FROM project_main_policies WHERE id=? AND project_id=?").get(policyId, projectId);
+    if (!row) throw new ApiError(404, "이 프로젝트의 main 승인 기록을 찾을 수 없습니다");
+    const revokedAt = row.revoked_at ?? new Date().toISOString();
+    if (!row.revoked_at) {
+      const affected = store.listWork(projectId).flatMap(work => {
+        if (!work.taskId || work.sec === "done") return [];
+        const link = integrationLink(store, store.getTask(work.taskId));
+        return link && store.getEffectiveContract(link.source, link.report)?.projectMainPolicy === policyId ? [work.taskId] : [];
+      });
+      store.db.query("UPDATE project_main_policies SET revoked_at=? WHERE id=?").run(revokedAt, policyId);
+      for (const taskId of affected) holdStaleIntegration(store, taskId);
+    }
+    return { projectId, policyId, revokedAt };
+  });
 }

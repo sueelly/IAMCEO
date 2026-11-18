@@ -1,3 +1,4 @@
+import { projectMainContract, projectMainPolicyPrefix } from "./project-main-policy.ts";
 import { describeTaskContext } from "./task-context.ts";
 import { assignmentPredecessor, buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment } from "./workflow.ts";
 import { activeTaskContinuationPauses, taskScopeForDeliveryIds } from "./task-continuation.ts";
@@ -1970,6 +1971,17 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.emit({ type: "work", projectId, work: this.listWork(projectId) });
   }
 
+  /** Project a verified completion or its reopening within the same transaction as the stage mark. */
+  syncWorkCompletion(projectId: string, taskId: string, stage: "done" | "reopen", at: string): void {
+    const linked = "project_id=? AND COALESCE(task_id,'tk_'||id)=?";
+    const write = stage === "done"
+      ? this.db.query(`UPDATE work SET auto_done_from=sec, sec='done', done_at=?1, updated_at=?1
+          WHERE sec IN ('doing','next') AND ${linked}`)
+      : this.db.query(`UPDATE work SET sec=auto_done_from, auto_done_from=NULL, done_at=NULL, updated_at=?1
+          WHERE sec='done' AND auto_done_from IS NOT NULL AND ${linked}`);
+    if (write.run(at, projectId, taskId).changes) this.emitWork(projectId);
+  }
+
   /** id 가 있으면 고치고(다른 프로젝트 항목이면 거부), 없으면 만든다. */
   upsertWork(input: WorkInput): WorkItem {
     return this.transaction(() => {
@@ -1983,17 +1995,21 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (input.id) {
         const existing = this.getWork(input.id);
         if (!existing || existing.projectId !== input.projectId) throw new ApiError(404, `일 항목을 찾을 수 없습니다: ${input.id}`);
+        const taskId = input.taskId === undefined ? existing.taskId ?? null : input.taskId;
         this.run(
-          "UPDATE work SET sec = ?, title = ?, detail = ?, who = ?, done_at = ?, updated_at = ? WHERE id = ?",
+          `UPDATE work SET auto_done_from=CASE WHEN sec=? AND task_id IS ? THEN auto_done_from END,
+            sec=?, title=?, detail=?, who=?, done_at=?, updated_at=?, task_id=? WHERE id=?`,
+          input.sec,
+          taskId,
           input.sec,
           input.title,
           input.detail ?? existing.detail,
           input.who ?? existing.who,
           input.sec === "done" ? (existing.doneAt ?? at) : null,
           at,
+          taskId,
           input.id,
         );
-        if (input.taskId !== undefined) this.run("UPDATE work SET task_id = ? WHERE id = ?", input.taskId, input.id);
         const item = this.getWork(input.id)!;
         this.syncWorkTask(item);
         this.emitWork(input.projectId);
@@ -2480,6 +2496,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const at = nowIso();
       const row = this.row("INSERT INTO task_stage_marks (project_id, task_id, stage, evidence, member_id, who, at, source_seq) VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(scope_seq),0) FROM deliveries)) RETURNING *",
         input.projectId, input.taskId, input.stage, input.evidence, input.memberId, input.who, at)!;
+      if (input.stage === "reopen") this.syncWorkCompletion(input.projectId, input.taskId, "reopen", at);
       this.queueProgress([input.taskId]);
       return toMark(row);
     });
@@ -3451,6 +3468,21 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (member) this.emit({ type: "member", member });
   }
 
+  /** The board scheduler has validated the untouched input and its new scope under
+   * its immediate transaction. Preserve the original audit; notify both inboxes. */
+  moveBoardClaim(input: Delivery, memberId: string, messageId: string, text: string): Delivery {
+    if (!this.db.inTransaction || !input.taskId) throw new Error("Board claim move requires the scheduling transaction");
+    const moved = this.db.query(`UPDATE deliveries SET member_id=?,ref_id=?,text=? WHERE id=? AND member_id=?
+      AND task_id=? AND status='queued' AND attempts=0 AND ref_id=?`)
+      .run(memberId, messageId, text, input.id, input.memberId, input.taskId, input.refId);
+    const enrolled = this.db.query("UPDATE task_sequence SET member_id=?,entered_at=? WHERE task_id=? AND member_id=?")
+      .run(memberId, nowIso(), input.taskId, input.memberId);
+    if (moved.changes !== 1 || enrolled.changes !== 1) throw new ApiError(409, "진행판 배정 상태가 바뀌었습니다");
+    this.emitMember(input.memberId);
+    this.emitMember(memberId);
+    return this.requireDelivery(input.id);
+  }
+
   enqueue(input: NewDelivery): Delivery {
     return this.transaction(() => {
       const member = this.requireMember(input.memberId);
@@ -4179,14 +4211,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** 업무의 지금 계약(가장 높은 판). 없으면 null. */
   getTaskContract(taskId: string): TaskContract | null {
     const r = this.row("SELECT * FROM task_contracts WHERE task_id = ? ORDER BY rev DESC LIMIT 1", taskId);
-    return r ? toContract(r) : null;
+    return r ? projectMainContract(this, taskId, toContract(r)) : null;
   }
 
   /**
    * 업무가 따르는 계약: 자기 계약, 없으면 가장 가까운 위 업무(parent)의 계약. 갈래 업무를 새로 만들어
    * 위 업무의 계약을 비켜 가지 못하게 한다. 돌아온 계약의 taskId 는 계약이 붙은 업무다.
    */
-  getEffectiveContract(taskId: string): TaskContract | null {
+  getEffectiveContract(taskId: string, reportId?: string): TaskContract | null {
     const seen = new Set<string>();
     let id: string | null | undefined = taskId;
     let pending: TaskContract | null = null;
@@ -4194,7 +4226,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       seen.add(id);
       // 최신 제안과 현재 확정 판은 다르다. 제안만으로 기존 확정 판/부모 계약을 가릴 수 없다.
       const bound = this.row("SELECT * FROM task_contracts WHERE task_id = ? AND (author_kind <> 'worker' OR confirmed_at IS NOT NULL) ORDER BY rev DESC LIMIT 1", id);
-      if (bound) return toContract(bound);
+      if (bound) return projectMainContract(this, taskId, toContract(bound), reportId);
       pending ??= this.getTaskContract(id);
       id = this.getTask(id)?.parentTaskId ?? null;
     }
@@ -4208,7 +4240,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
       this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at, inputs, outputs, constraints_json, exclusions, main_authority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso(),
-        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions), input.main_authority ?? null);
+        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions), input.main_authority?.startsWith(projectMainPolicyPrefix) ? null : input.main_authority ?? null);
       return this.getTaskContract(taskId)!;
     });
   }

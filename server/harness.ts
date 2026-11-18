@@ -25,6 +25,8 @@ export interface ContractInput {
 }
 
 export interface TaskContract {
+  /** Derived from owner-registered project scope; never copy to another task as a direct grant. */
+  projectMainPolicy?: number;
   taskId: string;
   rev: number;
   kind: ContractKind;

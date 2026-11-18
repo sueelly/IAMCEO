@@ -682,8 +682,12 @@ describe("새 읽기 계약", () => {
         expect(res.headers.get("cache-control")).toBe("no-store");
       }
     }
+    for (const init of attempts) {
+      const res = await fetch(base + `/api/projects/${projectId}/main-policy`, { ...init, method: "POST", body: "{}" });
+      expect(res.status).toBe(401);
+    }
     const capabilities = await json(api("/api/capabilities"));
-    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, delivery: false, push: false, operations: false } });
+    expect(capabilities).toEqual({ contractVersion: 2, capabilities: { paging: true, compactState: true, snapshotHistory: true, archive: true, realtime: true, browserRealtime: true, workflowAssignment: false, delivery: false, push: false, operations: false } });
   });
 
   test("예외 로그에 비밀 query·헤더·오류 본문이 남지 않는다", async () => {

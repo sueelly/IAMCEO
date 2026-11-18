@@ -72,6 +72,7 @@ export function synchronizeTaskCompletion(store: Store, taskId: string, visiting
     store.db.query(`INSERT INTO task_completion_reviews
       (report_id,task_id,contract_task_id,contract_rev,mark_id,status,completed_at) VALUES(?,?,?,?,?,'pending',?)`)
       .run(report!.id, taskId, contract!.taskId, contract!.rev, mark.id, mark.at);
+    store.syncWorkCompletion(task.projectId, taskId, "done", mark.at);
     scheduleVerifiedIntegration(store, task);
     store.createTaskNotice(task.projectId, taskId, mark.id, [task.title + " 수행 완료", `계약 r${contract!.rev}의 완료 조건을 통과했습니다`, "최종 검수 직원이 확인할 예정입니다. 일반 후속 업무는 진행합니다"]);
     return true;
@@ -192,7 +193,7 @@ function currentReview(store: Store, row: CompletionReviewRow): boolean {
 }
 
 export function awaitingIntegrationReceipt(store: Store, row: CompletionReviewRow): boolean {
-  if (row.main_commit || !store.getEffectiveContract(row.task_id)?.main_authority) return false;
+  if (row.main_commit || !store.getEffectiveContract(row.task_id, row.report_id)?.main_authority) return false;
   const artifact = store.getReportHarness(row.report_id);
   return !!artifact?.artifactBase && store.getMessage(row.report_id)?.taskId === row.task_id;
 }

@@ -696,3 +696,40 @@ test("v40 upgrade and Store reconstruction preserve an existing global concurren
   expect(columns(migrated, "members")).toContain("execution_issue_json");
   expect(new Store(migrated, new Bus()).getSettings().maxConcurrentTurns).toBe(20);
 });
+
+test("v54 automatic completion backfills active cards once and respects later board and stage edits", () => {
+  const { path } = fixture("completion-board.db"), old = historicalDb(path, 54);
+  const later = "2026-11-09T00:00:00.000Z", completed = "2026-11-08T00:00:00.000Z";
+  const task = old.query("INSERT INTO tasks(id,project_id,title,created_at,updated_at) VALUES(?,'p',?,?,?)");
+  const mark = old.query("INSERT INTO task_stage_marks(project_id,task_id,stage,evidence,who,at) VALUES('p',?,?,'검사 근거','하네스',?)");
+  const receipt = old.query("INSERT INTO task_completion_reviews(task_id,report_id,contract_task_id,contract_rev,mark_id,status,completed_at) VALUES(?,'msg_한글',?,1,?,'pending',?)");
+  const card = old.query("INSERT INTO work(id,project_id,task_id,sec,title,sort_order,created_at,updated_at) VALUES(?,'p',?,?,?,1,?,?)");
+  for (const id of ["tk_w_legacy", "reopened", "manual"]) {
+    task.run(id, id, at, at);
+    const done = mark.run(id, "done", completed);
+    if (id !== "manual") receipt.run(id, id, done.lastInsertRowid, completed);
+    if (id === "reopened") mark.run(id, "reopen", later);
+  }
+  card.run("w_legacy", null, "next", "옛 연결", at, at);
+  card.run("explicit", "tk_w_legacy", "doing", "저장된 연결", at, at);
+  card.run("edited", "tk_w_legacy", "doing", "나중에 움직인 일", at, later);
+  card.run("hold", "tk_w_legacy", "hold", "보류", at, at);
+  card.run("reopen", "reopened", "next", "다시 연 업무", at, at);
+  card.run("manual", "manual", "doing", "수동 완료", at, at);
+  old.close();
+
+  const upgraded = openDb(path), store = new Store(upgraded, new Bus());
+  for (const id of ["w_legacy", "explicit"]) expect(store.getWork(id)).toMatchObject({ sec: "done", doneAt: completed });
+  expect(store.getWork("edited")?.sec).toBe("doing");
+  expect(store.getWork("hold")?.sec).toBe("hold");
+  expect(store.getWork("reopen")?.sec).toBe("next");
+  expect(store.getWork("manual")?.sec).toBe("doing");
+  store.upsertWork({ ...store.getWork("explicit")!, sec: "doing" });
+  const revision = store.boardRevision("p");
+  upgraded.close();
+  const again = new Store(track(openDb(path)), new Bus());
+  expect(again.getWork("explicit")?.sec).toBe("doing");
+  expect(again.boardRevision("p")).toBe(revision);
+  again.addStageMark({ projectId: "p", taskId: "tk_w_legacy", stage: "reopen", memberId: null, who: "대표", evidence: "새 조건" });
+  expect(again.getWork("w_legacy")).toMatchObject({ sec: "next", doneAt: null });
+});

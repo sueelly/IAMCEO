@@ -98,7 +98,7 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
         process: z.object({ pid: z.number().int().positive(), startedAt: z.string().nullable() }).nullable() }),
       baseline: z.object({ serverEpoch: z.string().min(1), turn: z.number().int().nullable(), inputEpoch: z.number().int().nullable(), capturedAt: z.iso.datetime(),
         logs: z.array(z.object({ path: z.string().min(1), fileIdentity: z.string().nullable(), offset: z.number().int().nonnegative(), eventId: z.string().nullable() })),
-        executionContracts: z.array(z.object({ taskId: z.string().min(1), contractTaskId: z.string().min(1), rev: z.number().int().positive(), context: z.string().min(1) })).optional() }),
+        executionContracts: z.array(z.object({ taskId: z.string().min(1), contractTaskId: z.string().min(1), rev: z.number().int().positive(), context: z.string().min(1), projectMainPolicy: z.number().int().positive().optional() })).optional() }),
       markers: z.array(z.object({ deliveryId: z.string().min(1), marker: z.string().min(1) })).min(1),
     }).safeParse(dispatch).success && createHash("sha256").update(dispatch.wireText).digest("hex") === dispatch.wireSha256;
   }

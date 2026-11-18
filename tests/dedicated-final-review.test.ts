@@ -221,6 +221,23 @@ test("a review finding creates one scoped repair and a conductor notification", 
   expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id && d.text.includes(args.repair_title))).toHaveLength(1);
 });
 
+test("an existing unassigned review repair reaches its original worker with the bound scope while the lead is busy", async () => {
+  const f = await pendingReview();
+  f.runner.busy.add(f.lead.id);
+  const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested", reviewed_commit: f.head,
+    evidence: "재시작하면 설정이 초기화됩니다", repair_title: "재시작 후 설정 보존 검증" };
+  expect((await f.tool(f.reviewer, "task_review", args)).isError).toBeUndefined();
+  const card = f.store.listWork(f.project.id).find(w => w.title === args.repair_title)!;
+  f.orch.checkTaskContinuations();
+  await until("원 담당자 수정 업무 수신", () => f.store.listTaskDeliveries(card.taskId!).some(d => d.kind === "instruction" && d.status === "delivered"));
+  f.orch.checkTaskContinuations();
+  const assignments = f.store.listTaskDeliveries(card.taskId!).filter(d => d.kind === "instruction");
+  expect(assignments).toHaveLength(1);
+  expect(assignments[0]?.memberId).toBe(f.worker.id);
+  expect(f.store.getEffectiveContract(card.taskId!)?.scope).toContain(contract.scope);
+  expect(f.store.listWork(f.project.id).find(w => w.id === card.id)?.sec).toBe("doing");
+});
+
 test("a repair distinguishes missing titles from a commit on another report", async () => {
   const f = await pendingReview();
   const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested", evidence: "검사에서 초기화가 재현됐습니다", reviewed_commit: f.head };

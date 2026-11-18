@@ -105,7 +105,7 @@ export interface DeliveryBaseline {
   /** native ID 미확정 후보 탐색도 재시작 때 같은 기준선을 사용한다. */
   capturedAt: string;
   /** Immutable execution context, separate from the original input revision. */
-  executionContracts?: { taskId: string; contractTaskId: string; rev: number; context: string }[];
+  executionContracts?: { taskId: string; contractTaskId: string; rev: number; context: string; projectMainPolicy?: number }[];
 }
 export interface DeliveryProbe {
   dispatchId: string;

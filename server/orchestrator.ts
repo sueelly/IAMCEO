@@ -1,3 +1,4 @@
+import { claimReadyBoardWork, sharedWorkAllowsDelivery } from "./shared-work-queue.ts";
 import { assignedReviewMember } from "./review-routing.ts";
 import { providerIssueKind } from "../shared/execution-issues.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
@@ -24,7 +25,7 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { currentIntegrationCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
+import { currentIntegrationCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, prepareReviewedRepair, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
 import { awaitingIntegrationReceipt, checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, reconcileNextCompletionFamily, queueExpiredCompletionAssignments, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
@@ -640,6 +641,7 @@ class OrchestratorDeliveryRecovery extends DeliveryRecovery {
       const snapshot = snapshots.find(snapshot => snapshot.taskId === taskId);
       // Old envelopes cannot prove which contract they carried. Inspect their
       // receipt, but do not replay them under newly discovered execution scope.
+      if (snapshot?.projectMainPolicy && snapshot.projectMainPolicy !== contract?.projectMainPolicy) return false;
       if (contract ? snapshot?.contractTaskId !== contract.taskId || snapshot.rev !== contract.rev : !!snapshot) return false;
     }
     return true;
@@ -4505,7 +4507,7 @@ export class Orchestrator implements OrchestratorApi {
     const project = this.store.requireProject(member.projectId);
     const link = task && integrationStatus(this.store, task);
     const review = link && latestCompletionReview(this.store, link.source);
-    const selfIntegration = !!link && !link.cleanup && !!this.store.getEffectiveContract(link.source)?.main_authority;
+    const selfIntegration = !!link && !link.cleanup && !!this.store.getEffectiveContract(link.source, link.report)?.main_authority;
     if (input.artifactBase && !input.artifactCommit) throw new ApiError(400, "artifact_base에는 대조할 artifact_commit이 필요합니다");
     if (member.kind === "worker" && input.kind === "완료" && task?.branch && contract?.main_authority && !input.artifactCommit)
       throw new ApiError(409, "main 통합 계약의 완료 보고에 검증한 작업 브랜치의 artifact_commit을 적어 주세요");
@@ -4526,7 +4528,7 @@ export class Orchestrator implements OrchestratorApi {
       const worktree = task.worktree ?? project.cwd;
       if (!await integrationWorktreeAt(project.cwd, worktree, main))
         throw new ApiError(409, "task 도구로 이 저장소의 통합 워크트리를 등록하고, 프로젝트의 origin과 같은 원격을 쓰며 HEAD가 main_commit과 같은지 확인해 주세요");
-      const sourceContract = this.store.getEffectiveContract(link.source);
+      const sourceContract = this.store.getEffectiveContract(link.source, link.report);
       if (!sourceContract) throw new ApiError(409, "원 업무의 통합 계약이 바뀌었습니다");
       const featureChecks = checks.filter(c => !isRemoteObservation(c.command) && (c.criterion == null || c.criterion <= sourceContract.acceptance.length));
       const missing = completionGate(sourceContract, featureChecks);
@@ -5021,22 +5023,51 @@ export class Orchestrator implements OrchestratorApi {
     const available = (member: Member) => member.origin === "runner" && !!(member.sessionId || member.paneId)
       && (member.status === "idle" || member.status === "waiting");
     const reviews = checkCompletionReviews(this.store, now, this.timings.continuationMs);
-    const deliveries = this.taskContinuations.check(now, member => {
-      const project = this.store.requireProject(member.projectId);
-      if (project.archived || !project.runnerEnabled || !project.connection.ok || this.archiving.has(project.id)) return false;
-      if (!available(member)) return false;
-      const rt = this.runtime(member.id);
-      if (rt.closing || rt.starting || rt.reopening || rt.pumping || rt.background || rt.stopRequest || this.isBusy(member)) return false;
-      if (this.configWrites.has(member.id) || this.terminalMutations.has(member.id) || this.pendingLifecycle(member.id)) return false;
-      if (this.inflightReportTools.get(member.id) || this.deferredReportChecks.has(member.id)) return false;
-      if (this.store.inputState(member.id).lease || this.deliveryRecovery.fenced(member.id)) return false;
-      if (this.store.listPendingExecutions().some(run => run.memberId === member.id && run.identity.sessionGeneration === this.store.memberRevisions(member.id).sessionGeneration)) return false;
-      const observation = member.statusObservation;
-      if (this.backendOf(member) === "core" && observation && (observation.ownership !== "verified" || observation.freshness !== "fresh")) return false;
-      return true;
-    }, available);
-    for (const memberId of new Set([...deliveries, ...reviews].map(d => d.memberId))) void this.pump(memberId);
-    return [...deliveries, ...reviews];
+    const deliveries = this.taskContinuations.check(now, member => this.availableForTask(member), available);
+    // An assignee edit can be the only remaining work on a project's board.
+    const projects = this.store.db.query<{ project_id: string }, []>(`
+      SELECT project_id FROM work WHERE sec='next'
+      UNION
+      SELECT w.project_id FROM work w
+        JOIN deliveries d ON d.task_id=COALESCE(w.task_id, 'tk_' || w.id) AND d.project_id=w.project_id
+        JOIN messages claim ON claim.id=d.ref_id JOIN members worker ON worker.id=d.member_id
+        WHERE w.sec='doing' AND trim(w.who)<>'' AND d.status='queued' AND d.attempts=0
+          AND d.kind='instruction' AND d.ref_type='message' AND d.ref_id GLOB 'msg_board_claim_*'
+          AND (w.who<>claim.target_name OR w.who<>worker.name)
+    `).all();
+    const claimed = projects.flatMap(({ project_id }) => this.claimSharedWork(project_id));
+    for (const memberId of new Set([...deliveries, ...reviews, ...claimed].map(d => d.memberId))) void this.pump(memberId);
+    return [...deliveries, ...reviews, ...claimed];
+  }
+
+  private availableForTask(member: Member): boolean {
+    const project = this.store.requireProject(member.projectId);
+    if (project.archived || !project.runnerEnabled || !project.connection.ok || this.archiving.has(project.id)) return false;
+    if (member.origin !== "runner" || !(member.sessionId || member.paneId) || !["idle", "waiting"].includes(member.status)) return false;
+    const rt = this.runtime(member.id);
+    if (rt.closing || rt.starting || rt.reopening || rt.pumping || rt.background || rt.stopRequest || this.isBusy(member)) return false;
+    if (this.configWrites.has(member.id) || this.terminalMutations.has(member.id) || this.pendingLifecycle(member.id)) return false;
+    if (this.inflightReportTools.get(member.id) || this.deferredReportChecks.has(member.id)) return false;
+    if (this.store.inputState(member.id).lease || this.deliveryRecovery.fenced(member.id)) return false;
+    if (this.store.listPendingExecutions().some(run => run.memberId === member.id && run.identity.sessionGeneration === this.store.memberRevisions(member.id).sessionGeneration)) return false;
+    const observation = member.statusObservation;
+    if (this.backendOf(member) === "core" && observation && (observation.ownership !== "verified" || observation.freshness !== "fresh")) return false;
+    return true;
+  }
+
+  private claimSharedWork(projectId: string): Delivery[] {
+    if (!this.completionChecksAllowed() || this.archiving.has(projectId)) return [];
+    return claimReadyBoardWork(this.store, projectId, member => this.availableForTask(member) &&
+      !this.executionInputBlocked(member) && !this.pendingInputs(member.id).some(d => d.wake));
+  }
+
+  private startSharedWork(projectId: string): void {
+    try {
+      for (const input of this.claimSharedWork(projectId)) void this.pump(input.memberId);
+    } catch (error) {
+      // The periodic scheduler retries committed cards if an idle callback races a database writer.
+      console.warn("예정 업무 배정 실패:", projectId, (error as Error).message);
+    }
   }
 
   /** 완료 알림 본문: 무엇이 끝났는지와 근거, 남은 미검증. */
@@ -5180,16 +5211,20 @@ export class Orchestrator implements OrchestratorApi {
         text = `${member.name}가 '${task.title}'에서 수정할 부분을 확인했습니다. 문제 보고 #${issue.id}를 확인해 주세요.`;
       }
       const assigned = followup?.taskId ? this.store.listTaskDeliveries(followup.taskId).find(d => d.kind === "instruction") : null;
+      const queuedForAuthor = !assigned && followup && prepareReviewedRepair(this.store, followup);
       if (assigned) {
         text += ` 수정 업무 #${followup!.taskId} '${followup!.title}'를 원 담당자에게 전달했습니다.`;
         this.store.afterCommit(() => { void this.pump(assigned.memberId); });
+      } else if (queuedForAuthor && followup) {
+        text += ` 수정 업무 #${followup.taskId} '${followup.title}'를 원 담당자의 다음 업무로 등록했습니다.`;
       } else if (followup) text += ` 예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`;
       const lead = this.store.getConductor(task.projectId);
       const notification = lead ? this.store.enqueue({ projectId: task.projectId, memberId: lead.id, kind: "system",
-        taskId: followup?.taskId ?? task.id, wake: !!followup && !assigned, text: formatSystem(text) }) : null;
+        taskId: followup?.taskId ?? task.id, wake: !!followup && !assigned && !queuedForAuthor, text: formatSystem(text) }) : null;
       return { status: input.result, followup, notification };
     });
     if (notification?.wake) void this.pump(notification.memberId);
+    if (followup) this.startSharedWork(member.projectId);
     return { status, followupId: followup?.taskId ?? undefined };
   }
 
@@ -5485,7 +5520,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.taskContinuations.canDispatch(d) || !completionReviewAllowsDelivery(this.store, d, member)) return false;
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
-      if (!integrationTaskAllowsInput(this.store, taskId)) return false;
+      if (!sharedWorkAllowsDelivery(this.store, d) || !integrationTaskAllowsInput(this.store, taskId)) return false;
       if (!worker || !taskId) return true;
       // Independent order permission never resolves an intervention or owner decision.
       if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
@@ -5945,7 +5980,8 @@ export class Orchestrator implements OrchestratorApi {
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
       const contract = this.store.getEffectiveContract(taskId);
-      return contract ? [{ taskId, contractTaskId: contract.taskId, rev: contract.rev, context: this.instructionTaskLines(project.id, taskId)! }] : [];
+      return contract ? [{ taskId, contractTaskId: contract.taskId, rev: contract.rev, context: this.instructionTaskLines(project.id, taskId)!,
+        ...(contract.projectMainPolicy ? { projectMainPolicy: contract.projectMainPolicy } : {}) }] : [];
     }) : [];
     const dispatch = this.deliveryRecovery.prepareDispatch(deliveries.map(d => d.id), observed?.identity ?? {
       terminalId: member.paneId, sessionId: member.sessionId, sessionGeneration: this.store.memberRevisions(member.id).sessionGeneration, process: null,
@@ -6260,7 +6296,7 @@ export class Orchestrator implements OrchestratorApi {
       // contract may have changed while the runner was inspecting the terminal.
       if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery, member)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
-      if (!integrationTaskAllowsInput(this.store, taskId)) return false;
+      if (!sharedWorkAllowsDelivery(this.store, delivery) || !integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
       if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || sequence.blocked(taskId, delivery))
         && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;
@@ -6563,7 +6599,9 @@ export class Orchestrator implements OrchestratorApi {
         this.releaseSlots();
         return;
     }
-    if (status !== "blocked") void this.pump(member.id);
+    if (status === "idle") {
+      void this.pump(member.id).then(() => this.startSharedWork(member.projectId));
+    } else if (status !== "blocked") void this.pump(member.id);
   }
 
   private async onTurnEnd(member: Member, e: Extract<RunnerEvent, { type: "turn_end" }>): Promise<void> {
@@ -6625,6 +6663,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     await this.pump(member.id);
     this.releaseSlots();
+    this.startSharedWork(member.projectId);
   }
 
   private async onTurnError(member: Member, errorText: string, deliveries?: Delivery[]): Promise<void> {

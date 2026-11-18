@@ -1,3 +1,5 @@
+import { MainPolicyRequest } from "./project-main-policy.ts";
+import { registerProjectMainPolicy, revokeProjectMainPolicy } from "./task-main-followup.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
 import { readOnlyRequestAllowed } from "./read-only-policy.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -642,6 +644,15 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const result = orch.recoverDelivery ? await orch.recoverDelivery(id!, body) : ctx.delivery ? await ctx.delivery.recover(id!, body) : null;
       if (!result) throw new ApiError(501, "전달 복구를 지원하지 않습니다");
       return Response.json(result, { status: result.outcome === "stopped" ? 200 : 202 });
+    }),
+    route("POST", "/api/projects/:id/main-policy/revoke", async (req, url, [id]) => {
+      strictQuery(url, []);
+      const { policyId } = await parseBody(req, z.strictObject({ policyId: z.number().int().positive() }));
+      return Response.json(revokeProjectMainPolicy(store, id!, policyId));
+    }),
+    route("POST", "/api/projects/:id/main-policy", async (req, url, [id]) => {
+      activeProject(id!); strictQuery(url, []);
+      return Response.json(registerProjectMainPolicy(store, id!, await parseBody(req, MainPolicyRequest)));
     }),
     route("GET", "/api/projects/:id/workflow/tasks/:task/assignment", (_req, url, [id, taskId]) => {
       strictQuery(url, ["memberId"]);

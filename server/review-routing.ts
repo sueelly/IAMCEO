@@ -66,8 +66,12 @@ export function mayReadReviewReport(store: Store, member: Member, reportId: stri
 }
 
 export function untouchedReviewBatch(store: Store, delivery: Delivery): boolean {
+  return !delivery.refId && !delivery.refType && untouchedQueuedInput(store, delivery);
+}
+
+export function untouchedQueuedInput(store: Store, delivery: Delivery): boolean {
   if (delivery.status !== "queued" || !delivery.wake || delivery.attempts || delivery.deliveredAt || delivery.holdReason ||
-      delivery.lastError || delivery.nextAttemptAt || delivery.refId || delivery.refType) return false;
+      delivery.lastError || delivery.nextAttemptAt) return false;
   const r = store.getDeliveryRecovery(delivery.id), retry = store.getDeliveryRetry(delivery.id);
   if (!r || r.phase !== "none" || r.version !== 1 || r.activeCheckMs || r.nextCheckAt || r.lastCheckedAt || r.marker || r.autoAttempts || r.checkCount || r.reason || r.evidence.length ||
       retry.retryReason || retry.sourceRevision || retry.correctionRevision || retry.retryScope) return false;
