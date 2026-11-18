@@ -24,7 +24,7 @@ export async function readFinalReviewPatch(cwd: string, commit: string, path: st
   const base = recordedBase ? (await git("merge-base", commit, recordedBase))?.trim()
     : (await git("merge-base", commit, "refs/remotes/origin/main"))?.trim()
       ?? (await git("merge-base", commit, "refs/heads/main"))?.trim();
-  const againstMain = !!base && sha.test(base) && base !== commit;
+  const againstMain = !!base && sha.test(base) && (base !== commit || recordedBase === commit);
   if (!againstMain && (recordedBase || (await git("rev-list", "--parents", "-n", "1", commit))?.trim() !== commit)) {
     return { state: "missing_base" as const };
   }

@@ -188,6 +188,12 @@ function currentReview(store: Store, row: CompletionReviewRow): boolean {
   return contract?.taskId === row.contract_task_id && contract.rev === row.contract_rev;
 }
 
+export function awaitingIntegrationReceipt(store: Store, row: CompletionReviewRow): boolean {
+  if (row.main_commit || !store.getEffectiveContract(row.task_id)?.main_authority) return false;
+  const artifact = store.getReportHarness(row.report_id);
+  return !!artifact?.artifactBase && store.getMessage(row.report_id)?.taskId === row.task_id;
+}
+
 export function isCompletionReviewPending(store: Store, taskId: string | null | undefined, reportId: string): boolean {
   const row = taskId ? latestCompletionReview(store, taskId) : null;
   return !!row && row.report_id === reportId && currentReview(store, row);
@@ -197,7 +203,7 @@ export function completionReviewAllowsDelivery(store: Store, delivery: Delivery,
   if (!isCompletionReviewDelivery(delivery)) return !recipient?.finalReviewer;
   if (!recipient?.finalReviewer) return false;
   const rows = store.db.query<CompletionReviewRow, [string]>("SELECT * FROM task_completion_reviews WHERE delivery_id=?").all(delivery.id);
-  return rows.some(row => currentReview(store, row) && !completionReviewPaused(store, delivery.projectId, row.task_id));
+  return rows.some(row => currentReview(store, row) && !awaitingIntegrationReceipt(store, row) && !completionReviewPaused(store, delivery.projectId, row.task_id));
 }
 
 /** Schedule one bounded review batch per project while preserving individual review receipts. */
@@ -211,8 +217,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
     for (const review of reviews) {
       const task = store.requireTask(review.task_id), project = store.requireProject(task.projectId);
       if (project.archived || !project.runnerEnabled || task.mergedInto || !currentReview(store, review) || completionReviewPaused(store, project.id, task.id)) continue;
-      if (!review.main_commit && store.getEffectiveContract(task.id)?.main_authority &&
-          now - Date.parse(review.completed_at) < Math.min(2 * intervalMs, 120_000)) continue;
+      if (awaitingIntegrationReceipt(store, review)) continue;
       const reviewer = store.getFinalReviewer(project.id);
       if (!reviewer) continue;
       const batch = projects.get(project.id) ?? { reviewer, due: [], attention: [] };

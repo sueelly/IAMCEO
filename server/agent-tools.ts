@@ -838,9 +838,9 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   task_review_evidence: tool(
-    "현재 검수 대상의 확정 계약, 직원 완료 보고, 검사와 정확한 Git 커밋의 변경분을 읽습니다. 필요한 경우 변경 파일 하나와 nextOffset을 지정합니다.",
-    z.strictObject({ task_id: text, report_id: text, path: z.string().max(1024).optional(), offset: z.number().int().min(0).max(2_097_152).optional() }),
-    async (orch, member, a) => reply(JSON.stringify(await orch.finalReviewEvidence(member, a.task_id, a.report_id, a.path, a.offset ?? 0))),
+    "현재 계약, 검사, 검수할 변경분을 읽습니다. main 통합 업무는 원격 main 전후 차이를 기본으로 보여 주고 revision=branch로 원래 작업 브랜치도 대조할 수 있습니다. 파일과 nextOffset을 지정해 이어 읽습니다.",
+    z.strictObject({ task_id: text, report_id: text, path: z.string().max(1024).optional(), offset: z.number().int().min(0).max(2_097_152).optional(), revision: z.enum(["main", "branch"]).optional() }),
+    async (orch, member, a) => reply(JSON.stringify(await orch.finalReviewEvidence(member, a.task_id, a.report_id, a.path, a.offset ?? 0, a.revision))),
   ),
 
   task_review: tool(

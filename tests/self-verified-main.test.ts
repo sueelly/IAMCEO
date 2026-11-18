@@ -68,6 +68,9 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   await until("통합 담당자 수신", () => deliveries()[0]?.status === "delivered");
   expect(f.runner.to(f.lead)).toHaveLength(0);
   expect(f.runner.to(f.reviewer)).toHaveLength(0);
+  expect(checkCompletionReviews(f.store, Date.now() + 600_000, 30_000).some(d => d.text.includes(f.reportId))).toBe(false);
+  const premature = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.task.id, report_id: f.reportId });
+  expect(premature.isError).toBe(true);
   expect(f.store.getReportHarness(f.reportId)?.artifactBase).toBe(f.base);
   expect(f.store.getEffectiveContract(taskId)?.exclusions).toContain("배포");
   const report = (main: string, includeBefore = true) => f.tool(f.worker, "post", { kind: "완료", title: "통합 검증", task_id: taskId, main_commit: main,
@@ -78,7 +81,9 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   writeExec(f.isolated.paths.claudeHome, f.worker, beforeCommand, 0, beforeOutput);
   witness();
   expect((await report(f.head)).isError).toBe(true);
-  f.git("checkout", "main"); f.git("merge", "--no-ff", "save-settings", "-m", "integrate settings");
+  f.git("checkout", "main"); f.git("merge", "--no-ff", "--no-commit", "save-settings");
+  writeFileSync(join(f.project.cwd, "integration.txt"), "merge result");
+  f.git("add", "integration.txt"); f.git("commit", "-m", "integrate settings");
   f.git("push", "origin", "main");
   const main = f.git("rev-parse", "HEAD");
   expect(f.git("ls-remote", "origin", "refs/heads/main").split(/\s/)[0]).toBe(main);
@@ -96,9 +101,11 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   expect(observed.isError, observed.text).toBeUndefined();
   expect(JSON.parse(observed.text)).toMatchObject({
     integration: { mainBase: f.base, mainCommit: main, reportId: latestCompletionReview(f.store, f.task.id)!.integration_report_id },
-    patch: { state: "observed", comparison: f.base, files: ["settings.py", "verify.py"] },
+    patch: { state: "observed", commit: main, comparison: f.base, files: ["integration.txt", "settings.py", "verify.py"] },
   });
   expect(JSON.parse(observed.text).integration.reportId).toBeString();
+  const topic = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.task.id, report_id: f.reportId, revision: "branch" });
+  expect(JSON.parse(topic.text).patch).toMatchObject({ commit: f.head, files: ["settings.py", "verify.py"] });
   const defect = spawnSync("/usr/bin/python3", ["verify.py", ""], { cwd: f.project.cwd, encoding: "utf8" });
   expect(defect.status).toBe(1);
   expect(defect.stderr).toContain("('default', '')");

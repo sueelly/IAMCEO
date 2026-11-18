@@ -24,7 +24,7 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { currentIntegrationCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
-import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, reconcileNextCompletionFamily, queueExpiredCompletionAssignments, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
+import { awaitingIntegrationReceipt, checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, reconcileNextCompletionFamily, queueExpiredCompletionAssignments, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -5038,7 +5038,7 @@ export class Orchestrator implements OrchestratorApi {
     ];
   }
 
-  async finalReviewEvidence(member: Member, taskId: string, reportId: string, path: string | undefined, offset: number) {
+  async finalReviewEvidence(member: Member, taskId: string, reportId: string, path: string | undefined, offset: number, revision?: "main" | "branch") {
     const task = this.store.resolveTask(this.requireTaskInProject(member, taskId));
     const project = this.store.requireProject(task.projectId);
     this.requireActive(project);
@@ -5050,10 +5050,15 @@ export class Orchestrator implements OrchestratorApi {
       this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
       throw new ApiError(409, "현재 검수 대기 중인 완료 보고와 계약을 확인해 주세요");
     }
-    const patch = artifact.artifactCommit
-      ? await readFinalReviewPatch(project.cwd, artifact.artifactCommit, path, offset, artifact.artifactBase ?? review.main_base)
+    if (awaitingIntegrationReceipt(this.store, review) || revision === "main" && !review.main_commit)
+      throw new ApiError(409, "담당자의 원격 main 통합 확인 후 통합판을 검수할 수 있습니다");
+    const integrated = !!review.main_commit && revision !== "branch";
+    const tip = integrated ? review.main_commit : artifact.artifactCommit;
+    const base = integrated ? review.main_base : artifact.artifactBase;
+    const patch = tip
+      ? await readFinalReviewPatch(project.cwd, tip, path, offset, base)
       : null;
-    if (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0)) {
+    if ((!review.main_commit || integrated) && (!patch || patch.state === "observed" && (patch.patch.length > 0 || patch.fileCount === 0))) {
       this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
         .run(member.id, task.id, report.id);
     }
@@ -5092,6 +5097,7 @@ export class Orchestrator implements OrchestratorApi {
       if (this.store.doneMark(task.id)?.id !== review.mark_id || completionReviewPaused(this.store, task.projectId, task.id)) {
         throw new ApiError(409, "현재 수행 완료 기록 또는 중단 상태를 확인해 주세요");
       }
+      if (awaitingIntegrationReceipt(this.store, review)) throw new ApiError(409, "원격 main 통합 확인 후 검수 판정을 남겨 주세요");
       let followup: WorkItem | undefined;
       let text: string;
       if (input.result === "confirmed") {
