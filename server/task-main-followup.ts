@@ -4,7 +4,7 @@ import { ApiError, type Store } from "./store.ts";
 import { completionReviewPaused, latestCompletionReview, requestCompletionChanges, synchronizeRelatedTaskCompletion } from "./task-completion.ts";
 import { latestWorkerOutcome } from "./task-progress.ts";
 
-import { beforeMainCommand, fullCommit, remoteMainCommand } from "./integration-evidence.ts";
+import { beforeMainCommand, fullCommit, integrationHeadCommand, remoteMainCommand } from "./integration-evidence.ts";
 export { fullCommit };
 const prefix = "reviewed-main:";
 
@@ -129,6 +129,7 @@ function queueIntegration(store: Store, source: Task, commit: string): WorkItem 
       `원 업무 #${source.id} ${source.title}의 계약 검사를 통과한 완료 보고 #${report}을 확인했습니다.`,
       `작업 브랜치 ${branch} · 검증 커밋 ${reviewed}.`,
       "통합 권한을 확인하고 최신 origin/main에서 검증 커밋을 합칩니다. 통합 결과의 검사를 통과하면 일반 푸시하고 원격 main에 검증 커밋이 포함됐는지 확인합니다.",
+      `같은 저장소에 통합용 워크트리를 준비하고 task(task_id, worktree)로 그 경로를 이 업무에 등록합니다. 원격 조회와 검사는 이 워크트리에서 실행합니다. 각 실행 검사는 '${integrationHeadCommand} && 검사 명령'으로 한 번 돌리고 checks에 해당 명령을 적습니다.`,
       `통합 전 ${beforeMainCommand}로 원격 main SHA를 기록하고, 그 명령도 behavior 검사로 제출합니다. 푸시 직전 task_trace에서 원 업무와 통합 업무의 현재 조건을 확인합니다. 푸시 후 ${remoteMainCommand}를 실행하고 같은 명령의 behavior 검사와 통합 검사를 남깁니다. post 완료에 main_base(통합 직전 원격 main), main_commit(확인한 원격 main), 본문에 작업·원격 SHA를 기록합니다.`,
       "문제가 생기면 재현과 남은 조건을 보고하고 발견한 범위의 별도 수정 업무로 연결합니다.",
     ].join("\n");
@@ -155,8 +156,6 @@ function dispatchScopedWork(store: Store, source: Task, work: WorkItem, workerId
       contract = store.confirmTaskContract(work.taskId, contract.rev, { name: original.confirmedBy!, memberId: original.confirmedByMemberId ?? null });
   }
   if (!bindingContract(contract)) return;
-  if (integrationLink(store, store.requireTask(work.taskId)) && source.worktree && !store.requireTask(work.taskId).worktree)
-    store.saveTask({ id: work.taskId, projectId: source.projectId, memberId: workerId, who: "하네스", worktree: source.worktree });
   store.enqueue({ projectId: source.projectId, memberId: worker.id, kind: "instruction", taskId: work.taskId,
     text: [`업무 #${work.taskId} · ${work.title}`, work.detail, formatContract(contract)].join("\n") });
 }

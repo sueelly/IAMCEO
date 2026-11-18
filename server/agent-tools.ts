@@ -1,3 +1,4 @@
+import { integrationHeadCommand } from "./integration-evidence.ts";
 import { fullCommit, queueIntegrationRepair, queueReviewedIntegration } from "./task-main-followup.ts";
 import { publicHarness } from "./harness-redaction.ts";
 import { CODE_SOURCES, CODE_LINES } from "./harness-source-read.ts";
@@ -451,7 +452,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
       artifact_commit: z.string().regex(fullCommit).optional().describe("요청한 변경을 검증한 작업 브랜치 커밋 전체 SHA. 확정 계약의 main_authority가 있으면 원 담당자에게 통합 업무가 이어진다."),
       artifact_base: z.string().regex(fullCommit).optional().describe("통합 전 원격 main과 작업 커밋의 공통 조상 전체 SHA. 등록된 저장소의 Git 이력과 대조한다."),
-      main_commit: z.string().regex(fullCommit).optional().describe("통합 담당자가 git ls-remote origin refs/heads/main으로 확인한 원격 SHA. 같은 명령의 behavior 검사와 main_base를 함께 제출한다."),
+      main_commit: z.string().regex(fullCommit).optional().describe(`등록한 통합 워크트리에서 git ls-remote origin refs/heads/main으로 확인한 SHA. 통합 전후 원격 조회와 그 사이에 '${integrationHeadCommand} && 검사 명령'으로 실행한 검사, main_base를 함께 제출한다.`),
       main_base: z.string().regex(fullCommit).optional().describe("통합 직전 원격 main의 전체 SHA"),
       continue_work: z.boolean().optional().describe("직원이 지금 맡은 업무를 같은 계약 안에서 이어서 수정·검증할 때 진행 보고에 true로 적는다. contract_rev와 남은 조건, 다음 행동을 함께 남긴다."),
       contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),

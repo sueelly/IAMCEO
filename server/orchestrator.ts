@@ -1,6 +1,6 @@
 import { providerIssueKind } from "../shared/execution-issues.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
-import { artifactRange, verifyIntegrationGraph, witnessedRemoteIntegration } from "./integration-evidence.ts";
+import { artifactRange, integrationWorktreeAt, isRemoteObservation, verifyIntegrationGraph, witnessedRemoteIntegration } from "./integration-evidence.ts";
 import { readFinalReviewPatch } from "./final-review-evidence.ts";
 import { UNKNOWN_AGENT_RESULT } from "./agent-receipts.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
@@ -4516,22 +4516,32 @@ export class Orchestrator implements OrchestratorApi {
         if (review.main_commit === main && review.main_base === base && prior.memberId === member.id && prior.taskId === task.id) return prior;
         throw new ApiError(409, "이 작업 판에는 이미 원격 main 통합 기록이 있습니다");
       }
+      const worktree = task.worktree ?? project.cwd;
+      if (!await integrationWorktreeAt(project.cwd, worktree, main))
+        throw new ApiError(409, "task 도구로 이 저장소의 통합 워크트리를 등록하고, 프로젝트의 origin과 같은 원격을 쓰며 HEAD가 main_commit과 같은지 확인해 주세요");
+      const sourceContract = this.store.getEffectiveContract(link.source);
+      if (!sourceContract) throw new ApiError(409, "원 업무의 통합 계약이 바뀌었습니다");
+      const featureChecks = checks.filter(c => !isRemoteObservation(c.command) && (c.criterion == null || c.criterion <= sourceContract.acceptance.length));
+      const missing = completionGate(sourceContract, featureChecks);
+      if (missing.length) throw new ApiError(409, "통합 워크트리에서 원래 완료 조건의 검사 결과를 제출해 주세요. " + missing.join(" / "));
       const comparison = this.store.getReportHarness(link.report)?.artifactBase;
       if ((!comparison && !review.legacy_integration) || !await verifyIntegrationGraph(project.cwd, link.commit, base, main, comparison ?? null))
         throw new ApiError(409, "등록된 저장소의 origin/main, 작업 커밋 포함과 통합 전 공통 조상을 확인해 주세요");
     }
     if ((artifact || main) && (this.store.requireTask(taskId!).branch !== task?.branch ||
+        main && this.store.requireTask(taskId!).worktree !== task?.worktree ||
         this.store.getEffectiveContract(taskId!)?.rev !== contract?.rev || this.store.getEffectiveContract(taskId!)?.taskId !== contract?.taskId))
-      throw new ApiError(409, "Git 기록을 확인하는 동안 업무 브랜치나 계약이 바뀌었습니다");
+      throw new ApiError(409, "Git 기록을 확인하는 동안 업무 브랜치·워크트리 또는 계약이 바뀌었습니다");
     if (input.continueWork && (member.kind !== "worker" || input.kind !== "진행" || !taskId ||
       !this.repairWorkScope(member).includes(taskId) || !bindingContract(contract) ||
       missingExecutionContractFields(contract).length || input.contractRev !== contract?.rev)) {
       throw new ApiError(409, "계속 수행은 지금 받은 직원 업무의 확정 계약 판을 contract_rev에 넣고 진행으로 보고해 주세요");
     }
     const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
-    const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims) : null;
+    const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims,
+      main && task ? { worktree: task.worktree ?? project.cwd, commit: main } : undefined) : null;
     if (main && base && !witnessedRemoteIntegration(checks, gate?.evidence ?? [], base, main))
-      throw new ApiError(409, "통합 전후 두 git ls-remote 실행 검사의 순서와 출력 SHA가 main_base, main_commit과 일치해야 합니다");
+      throw new ApiError(409, "통합 전후 git ls-remote의 출력이 main_base, main_commit과 일치하고 두 조회 사이에 통합판 검사를 실행한 기록이 필요합니다");
     // Another submission can finish while this one reads Git objects.
     if (main && link) {
       const current = latestCompletionReview(this.store, link.source);
@@ -4541,7 +4551,7 @@ export class Orchestrator implements OrchestratorApi {
             current.main_commit === main && current.main_base === base) return prior;
         throw new ApiError(409, "통합 보고를 확인하는 동안 완료 기록이 바뀌었습니다");
       }
-      if (!task || !integrationStatus(this.store, task)?.eligible) throw new ApiError(409, "원 업무의 통합 조건이 바뀌었습니다");
+      if (!task || !integrationTaskAllowsInput(this.store, task.id)) throw new ApiError(409, "원 업무나 통합 업무의 진행 조건이 바뀌었습니다");
     }
     // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
     const recordRev = contract ? (input.contractRev && input.contractRev >= 1 && input.contractRev <= contract.rev ? input.contractRev : contract.rev) : null;
@@ -4593,7 +4603,7 @@ export class Orchestrator implements OrchestratorApi {
    * 5) 총괄·본사는 자기 검사가 없으면 이 계약 판으로 통과한 완료 보고가 있어야 한다. 자기 검사를 붙이면 같은 증거 대조를 받는다.
    * 거절된 완료는 글이 아니므로 보고 의무가 남는다(막힘으로 올리면 마감된다). 거절은 개선 후보로 남는다.
    */
-  private gateCompletion(member: Member, taskId: string | null, contract: TaskContract | null, checks: ReportCheckInput[], declaredRev: number | null, claims: ClaimInput[]): { gate: HarnessGate; evidenceStatus: string | null; evidence: CheckEvidence[]; claims: ClaimResult[] } {
+  private gateCompletion(member: Member, taskId: string | null, contract: TaskContract | null, checks: ReportCheckInput[], declaredRev: number | null, claims: ClaimInput[], integration?: { worktree: string; commit: string }): { gate: HarnessGate; evidenceStatus: string | null; evidence: CheckEvidence[]; claims: ClaimResult[] } {
     const refuse = (reason: string, log = reason, kind: HarnessFinding["kind"] = "completion_refused"): never => {
       reason = redactHarnessText(reason);
       log = redactHarnessText(log);
@@ -4639,7 +4649,7 @@ export class Orchestrator implements OrchestratorApi {
     // 실행 증거: 이 세션의 제공자 기록에서 계약 시각 뒤의 실행만 본다(옛 판·다른 업무·실패·없는 실행은 받지 않는다).
     const log = this.contextLog(member);
     const evidence = readProviderEvidence(member.cli, log ? { ...log, root: providerLogRoot(member.cli, log.home) } : null, contract.at);
-    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd, taskId ? this.store.requireTask(taskId).worktree : null);
+    const exec = matchExecChecks(checks, evidence, ref => { const used = this.store.execRefTask(ref); return used && used !== contract.taskId ? used : null; }, member.cwd, taskId ? this.store.requireTask(taskId).worktree : null, integration);
     const verified = verifyClaims(claims, evidence, source => {
       const file = /^f_[A-Za-z0-9_-]+$/.test(source) ? this.store.getFile(source) : null;
       // 자기가 올린 자료는 자기 글이다. 대표·다른 직원의 자료 본문만 원문으로 친다.

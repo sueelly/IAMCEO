@@ -1,4 +1,5 @@
-import { executionPath } from "./harness-worktree.ts";
+import { integrationHeadCommand, isRemoteObservation } from "./integration-evidence.ts";
+import { executionCwdAllowed, executionPath } from "./harness-worktree.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
 // 완료 검사의 실행 증거. 직원 세션의 제공자 기록(Claude 세션 기록·Codex rollout)을 읽기만 한다.
 // 서버가 실행을 지어내지 않고, 기록에 남은 명령·종료 코드·출력만 본다. 기록 형식을 모르는 제공자(Antigravity)는 '지원 안 함'이다.
@@ -229,11 +230,17 @@ export interface CheckEvidence {
   command: string | null;
 }
 
+function integrationCommandProof(run: ExecRecord, command: string, workdir: string | null | undefined, root: string) {
+  const cwd = executionPath(run.cwd);
+  if (!cwd || (workdir != null && executionPath(workdir) !== cwd)) return "absent";
+  return commandProof(run.command, command, cwd, executionPath(root), path => executionCwdAllowed(path, root));
+}
+
 /**
  * 실행 검사(behavior·typecheck·regression)의 통과 주장을 기록과 대조한다. 통과마다 command 가 있어야 하고,
  * 계약 시각 뒤 그 명령을 품은 마지막 실행이 종료 코드 0 이어야 한다. 다른 업무에 이미 쓴 실행은 쓰지 않는다.
  */
-export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEvidence, usedElsewhere: (ref: string) => string | null, expectedCwd: string | null = null, taskWorktree?: string | null): { reasons: string[]; results: CheckEvidence[] } {
+export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEvidence, usedElsewhere: (ref: string) => string | null, expectedCwd: string | null = null, taskWorktree?: string | null, integration?: { worktree: string; commit: string }): { reasons: string[]; results: CheckEvidence[] } {
   const reasons: string[] = [];
   const results: CheckEvidence[] = [];
   checks.forEach((c, idx) => {
@@ -244,8 +251,22 @@ export function matchExecChecks(checks: ReportCheckInput[], evidence: ProviderEv
     if (want.length < 3) { reasons.push(`${label}에 실제로 돌린 명령(command)이 없습니다. 실행 기록과 대조할 명령을 적으세요`); return; }
     if (c.workdir != null && !isExecutionWorkdir(c.workdir)) { reasons.push(`${label}의 workdir는 실제 도구가 사용한 절대 경로여야 합니다`); return; }
     if (evidence.status === "missing") { reasons.push(`${label}을 대조할 세션 실행 기록을 찾지 못했습니다(${evidence.code}). 증거 없는 통과는 받지 않습니다. 막힘으로 올리고 unverified 에 적으세요`); return; }
-    const runs = evidence.execs.map(e => ({ e, proof: e.cwd === null ? "absent" as const : observeCheckCommand(e.command, want, e.cwd, c.workdir, expectedCwd, taskWorktree).proof })).filter(r => r.proof !== "absent");
+    // For integration, the command starts at the registered checkout. A shell may
+    // cd there from the employee's session, or a provider may start there directly.
+    const needsHead = integration && !isRemoteObservation(want);
+    const prefix = integrationHeadCommand + " && ";
+    const verifiedCommand = needsHead && !want.startsWith(prefix) ? prefix + want : want;
+    const runs = evidence.execs.map(e => {
+      if (e.cwd === null) return { e, proof: "absent" as const };
+      const proof = integration ? integrationCommandProof(e, verifiedCommand, c.workdir, integration.worktree)
+        : observeCheckCommand(e.command, want, e.cwd, c.workdir, expectedCwd, taskWorktree).proof;
+      return { e, proof };
+    }).filter(r => r.proof !== "absent");
     const last = runs[runs.length - 1];
+    if (integration && (!last || needsHead && last.e.outputHead.split(" ")[0] !== integration.commit)) {
+      reasons.push(`${label}은 통합 업무에 등록한 워크트리에서 ${needsHead ? `'${prefix}검사 명령'으로 실행해 main_commit과 같은 HEAD를 기록하세요` : "원격 main을 조회한 실행이 필요합니다"}`);
+      return;
+    }
     if (!last) { reasons.push(`${label}의 명령 '${redactHarnessText(want).slice(0, 80)}'을 계약 뒤 실행 기록에서 찾지 못했습니다(명령 자리에서 찾습니다. echo 안의 글은 치지 않습니다). 지금 판 기준으로 실제로 돌린 뒤 올리세요`); return; }
     if (last.proof === "masked") { reasons.push(`${label}의 마지막 실행은 뒤에 붙은 파이프·;·& 명령의 종료 코드라 검사 결과가 아닙니다. 그 명령만(또는 &&로, 파이프면 명시적인 set -o pipefail 로) 다시 돌리세요`); return; }
     if (last.e.exitCode !== 0) { reasons.push(`${label}의 마지막 실행이 통과가 아닙니다(종료 코드 ${last.e.exitCode ?? "알 수 없음"})`); return; }
