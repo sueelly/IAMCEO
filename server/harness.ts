@@ -9,6 +9,7 @@ export type CheckResult = "pass" | "fail" | "not_run";
 
 export interface ContractInput {
   kind: ContractKind;
+  main_authority?: string;
   goal: string;
   acceptance: string[];
   scope?: string | null;
@@ -27,6 +28,7 @@ export interface TaskContract {
   taskId: string;
   rev: number;
   kind: ContractKind;
+  main_authority?: string;
   goal: string;
   acceptance: string[];
   scope: string | null;
@@ -155,6 +157,7 @@ export function formatContract(contract: TaskContract, state: { latest?: ReportC
     else out.push(`- ${EXECUTION_CONTRACT_LABEL[field]}: ${values && (field === "constraints" || field === "exclusions") ? "없음" : "미정"}`);
   }
   contract.acceptance.forEach((a, i) => out.push(`- 합격 기준 ${i + 1}: ${line(a)}`));
+  if (contract.main_authority) out.push(`- main 통합 승인 근거: ${line(contract.main_authority)}`);
   out.push(`- 자율 범위: ${contract.scope ? line(contract.scope) : "미정"}`);
   const missing = missingExecutionContractFields(contract);
   if (missing.length) out.push(`새 실행 전 총괄이 보완할 항목: ${missing.map(field => EXECUTION_CONTRACT_LABEL[field]).join(", ")}. 기존 계약의 미정 항목을 임의로 정하거나 실행 승인을 추정하지 않습니다.`);

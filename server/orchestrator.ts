@@ -1,5 +1,6 @@
 import { providerIssueKind } from "../shared/execution-issues.ts";
 import { publicHarness, redactHarnessText } from "./harness-redaction.ts";
+import { artifactRange, verifyIntegrationGraph, witnessedRemoteIntegration } from "./integration-evidence.ts";
 import { readFinalReviewPatch } from "./final-review-evidence.ts";
 import { UNKNOWN_AGENT_RESULT } from "./agent-receipts.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
@@ -22,7 +23,7 @@ import { writeStatuslineWrapper } from "./runner/statusline.ts";
 //
 // 조립 순서: createOrchestrator(config, store) → startServer(ctx) → setServerUrl(url) → recover() · 끝낼 때 shutdown().
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { currentReviewedCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
+import { currentIntegrationCommit, findIndependentReviewRepair, fullCommit, integrationStatus, integrationTaskAllowsInput, holdStaleIntegration, queueBranchCleanup, queueIndependentReviewRepair, queueIntegrationRepair, queueReviewedIntegration, requireIntegrationResult } from "./task-main-followup.ts";
 import { checkCompletionReviews, completionReviewAllowsDelivery, completionReviewPaused, isCompletionReviewDelivery, isCompletionReviewPending, latestCompletionReview, synchronizeRelatedTaskCompletion, reconcileNextCompletionFamily, queueExpiredCompletionAssignments, confirmCompletionReview, requestCompletionChanges } from "./task-completion.ts";
 import { selectConductorInputs } from "./conductor-input.ts";
 import { homedir } from "node:os";
@@ -208,7 +209,7 @@ function cleanContract(input: ContractInput): ContractInput {
     const cleaned = list(v);
     return cleaned.length === v.length ? cleaned : null;
   };
-  const contract = { kind: input.kind, goal: one(input.goal), acceptance: list(input.acceptance), scope: input.scope ? one(input.scope) || null : null,
+  const contract = { kind: input.kind, ...(input.main_authority?.trim() ? { main_authority: one(input.main_authority) } : {}), goal: one(input.goal), acceptance: list(input.acceptance), scope: input.scope ? one(input.scope) || null : null,
     inputs: terms(input.inputs), outputs: terms(input.outputs), constraints: terms(input.constraints), exclusions: terms(input.exclusions),
     forbidden: list(input.forbidden), evidence: list(input.evidence), ...(input.checks ? { checks: input.checks } : {}) };
   if (!contract.goal || !contract.acceptance.length) throw new ApiError(400, "계약에는 goal(원하는 결과)과 acceptance(합격 기준) 1개 이상이 필요합니다");
@@ -476,6 +477,9 @@ export interface PostInput {
   /** 현재 담당 업무를 같은 계약으로 이어서 수행한다는 진행 보고. */
   continueWork?: boolean;
   artifactCommit?: string;
+  artifactBase?: string;
+  mainCommit?: string;
+  mainBase?: string;
   /** 확인하지 못한 것. 'unverified' 검사 한 줄로 남는다. */
   unverified?: string[];
   /** 검사가 따른 계약 판 번호. 계약이 있는 업무의 완료는 지금 판과 같아야 받는다. */
@@ -4479,7 +4483,35 @@ export class Orchestrator implements OrchestratorApi {
     if (input.artifactCommit && (member.kind !== "worker" || input.kind !== "완료" || !artifactBranch || !fullCommit.test(input.artifactCommit))) {
       throw new ApiError(400, "검수할 커밋은 등록된 작업 브랜치의 직원 완료 보고에 전체 SHA로 적어 주세요");
     }
-    const artifact = artifactBranch && input.artifactCommit ? { branch: artifactBranch, commit: input.artifactCommit.toLowerCase() } : undefined;
+    const task = taskId ? this.store.requireTask(taskId) : null;
+    const project = this.store.requireProject(member.projectId);
+    const link = task && integrationStatus(this.store, task);
+    const review = link && latestCompletionReview(this.store, link.source);
+    const selfIntegration = !!link && !link.cleanup && !!this.store.getEffectiveContract(link.source)?.main_authority;
+    if (input.artifactBase && !input.artifactCommit) throw new ApiError(400, "artifact_base에는 대조할 artifact_commit이 필요합니다");
+    if (member.kind === "worker" && input.kind === "완료" && task?.branch && contract?.main_authority && !input.artifactCommit)
+      throw new ApiError(409, "main 통합 계약의 완료 보고에 검증한 작업 브랜치의 artifact_commit을 적어 주세요");
+    const artifact = artifactBranch && input.artifactCommit ? { branch: artifactBranch, commit: input.artifactCommit.toLowerCase(),
+      base: await artifactRange(project.cwd, artifactBranch, input.artifactCommit.toLowerCase()) } : undefined;
+    if (artifact && (contract?.main_authority && !artifact.base || input.artifactBase && input.artifactBase.toLowerCase() !== artifact.base))
+      throw new ApiError(409, "등록된 저장소에서 작업 브랜치의 끝점과 통합 전 main과의 공통 조상을 확인해 주세요");
+    const main = input.mainCommit?.toLowerCase(), base = input.mainBase?.toLowerCase();
+    if ((selfIntegration && input.kind === "완료") || main || base) {
+      if (!main || !base || !task || !review || !link?.eligible || link.cleanup || member.kind !== "worker" ||
+          member.finalReviewer || input.kind !== "완료" || !this.store.hasTaskInstruction(task.id, member.id))
+        throw new ApiError(409, "배정받은 통합 업무에서 main_base와 main_commit을 함께 제출해 주세요");
+      if (review.integration_report_id) {
+        const prior = this.store.requireMessage(review.integration_report_id);
+        if (review.main_commit === main && review.main_base === base && prior.memberId === member.id && prior.taskId === task.id) return prior;
+        throw new ApiError(409, "이 작업 판에는 이미 원격 main 통합 기록이 있습니다");
+      }
+      const comparison = this.store.getReportHarness(link.report)?.artifactBase;
+      if ((!comparison && !review.legacy_integration) || !await verifyIntegrationGraph(project.cwd, link.commit, base, main, comparison ?? null))
+        throw new ApiError(409, "등록된 저장소의 origin/main, 작업 커밋 포함과 통합 전 공통 조상을 확인해 주세요");
+    }
+    if ((artifact || main) && (this.store.requireTask(taskId!).branch !== task?.branch ||
+        this.store.getEffectiveContract(taskId!)?.rev !== contract?.rev || this.store.getEffectiveContract(taskId!)?.taskId !== contract?.taskId))
+      throw new ApiError(409, "Git 기록을 확인하는 동안 업무 브랜치나 계약이 바뀌었습니다");
     if (input.continueWork && (member.kind !== "worker" || input.kind !== "진행" || !taskId ||
       !this.repairWorkScope(member).includes(taskId) || !bindingContract(contract) ||
       missingExecutionContractFields(contract).length || input.contractRev !== contract?.rev)) {
@@ -4487,6 +4519,19 @@ export class Orchestrator implements OrchestratorApi {
     }
     const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
     const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims) : null;
+    if (main && base && !witnessedRemoteIntegration(checks, gate?.evidence ?? [], base, main))
+      throw new ApiError(409, "통합 전후 두 git ls-remote 실행 검사의 순서와 출력 SHA가 main_base, main_commit과 일치해야 합니다");
+    // Another submission can finish while this one reads Git objects.
+    if (main && link) {
+      const current = latestCompletionReview(this.store, link.source);
+      if (current?.integration_report_id) {
+        const prior = this.store.requireMessage(current.integration_report_id);
+        if (current.report_id === link.report && prior.taskId === taskId && prior.memberId === member.id &&
+            current.main_commit === main && current.main_base === base) return prior;
+        throw new ApiError(409, "통합 보고를 확인하는 동안 완료 기록이 바뀌었습니다");
+      }
+      if (!task || !integrationStatus(this.store, task)?.eligible) throw new ApiError(409, "원 업무의 통합 조건이 바뀌었습니다");
+    }
     // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
     const recordRev = contract ? (input.contractRev && input.contractRev >= 1 && input.contractRev <= contract.rev ? input.contractRev : contract.rev) : null;
     let noticeTo: string | null = null;
@@ -4505,6 +4550,12 @@ export class Orchestrator implements OrchestratorApi {
       const watch = this.watchReport(message, input.continueWork === true);
       if (watch.trip && taskId) noticeTo = this.watchNoticeDelivery(member.projectId, taskId, watch.trip)?.memberId ?? null;
       if (taskId && member.kind === "worker") synchronizeRelatedTaskCompletion(this.store, taskId);
+      if (main && base && link && task) {
+        this.store.db.query("UPDATE task_completion_reviews SET main_base=?,main_commit=?,integration_report_id=? WHERE task_id=? AND report_id=?")
+          .run(base, main, message.id, link.source, link.report);
+        this.markTaskStage(member, { taskId: link.source, stage: "merged",
+          evidence: `원격 main ${main} · 작업 커밋 ${link.commit} 포함 · 통합 보고 #${message.id}`, integrationReport: message.id, mainCommit: main });
+      }
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: this.reportWakesConductor(message) && !watch.quiet, refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
@@ -5041,9 +5092,11 @@ export class Orchestrator implements OrchestratorApi {
         if (task.branch && artifact?.artifactBranch === task.branch && artifact.artifactCommit && !input.reviewedCommit) {
           throw new ApiError(409, "작업 브랜치의 검증 커밋을 대조한 뒤 전체 SHA를 적어 주세요");
         }
-        followup = this.markTaskStage(member, { taskId: task.id, stage: "done", evidence, reviewedCommit: input.reviewedCommit }).followup;
+        confirmCompletionReview(this.store, task.id, member, evidence, input.reviewedCommit && task.branch
+          ? { branch: task.branch, commit: input.reviewedCommit.toLowerCase() } : undefined);
         text = `${member.name}가 '${task.title}'의 최신 완료 보고 #${review.report_id}를 독립 검수했습니다.`;
-      } else if (input.result === "confirmed_with_repair") {
+      } else if (input.result === "confirmed_with_repair" || review.main_commit || this.store.getEffectiveContract(task.id)?.main_authority ||
+                 this.store.listStageMarks(task.id).some(mark => mark.stage === "merged" && mark.id > review.mark_id)) {
         const title = input.repairTitle?.trim();
         if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 원래 완료 근거를 먼저 확인해 주세요");
         if (!title || input.reviewedCommit) throw new ApiError(400, "별도 수정 업무 이름을 적어 주세요. 통합 검수 커밋은 수정 결과를 확인할 때 기록합니다");
@@ -5055,7 +5108,12 @@ export class Orchestrator implements OrchestratorApi {
           followup = queueIndependentReviewRepair(this.store, task, report.id, issue.id, title, evidence);
         }
         confirmCompletionReview(this.store, task.id, member, evidence);
-        text = `${member.name}가 '${task.title}'의 기존 완료 근거를 확인하고 새 결함을 별도 수정 업무에 연결했습니다.`;
+        if (input.result === "changes_requested") {
+          this.store.db.query("UPDATE task_completion_reviews SET status='changes_requested' WHERE task_id=? AND report_id=?")
+            .run(task.id, review.report_id);
+          this.store.queueProgress([task.id]);
+        }
+        text = `${member.name}가 '${task.title}'의 완료 보고 #${report.id}에서 결함을 확인하고 수정 업무에 연결했습니다.`;
       } else {
         const title = input.repairTitle?.trim();
         if (!title || input.reviewedCommit) throw new ApiError(400, "확인된 문제를 고칠 업무 이름을 적어 주세요");
@@ -5067,10 +5125,14 @@ export class Orchestrator implements OrchestratorApi {
           .run(member.id, task.id, review.report_id);
         text = `${member.name}가 '${task.title}'에서 수정할 부분을 확인했습니다. 문제 보고 #${issue.id}를 확인해 주세요.`;
       }
-      if (followup) text += ` 예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`;
+      const assigned = followup?.taskId ? this.store.listTaskDeliveries(followup.taskId).find(d => d.kind === "instruction") : null;
+      if (assigned) {
+        text += ` 수정 업무 #${followup!.taskId} '${followup!.title}'를 원 담당자에게 전달했습니다.`;
+        this.store.afterCommit(() => { void this.pump(assigned.memberId); });
+      } else if (followup) text += ` 예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`;
       const lead = this.store.getConductor(task.projectId);
       const notification = lead ? this.store.enqueue({ projectId: task.projectId, memberId: lead.id, kind: "system",
-        taskId: followup?.taskId ?? task.id, wake: !!followup, text: formatSystem(text) }) : null;
+        taskId: followup?.taskId ?? task.id, wake: !!followup && !assigned, text: formatSystem(text) }) : null;
       return { status: input.result, followup, notification };
     });
     if (notification?.wake) void this.pump(notification.memberId);
@@ -5100,9 +5162,9 @@ export class Orchestrator implements OrchestratorApi {
     return this.store.transaction(() => {
       const before = this.store.taskProgress(task.id);
       const done = this.store.doneMark(task.id);
-      const afterReviewedMerge = !!task.branch && (input.stage === "merged" || input.stage === "applied") &&
-        !!done && !!currentReviewedCommit(this.store, task);
-      if (input.stage !== "reopen" && done && !afterReviewedMerge) {
+      const completedBranch = !!task.branch && (input.stage === "merged" || input.stage === "applied") &&
+        !!done && !!currentIntegrationCommit(this.store, task);
+      if (input.stage !== "reopen" && done && !completedBranch) {
         if (input.stage === "done") {
           const review = latestCompletionReview(this.store, task.id);
           const reviewer = this.store.getFinalReviewer(task.projectId);
@@ -5110,7 +5172,7 @@ export class Orchestrator implements OrchestratorApi {
             throw new ApiError(409, "프로젝트의 최종 검수 직원이 최신 완료 보고를 확인합니다");
           }
           if (input.reviewedCommit && latestCompletionReview(this.store, task.id)?.reviewed_commit &&
-            currentReviewedCommit(this.store, task) !== input.reviewedCommit.toLowerCase()) {
+            currentIntegrationCommit(this.store, task) !== input.reviewedCommit.toLowerCase()) {
             throw new ApiError(409, "현재 최종 검수가 이 커밋을 가리키지 않습니다. 최신 작업 브랜치의 검사와 검수를 다시 확인해 주세요");
           }
           const confirmed = confirmCompletionReview(this.store, task.id, member, evidence, gitReview);
@@ -5128,10 +5190,15 @@ export class Orchestrator implements OrchestratorApi {
       const active = marks.slice(from);
       const contract = input.stage === "merged" && task.branch ? this.store.getEffectiveContract(task.id) : null;
       if (contract && bindingContract(contract) && !missingExecutionContractFields(contract).length &&
-        !afterReviewedMerge && !active.some(mark => mark.stage === "merged")) {
+        !completedBranch && !active.some(mark => mark.stage === "merged")) {
         throw new ApiError(409, "main 통합 전에 직원 수행 완료와 검수한 작업 브랜치의 전체 커밋을 확인해 주세요");
       }
-      const integration = input.stage === "merged" && afterReviewedMerge
+      if (input.stage === "merged" && contract?.main_authority) {
+        const receipt = latestCompletionReview(this.store, task.id);
+        if (!receipt?.integration_report_id || receipt.integration_report_id !== input.integrationReport || receipt.main_commit !== input.mainCommit)
+          throw new ApiError(409, "검증된 통합 담당자의 원격 main 보고가 필요합니다");
+      }
+      const integration = input.stage === "merged" && completedBranch
         ? requireIntegrationResult(this.store, task, input.integrationReport, input.mainCommit) : null;
       const recordedMerge = integration ? active.findLast(mark => mark.stage === "merged" && mark.id > done!.id) : null;
       if (recordedMerge) return { mark: recordedMerge, progress: before, noticeId: null, repeated: true };

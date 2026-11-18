@@ -16,6 +16,8 @@ async function readyForReview() {
   const result = await f.tool(f.worker, "post", { task_id: source.id, kind: "완료", title: "설정 복구 검증", contract_rev: 1, artifact_commit: commit, checks });
   expect(result.isError, result.text).toBeUndefined();
   expect(f.store.taskProgress(source.id).finalReview?.status).toBe("pending");
+  // These cases exercise the previous exact-review workflow restored from an existing approved integration.
+  f.store.db.query("UPDATE task_completion_reviews SET legacy_integration=1 WHERE task_id=?").run(source.id);
   const confirm = () => f.tool(f.lead, "task_stage", { task_id: source.id, stage: "done", evidence: "변경과 검사 근거를 확인했습니다", reviewed_commit: commit });
   const integration = (head = commit) => f.tool(f.lead, "task_followup", { task_id: source.id, kind: "integration", reviewed_commit: head });
   return { ...f, source, confirm, integration };
@@ -61,9 +63,9 @@ test("a post-merge repair preserves the original final review", async () => {
   const arbitrary = await f.tool(f.lead, "task_stage", { task_id: f.source.id, stage: "merged", evidence: different });
   expect(arbitrary.isError).toBe(true);
   const integrationTaskId = f.store.listWork(f.project.id).find(w => w.sec === "next")!.taskId!;
-  f.orch.saveTask(f.lead, { taskId: integrationTaskId, contract });
+  const integrationContract = f.orch.saveTask(f.lead, { taskId: integrationTaskId, contract }).contract!;
   const report = await f.orch.recordPost(f.worker, { taskId: integrationTaskId, kind: "완료", title: "원격 main 통합 확인",
-    body: `검수 커밋 ${commit}이 원격 main ${different}에 포함됩니다.`, contractRev: 1,
+    body: `검수 커밋 ${commit}이 원격 main ${different}에 포함됩니다.`, contractRev: integrationContract.rev,
     checks: [{ name: "통합 결과", kind: "other", result: "pass", criterion: 1, evidence: "포함을 확인했습니다" }],
   });
   const merged = await f.tool(f.lead, "task_stage", { task_id: f.source.id, stage: "merged",

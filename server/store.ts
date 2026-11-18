@@ -4180,9 +4180,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.requireTask(taskId);
     return this.transaction(() => {
       const rev = ((this.row("SELECT MAX(rev) AS rev FROM task_contracts WHERE task_id = ?", taskId)?.rev as number | null) ?? 0) + 1;
-      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at, inputs, outputs, constraints_json, exclusions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      this.run("INSERT INTO task_contracts (task_id, rev, kind, goal, acceptance, scope, forbidden, evidence, checks, author, author_member_id, author_kind, source_message_id, at, inputs, outputs, constraints_json, exclusions, main_authority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         taskId, rev, input.kind, input.goal, JSON.stringify(input.acceptance), input.scope ?? null, JSON.stringify(input.forbidden ?? []), JSON.stringify(input.evidence ?? []), JSON.stringify(requiredChecks(input)), by.author, by.authorMemberId, by.authorKind, by.sourceMessageId ?? null, nowIso(),
-        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions));
+        input.inputs == null ? null : JSON.stringify(input.inputs), input.outputs == null ? null : JSON.stringify(input.outputs), input.constraints == null ? null : JSON.stringify(input.constraints), input.exclusions == null ? null : JSON.stringify(input.exclusions), input.main_authority ?? null);
       return this.getTaskContract(taskId)!;
     });
   }
@@ -4198,11 +4198,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 보고 글의 검사 기록. 그 직원의 지금 실행과 계약 판, 검사마다 대조한 실행 증거, 조사 주장을 함께 남긴다. */
-  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; artifact?: { branch: string; commit: string }; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
+  recordReportChecks(message: Message, member: Member, checks: ReportCheckInput[], extra: { contractTaskId: string | null; contractRev: number | null; artifact?: { branch: string; commit: string; base?: string | null }; reviewNeeded?: string | null; gate?: HarnessGate | null; evidenceStatus?: string | null; evidence?: CheckEvidence[]; claims?: ClaimResult[] }): void {
     checks = publicHarness(checks);
     extra = publicHarness(extra);
     const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
-    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at, artifact_branch, artifact_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at, extra.artifact?.branch ?? null, extra.artifact?.commit ?? null);
+    this.run("INSERT INTO report_harness (message_id, task_id, member_id, run_id, contract_task_id, contract_rev, review_needed, gate, evidence_status, at, artifact_branch, artifact_commit, artifact_base) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", message.id, message.taskId ?? null, member.id, run?.run_id ?? null, extra.contractTaskId, extra.contractRev, extra.reviewNeeded ?? null, extra.gate ?? null, extra.evidenceStatus ?? null, message.at, extra.artifact?.branch ?? null, extra.artifact?.commit ?? null, extra.artifact?.base ?? null);
     checks.forEach((c, i) => {
       const e = extra.evidence?.find(x => x.idx === i);
       this.run("INSERT INTO report_checks (message_id, idx, name, kind, result, evidence, command, workdir, criterion, exec_status, exec_ref, exec_exit, exec_at, exec_output_sha, exec_command) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -4232,6 +4232,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** 총괄이 이 직원에게 이 업무를 맡긴 적이 있는지(전달된 지시). */
   hasInstruction(memberId: string, taskId: string): boolean {
     return !!this.row("SELECT 1 FROM deliveries WHERE member_id = ? AND task_id = ? AND kind = 'instruction' LIMIT 1", memberId, taskId);
+  }
+
+  /** An existing work order keeps its original assignee and delivery receipt across restarts. */
+  hasTaskInstruction(taskId: string, receivedBy?: string): boolean {
+    if (receivedBy) return !!this.row("SELECT 1 FROM deliveries WHERE task_id=? AND kind IN ('instruction','user_message') AND member_id=? AND status='delivered' LIMIT 1", taskId, receivedBy);
+    return !!this.row("SELECT 1 FROM deliveries WHERE task_id=? AND kind IN ('instruction','user_message') LIMIT 1", taskId);
   }
 
   /** 업무의 전달(누구에게 어떤 글이 갔는지). 글 내용은 싣지 않는다. */
@@ -4317,12 +4323,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 보고 글의 하네스 기록(실행·계약 판·검토 요청)과 검사. 기록이 없으면 null. */
-  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; artifactBranch: string | null; artifactCommit: string | null; reviewNeeded: string | null; memberId: string; gate: HarnessGate | null; evidenceStatus: string | null; checks: ReportCheck[]; claims: ClaimResult[] } | null {
+  getReportHarness(messageId: string): { runId: string | null; contractTaskId: string | null; contractRev: number | null; artifactBranch: string | null; artifactCommit: string | null; artifactBase: string | null; reviewNeeded: string | null; memberId: string; gate: HarnessGate | null; evidenceStatus: string | null; checks: ReportCheck[]; claims: ClaimResult[] } | null {
     const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE h.message_id = ?", messageId);
     if (!h) return null;
     const checks = this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", messageId).map(r => toCheck(r, h));
     return { runId: (h.run_id as string | null) ?? null, contractTaskId: (h.contract_task_id as string | null) ?? null, contractRev: (h.contract_rev as number | null) ?? null,
-      artifactBranch: h.artifact_branch ?? null, artifactCommit: h.artifact_commit ?? null, reviewNeeded: h.review_needed ? redactHarnessText(h.review_needed as string) : null, memberId: h.member_id as string,
+      artifactBranch: h.artifact_branch ?? null, artifactBase: h.artifact_base ?? null, artifactCommit: h.artifact_commit ?? null, reviewNeeded: h.review_needed ? redactHarnessText(h.review_needed as string) : null, memberId: h.member_id as string,
       gate: (h.gate as HarnessGate | null) ?? null, evidenceStatus: (h.evidence_status as string | null) ?? null, checks, claims: this.listReportClaims(messageId) };
   }
 
@@ -4572,7 +4578,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
 function toContract(r: Row): TaskContract {
   return {
-    taskId: r.task_id as string, rev: r.rev as number, kind: r.kind as TaskContract["kind"], goal: r.goal as string,
+    taskId: r.task_id as string, rev: r.rev as number, ...(r.main_authority ? { main_authority: String(r.main_authority) } : {}), kind: r.kind as TaskContract["kind"], goal: r.goal as string,
     acceptance: JSON.parse(r.acceptance as string), scope: (r.scope as string | null) ?? null, forbidden: JSON.parse(r.forbidden as string),
     inputs: r.inputs == null ? null : JSON.parse(r.inputs as string), outputs: r.outputs == null ? null : JSON.parse(r.outputs as string),
     constraints: r.constraints_json == null ? null : JSON.parse(r.constraints_json as string), exclusions: r.exclusions == null ? null : JSON.parse(r.exclusions as string),

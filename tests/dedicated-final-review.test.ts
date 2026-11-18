@@ -173,7 +173,7 @@ test("the scheduler wakes the offline reviewer in read-only mode and keeps the o
   expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id)).toHaveLength(before);
 });
 
-test("the dedicated reviewer confirms the exact report and queues integration once", async () => {
+test("the dedicated reviewer confirms the exact report without expanding a branch-only contract", async () => {
   const f = await pendingReview();
   const tools = listAgentTools(f.reviewer).map(t => t.name);
   expect(tools).toContain("task_review");
@@ -193,7 +193,7 @@ test("the dedicated reviewer confirms the exact report and queues integration on
   expect((await f.tool(f.reviewer, "task_review", args)).isError).toBeUndefined();
   expect((await f.tool(f.reviewer, "task_review", { ...args, reviewed_commit: "e".repeat(40) })).isError).toBe(true);
   expect(f.store.taskProgress(f.source.id).finalReview?.status).toBe("confirmed");
-  expect(f.store.listWork(f.project.id).filter(w => w.sec === "next")).toHaveLength(1);
+  expect(f.store.listWork(f.project.id).filter(w => w.sec === "next")).toHaveLength(0);
 });
 
 test("owner stop retains the review and blocks further verdicts and delivery", async () => {

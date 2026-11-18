@@ -1,3 +1,4 @@
+import { scheduleVerifiedIntegration } from "./task-main-followup.ts";
 import type { Delivery, Member } from "../shared/types.ts";
 import { bindingContract, missingExecutionContractFields } from "./harness.ts";
 import { ApiError, ASSIGNMENT_HISTORY_MS, type Store } from "./store.ts";
@@ -10,6 +11,7 @@ interface CompletionReviewRow {
   reviewed_at: string | null; completed_at: string; reviewer_id: string | null; evidence: string | null; delivery_id: string | null;
   reviewed_branch: string | null; reviewed_commit: string | null;
   evidence_reader_id: string | null;
+  legacy_integration: number; main_commit: string | null; main_base: string | null; integration_report_id: string | null;
   review_dispatch_count: number;
   attention_delivery_id: string | null;
 }
@@ -59,12 +61,17 @@ export function synchronizeTaskCompletion(store: Store, taskId: string, visiting
       : previous.status === "pending")) {
       requestCompletionChanges(store, taskId, "완료 근거·업무 계약·차단 조건이 변경되어 남은 조건을 다시 확인합니다");
     }
-    if (!valid || store.doneMark(taskId) || previous?.report_id === report!.id) return false;
+    if (!valid) return false;
+    if (store.doneMark(taskId) || previous?.report_id === report!.id) {
+      if (store.doneMark(taskId)?.id === previous?.mark_id && previous) scheduleVerifiedIntegration(store, task);
+      return false;
+    }
     const mark = store.addStageMark({ projectId: task.projectId, taskId, stage: "done", memberId: null, who: "하네스",
       evidence: `계약 r${contract!.rev} 완료 조건 통과 · 보고 #${report!.id} · 독립 최종 검수 대기` });
     store.db.query(`INSERT INTO task_completion_reviews
       (report_id,task_id,contract_task_id,contract_rev,mark_id,status,completed_at) VALUES(?,?,?,?,?,'pending',?)`)
       .run(report!.id, taskId, contract!.taskId, contract!.rev, mark.id, mark.at);
+    scheduleVerifiedIntegration(store, task);
     store.createTaskNotice(task.projectId, taskId, mark.id, [task.title + " 수행 완료", `계약 r${contract!.rev}의 완료 조건을 통과했습니다`, "최종 검수 직원이 확인할 예정입니다. 일반 후속 업무는 진행합니다"]);
     return true;
   });
@@ -131,7 +138,7 @@ function retireReminder(store: Store, review: CompletionReviewRow): void {
 
 export function requestCompletionChanges(store: Store, taskId: string, evidence: string, member?: Member): MarkFact | null {
   const review = latestCompletionReview(store, taskId);
-  if (!review || review.status === "changes_requested") return null;
+  if (!review || review.status === "changes_requested" && store.doneMark(taskId)?.id !== review.mark_id) return null;
   const task = store.requireTask(taskId);
   store.db.query("UPDATE task_completion_reviews SET status='changes_requested',reviewed_at=?,evidence=? WHERE task_id=? AND report_id=?")
     .run(new Date().toISOString(), evidence, taskId, review.report_id);
@@ -204,6 +211,8 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
     for (const review of reviews) {
       const task = store.requireTask(review.task_id), project = store.requireProject(task.projectId);
       if (project.archived || !project.runnerEnabled || task.mergedInto || !currentReview(store, review) || completionReviewPaused(store, project.id, task.id)) continue;
+      if (!review.main_commit && store.getEffectiveContract(task.id)?.main_authority &&
+          now - Date.parse(review.completed_at) < Math.min(2 * intervalMs, 120_000)) continue;
       const reviewer = store.getFinalReviewer(project.id);
       if (!reviewer) continue;
       const batch = projects.get(project.id) ?? { reviewer, due: [], attention: [] };
@@ -235,7 +244,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
       const list = entries.map(({ taskId, title, review }) => `- #${taskId} '${title}' · 계약 #${review.contract_task_id} r${review.contract_rev} · 통과 보고 #${review.report_id}`);
       const delivery = store.enqueue({ projectId, memberId: batch.reviewer.id, taskId: entries.length === 1 ? entries[0]!.taskId : null, kind: "system", wake: true,
         text: [`${reviewPrefix}${entries.length}건`, ...list,
-          "각 항목의 task_review_evidence와 산출물을 대조한 뒤 task_review에 결과를 남기세요. 통합 가능한 판은 전체 reviewed_commit을 적습니다. 완료 근거가 유효하지만 새 결함이 있으면 confirmed_with_repair를, 원래 완료 조건이나 증거가 성립하지 않으면 changes_requested를 선택합니다."].join("\n") });
+          "각 항목의 task_review_evidence와 산출물을 대조한 뒤 task_review에 결과를 남기세요. 대조한 작업 커밋은 reviewed_commit에 적습니다. 원격 main 반영 뒤 발견한 결함은 원 업무에 연결된 새 수정 업무로 보냅니다. 완료 근거가 유효하지만 새 결함이 있으면 confirmed_with_repair를, 원래 완료 조건이나 증거가 성립하지 않으면 changes_requested를 선택합니다."].join("\n") });
       for (const { review } of entries) link.run(delivery.id, review.task_id, review.report_id);
       out.push(delivery);
     }

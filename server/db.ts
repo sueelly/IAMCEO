@@ -1,3 +1,4 @@
+import { SELF_INTEGRATION_SCHEMA } from "./self-integration-schema.ts";
 import { COMPLETION_CHANGE_SCHEMA, COMPLETION_WORKER_SCHEMA } from "./completion-change-schema.ts";
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
@@ -1040,6 +1041,7 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE task_completion_reviews ADD COLUMN evidence_reader_id TEXT;`,
   COMPLETION_CHANGE_SCHEMA,
   COMPLETION_WORKER_SCHEMA,
+  SELF_INTEGRATION_SCHEMA,
   `ALTER TABLE task_completion_reviews ADD COLUMN review_dispatch_count INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE task_completion_reviews ADD COLUMN attention_delivery_id TEXT;`,
 ];
