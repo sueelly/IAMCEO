@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture, until, writeExec } from "./fixtures/harness-fixture.ts";
 import { checkCompletionReviews, latestCompletionReview, synchronizeTaskCompletion } from "../server/task-completion.ts";
 
-const contract = { kind: "other" as const, goal: "설정 유지", scope: "설정 저장", inputs: ["설정 파일"], outputs: ["저장 결과"],
-  constraints: [], exclusions: ["배포"], acceptance: ["재시작 후 설정이 유지된다"], checks: [] };
-const check = { name: "설정 유지", kind: "other", result: "pass", criterion: 1, evidence: "재시작 뒤 값을 대조했습니다" };
+const contract = { kind: "coding" as const, goal: "설정 유지", scope: "설정 저장", inputs: ["설정 파일"], outputs: ["저장 결과"],
+  constraints: [], exclusions: ["배포"], acceptance: ["재시작 후 설정이 유지된다"], checks: ["behavior"] };
+const check = { name: "설정 유지", kind: "behavior", command: "python3 verify.py", result: "pass", criterion: 1, evidence: "재시작 뒤 값을 대조했습니다" };
 const remoteCommand = "git ls-remote origin refs/heads/main";
 const beforeCommand = "git ls-remote --exit-code origin refs/heads/main";
 
@@ -23,20 +23,37 @@ async function sourceWithGit(authorized = true) {
   git("add", "."); git("commit", "-m", "initial"); git("push", "origin", "main");
   const base = git("rev-parse", "main");
   git("checkout", "-b", "save-settings");
-  for (const text of ["first", "second"]) {
-    writeFileSync(join(f.project.cwd, text), text);
-    git("add", text); git("commit", "-m", text);
-  }
+  // The feature and its restart check land in separate commits. The first commit
+  // contains a real empty-value bug outside the worker's initial example.
+  writeFileSync(join(f.project.cwd, "settings.py"), [
+    "import sys", "from pathlib import Path", "mode, filename, *args = sys.argv[1:]", "state = Path(filename)",
+    "if mode == 'save' and args[0]:", "    state.write_text(args[0])",
+    "elif mode == 'load':", "    print(state.read_text() if state.exists() else 'default')",
+  ].join("\n"));
+  git("add", "settings.py"); git("commit", "-m", "save settings");
+  writeFileSync(join(f.project.cwd, "verify.py"), [
+    "import subprocess, sys, tempfile", "from pathlib import Path", "value = sys.argv[1] if len(sys.argv) > 1 else 'dark'",
+    "with tempfile.TemporaryDirectory() as directory:", "    filename = str(Path(directory) / 'settings')",
+    "    subprocess.run([sys.executable, 'settings.py', 'save', filename, value], check=True)",
+    "    actual = subprocess.check_output([sys.executable, 'settings.py', 'load', filename], text=True).rstrip('\\n')",
+    "    assert actual == value, (actual, value)", "print('setting restored')",
+  ].join("\n"));
+  git("add", "verify.py"); git("commit", "-m", "verify settings after restart");
+  const runBehavior = () => {
+    const output = execFileSync("/usr/bin/python3", ["verify.py"], { cwd: f.project.cwd, encoding: "utf8" });
+    writeExec(f.isolated.paths.claudeHome, f.worker, check.command, 0, output);
+  };
   const head = git("rev-parse", "HEAD");
   git("push", "origin", "save-settings");
   const saved = await f.tool(f.lead, "task", { title: "설정 저장", branch: "save-settings",
     contract: { ...contract, ...(authorized ? { main_authority: "대표의 이 저장소 main 일반 푸시 지속 승인" } : {}) } });
   expect(saved.isError, saved.text).toBeUndefined();
   const task = f.store.listTasks(f.project.id).find(t => t.branch === "save-settings")!;
+  runBehavior();
   const post = await f.tool(f.worker, "post", { kind: "완료", title: "설정 검증", task_id: task.id,
     artifact_commit: head, contract_rev: 1, checks: [check] });
   expect(post.isError, post.text).toBeUndefined();
-  return { ...f, reviewer, git, task, base, head, reportId: latestCompletionReview(f.store, task.id)!.report_id };
+  return { ...f, reviewer, git, task, base, head, runBehavior, reportId: latestCompletionReview(f.store, task.id)!.report_id };
 }
 
 test("a worker receives one scoped integration, updates a real isolated remote, and receives the post-merge defect without coordinator or review gating", async () => {
@@ -65,6 +82,7 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   f.git("push", "origin", "main");
   const main = f.git("rev-parse", "HEAD");
   expect(f.git("ls-remote", "origin", "refs/heads/main").split(/\s/)[0]).toBe(main);
+  f.runBehavior();
   witness();
   expect((await report(main, false)).isError).toBe(true);
   const posted = await report(main);
@@ -74,7 +92,10 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   expect(latestCompletionReview(f.store, f.task.id)).toMatchObject({ status: "pending", main_base: f.base, main_commit: main });
   const due = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
   expect(due.some(d => d.memberId === f.reviewer.id && d.text.includes(f.reportId))).toBe(true);
-  expect((await f.tool(f.reviewer, "task_review_evidence", { task_id:f.task.id, report_id:f.reportId, path:"second" })).isError).toBeUndefined();
+  expect((await f.tool(f.reviewer, "task_review_evidence", { task_id:f.task.id, report_id:f.reportId, path:"verify.py" })).isError).toBeUndefined();
+  const defect = spawnSync("/usr/bin/python3", ["verify.py", ""], { cwd: f.project.cwd, encoding: "utf8" });
+  expect(defect.status).toBe(1);
+  expect(defect.stderr).toContain("('default', '')");
   const issue = { task_id: f.task.id, report_id: f.reportId, result: "changes_requested", repair_title: "빈 설정 저장 복구", evidence: "빈 설정을 저장한 뒤 다시 열면 값이 사라집니다" };
   const repair = await f.tool(f.reviewer, "task_review", issue);
   expect(repair.isError, repair.text).toBeUndefined();
@@ -110,7 +131,7 @@ test("reconciliation recovers only an obsolete server integration hold and prese
 
 test("a reporter cannot upgrade a branch-only task through a later independent verdict", async () => {
   const f = await sourceWithGit(false);
-  const read = await f.tool(f.reviewer, "task_review_evidence", { task_id:f.task.id, report_id:f.reportId, path:"second" });
+  const read = await f.tool(f.reviewer, "task_review_evidence", { task_id:f.task.id, report_id:f.reportId, path:"settings.py" });
   expect(read.isError, read.text).toBeUndefined();
   const review = await f.tool(f.reviewer, "task_review", { task_id: f.task.id, report_id: f.reportId, result: "confirmed", evidence: "최종 확인", reviewed_commit: f.head });
   expect(review.isError, review.text).toBeUndefined();
