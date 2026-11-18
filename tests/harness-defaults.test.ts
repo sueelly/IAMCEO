@@ -171,15 +171,13 @@ test("다음 턴 비켜 가기: 이미 다음 업무까지 받은 옛 실행에�
   await until("직원 지시", () => f.runner.to(f.worker).some(t => t.includes("업무 계약 r1")));
   const firstRun = f.store.listPendingExecutions().find(r => r.memberId === f.worker.id)!;
   f.runner.end(f.worker);
-  await until("보고 보완 지시", () => f.runner.to(f.worker).some(t => t.includes("보고 보완:")));
-  f.runner.end(f.worker, 1);
-  await until("보고 보완 턴 종료", () => !f.store.listPendingExecutions().some(r => r.memberId === f.worker.id));
+  await until("보고 없는 첫 실행 종료", () => f.store.getExecutionJournal(firstRun.runId)?.phase === "ended");
+  expect(f.store.getExecutionJournal(firstRun.runId)?.reportRequestedAt).toBeNull();
   const free = id((await f.tool(f.lead, "task", { title: "다른 일" })).text);
   // 필수 기준을 적용하기 전에 이미 대기열에 있던 지시를 복원한다.
   f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "이것도", taskId: free });
   expect(f.runner.to(f.worker).some(t => t.includes("이것도"))).toBe(false);
-  // 새 전달은 앞 업무가 끝날 때까지 기다린다. 순서 제한 전에 다음 업무까지
-  // 이미 받은 옛 실행의 영수증과 종료 기록을 복원해 계약 우회 방지를 검사한다.
+  // 다른 지시까지 이미 수신한 옛 실행의 영수증과 종료 기록을 복원한다.
   const received = f.store.listPending(f.worker.id).find(d => d.taskId === free && d.kind === "instruction")!;
   expect(received).toBeDefined();
   f.store.markDelivered(received.id);
