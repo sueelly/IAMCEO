@@ -5643,6 +5643,19 @@ export class Orchestrator implements OrchestratorApi {
     member = this.store.requireMember(memberId);
     if (this.executionInputBlocked(member)) { this.store.setDeliveryWait(memberId, null); return; }
 
+    // Restore the owned holder before reserving a write. Otherwise a cold
+    // CoreRunner restores this pump's new write_started row as a prior send.
+    if (runner instanceof CoreRunner && (member.paneId || member.sessionId) &&
+      pending.some(d => d.wake) && !runner.observationState(memberId)) {
+      wait("session");
+      if (rt.reattaching) return;
+      const target = this.runnerMember(member, project);
+      const joined = await runner.reattachOwned(target);
+      if (joined.outcome === "rejoined") rt.again = true; // Recheck admission against the observed CLI.
+      else this.coreSupervisor?.watch(target); // Confirm absence or ownership through ordinary lifecycle recovery.
+      return;
+    }
+
     // 턴 도중 승인 창에 걸려도 보류로 보여 준다. isBusy 보다 먼저 본다(§6).
     if (member.status === "blocked") {
       wait(member.blockedReason === "permission" ? "permission" : member.blockedReason === "selection" ? "selection" : member.blockedReason === "setup" ? "setup" : "input");
@@ -5978,6 +5991,7 @@ export class Orchestrator implements OrchestratorApi {
       return taskId && sequence.blocked(taskId, d);
     }).map(d => d.id) : []);
     const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
+    if (runner instanceof CoreRunner && !observed) return { ok: false, reason: "busy", retryable: true, deliveryEffect: "not_written" };
     const executionContracts = member.kind === "worker" ? [...new Set(deliveries.filter(d => d.wake && d.taskId).map(d => d.taskId!))].flatMap(taskId => {
       const contract = this.store.getEffectiveContract(taskId);
       return contract ? [{ taskId, contractTaskId: contract.taskId, rev: contract.rev, context: this.instructionTaskLines(project.id, taskId)!,
