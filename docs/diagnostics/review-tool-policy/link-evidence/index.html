@@ -1,0 +1,95 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Novel 검수 진단의 원자료 연결 확인서</title><style>*{box-sizing:border-box}body{margin:0;background:#f3f5f7;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;line-height:1.75}.page{max-width:1100px;margin:auto;padding:28px 20px 60px}h1{font-size:clamp(28px,4vw,38px);line-height:1.4}h2{margin-top:34px;font-size:24px}p,li,td,th,code{overflow-wrap:anywhere}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;background:white;font-size:14px}th,td{border:1px solid #d4dde4;padding:10px;vertical-align:top;text-align:left}th{background:#e8eff3}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#172b38;color:white;padding:16px}li{margin-bottom:14px}@media(max-width:600px){.page{padding:18px 14px}th,td{padding:8px;font-size:13px}}</style></head><body><main class="page"><h1>Novel 검수 진단의 원자료 연결 확인서</h1>
+<p>새 보완 업무 tk_qx9Byiz7koZZ에서 <strong>기존 고정판의 원본·전체 변경분·실행 결과를 연결하고 정상 지원 API에서 다시 읽어 확인했습니다.</strong> 진행 보고 msg_0KVbJThWHE7Z의 세 자료 본문이 반환됐고, 필요한 실행 결과 JSON은 고정 입력과 일치했습니다.</p>
+<p>이번 결과는 커밋 조회가 실패해도 자료 본문으로 대조할 수 있게 한 작성자 보완입니다. 기존 합성 시험·제품 검수·운영 복구는 다시 수행하지 않았습니다. 총괄이 지정 독립 검토를 이어갈 차례이며, 이 직원의 정상 조회를 지정 검수자의 최종 수용으로 바꾸지 않습니다.</p>
+<h2>무엇을 어느 업무에 연결했나</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th scope="col">대상</th>
+<th scope="col">근거와 연결</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>현재 보완 업무</td>
+<td>tk_qx9Byiz7koZZ · 확정 계약 r1</td>
+</tr>
+<tr>
+<td>원 업무·문제 보고</td>
+<td>tk_34o1KVuzwy5Z · msg_sSjTzzyxObEk</td>
+</tr>
+<tr>
+<td>원래 검토 대상</td>
+<td>IAMCEO 679b10d99da712ff95eef7c6cdaa3437eb30be06</td>
+</tr>
+<tr>
+<td>원자료 묶음의 고정판</td>
+<td>28c08fc55dd79b6ee786e4cd42965239101dd0a0</td>
+</tr>
+<tr>
+<td>제품 소스 기준</td>
+<td>27ec070c1c83acbe0229c53ddccf278ad15d7965</td>
+</tr>
+<tr>
+<td>저장소</td>
+<td><a href="https://github.com/sueelly/IAMCEO.git">https://github.com/sueelly/IAMCEO.git</a></td>
+</tr>
+<tr>
+<td>원본 9개·소스 8구간</td>
+<td>f_Scyhi03Me6ic · 원 업무 f_dRBybUhHISeb의 입력을 연결</td>
+</tr>
+<tr>
+<td>전체 변경분</td>
+<td>f_RuJfMFYh5SQ7 · 원 업무 f_7Am6QXyFjRpb의 전체 diff 입력을 연결</td>
+</tr>
+<tr>
+<td>필요한 실행 원자료</td>
+<td>f_XIc9unzt2Pwn · 기존 CLI·서버 결과 JSON과 총괄 보고 본문</td>
+</tr>
+</tbody></table></div>
+<p>원 업무의 최신 task_trace에는 완료 근거 msg_p6fJQaxDvP8C와 msg_2pQdiJI4GGce가 eligible로 남고 지정 최종 검수는 pending으로 관측됐습니다. 이 상태를 보존하고, 새 업무에는 별도 브랜치·워크트리를 등록했습니다. 원 업무의 단계나 계약을 바꾸지 않았습니다.</p>
+<h2>직접 다시 읽어 확인한 범위</h2>
+<p>정상 post(report_id) 조회로 위 세 자료의 본문을 받았습니다. 호출 결과의 전체 실행 JSON을 고정 입력과 대조했습니다.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th scope="col">실행 원자료의 핵심 필드</th>
+<th scope="col">재조회 결과</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>기본 fake MCP 호출 수</td>
+<td>0</td>
+</tr>
+<tr>
+<td>기본 오류</td>
+<td>MCP tool call requires approval, but approval policy is never · 2건</td>
+</tr>
+<tr>
+<td>후보 fake MCP 호출 수</td>
+<td>post·task_review_evidence 각1건, 합계2건</td>
+</tr>
+<tr>
+<td>never/read-only·쉘/외부 MCP 제한</td>
+<td>보존 true</td>
+</tr>
+<tr>
+<td>서버 fixture의 사람 결재</td>
+<td>거절 뒤에도 열린 상태 true</td>
+</tr>
+<tr>
+<td>전체 실행 JSON과 고정 입력</td>
+<td>일치 true</td>
+</tr>
+</tbody></table></div>
+<p>이는 원 커밋에 보존된 기존 합성 실행 결과의 재조회입니다. 새 모델·계정·운영 호출이나 실제 검수 판정이 아닙니다. 당시 전체 터미널 또는 실서비스 서버 로그를 수집한 자료도 아닙니다. 06:39 KST 실제 오류는 자료 안의 총괄 보고 msg_joLOlvnUy3GJ에 귀속하고, 합성의 호출0을 실서비스 서버 로그 사실로 옮기지 않습니다.</p>
+<p>큰 소스 자료를 지원 API로 읽으면 합성 코드의 usage 필드 등에 [가림]이 반환됩니다. 그 반환 본문을 Git 원문과 바이트가 같다고 주장하지 않았습니다. 가림을 풀거나 정책을 바꾸지 않았습니다. 원문 기준은 고정 Git 객체·blob·SHA-256이며, 필요한 실행 결과 JSON은 별도 자료로 나누어 재조회 일치를 확인했습니다. 가림이 저장·응답 중 어느 단계에서 적용됐는지는 이번 조회만으로 확정하지 않습니다.</p>
+<h2>문서 회귀 검사와 남은 담당</h2>
+<p>새 워크트리에서 다음 문서 검사를 실제 실행해 모두 exit0을 확인했습니다. 기존 CLI·서버 합성 fixture를 다시 실행하는 명령은 아닙니다.</p>
+<pre><code class="language-sh">python3 docs/diagnostics/review-tool-policy/review-handoff/verify-handoff.py
+python3 docs/diagnostics/review-tool-policy/verify-report.py
+python3 docs/diagnostics/review-tool-policy/link-evidence/verify-link.py
+</code></pre>
+<p>앞의 두 검사는 원본9개·제품소스8구간·전체diff·오류·역할/사람 결재 보호와 원 진단서의 일치를 확인합니다. 마지막 검사는 이번 업무의 연결 ID·정상 조회 기록·필요한 실행 JSON·표시 문서가 고정 입력과 맞는지 확인합니다. 검증한 새 문서만 커밋·작업 브랜치 일반 업로드하고 원격 SHA 일치를 연결 보고에 남깁니다.</p>
+<p>자동 Git 조회의 missing_commit이 정상화됐다고 보고하지 않습니다. 지정 검수자의 이번 자료 열람·최종 수용, 실서비스 tools/call·/agent/tool·operation ID·현재 프로세스 동일성은 미확인입니다. 총괄은 새 업무의 세 자료로 지정 독립 검토를 이어갈 수 있습니다. 정책·권한·역할·승인·세션·기존 대기열·서비스·main 변경은0건입니다.</p>
+<p>워크트리 <code>/Users/hyejookim/Programming/01_Ing/.worktrees/IAMCEO/link-review-evidence</code> · 브랜치 <code>docs-link-review-evidence-tk_qx9Byiz7koZZ</code>. 이 폴더 아래 <code>docs/diagnostics/review-tool-policy/link-evidence/index.html</code>은 일반 브라우저에서, <code>index.md</code>는 터미널에서 읽을 수 있습니다. 두 파일의 핵심 내용은 같습니다.</p>
+</main></body></html>

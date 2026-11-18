@@ -1,0 +1,26 @@
+[
+  {
+    "key": "source",
+    "newFileId": "f_Scyhi03Me6ic",
+    "originalFileId": "f_dRBybUhHISeb",
+    "path": "docs/diagnostics/review-tool-policy/review-handoff/snapshot.md",
+    "apiMaskingMayApply": true,
+    "inputCommit": "28c08fc55dd79b6ee786e4cd42965239101dd0a0"
+  },
+  {
+    "key": "diff",
+    "newFileId": "f_RuJfMFYh5SQ7",
+    "originalFileId": "f_7Am6QXyFjRpb",
+    "path": "docs/diagnostics/review-tool-policy/review-handoff/changes.md",
+    "apiMaskingMayApply": true,
+    "inputCommit": "28c08fc55dd79b6ee786e4cd42965239101dd0a0"
+  },
+  {
+    "key": "execution",
+    "newFileId": "f_XIc9unzt2Pwn",
+    "originalFileId": null,
+    "path": "docs/diagnostics/review-tool-policy/link-evidence/evidence.md",
+    "apiMaskingMayApply": true,
+    "inputCommit": "28c08fc55dd79b6ee786e4cd42965239101dd0a0"
+  }
+]

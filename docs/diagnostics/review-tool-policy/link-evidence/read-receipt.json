@@ -1,0 +1,35 @@
+{
+  "taskId": "tk_qx9Byiz7koZZ",
+  "reportId": "msg_0KVbJThWHE7Z",
+  "readVia": "post(report_id)",
+  "files": [
+    {
+      "id": "f_Scyhi03Me6ic",
+      "bodyPresent": true,
+      "bodyCharacters": 88204
+    },
+    {
+      "id": "f_RuJfMFYh5SQ7",
+      "bodyPresent": true,
+      "bodyCharacters": 59948
+    },
+    {
+      "id": "f_XIc9unzt2Pwn",
+      "bodyPresent": true,
+      "bodyCharacters": 8027
+    }
+  ],
+  "executionFileId": "f_XIc9unzt2Pwn",
+  "executionPayloadEqualsCanonicalInputs": true,
+  "checks": {
+    "baselineCallCount": 0,
+    "candidateCallCount": 2,
+    "baselineErrors": [
+      "MCP tool call requires approval, but approval policy is never",
+      "MCP tool call requires approval, but approval policy is never"
+    ],
+    "restrictionsPreserved": true,
+    "humanDecisionStillOpen": true
+  },
+  "scope": "Normal author read only. Designated reviewer read/acceptance and automatic Git lookup remain unverified."
+}
