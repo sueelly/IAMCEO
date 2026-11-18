@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Orchestrator } from "../server/orchestrator.ts";
 import { CoreRunner } from "../server/runner/core.ts";
@@ -6,12 +7,12 @@ import { createQueueStatusFixture } from "./fixtures/queue-status-runtime.ts";
 
 type Fixture = Awaited<ReturnType<typeof createQueueStatusFixture>>;
 
-async function coldRuntime(f: Fixture) {
+async function coldRuntime(f: Fixture, socketPath = f.config.coreSocket) {
   await f.orch.shutdown();
   // This existing session has already applied its native CLI preference.
   f.store.setParallelApplied(f.member.id, f.member.parallel);
   const homes = { claudeHome: join(f.dir, "claude"), codexHome: join(f.dir, "codex") };
-  const runner = new CoreRunner({ ...homes, contextHome: f.dir, socketPath: f.config.coreSocket,
+  const runner = new CoreRunner({ ...homes, contextHome: f.dir, socketPath,
     claudeBin: "/usr/bin/false", codexBin: "/usr/bin/false" }, { recoveryStore: f.store, pollMs: 10 });
   const orch = new Orchestrator({ config: f.config, store: f.store, runners: new Map([["core", runner]]),
     providerHomes: homes, timings: { healthMs: 60_000, tickMs: 60_000 } });
@@ -75,15 +76,15 @@ test("a cold Core pump preserves a previous unresolved send", async () => {
   } finally { await cold?.shutdown(); await f.stop(); }
 });
 
-for (const inventory of ["duplicate", "missing"] as const) {
+for (const inventory of ["duplicate", "missing", "unavailable"] as const) {
   test(`a cold pump leaves the instruction untouched when its owned terminal inventory is ${inventory}`, async () => {
     const f = await createQueueStatusFixture();
     let cold: Orchestrator | undefined;
     try {
-      cold = await coldRuntime(f);
+      cold = await coldRuntime(f, inventory === "unavailable" ? join(f.dir, "unreachable.sock") : f.config.coreSocket);
       const original = f.terminals.get(f.member.paneId!)!;
       if (inventory === "duplicate") f.terminals.set("duplicate", { ...original, address: "duplicate" });
-      else f.terminals.clear();
+      else if (inventory === "missing") f.terminals.clear();
       const before = [...f.terminals.keys()];
       const d = enqueue(f, "Only the original holder may receive this instruction");
       await cold.pump(f.member.id);
@@ -95,6 +96,26 @@ for (const inventory of ["duplicate", "missing"] as const) {
     } finally { await cold?.shutdown(); await f.stop(); }
   });
 }
+
+test("after the supervisor confirms an ended holder, managed recovery resumes the original session", async () => {
+  const f = await createQueueStatusFixture();
+  let cold: Orchestrator | undefined;
+  try {
+    cold = await coldRuntime(f);
+    const transcriptDir = join(f.dir, "claude", "projects", "fixture");
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(join(transcriptDir, f.member.sessionId + ".jsonl"), "");
+    f.terminals.get(f.member.paneId!)!.state = "finished";
+    const d = enqueue(f, "Resume through managed lifecycle");
+    await cold.pump(f.member.id);
+    expect(f.terminals.size).toBe(1);
+    expect(f.store.listDeliveryDispatches(d.id)).toHaveLength(0);
+    await cold.recover();
+    expect(f.store.requireDelivery(d.id)).toMatchObject({ status: "delivered", attempts: 1 });
+    expect(f.store.requireMember(f.member.id).sessionId).toBe(f.member.sessionId);
+    expect(f.writes.filter(w => w.text.includes(d.text))).toHaveLength(1);
+  } finally { await cold?.shutdown(); await f.stop(); }
+});
 
 test("a cold pump waits through a manual lease and sends the same input after release", async () => {
   const f = await createQueueStatusFixture();
