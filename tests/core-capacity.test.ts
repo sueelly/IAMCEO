@@ -88,7 +88,7 @@ for (const change of ["contract", "owner-stop"] as const) {
       timings: { tickMs: 60_000, healthMs: 60_000 } });
     try {
       const project = store.createProject({ name: "Continuation preflight", cwd: runtime.paths.work });
-      const worker = await orch.createMember(project.id, { name: "Worker", cli: "claude" });
+      const worker = await orch.createMember(project.id, { name: "Worker", cli: "claude", parallel: false });
       const task = store.saveTask({ projectId: project.id, memberId: worker.id, who: "대표", title: "Approved remaining scope" }).task;
       const contract = { kind: "other" as const, goal: "승인된 범위 확인", acceptance: ["검사 결과 확인"], inputs: ["승인 요청"], outputs: ["검사 결과"], scope: "승인 범위", constraints: [], exclusions: [] };
       store.saveTaskContract(task.id, contract, { author: "대표", authorMemberId: null, authorKind: "owner" });
@@ -122,8 +122,9 @@ for (const scope of ["project", "global", "failure", "criteria", "contract_revis
     try {
       store.patchSettings({ maxConcurrentTurns: 2, boardTidyHours: 0 });
       const project = store.createProject({ name: "Core capacity", cwd: runtime.paths.work });
-      const first = await orch.createMember(project.id, { name: "First", cli: "claude" });
-      const second = await orch.createMember(project.id, { name: "Second", cli: "claude" });
+      // Count physical work writes; this fixture does not emulate CLI control commands.
+      const first = await orch.createMember(project.id, { name: "First", cli: "claude", parallel: false });
+      const second = await orch.createMember(project.id, { name: "Second", cli: "claude", parallel: false });
       const lead = ["criteria", "contract_revision"].includes(scope) ? store.createMember({ projectId: project.id, kind: "conductor", handle: "lead", name: "총괄", cwd: project.cwd, origin: "manual" }) : null;
       const execution = { inputs: ["현재 인계 기록"], outputs: ["인계 문서"], scope: "문서 인계", constraints: [], exclusions: [] };
       const task = scope === "failure" || scope === "sequence" ? store.saveTask({ projectId: project.id, memberId: second.id, who: "대표", title: "실패 정책 경합" }).task
@@ -201,7 +202,7 @@ test("quota discovered while opening an offline worker fences its input before a
     timings: { tickMs: 60_000, healthMs: 60_000 } });
   try {
     const project = store.createProject({ name: "Startup limit", cwd: runtime.paths.work });
-    const member = store.createMember({ projectId: project.id, kind: "worker", handle: "worker", name: "Worker", cwd: project.cwd, origin: "runner", cli: "claude" });
+    const member = store.createMember({ projectId: project.id, kind: "worker", handle: "worker", name: "Worker", cwd: project.cwd, origin: "runner", cli: "claude", parallel: false });
     store.patchMember(member.id, { status: "offline", backend: "core" });
     const queued = store.enqueue({ projectId: project.id, memberId: member.id, kind: "instruction", text: "Preserve this queued input", wake: true });
     await orch.pump(member.id);

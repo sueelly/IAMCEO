@@ -1,5 +1,5 @@
 import { createServer, type Socket } from 'node:net';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Bus } from '../../server/bus.ts';
 import { loadConfig } from '../../server/config.ts';
@@ -84,7 +84,14 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const runner = new CoreRunner({ socketPath, claudeBin: '/usr/bin/false', codexBin: '/usr/bin/false', claudeHome, codexHome, contextHome: dir }, { pollMs: 10, acceptCheckMs: 120, rpcTimeoutMs: 1000, sendTimeoutMs: 1000 });
   const orch = new Orchestrator({ config, store, runners: new Map([['core', runner]]), providerHomes: { claudeHome, codexHome }, timings: { healthMs: 60_000, tickMs: 60_000 } });
   orch.setServerUrl('http://127.0.0.1:1');
-  const stop = async () => { await Bun.sleep(50); await orch.shutdown(); for (const socket of sockets) socket.destroy(); await new Promise<void>(done => server.close(() => done())); db.close(); };
+  const stop = async () => {
+    await Bun.sleep(50);
+    await orch.shutdown();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(done => server.close(() => done()));
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  };
   const member = await orch.createMember(project.id, { name: 'Fixture worker', cli: 'claude' });
   return { dir, config, bus, store, orch, project, runner, member, terminals, writes, controls, keys, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
     setOnKeys(value: (() => void) | null) { onKeys = value; }, setKeyGate(value: Promise<void> | null) { keyGate = value; },
