@@ -1092,7 +1092,7 @@ describe("전달 실패 사유(herdr 자리)", () => {
     await expect(t.orch.adopt(t.project.id, { paneId: "없음", name: "x", role: "" })).rejects.toMatchObject({ status: 404 });
     expect(t.runner.sent.length).toBe(0);
     const a = await t.orch.adopt(t.project.id, { paneId: "live1", name: "기존이", role: "개발", handle: "old" });
-    expect(a).toMatchObject({ origin: "adopted", cli: "claude", sessionId: "sess-live", paneId: "live1", status: "working" });
+    expect(a).toMatchObject({ origin: "adopted", cli: "claude", parallel: true, sessionId: "sess-live", paneId: "live1", status: "working" });
     expect(t.runner.sent[0]!.text.startsWith("[시스템] 지금부터 이 세션은")).toBe(true);
     expect(t.runner.sent[0]!.text).toContain("기존이");
     t.runner.emit({ type: "turn_end", memberId: a.id, finalText: "", isError: false });

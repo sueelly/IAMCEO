@@ -524,9 +524,9 @@ export class CoreRunner implements Runner {
       // Status is taken exclusively from OSC7501, never this screen guard.
       const draft = composerDraft(providerFor(member), screen.text);
       if (draft !== "") return { ok: false, reason: "input_busy", retryable: false, deliveryEffect: "not_written", detail: draft === null ? "Cannot identify an empty CLI composer" : "A user draft is present; IAMCEO leaves it untouched" };
-      const preference = this.parallelPreferences.get(member.id) ?? member.parallel;
-      const prefix = providerFor(member) !== "claude" && preference !== undefined
-        ? (preference ? "IAMCEO execution preference: Use native subagents for independent work in parallel when useful; retain your normal approvals and tool access.\n\n" : "IAMCEO execution preference: Work sequentially for this task; do not spawn subagents.\n\n") : "";
+      const preference = member.parallel ?? this.parallelPreferences.get(member.id);
+      const prefix = member.kind !== "conductor" && providerFor(member) !== "claude" && preference !== undefined
+        ? (preference ? "IAMCEO execution preference: Use native subagents for independent parts of your assigned work when useful. Choose and coordinate them yourself within your existing tool permissions and approvals.\n\n" : "IAMCEO execution preference: Work sequentially for this task; do not spawn subagents.\n\n") : "";
       const binding = laterNativeId(providerFor(member)) && !track.sessionId && track.nonce ? codexBindingMarker(track.nonce) + "\n\n" : "";
       const cleaned = cleanText(binding + prefix + text);
       if (!cleaned.trim()) return unsupported("Message is empty");
@@ -781,6 +781,7 @@ export class CoreRunner implements Runner {
     } else operation.cursor = result.cursor;
   }
   async setParallel(member: RunnerMember, on: boolean, opts: StartOpts): Promise<SendResult> {
+    if (member.kind === "conductor") return unsupported("This role coordinates through IAMCEO and cannot start native subagents");
     if (providerFor(member) !== "claude") {
       // Codex and Antigravity have native subagents, not Claude's Ultracode switch. Its capability
       // stays enabled; this preference is added explicitly to each next task.

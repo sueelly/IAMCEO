@@ -626,7 +626,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       cwd: z.string().optional().describe("작업 폴더. 기본은 프로젝트 폴더. 프로젝트 폴더 안이어야 한다. 밖이 꼭 필요하면 ask 로 묻고, 대표가 그 경로를 쓴 글을 user_quote 에 싣는다"),
       first_instruction: z.string().optional().describe("첫 지시. 끝났다고 볼 기준 포함"),
       user_quote: userQuote,
-      parallel: z.boolean().optional().describe("병렬(ultracode)로 시작"),
+      parallel: z.boolean().optional().describe("직원의 병렬 작업 선호. 기본값은 켜짐이며 대표가 순차 실행을 요청하면 false"),
       task_id: firstTaskId,
     }),
     async (orch, member, a) => {
@@ -654,7 +654,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       member: memberRef,
       text: text.describe("이 직원이 맡을 일과 직접 확인할 완료 기준, 참고 자료를 적는다. 다른 담당자가 맡을 검토·통합·적용은 별도 업무로 연결한다."),
       user_quote: userQuote,
-      parallel: z.boolean().optional().describe("이 일에 병렬(ultracode)이 나은지. 지금과 다를 때만 서버가 바꾼다"),
+      parallel: z.boolean().optional().describe("대표가 병렬 작업 선호 변경을 요청했을 때만 지정한다. 생략하면 기존 설정을 유지한다"),
       urgent: z.boolean().optional().describe("대표가 '지금 바로'라고 했을 때만 true"),
       attachments: z.array(z.string()).max(20).optional().describe("함께 넘길 대표 메시지의 첨부 id(`첨부:` 줄 경로의 파일 이름 앞 a_... 부분). 경로를 글로 옮기지 말고 이것을 쓴다"),
       contract: contractSchema.optional(),

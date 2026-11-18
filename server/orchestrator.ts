@@ -577,6 +577,7 @@ interface Runtime {
   closing: boolean;
   /** 병렬 설정을 다시 시도한 횟수. 끝내 안 되면 총괄에게 알리고 일을 내보낸다. */
   parallelFails: number;
+  failedParallel: boolean | null;
   /** 이 시각까지는 전달하지 않는다(입력을 못 읽고 끝난 턴을 곧바로 되풀이하지 않게). */
   holdUntil: number;
   /** 재결합 중에는 working 을 '대표가 터미널에 친 일'로 보지 않는다. */
@@ -2349,8 +2350,8 @@ export class Orchestrator implements OrchestratorApi {
         // 끝낸 넘겨받은 칸은 잠든 것과 같다. 깨울 때 도구와 규칙을 갖고 뜨며 서버 세션이 된다.
         const handedBack = member.origin === "adopted" && !!member.sessionId && member.status !== "asleep" && member.status !== "offline";
         // 병렬은 세션에만 있는 값이라 새 칸·새 프로세스에서 풀린다. 다음 일 전에 되살린다.
-        if (member.parallel) this.runtime(id).wantParallel ??= true;
-        this.store.patchMember(id, { backend: member.backend ? next : null, paneId: null, ...(member.parallel ? { parallel: false } : {}), ...(handedBack ? { status: "asleep" as const } : {}) });
+        this.resetSessionParallel(member);
+        this.store.patchMember(id, { backend: member.backend ? next : null, paneId: null, ...(handedBack ? { status: "asleep" as const } : {}) });
         moved.push(member.name);
       }
     } catch (e) {
@@ -3657,6 +3658,7 @@ export class Orchestrator implements OrchestratorApi {
         cli,
         modelOverride: input.modelOverride,
         effortOverride: input.effortOverride,
+        parallel: input.parallel,
         cwd: input.cwd ? this.resolveCwd(project, input.cwd) : undefined,
       }), ({ member }) => {
         if (!input.firstInstruction) return [];
@@ -3666,7 +3668,7 @@ export class Orchestrator implements OrchestratorApi {
       if (assignedBy) for (const delivery of spawned.deliveries) this.store.noteDelegation(assignedBy.id, delivery, false);
       return spawned;
     });
-    if (input.parallel) this.runtime(member.id).wantParallel = true;
+    if (input.parallel !== undefined) this.runtime(member.id).wantParallel = input.parallel;
     await ready;
     await this.pump(member.id);
     const assigned = deliveries[0] ? { delivery: this.store.requireDelivery(deliveries[0].id), position: 0,
@@ -3676,7 +3678,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 명부에 올리고 세션을 띄우기 시작한다. 끝나기 전에는 pump 가 건너뛰고, 끝나면 다시 민다. */
-  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null }): { member: Member; ready: Promise<void> } {
+  private beginSpawn(project: Project, input: { kind: MemberKind; handle: string; name: string; role: string; parallel?: boolean; cwd?: string; cli?: CliProvider; modelOverride?: string | null; effortOverride?: string | null }): { member: Member; ready: Promise<void> } {
     this.requireActive(this.store.requireProject(project.id));
     this.requireNotSwitching(); // 옮기는 명단에 없는 칸이 옛 실행기에 남는다.
     const member = this.store.createMember({ projectId: project.id, ...input, origin: "runner", status: "idle" });
@@ -3726,7 +3728,10 @@ export class Orchestrator implements OrchestratorApi {
     const currentError = runner instanceof CoreRunner ? runner.observationState(memberId)?.lastError : null;
     this.store.patchMember(memberId, { sessionId: started.sessionId, paneId: started.paneId, ...(!currentError && !this.store.requireMember(memberId).executionIssue ? { lastError: null } : {}) });
     // 이미 떠 있던 칸에 붙었으면 이번 인자가 들어간 것이 아니다.
-    if (!started.rejoined && sent) this.store.setAppliedConfig(memberId, sent);
+    if (!started.rejoined) {
+      this.resetSessionParallel(this.store.requireMember(memberId));
+      if (sent) this.store.setAppliedConfig(memberId, sent);
+    }
     if (started.tabId && started.tabId !== project.herdrTabId) this.store.patchProject(project.id, { herdrTabId: started.tabId });
   }
 
@@ -3818,6 +3823,7 @@ export class Orchestrator implements OrchestratorApi {
         taskId: task?.id ?? null,
       });
       if (assignedBy) this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent);
+      if (input.parallel !== undefined && input.parallel !== target.parallel) this.store.patchMember(target.id, { parallel: input.parallel });
       return delivery;
     });
     // 거절된 지시는 병렬 설정도 바꾸지 않는다.
@@ -4141,7 +4147,7 @@ export class Orchestrator implements OrchestratorApi {
         const started = await this.startManaged(fresh, project, false);
         if (await this.dropIfClosed(member, project, runner, started)) return null;
         this.applyStarted(member.id, project, started, sent);
-        this.store.patchMember(member.id, { contextPct: null, parallel: false, ...(member.origin === "adopted" ? { origin: "runner" as const } : {}) });
+        this.store.patchMember(member.id, { contextPct: null, ...(member.origin === "adopted" ? { origin: "runner" as const } : {}) });
         this.store.enqueue({ projectId: project.id, memberId: member.id, kind: "system", text: this.newSessionNote(member), wake: false });
       } catch (e2) {
         this.store.patchMember(member.id, { lastError: (e2 as Error).message });
@@ -5687,10 +5693,21 @@ export class Orchestrator implements OrchestratorApi {
 
     const turn: Turn = { kind: "work", admitted: runner.kind === "headless" || runner.kind === "core", text: "", interrupted: false };
     rt.turn = turn;
+    // Claude's Ultracode switch belongs to a CLI session, including adopted or reattached ones.
+    // Codex and Antigravity receive the stored preference with each delivery.
+    if (member.kind === "conductor" || member.finalReviewer) rt.wantParallel = null;
+    else if (member.cli === "claude" && rt.failedParallel !== member.parallel && member.parallel !== this.store.parallelApplied(member.id)) {
+      rt.wantParallel ??= member.parallel;
+    }
     if (rt.wantParallel !== null) {
       rt.pumpStage = "parallel";
       const go = await this.applyParallel(member, project, runner, rt, this.pendingInputs(memberId));
-      if (!go || this.store.requireMember(memberId).status === "asleep") {
+      // A later assignment may have changed the preference while the CLI confirmed the switch.
+      // Re-evaluate its queued bundle with the latest member before writing any work.
+      const current = this.store.requireMember(memberId);
+      const changedDuringControl = go && member.parallel !== current.parallel;
+      if (changedDuringControl) rt.again = true;
+      if (!go || changedDuringControl || current.status === "asleep") {
         rt.turn = null;
         this.releaseSlots();
         return;
@@ -5846,10 +5863,7 @@ export class Orchestrator implements OrchestratorApi {
       this.store.setAppliedConfig(member.id, want);
       this.store.appendActivity(member.id, "system", `새 설정으로 다시 열었습니다: 모델 ${want.model ?? "기본"}, effort ${want.effort ?? "기본"}`);
       // 병렬은 세션에만 있는 값이라 다시 열면 풀린다. 다음 일 전에 되살린다.
-      if (member.parallel) {
-        this.store.patchMember(member.id, { parallel: false });
-        rt.wantParallel ??= true;
-      }
+      this.resetSessionParallel(member);
       return true;
     }
     switch (result.reason) {
@@ -5983,18 +5997,28 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
+  private resetSessionParallel(member: Member): void {
+    const rt = this.runtime(member.id);
+    rt.failedParallel = null;
+    if (this.store.parallelApplied(member.id)) {
+      this.store.setParallelApplied(member.id, false);
+      rt.wantParallel ??= member.parallel;
+    }
+  }
+
   /** 일을 내보내도 되면 true. 일시적으로 못 바꿨으면 지시를 되살리고 일도 미룬다(순차로 나가 버리면 되돌릴 수 없다). */
   private async applyParallel(member: Member, project: Project, runner: Runner, rt: Runtime, pending: Delivery[] = []): Promise<boolean> {
     const want = rt.wantParallel!;
     rt.wantParallel = null;
-    if (want === member.parallel) return true;
+    if (want === this.store.parallelApplied(member.id)) return true;
     const held = rt.turn;
     rt.turn = { kind: "control", admitted: runner.kind === "headless" || runner.kind === "core", text: "", interrupted: false };
     const result = await this.safeSend(() => runner.setParallel(this.runnerMember(member, project), want, { ...this.writeRunFiles(member, project), beforeWrite: () => this.reservedInputAllowed(member, pending) }));
     rt.turn = held;
     if (result.ok) {
       rt.parallelFails = 0;
-      this.store.patchMember(member.id, { parallel: want });
+      rt.failedParallel = null;
+      this.store.setParallelApplied(member.id, want);
       this.store.appendActivity(member.id, "system", `병렬 ${want ? "켬" : "끔"}`);
       return true;
     }
@@ -6018,8 +6042,9 @@ export class Orchestrator implements OrchestratorApi {
       return false;
     }
     // 끝내 안 된다. 일을 영영 막지는 않되, 순차로 돈다는 것을 총괄이 알게 한다.
-    rt.wantParallel = null;
+    if (rt.wantParallel === want) rt.wantParallel = null;
     rt.parallelFails = 0;
+    rt.failedParallel = want;
     const conductor = this.store.getConductor(member.projectId);
     if (conductor && conductor.id !== member.id) {
       this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name} 병렬 ${want ? "켜기" : "끄기"} 실패: ${normalizeSpace(detail).slice(0, 200)}. 지금 설정대로 일을 넘겼습니다.`), wake: false });
@@ -6791,7 +6816,7 @@ export class Orchestrator implements OrchestratorApi {
   private runtime(memberId: string): Runtime {
     let rt = this.runtimes.get(memberId);
     if (!rt) {
-      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, toolsGaveUp: null, background: null, stopRequest: null };
+      rt = { contextCandidate: null, turn: null, pumping: null, pumpStage: null, pumpSince: null, pumpReported: false, again: false, posted: false, delegated: false, direct: false, skipCompact: false, compactRequest: null, compactTimer: null, retryTimer: null, inputBusySince: null, wantParallel: null, starting: null, reopening: null, closing: false, parallelFails: 0, failedParallel: null, reattaching: false, holdUntil: 0, configFails: 0, configGaveUp: null, toolsGaveUp: null, background: null, stopRequest: null };
       this.runtimes.set(memberId, rt);
     }
     return rt;

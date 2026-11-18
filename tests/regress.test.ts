@@ -488,6 +488,7 @@ describe("턴 정리", () => {
     expect(t.store.requireMember(w.id).parallel).toBe(false);
     expect(parallel).toEqual([]);
     t.store.patchMember(w.id, { parallel: true });
+    t.store.setParallelApplied(w.id, true);
     await t.orch.assign(t.project.id, "cs", { text: "c", parallel: false });
     await t.orch.assign(t.project.id, "cs", { text: "d", parallel: true });
     t.runner.end(w.id);
@@ -1169,7 +1170,8 @@ describe("2차 검수 회귀: 전달", () => {
     await t.orch.assign(t.project.id, "cs", { text: "순차 일", parallel: false });
     await until(() => t.runner.sent.filter((s) => s.memberId === w.id).length > before, "결국 내보냄");
     expect(t.runner.parallelCalls).toBe(3);
-    expect(t.store.requireMember(w.id).parallel).toBe(true);
+    expect(t.store.requireMember(w.id).parallel).toBe(false);
+    expect(t.store.parallelApplied(w.id)).toBe(true);
     const note = t.store.listPending(lead.id).find((d) => d.text.includes("병렬 끄기 실패"));
     expect(note?.text).toContain("철수");
   });
@@ -1393,7 +1395,7 @@ describe("2차 검수 회귀: REST", () => {
 
 describe("역할 템플릿 꺼내기", () => {
   test("exportRoles 는 example 만 쓰고, 승인 규칙이 빠진 맞춤 템플릿은 경고한다", async () => {
-    const { exportRoles, renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } = await import("../server/roles.ts");
+    const { exportRoles, renderRole, NATIVE_PARALLEL_GUIDE, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } = await import("../server/roles.ts");
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-roles-x-")));
     const paths = exportRoles(dir);
     expect(paths.map((p) => p.split("/").at(-1)).sort()).toEqual(["conductor.example.md", "root.example.md", "worker.example.md"]);
@@ -1406,7 +1408,7 @@ describe("역할 템플릿 꺼내기", () => {
     console.warn = (m: string) => warned.push(String(m));
     try {
       // 터미널 승인 안내는 고친 템플릿에도 끝에 붙는다. 경고는 붙이기 전 템플릿으로 판단한다.
-      expect(renderRole("worker", vars, dir)).toBe(`맞춤 n\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
+      expect(renderRole("worker", vars, dir)).toBe(`맞춤 n\n\n${NATIVE_PARALLEL_GUIDE}\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
     } finally {
       console.warn = warn;
     }
@@ -1614,4 +1616,26 @@ describe("W5 전달 통합", () => {
     } finally { release(); await checking; }
   });
 
+});
+
+test("a newer sequential preference is applied before a queued bundle leaves an in-flight parallel control", async () => {
+  const t = await setup();
+  const w = (await t.orch.addMember(t.project.id, { name: "동시 지시", handle: "changes", cli: "claude" })).member;
+  const order: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  t.runner.setParallel = async (_m, on) => {
+    order.push(on ? "on" : "off");
+    if (on) await held;
+    return { ok: true };
+  };
+  const send = t.runner.send.bind(t.runner);
+  t.runner.send = async (...args) => { order.push("work"); return send(...args); };
+  const first = t.orch.assign(t.project.id, w.handle, { text: "작업" });
+  await until(() => order.length > 0);
+  const second = t.orch.assign(t.project.id, w.handle, { text: "순차 작업", parallel: false });
+  release();
+  await Promise.all([first, second]);
+  expect(order).toEqual(["on", "off", "work"]);
+  expect(t.store.requireMember(w.id).parallel).toBe(false);
 });

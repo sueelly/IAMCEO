@@ -156,6 +156,10 @@ test("member creation and optimistic decisions use authenticated REST contracts"
   expect(response.status).toBe(200);
   const member = await response.json() as Member;
   expect(member.cli).toBe("codex");
+  expect(member.parallel).toBe(true);
+  const sequential = await call(`/api/projects/${f.project.id}/members`, { name: "순차 직원", parallel: false });
+  expect(sequential.status).toBe(200);
+  expect((await sequential.json() as Member).parallel).toBe(false);
   expect((await call(`/api/projects/${f.project.id}/members`, { name: "잘못된 직원", cli: "other" })).status).toBe(400);
   const decision = f.store.createDecision({ projectId: f.project.id, memberId: member.id, who: member.name, title: "결정", options: [{ k: "yes", label: "예" }] });
   expect((await call(`/api/decisions/${decision.id}/answer`, { choice: "yes", expectedVersion: "old" })).status).toBe(409);

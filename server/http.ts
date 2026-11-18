@@ -213,7 +213,7 @@ const AnswerApprovalSchema = z.strictObject({
   option: z.number().int().min(1).max(9),
   note: z.string().max(4000).optional(),
 });
-const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
+const CreateMemberSchema = z.strictObject({ name: nonEmpty, role: z.string().optional(), parallel: z.boolean().optional(), cli: cliProvider.optional(), modelOverride: modelName.nullable().optional() });
 const PatchMemberSchema = z.strictObject({ cli: cliProvider.optional(), modelOverride: listedModel.nullable().optional(), effortOverride: z.union([effort, codexEffort]).nullable().optional(), codexSpeed: z.enum(CODEX_SPEEDS).optional() });
 const AnswerNativePromptSchema = z.strictObject({
   operationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),

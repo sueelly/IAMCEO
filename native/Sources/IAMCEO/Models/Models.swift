@@ -121,7 +121,7 @@ struct Member: Codable, Sendable, Identifiable {
     var paneId: String? = nil
     var contextPct: Double? = nil
     var subagents: Int = 0
-    var parallel: Bool = false
+    var parallel: Bool = true
     var queuedCount: Int = 0
     var lastError: String? = nil
     var updatedAt: String = ""
@@ -166,7 +166,7 @@ extension Member {
         paneId = try c.decodeIfPresent(String.self, forKey: ModelKey("paneId"))
         contextPct = try c.decodeIfPresent(Double.self, forKey: ModelKey("contextPct"))
         subagents = try c.decodeIfPresent(Int.self, forKey: ModelKey("subagents")) ?? 0
-        parallel = try c.decodeIfPresent(Bool.self, forKey: ModelKey("parallel")) ?? false
+        parallel = try c.decodeIfPresent(Bool.self, forKey: ModelKey("parallel")) ?? true
         queuedCount = try c.decodeIfPresent(Int.self, forKey: ModelKey("queuedCount")) ?? 0
         lastError = try c.decodeIfPresent(String.self, forKey: ModelKey("lastError"))
         updatedAt = try c.decodeIfPresent(String.self, forKey: ModelKey("updatedAt")) ?? ""
