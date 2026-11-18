@@ -477,7 +477,7 @@ function toMember(r: Row): Member {
     contextWindow: r.context_window ?? null,
     contextWindowSource: r.context_window_source ?? null,
     subagents: r.subagents,
-    parallel: !!r.parallel,
+    parallel: !!r.parallel_preference,
     queuedCount: r.queued_count,
     heldCount: r.held_count ?? 0,
     lastError: r.last_error,
@@ -769,7 +769,7 @@ const MEMBER_COLUMNS: Record<keyof MemberPatch, string> = {
   contextWindow: "context_window",
   contextWindowSource: "context_window_source",
   subagents: "subagents",
-  parallel: "parallel",
+  parallel: "parallel_preference",
   lastError: "last_error",
   statusObservation: "status_observation_json",
   blockedReason: "blocked_reason",
@@ -1432,7 +1432,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const id = newId("m_");
       const at = nowIso();
       this.run(
-        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel, token, updated_at, created_at, cli, model_override, effort_override, final_reviewer)
+        `INSERT INTO members (id, project_id, handle, name, role, kind, origin, backend, status, cwd, session_id, pane_id, parallel_preference, token, updated_at, created_at, cli, model_override, effort_override, final_reviewer)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         input.projectId,
@@ -1446,7 +1446,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         input.cwd ?? project.cwd,
         input.sessionId ?? null,
         input.paneId ?? null,
-        input.parallel ? 1 : 0,
+        input.parallel === false ? 0 : 1,
         `tk_${newId("")}${newId("")}`,
         at,
         at,
@@ -1500,6 +1500,15 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (member.status !== before.status || member.blockedReason !== before.blockedReason) this.emitProjects();
       return member;
     });
+  }
+
+  /** Last confirmed session-level parallel control. Preference survives new processes and provider changes. */
+  parallelApplied(id: string): boolean {
+    return !!this.row("SELECT parallel FROM members WHERE id = ?", id)?.parallel;
+  }
+
+  setParallelApplied(id: string, enabled: boolean): void {
+    this.run("UPDATE members SET parallel = ? WHERE id = ?", enabled ? 1 : 0, id);
   }
 
   getAppliedConfig(id: string): AppliedConfig | null {

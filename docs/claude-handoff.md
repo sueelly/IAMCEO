@@ -203,7 +203,7 @@ CLI에 이미 연결된 도구가 호스트 앱·브라우저·시뮬레이터�
 | 빌드·로컬 설치 | [native/README.md](../native/README.md), `native/project.yml`, `scripts/build-native.ts`, `Services/LocalHostService.swift` |
 | 엔진 출처 | [vendor/herdr-core/README.md](../vendor/herdr-core/README.md) |
 
-**문서와 프롬프트의 남은 불일치:** `docs/operating-model.md`에는 headless/herdr 시기의 자동 압축·최종 글 자동 보고·승인 UI 설명이 남아 있다. 역할 템플릿에도 Claude의 ultracode 중심 표현이 남아 있어 Codex와 구분해 다듬을 필요가 있다. 이를 현재 core에서 모두 구현된 기능으로 받아들이지 않는다. 현행 동작은 `CoreRunner`, 서버 API, 실제 검증 기록과 대조한다.
+**문서와 프롬프트의 남은 불일치:** `docs/operating-model.md`에는 headless/herdr 시기의 자동 압축·최종 글 자동 보고·승인 UI 설명이 남아 있다. 이를 현재 core에서 모두 구현된 기능으로 받아들이지 않는다. 현행 동작은 `CoreRunner`, 서버 API, 실제 검증 기록과 대조한다.
 
 `docs/iamceo-native-blueprint.html`은 설계 설명, `docs/iamceo-front-preview.html`과 `iamceo-front-gallery.html`은 이전 시안, [iamceo-native-implementation.html](iamceo-native-implementation.html)은 현재 구현 화면 모음이다. 어느 것도 이번 사용자가 새 네이티브 디자인을 승인했다는 근거는 아니다.
 

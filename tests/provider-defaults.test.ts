@@ -121,3 +121,42 @@ describe("new provider defaults", () => {
     } finally { store.db.close(); }
   });
 });
+
+test("existing employee preferences are enabled once, without rotating their sessions or overwriting later choices", async () => {
+  const runtime = createIsolatedRuntime();
+  cleanups.push(() => runtime.stop());
+  const path = join(runtime.paths.iamceoHome, "parallel-v50.db");
+  const old = new Database(path, { create: true });
+  for (const migration of MIGRATIONS.slice(0, 50)) old.exec(migration);
+  old.exec(`PRAGMA user_version=50;
+    INSERT INTO projects (id,name,cwd,runner_enabled,created_at,updated_at)
+      VALUES ('p','팀','/fixture',1,'old','old');
+    INSERT INTO members (id,project_id,handle,name,kind,origin,status,cwd,session_id,pane_id,token,parallel,created_at,updated_at)
+      VALUES ('old','p','w','직원','worker','adopted','blocked','/fixture','conversation','pane','fixture',0,'old','old');`);
+  old.close();
+  const store = new Store(openDb(path), new Bus());
+  try {
+    expect(store.requireMember("old")).toMatchObject({ parallel: true, status: "blocked", sessionId: "conversation", paneId: "pane" });
+    store.patchMember("old", { parallel: false });
+  } finally { store.db.close(); }
+  const reopened = new Store(openDb(path), new Bus());
+  try { expect(reopened.requireMember("old").parallel).toBe(false); }
+  finally { reopened.db.close(); }
+});
+
+test("new staff, chiefs, reviewers and adopted employees default on; explicit sequential work survives launch and rotation", async () => {
+  const { orch, store, runtime, runner } = fixture();
+  const project = store.createProject({ name: "병렬 팀", cwd: runtime.paths.work });
+  const lead = await orch.ensureConductor(project.id);
+  const staff = await orch.createMember(project.id, { name: "자동 병렬" });
+  const sequential = (await orch.addMember(project.id, { name: "순차 직원", parallel: false })).member;
+  const reviewer = store.ensureFinalReviewer(project.id)!;
+  const adopted = store.createMember({ projectId: project.id, name: "편입", handle: "adopted", kind: "worker", origin: "adopted" });
+  expect([lead, staff, reviewer, adopted].map(member => member.parallel)).toEqual([true, true, true, true]);
+  expect(sequential.parallel).toBe(false);
+  expect(runner.started.find(member => member.id === sequential.id)?.parallel).toBe(false);
+  store.archiveAndRotateSession(staff.id, "claude");
+  store.archiveAndRotateSession(sequential.id, "claude");
+  expect(store.requireMember(staff.id).parallel).toBe(true);
+  expect(store.requireMember(sequential.id).parallel).toBe(false);
+});

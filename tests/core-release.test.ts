@@ -97,7 +97,8 @@ export async function createReleaseFixture() {
     if (recover) await orch.recover();
   }
   let member!: Member;
-  try { await boot(false); member = await orch.createMember(project.id, { name: "Claude", cli: "claude" }); }
+  // Transport fault injection targets the first work input, so use sequential fixture sessions.
+  try { await boot(false); member = await orch.createMember(project.id, { name: "Claude", cli: "claude", parallel: false }); }
   catch (error) {
     await server?.stop(); await orch?.shutdown(); db.close();
     for (const socket of sockets) socket.destroy();
@@ -316,7 +317,7 @@ if (process.argv[2] === "--crash-write") {
 
   test("release: five real core members reserve at most two automatic turns", async () => {
     const f = await fixture(); const members = [f.member];
-    for (let i = 1; i < 5; i++) members.push(await f.orch.createMember(f.project.id, { name: `worker-${i}`, cli: i % 2 ? "codex" : "claude" }));
+    for (let i = 1; i < 5; i++) members.push(await f.orch.createMember(f.project.id, { name: `worker-${i}`, cli: i % 2 ? "codex" : "claude", parallel: false }));
     for (const member of members) f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "instruction", text: "parallel work" });
     await Promise.all(members.map(m => f.orch.pump(m.id)));
     for (let i = 0; i < 100 && f.info().calls["terminal.send"]! < 2; i++) await Bun.sleep(5);

@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ReportCheckInput } from "./harness.ts";
 import type { CheckEvidence } from "./harness-evidence.ts";
 
 const run = promisify(execFile);
+export const integrationHeadCommand = "git diff --quiet HEAD -- && git rev-parse HEAD";
 export const beforeMainCommand = "git ls-remote --exit-code origin refs/heads/main";
 export const remoteMainCommand = "git ls-remote origin refs/heads/main";
 export const fullCommit = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
@@ -52,8 +54,40 @@ function remoteObservation(checks: ReportCheckInput[], evidence: CheckEvidence[]
     e.outputSha !== null && hashes.has(e.outputSha))?.at;
 }
 
+export function isRemoteObservation(command: string | null | undefined) {
+  return command === beforeMainCommand || command === remoteMainCommand;
+}
+
+async function originTargets(cwd: string) {
+  const urls = await Promise.all([git(cwd, "remote", "get-url", "--all", "origin"),
+    git(cwd, "remote", "get-url", "--push", "--all", "origin")]);
+  if (urls.some(value => !value)) return null;
+  // Relative filesystem remotes resolve from the checkout running Git.
+  return JSON.stringify(urls.map(value => value!.split("\n").map(url => url.includes(":") ? url : resolve(cwd, url))));
+}
+
+/** The worktree list comes from the authorized repository, including linked checkouts.
+ * A clone with the same objects and a different origin cannot register its receipts here. */
+export async function integrationWorktreeAt(repo: string, worktree: string, commit: string): Promise<boolean> {
+  if (!isAbsolute(worktree)) return false;
+  const [list, root, projectRoot] = await Promise.all([git(repo, "worktree", "list", "--porcelain", "-z"),
+    realpath(worktree).catch(() => null), realpath(repo).catch(() => null)]);
+  if (!list || !root || !projectRoot) return false;
+  for (const entry of list.split("\0\0")) {
+    const [path, head] = entry.split("\0");
+    if (head !== "HEAD " + commit || !path?.startsWith("worktree ") || await realpath(path.slice(9)).catch(() => null) !== root) continue;
+    if (root === projectRoot) return true;
+    const [authorized, actual] = await Promise.all([originTargets(projectRoot), originTargets(root)]);
+    return authorized !== null && authorized === actual;
+  }
+  return false;
+}
+
 export function witnessedRemoteIntegration(checks: ReportCheckInput[], evidence: CheckEvidence[], base: string, main: string): boolean {
   const before = remoteObservation(checks, evidence, beforeMainCommand, base);
   const after = remoteObservation(checks, evidence, remoteMainCommand, main);
-  return !!before && !!after && before <= after;
+  if (!before || !after) return false;
+  const start = Date.parse(before), end = Date.parse(after);
+  return start <= end && evidence.every(e => e.status !== "matched" || isRemoteObservation(checks[e.idx]?.command) ||
+    (e.at !== null && Date.parse(e.at) >= start && Date.parse(e.at) <= end));
 }

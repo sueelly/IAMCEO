@@ -7,6 +7,8 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(member.cli, "codex")
         XCTAssertEqual(member.status, "starting")
         XCTAssertEqual(member.contextPct, 37.5)
+        XCTAssertTrue(member.parallel)
+        XCTAssertFalse(try JSONDecoder().decode(Member.self, from: Data(#"{"id":"sequential","parallel":false}"#.utf8)).parallel)
         XCTAssertNil(member.sessionId)
         XCTAssertNil(member.backend)
     }

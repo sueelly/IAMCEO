@@ -45,15 +45,19 @@ function setupWork(f: Fixture) {
 function mutateAtWrite(f: Fixture, mutate: () => void) {
   const send = f.runner.send.bind(f.runner);
   let boundaries = 0;
-  f.runner.send = (member, text, opts, urgent = false) => send(member, text, {
-    ...opts,
-    beforeWrite: () => {
-      boundaries++;
-      if (boundaries === 1) mutate();
-      if (!opts.beforeWrite) throw new Error("The ordinary pump must provide its final admission callback");
-      return opts.beforeWrite();
-    },
-  }, urgent);
+  f.runner.send = (member, text, opts, urgent = false) => {
+    // Only the selected delivery carries a bundle marker. Let the CLI confirm its session controls first.
+    if (!opts.marker) return send(member, text, opts, urgent);
+    return send(member, text, {
+      ...opts,
+      beforeWrite: () => {
+        boundaries++;
+        if (boundaries === 1) mutate();
+        if (!opts.beforeWrite) throw new Error("The ordinary pump must provide its final admission callback");
+        return opts.beforeWrite();
+      },
+    }, urgent);
+  };
   return () => boundaries;
 }
 

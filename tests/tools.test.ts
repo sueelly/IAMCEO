@@ -687,12 +687,16 @@ describe("총괄 도구", () => {
     const { store, project, runner, lead, call } = await setup();
     await call(lead, "team_add", { name: "철수", role: "개발", handle: "cs" });
     const w = store.findMember(project.id, "cs")!;
-    await call(lead, "team_assign", { member: "cs", text: "큰 일", parallel: true });
+    const taskId = defaultTaskId(store, project.id);
+    store.saveTaskContract(taskId, { kind: "other", goal: "병렬 실행 확인", inputs: ["대표의 지시"], outputs: ["실행 근거"], scope: "테스트",
+      acceptance: ["제어 한 번"], constraints: [], exclusions: [], checks: [] }, { author: lead.name, authorMemberId: lead.id, authorKind: "conductor" });
+    const response = await call(lead, "team_assign", { member: "cs", text: "큰 일", task_id: taskId, parallel: true });
+    expect(response.isError, response.text).not.toBe(true);
     expect(runner.parallel).toEqual([{ memberId: w.id, on: true }]);
     expect(store.requireMember(w.id).parallel).toBe(true);
     runner.end(w.id);
     await Bun.sleep(20);
-    await call(lead, "team_assign", { member: "cs", text: "또 큰 일", parallel: true });
+    expect((await call(lead, "team_assign", { member: "cs", text: "또 큰 일", task_id: taskId, parallel: true })).isError).not.toBe(true);
     expect(runner.parallel).toHaveLength(1);
   });
 

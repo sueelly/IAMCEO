@@ -13,7 +13,7 @@ import { MIGRATIONS, openDb } from "../server/db.ts";
 import { MAX_ARTIFACT_BYTES } from "../server/files.ts";
 import { startServer } from "../server/http.ts";
 import { Orchestrator } from "../server/orchestrator.ts";
-import { renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
+import { renderRole, NATIVE_PARALLEL_GUIDE, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { buildClaudeArgs, childEnv, HeadlessRunner, StreamParser } from "../server/runner/headless.ts";
 import type { Runner, RunnerEvent, RunnerMember, SendResult, StartOpts } from "../server/runner/types.ts";
 import { ApiError, Store } from "../server/store.ts";
@@ -581,8 +581,10 @@ describe("실행 방식 전환의 안전", () => {
     const t = await setup();
     const w = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs", role: "개발" })).member;
     t.store.patchMember(w.id, { parallel: true });
+    t.store.setParallelApplied(w.id, true);
     expect((await t.api("PUT", "/api/settings", { backend: "headless" })).status).toBe(200);
-    expect(t.store.requireMember(w.id).parallel).toBe(false);
+    expect(t.store.requireMember(w.id).parallel).toBe(true);
+    expect(t.store.parallelApplied(w.id)).toBe(false);
     let calls = 0;
     t.headless.setParallel = async () => {
       calls++;
@@ -864,7 +866,7 @@ describe("직급별 모델·effort", () => {
     const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 고친 템플릿");
     expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: rule }, dir)).toContain(rule);
-    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
+    expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${NATIVE_PARALLEL_GUIDE}\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
 
     const t = await setup();
     await t.api("PUT", "/api/settings", { ranks: { staff: { effort: "xhigh" } } });
@@ -904,11 +906,13 @@ describe("직급별 모델·effort", () => {
     const t = await setup();
     const w = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs", role: "개발" })).member;
     t.store.patchMember(w.id, { parallel: true });
+    t.store.setParallelApplied(w.id, true);
     t.herdr.applyResults = [{ ok: false, reason: "input_busy", retryable: true }, { ok: true }];
     await t.api("PUT", "/api/settings", { ranks: { lead: { model: "sonnet" } } });
     await until(() => t.store.requireMember(w.id).appliedModel === "sonnet", "입력칸이 빈 뒤 적용");
     expect(t.herdr.applied).toHaveLength(2);
-    expect(t.store.requireMember(w.id).parallel).toBe(false);
+    expect(t.store.requireMember(w.id).parallel).toBe(true);
+    expect(t.store.parallelApplied(w.id)).toBe(false);
 
     t.herdr.applyResults = [1, 2, 3].map(() => ({ ok: false as const, reason: "error" as const, detail: "확인 실패", retryable: true }));
     await t.api("PUT", "/api/settings", { ranks: { lead: { model: "opus" } } });

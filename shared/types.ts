@@ -219,7 +219,7 @@ export interface Member {
   contextWindow: number | null;
   contextWindowSource: ContextWindowSource | null;
   subagents: number; // 지금 돌고 있는 서브에이전트 수
-  parallel: boolean; // ultracode 켬
+  parallel: boolean; // 직원의 병렬 작업 선호. 현재 하위 실행 수는 subagentState로 확인한다.
   queuedCount: number; // 전달 대기 중 입력 수(보류 포함)
   /** queuedCount 중 보류(보호·확인 필요·보관)라 자동으로 들어가지 않는 입력 수. 옛 서버는 보내지 않는다. */
   heldCount?: number;
@@ -806,7 +806,7 @@ export type RealtimeEvent =
 
 // ---- REST 요청 ----
 export interface CreateProjectReq { name: string; cwd: string; goal?: string; startConductor?: boolean; chiefCli?: CliProvider; /** 개발 기억 운영. 생략하면 켠다. */ memory?: boolean }
-export interface CreateMemberReq { name: string; role?: string; cli?: CliProvider; modelOverride?: string | null }
+export interface CreateMemberReq { name: string; role?: string; parallel?: boolean; cli?: CliProvider; modelOverride?: string | null }
 export interface PatchProjectReq { name?: string; cwd?: string; runnerEnabled?: boolean; maxConcurrentTurns?: number | null; now?: string; archived?: boolean; /** 개발 기억 운영 켜기·끄기. 끈 값은 다른 기본값이 덮지 않는다. */ memory?: boolean }
 /** PUT /api/settings. ranks·codexRanks 는 고친 칸만 보내도 된다(나머지 유지). */
 export type SettingsPatch = Partial<Omit<Settings, "ranks" | "codexRanks" | "resetEfforts">> & {

@@ -39,13 +39,14 @@ async function sourceWithGit(authorized = true) {
     "    assert actual == value, (actual, value)", "print('setting restored')",
   ].join("\n"));
   git("add", "verify.py"); git("commit", "-m", "verify settings after restart");
-  const runBehavior = () => {
-    const output = execFileSync("/usr/bin/python3", ["verify.py"], { cwd: f.project.cwd, encoding: "utf8" });
-    writeExec(f.isolated.paths.claudeHome, f.worker, check.command, 0, output);
+  const runBehavior = (integration = false) => {
+    const command = integration ? "git diff --quiet HEAD -- && git rev-parse HEAD && " + check.command : check.command;
+    const output = execFileSync("/bin/sh", ["-c", command], { cwd: f.project.cwd, encoding: "utf8" });
+    writeExec(f.isolated.paths.claudeHome, f.worker, command, 0, output);
   };
   const head = git("rev-parse", "HEAD");
   git("push", "origin", "save-settings");
-  const saved = await f.tool(f.lead, "task", { title: "설정 저장", branch: "save-settings",
+  const saved = await f.tool(f.lead, "task", { title: "설정 저장", branch: "save-settings", worktree: f.project.cwd,
     contract: { ...contract, ...(authorized ? { main_authority: "대표의 이 저장소 main 일반 푸시 지속 승인" } : {}) } });
   expect(saved.isError, saved.text).toBeUndefined();
   const task = f.store.listTasks(f.project.id).find(t => t.branch === "save-settings")!;
@@ -84,10 +85,10 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   f.git("checkout", "main"); f.git("merge", "--no-ff", "--no-commit", "save-settings");
   writeFileSync(join(f.project.cwd, "integration.txt"), "merge result");
   f.git("add", "integration.txt"); f.git("commit", "-m", "integrate settings");
+  f.runBehavior(true);
   f.git("push", "origin", "main");
   const main = f.git("rev-parse", "HEAD");
   expect(f.git("ls-remote", "origin", "refs/heads/main").split(/\s/)[0]).toBe(main);
-  f.runBehavior();
   witness();
   expect((await report(main, false)).isError).toBe(true);
   const posted = await report(main);
@@ -155,4 +156,73 @@ test("a reporter cannot upgrade a branch-only task through a later independent v
   expect(review.isError, review.text).toBeUndefined();
   expect(f.store.listWork(f.project.id)).toHaveLength(0);
   expect((await f.tool(f.lead, "task_followup", { task_id:f.task.id, kind:"integration", reviewed_commit:f.head })).isError).toBe(true);
+});
+
+test("integration binds remote observations and one run of each check to the registered linked worktree and its merged HEAD", async () => {
+  const f = await sourceWithGit();
+  const integration = f.store.listWork(f.project.id).find(w => w.title.includes("main 통합"))!;
+  const taskId = integration.taskId!;
+  expect(f.store.requireTask(taskId).worktree).toBeNull();
+  const worktree = join(f.isolated.dir, "separate-main");
+  f.git("worktree", "add", worktree, "main");
+  const register = (path: string) => f.tool(f.worker, "task", { task_id: taskId, worktree: path });
+  expect((await register(worktree)).isError).toBeUndefined();
+
+  const receipt = (cwd: string, command: string) => {
+    const output = execFileSync("/bin/sh", ["-c", command], { cwd, encoding: "utf8" });
+    const executed = cwd === f.worker.cwd ? command : `cd '${cwd}' && ${command}`;
+    writeExec(f.isolated.paths.claudeHome, f.worker, executed, 0, output);
+  };
+  const guarded = "git diff --quiet HEAD -- && git rev-parse HEAD && " + check.command;
+  const remoteChecks = [{ ...check, name: "통합 전", command: beforeCommand },
+    { ...check, name: "통합 후", command: remoteCommand, criterion: 2 }];
+  const report = (main: string, checks = [check, ...remoteChecks]) => f.tool(f.worker, "post", { task_id: taskId,
+    kind: "완료", title: "분리 워크트리 통합", main_base: f.base, main_commit: main, contract_rev: 1,
+    body: `작업 ${f.head} · 통합 ${main}`, checks });
+
+  receipt(f.project.cwd, beforeCommand);
+  receipt(f.project.cwd, check.command);
+  receipt(worktree, beforeCommand);
+  f.git("-C", worktree, "merge", "--no-ff", f.head, "-m", "first integration candidate");
+  receipt(worktree, guarded);
+  f.git("-C", worktree, "commit", "--allow-empty", "-m", "updated integration candidate");
+  const main = f.git("-C", worktree, "rev-parse", "HEAD");
+  f.git("-C", worktree, "push", "origin", "main");
+  receipt(f.project.cwd, remoteCommand);
+  expect((await report(main)).isError).toBe(true);
+  receipt(worktree, remoteCommand);
+  const stale = await report(main);
+  expect(stale.isError).toBe(true);
+  expect(stale.text).toContain("HEAD");
+  expect((await report(main, remoteChecks)).isError).toBe(true);
+
+  // A separate clone can contain identical objects without being a worktree of the authorized repository.
+  const clone = join(f.isolated.dir, "other-repo");
+  f.git("clone", "--quiet", "--branch", "main", f.project.cwd, clone);
+  expect((await register(clone)).isError).toBeUndefined();
+  receipt(clone, guarded);
+  expect((await report(main)).isError).toBe(true);
+  expect(f.store.listStageMarks(f.task.id).filter(m => m.stage === "merged")).toHaveLength(0);
+
+  expect((await register(worktree)).isError).toBeUndefined();
+  writeFileSync(join(worktree, "setting"), "uncommitted local setting");
+  receipt(worktree, "git rev-parse HEAD && " + check.command);
+  receipt(worktree, remoteCommand);
+  expect((await report(main)).isError).toBe(true);
+  writeFileSync(join(worktree, "setting"), "initial");
+  receipt(worktree, guarded);
+  expect((await report(main)).isError).toBe(true);
+  f.git("config", "extensions.worktreeConfig", "true");
+  f.git("-C", worktree, "config", "--worktree", "remote.origin.url", clone);
+  receipt(worktree, remoteCommand);
+  expect((await report(main)).isError).toBe(true);
+  f.git("-C", worktree, "config", "--worktree", "--unset", "remote.origin.url");
+  receipt(worktree, remoteCommand);
+  f.store.addStageMark({ projectId: f.project.id, taskId, stage: "hold", memberId: f.lead.id, who: f.lead.name, evidence: "대표 중단" });
+  expect((await report(main)).isError).toBe(true);
+  f.store.addStageMark({ projectId: f.project.id, taskId, stage: "reopen", memberId: f.lead.id, who: f.lead.name, evidence: "대표 재개" });
+  const posted = await report(main);
+  expect(posted.isError, posted.text).toBeUndefined();
+  expect((await report(main)).isError).toBeUndefined();
+  expect(f.store.listStageMarks(f.task.id).filter(m => m.stage === "merged")).toHaveLength(1);
 });

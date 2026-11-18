@@ -31,13 +31,15 @@ export const TERMINAL_APPROVAL_GUIDE: string = terminalApproval;
 /** 총괄의 역할 경계는 사용자 정의 템플릿으로도 빠지지 않는다. 제품 제작 지시보다 우선한다. */
 export const COORDINATION_GUIDE: string = coordination;
 
+export const NATIVE_PARALLEL_GUIDE = "병렬 작업은 기본으로 켜져 있다. 각자 진행할 수 있는 조사·초안·검사가 있으면 별도 지시를 기다리지 말고 필요에 따라 CLI의 임시 서브에이전트를 직접 띄운다. 맡길 범위와 결과를 정하고 이 세션에서 결과를 검증해 보고한다. 짧거나 앞선 결과가 필요한 일은 직접 처리한다. 순차 설정과 현재 업무의 권한·승인 범위를 따른다.";
+
 /** 기본 역할 글 = 종류별 글 + 공통 글 지침. 세 CLI 모두 이 글을 시스템 프롬프트 파일로 받는다. */
 export function renderFinalReviewer(project: string): string {
   return withGuide(`당신은 '${project}' 프로젝트의 독립 최종 검수 담당자입니다.
 하네스가 수행 완료로 판정한 직원 보고만 검수합니다. 받은 업무 ID와 통과 보고 ID로 task_review_evidence에서 현재 계약, 보고 원문, 하네스의 검사 근거를 확인하세요. post의 report_id 조회로 보고에 연결된 자료 원문을 확인할 수 있습니다. Git 작업은 커밋의 변경분을 끝까지 읽으세요. 파일을 골라 읽거나 nextOffset으로 이어서 확인할 수 있습니다. 독립적으로 조회할 수 없는 근거는 확인한 것으로 기록하지 않습니다.
 한 번에 받은 검수 묶음은 항목별로 판정하세요. 원래 기준과 근거를 확인하면 task_review에서 confirmed를, 근거가 유효한 상태에서 새 결함을 찾으면 confirmed_with_repair를 남깁니다. 원래 기준이나 근거가 성립하지 않으면 changes_requested를 남깁니다. 수정할 부분에 원인·근거와 업무 이름을 적으세요.
-작업 브랜치의 검증 커밋을 독립적으로 대조한 경우 reviewed_commit에 전체 SHA를 적습니다. 승인된 main 통합은 담당자가 수행합니다. 병합 뒤 발견한 문제는 원 업무의 완료·통합 기록에 연결된 새 수정 업무로 보내세요.
-제품 구현과 수정, 커밋·푸시·병합·브랜치 삭제는 배정받은 다른 담당자의 업무입니다. 검수 결과를 총괄에게 연결하며 별도 지시를 내리거나 승인하지 않습니다.`);
+원격 main 전후의 실제 변경과 통합 보고의 검사를 대조하세요. 원래 작업 브랜치는 revision=branch로 읽고 원 보고의 전체 작업 SHA를 reviewed_commit에 적습니다. 병합 뒤 발견한 문제는 원 업무에 연결된 새 수정 업무로 보내세요.
+독립 최종 검수는 이 세션의 검수 전용 도구로 직접 수행합니다. 제품 구현과 수정, 커밋·푸시·병합·브랜치 삭제는 배정받은 다른 담당자의 업무입니다. 검수 결과를 총괄에게 연결하며 별도 지시를 내리거나 승인하지 않습니다.`);
 }
 
 function withGuide(role: string): string {
@@ -79,12 +81,14 @@ export function renderRole(kind: MemberKind, vars: RoleVars, rolesDir?: string):
     console.warn(`역할 템플릿 ${custom} 에 승인 규칙이 없습니다. 기본 규칙 전체를 대체하므로 직원이 승인 없이 일할 수 있습니다. 'iamceo roles export' 로 기본 규칙을 꺼내 고치세요`);
   }
   // 줄이 통째로 자리표시면 비었을 때 빈 줄을 남기지 않는다. 고쳐 쓴 템플릿에 자리표시가 없어도 규칙은 빠지지 않게 끝에 붙인다.
-  const place = (text: string, key: "SUBAGENT_EFFORT" | "MEMORY" | "TERMINAL_APPROVAL" | "COORDINATION", value: string, gap: string): string =>
+  const place = (text: string, key: "NATIVE_PARALLEL" | "SUBAGENT_EFFORT" | "MEMORY" | "TERMINAL_APPROVAL" | "COORDINATION", value: string, gap: string): string =>
     text.includes(`{{${key}}}`) ? (value ? text : text.replace(new RegExp(`^[ \\t]*\\{\\{${key}\\}\\}[ \\t]*\\n?`, "gm"), "")) : value ? `${text.trimEnd()}${gap}${value}\n` : text;
   const approval = TERMINAL_APPROVAL_GUIDE.trim();
   const coordination = kind === "conductor" ? COORDINATION_GUIDE.trim() : "";
-  const placed = place(place(place(place(template, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n"), "TERMINAL_APPROVAL", approval, "\n\n"), "COORDINATION", coordination, "\n\n");
-  const values: Record<string, string | undefined> = { ...vars, TERMINAL_APPROVAL: approval, COORDINATION: coordination };
-  const rendered = placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|SUBAGENT_EFFORT|MEMORY|TERMINAL_APPROVAL|COORDINATION)\}\}/g, (_, key: string) => values[key] ?? "");
+  const nativeParallel = kind === "conductor" ? "" : NATIVE_PARALLEL_GUIDE;
+  const withParallel = place(template, "NATIVE_PARALLEL", nativeParallel, "\n\n");
+  const placed = place(place(place(place(withParallel, "SUBAGENT_EFFORT", vars.SUBAGENT_EFFORT ?? "", "\n"), "MEMORY", vars.MEMORY ?? "", "\n\n"), "TERMINAL_APPROVAL", approval, "\n\n"), "COORDINATION", coordination, "\n\n");
+  const values: Record<string, string | undefined> = { ...vars, NATIVE_PARALLEL: nativeParallel, TERMINAL_APPROVAL: approval, COORDINATION: coordination };
+  const rendered = placed.replace(/\{\{(PROJECT|NAME|ROLE|CONDUCTOR|NATIVE_PARALLEL|SUBAGENT_EFFORT|MEMORY|TERMINAL_APPROVAL|COORDINATION)\}\}/g, (_, key: string) => values[key] ?? "");
   return rendered.includes(WRITING_GUIDE.trim()) ? rendered : withGuide(rendered);
 }

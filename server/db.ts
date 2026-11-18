@@ -1041,6 +1041,8 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE task_completion_reviews ADD COLUMN evidence_reader_id TEXT;`,
   COMPLETION_CHANGE_SCHEMA,
   COMPLETION_WORKER_SCHEMA,
+  // v51: default every employee to autonomous parallel work. Keep the legacy session switch as applied state.
+  `ALTER TABLE members ADD COLUMN parallel_preference INTEGER NOT NULL DEFAULT 1 CHECK (parallel_preference IN (0, 1));`,
   SELF_INTEGRATION_SCHEMA,
   `ALTER TABLE task_completion_reviews ADD COLUMN review_dispatch_count INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE task_completion_reviews ADD COLUMN attention_delivery_id TEXT;`,

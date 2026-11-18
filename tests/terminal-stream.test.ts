@@ -102,7 +102,8 @@ exec ${quote(process.execPath)} ${quote(script)} "$@"
   const runner = new CoreRunner({ socketPath, claudeBin: "/usr/bin/false", codexBin: "/usr/bin/false", contextHome: dir, claudeHome: join(dir, "claude"), codexHome: join(dir, "codex") }, { recoveryStore: store, pollMs: 60_000 });
   const orch = new Orchestrator({ config, store, runners: new Map([["core", runner]]), providerHomes: { claudeHome: join(dir,"claude"), codexHome: join(dir,"codex") }, timings: { healthMs: 60_000, tickMs: 60_000 } });
   const project = store.createProject({ name: "터미널", cwd: dir });
-  const member = await orch.createMember(project.id, { name: "직원", cli });
+  // This peer observes attach and work writes; CLI control commands are tested separately.
+  const member = await orch.createMember(project.id, { name: "직원", cli, parallel: false });
   const server = await startServer({ config, store, bus, orch, detectHosts: () => [] });
   const origin = `http://127.0.0.1:${server.port}`;
   const sockets: WebSocket[] = [];

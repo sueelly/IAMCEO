@@ -1,5 +1,5 @@
 import { createServer, type Socket } from 'node:net';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Bus } from '../../server/bus.ts';
 import { loadConfig } from '../../server/config.ts';
@@ -23,6 +23,8 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const project = store.createProject({ name: 'Queue status fixture', cwd: dir });
   const terminals = new Map<string, CoreTerminal>(); const sockets = new Set<Socket>();
   const writes: { terminal: string; text: string }[] = [];
+  const controls: { terminal: string; text: string }[] = [];
+  const controlReply = new Map<string, string>();
   const keys: { terminal: string; keys: string[] }[] = [];
   let onKeys: (() => void) | null = null;
   let keyGate: Promise<void> | null = null;
@@ -50,7 +52,7 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'Isolated read failure' } })+'\n');
           continue;
         }
-        if (req.method === 'terminal.read') result = { text: screen, complete, how: 'screen' };
+        if (req.method === 'terminal.read') result = { text: (controlReply.get(p.terminal) ?? '') + screen, complete, how: 'screen' };
         if (req.method === 'terminal.keys') {
           pendingKeys++;
           const apply = () => {
@@ -64,8 +66,15 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
         if (req.method === 'terminal.send') {
           const terminal = terminals.get(p.terminal)!;
           if (!terminal || (p.if ? terminal.status?.state !== p.if : !['idle', 'done'].includes(terminal.status?.state ?? ''))) throw new Error('unsafe fixture input');
-          writes.push({ terminal: p.terminal, text: p.text });
-          result = { turn: terminal.turn, started: true }; terminal.status = { state: 'working', app: 'claude-code' };
+          const control = /^\/effort ultracode (on|off)$/.exec(p.text);
+          if (control) {
+            controls.push({ terminal: p.terminal, text: p.text });
+            controlReply.set(p.terminal, `${p.text}\nUltracode ${control[1]} (this session only)\n`);
+            result = { turn: terminal.turn, started: false, status: 'idle' };
+          } else {
+            writes.push({ terminal: p.terminal, text: p.text });
+            result = { turn: terminal.turn, started: true }; terminal.status = { state: 'working', app: 'claude-code' };
+          }
         }
         socket.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result })+'\n');
       }
@@ -75,9 +84,16 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
   const runner = new CoreRunner({ socketPath, claudeBin: '/usr/bin/false', codexBin: '/usr/bin/false', claudeHome, codexHome, contextHome: dir }, { pollMs: 10, acceptCheckMs: 120, rpcTimeoutMs: 1000, sendTimeoutMs: 1000 });
   const orch = new Orchestrator({ config, store, runners: new Map([['core', runner]]), providerHomes: { claudeHome, codexHome }, timings: { healthMs: 60_000, tickMs: 60_000 } });
   orch.setServerUrl('http://127.0.0.1:1');
-  const stop = async () => { await Bun.sleep(50); await orch.shutdown(); for (const socket of sockets) socket.destroy(); await new Promise<void>(done => server.close(() => done())); db.close(); };
+  const stop = async () => {
+    await Bun.sleep(50);
+    await orch.shutdown();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(done => server.close(() => done()));
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  };
   const member = await orch.createMember(project.id, { name: 'Fixture worker', cli: 'claude' });
-  return { dir, config, bus, store, orch, project, runner, member, terminals, writes, keys, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
+  return { dir, config, bus, store, orch, project, runner, member, terminals, writes, controls, keys, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },
     setOnKeys(value: (() => void) | null) { onKeys = value; }, setKeyGate(value: Promise<void> | null) { keyGate = value; },
     keyRequests() { return pendingKeys; }, dropKeyReply() { loseKeyReply = true; },
     setReadFailure(value: boolean) { readFailure = value; },

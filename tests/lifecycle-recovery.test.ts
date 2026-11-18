@@ -105,7 +105,9 @@ async function fixture(healthMs = 60_000, rpcTimeoutMs = 100) {
     db.close(); await isolated.stop();
   });
   const current = orchestrator();
-  return { ...current, store, bus, db, project, config, calls, terminals, runners, orchestrator,
+  // Faults in this peer target work writes, so select sequential execution for its workers.
+  const createWorker = (name = "Worker", projectId = project.id) => current.orch.createMember(projectId, { name, parallel: false });
+  return { ...current, store, bus, db, project, config, calls, terminals, runners, orchestrator, createWorker,
     saveTranscript: (sessionId: string) => { const path = transcriptPath(project.cwd, sessionId, isolated.paths.claudeHome); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "{}\n"); },
     count: (method: string) => calls.filter(c => c.method === method).length,
     loseRun: (value: boolean) => { runLost = value; }, loseList: (value: boolean) => { listLost = value; }, loseKeys: () => { keysLost = true; },
@@ -117,7 +119,7 @@ async function fixture(healthMs = 60_000, rpcTimeoutMs = 100) {
 
 test("pre-launch list timeout does not fence the next explicit fresh-session attempt", async () => {
   const f = await fixture(60_000, 1000);
-  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const member = await f.createWorker();
   f.loseList(true);
   await expect(f.orch.freshMemberSession(member.id)).rejects.toThrow("terminal.list");
   expect(f.count("terminal.run")).toBe(1);
@@ -130,7 +132,7 @@ test("pre-launch list timeout does not fence the next explicit fresh-session att
 
 for (const preflight of [true, false]) test(`legacy unknown ${preflight ? "list" : "run"} failure ${preflight ? "recovers absence" : "retains its fence"}`, async () => {
   const f = await fixture(20, 1000);
-  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const member = await f.createWorker();
   f.saveTranscript(member.sessionId!);
   await f.orch.shutdown();
   f.terminals.get(member.paneId!)!.state = "finished";
@@ -158,7 +160,7 @@ for (const preflight of [true, false]) test(`legacy unknown ${preflight ? "list"
 
 test("legacy absence recovery cannot overwrite a concurrent explicit fresh generation", async () => {
   const f = await fixture(60_000, 1000);
-  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const member = await f.createWorker();
   await f.orch.shutdown();
   f.terminals.get(member.paneId!)!.state = "finished";
   f.store.patchMember(member.id, { paneId: null, sessionId: null, status: "error" });
@@ -182,7 +184,7 @@ test("legacy absence recovery cannot overwrite a concurrent explicit fresh gener
 
 test("lost creation reply preserves intent/member and restart rejoins labels with no additional run", async () => {
   const f = await fixture(); f.loseRun(true);
-  await expect(f.orch.createMember(f.project.id, { name: "Worker" })).rejects.toThrow();
+  await expect(f.createWorker()).rejects.toThrow();
   const member = f.store.listMembers(f.project.id)[0]!;
   expect(member.lastError).toStartWith("starting_unknown:");
   expect(f.store.listPendingLifecycleJournals()[0]).toMatchObject({ memberId: member.id, intent: "start", phase: "unknown" });
@@ -196,7 +198,7 @@ test("lost creation reply preserves intent/member and restart rejoins labels wit
 
 test("uncertain creation with duplicate owners is quarantined without run or kill", async () => {
   const f = await fixture(); f.loseRun(true);
-  await expect(f.orch.createMember(f.project.id, { name: "Worker" })).rejects.toThrow();
+  await expect(f.createWorker()).rejects.toThrow();
   const first = f.terminals.get("t1")!;
   f.terminals.set("t2", { ...first, address: "t2" });
   await f.orch.shutdown();
@@ -209,7 +211,7 @@ test("uncertain creation with duplicate owners is quarantined without run or kil
 
 test("initial bind failure with empty queue recovers through read-only supervisor", async () => {
   const f = await fixture(20);
-  const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const member = await f.createWorker();
   await f.orch.shutdown();
   const terminal = f.terminals.get(member.paneId!)!;
   const labels = terminal.labels; terminal.labels = { ...labels, "iamceo.generation": "99" };
@@ -221,7 +223,7 @@ test("initial bind failure with empty queue recovers through read-only superviso
 });
 
 test("sleep and close refusals preserve live state and always release closing guard", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   f.draft("human draft");
   await expect(f.orch.sleepMember(member.id)).rejects.toThrow();
   expect(f.store.requireMember(member.id)).toMatchObject({ status: "idle", paneId: member.paneId });
@@ -233,7 +235,7 @@ test("sleep and close refusals preserve live state and always release closing gu
 });
 
 test("unknown stop stays live in DB and restart confirms termination before asleep", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   f.loseKill(true);
   await expect(f.orch.sleepMember(member.id)).rejects.toThrow();
   expect(f.store.requireMember(member.id).status).toBe("idle");
@@ -247,7 +249,7 @@ test("unknown stop stays live in DB and restart confirms termination before asle
 });
 
 test("persistent lease is restored before recovery can pump a wake queue", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   const generation = f.store.memberRevisions(member.id).sessionGeneration;
   const request = { operationId: "claim-operation", expectedSessionGeneration: generation, claimId: "claim-one", action: "claim" as const };
   const claim = await f.orch.terminalControlV2(member.id, request);
@@ -263,7 +265,7 @@ test("persistent lease is restored before recovery can pump a wake queue", async
 });
 
 test("unknown direct Enter is durable and neither same operation nor same sequence replays", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   const expectedSessionGeneration = f.store.memberRevisions(member.id).sessionGeneration;
   await f.orch.terminalControlV2(member.id, { operationId: "claim", expectedSessionGeneration, claimId: "owner", action: "claim" });
   f.loseKeys();
@@ -276,7 +278,7 @@ test("unknown direct Enter is durable and neither same operation nor same sequen
 });
 
 test("fresh-session receipt returns before generation recheck and conflicting reuse is refused", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   const request = { operationId: "fresh", expectedSessionGeneration: f.store.memberRevisions(member.id).sessionGeneration };
   const receipt = await f.orch.freshMemberSessionV2(member.id, request);
   expect(receipt.status).toBe("applied");
@@ -286,7 +288,7 @@ test("fresh-session receipt returns before generation recheck and conflicting re
 });
 
 test("ACK started:false is received; repeated reads never replay or interrupt a stalled task", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" }); f.started(false);
+  const f = await fixture(); const member = await f.createWorker(); f.started(false);
   await f.orch.assign(f.project.id, member.handle, { text: "One task" });
   const run = f.store.listPendingExecutions()[0]!;
   expect(run).toMatchObject({ phase: "received", deliveryIds: [expect.any(String)], startedAt: null });
@@ -298,7 +300,7 @@ test("ACK started:false is received; repeated reads never replay or interrupt a 
 });
 
 test("error then idle keeps the error; stale and duplicate terminal events do not end a later turn", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Fail once" });
   const terminal = f.terminals.get(member.paneId!)!;
   terminal.turn = 1; terminal.status = { state: "error", msg: "real failure" };
@@ -316,7 +318,7 @@ test("error then idle keeps the error; stale and duplicate terminal events do no
 });
 
 test("confirmed CLI exit preserves reason/code, delivery linkage and one interruption across restart", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Unfinished task" });
   const run = f.store.listPendingExecutions()[0]!;
   const terminal = f.terminals.get(member.paneId!)!; terminal.state = "finished"; terminal.reason = "resume failed"; terminal.exit_code = 17;
@@ -337,7 +339,7 @@ test("Codex gone then wake with an unknown native ID cannot create a fresh conve
 });
 
 test("restart recognizes a later settled core turn without interruption or another send", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Finish while away" });
   const run = f.store.listPendingExecutions()[0]!;
   await f.orch.shutdown();
@@ -352,7 +354,7 @@ test("a write whose reply was lost settles from log receipt once a later turn is
   // Real 2026-11-07 run: kill -9 ~60ms after an owner message left dispatch write_started and the run in "starting".
   // Recovery proved receipt from the CLI log, but the run stayed "starting": member looked busy and the report the
   // worker could not post while the daemon was down was never requested.
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Crash-window task" });
   const run = f.store.listPendingExecutions()[0]!;
   expect(f.store.getDispatch(run.runId)?.baseline.turn).toBe(0);
@@ -374,7 +376,7 @@ test("a write whose reply was lost settles from log receipt once a later turn is
 });
 
 test("a recovered start with no later turn stays received and fenced; time alone never ends it", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Crash-window task, not yet counted" });
   const run = f.store.listPendingExecutions()[0]!;
   f.store.saveExecutionJournal({ ...run, phase: "starting", inputReceivedAt: null, startedAt: null, turn: null, createdAt: new Date(Date.now() - 60_000).toISOString() });
@@ -388,7 +390,7 @@ test("a recovered start with no later turn stays received and fenced; time alone
 
 test("a pump that never settles is reported once with its waiting stage and nothing is sent", async () => {
   // Real 2026-11-07 run: one member's queue stayed stuck for minutes with no clue where its pump waited.
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   const sendsBefore = f.count("terminal.send");
   const rt = (f.orch as unknown as { runtime(id: string): { pumping: Promise<void> | null; pumpSince: number | null; pumpStage: string | null; pumpReported: boolean } }).runtime(member.id);
   rt.pumping = new Promise<void>(() => {}); rt.pumpSince = Date.now() - 120_000; rt.pumpStage = "sync_config"; rt.pumpReported = false;
@@ -400,7 +402,7 @@ test("a pump that never settles is reported once with its waiting stage and noth
 });
 
 test("same-turn idle after restart leaves the received execution fenced", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" }); f.started(false);
+  const f = await fixture(); const member = await f.createWorker(); f.started(false);
   await f.orch.assign(f.project.id, member.handle, { text: "Received but not started" });
   const received = f.store.listPendingExecutions()[0]!;
   f.store.saveExecutionJournal({ ...received, inputReceivedAt: new Date(Date.now() - 30_000).toISOString() });
@@ -413,7 +415,7 @@ test("same-turn idle after restart leaves the received execution fenced", async 
 });
 
 test("finished terminal diagnostics and completion report outside latest 200 survive recovery", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Reported task" });
   const run = f.store.listPendingExecutions()[0]!;
   f.store.createMessage({ projectId: f.project.id, memberId: member.id, who: member.name, kind: "완료", title: "완료 보고", body: "완료" });
@@ -427,7 +429,7 @@ test("finished terminal diagnostics and completion report outside latest 200 sur
 });
 
 test("a question or progress message does not turn an interrupted execution into success", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Unfinished" });
   const run = f.store.listPendingExecutions()[0]!;
   f.store.createMessage({ projectId: f.project.id, memberId: member.id, who: member.name, kind: "질문", body: "아직 확인할 사항" });
@@ -436,7 +438,7 @@ test("a question or progress message does not turn an interrupted execution into
 });
 
 test("a second claim cannot take over a live claim and preflight refusals are definite", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   const expectedSessionGeneration = f.store.memberRevisions(member.id).sessionGeneration;
   await f.orch.terminalControlV2(member.id, { operationId: "first-claim", claimId: "owner", expectedSessionGeneration, action: "claim" });
   expect((await f.orch.terminalControlV2(member.id, { operationId: "other-claim", claimId: "other-owner", expectedSessionGeneration, action: "claim" })).status).toBe("refused");
@@ -447,7 +449,7 @@ test("a second claim cannot take over a live claim and preflight refusals are de
 });
 
 test("pending stop recovery respects a persisted lease before the runner binds", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   f.loseKill(true);
   await expect(f.orch.sleepMember(member.id)).rejects.toThrow();
   const identity = f.runner.observationState(member.id)!.identity;
@@ -465,7 +467,7 @@ test("pending stop recovery respects a persisted lease before the runner binds",
 });
 
 test("recovery of an idle-only sleep cannot force-stop newly observed work", async () => {
-  const f = await fixture(); const member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(); const member = await f.createWorker();
   f.loseKill(true);
   await expect(f.orch.sleepMember(member.id)).rejects.toThrow();
   const kills = f.count("terminal.kill");
@@ -479,7 +481,7 @@ test("recovery of an idle-only sleep cannot force-stop newly observed work", asy
 
 
 test("draft pre-write refusal clears to one automatic send with the same marker and no duplicate", async () => {
-  const f = await fixture(), member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(), member = await f.createWorker();
   f.draft("owner draft");
   const d = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "report", text: "직원 보고", wake: true });
   await f.orch.pump(member.id);
@@ -495,7 +497,7 @@ test("draft pre-write refusal clears to one automatic send with the same marker 
 });
 
 test("busy rejected survives server restart and sends exactly once after ordinary safety checks", async () => {
-  const f = await fixture(), member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(), member = await f.createWorker();
   f.rejectSend(true);
   const d = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "report", text: "보고", wake: true });
   await f.orch.pump(member.id);
@@ -511,7 +513,7 @@ test("busy rejected survives server restart and sends exactly once after ordinar
 });
 
 test("unknown send keeps its fence and tells sleep refusal's real cause", async () => {
-  const f = await fixture(), member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(), member = await f.createWorker();
   f.unknownSend();
   const d = f.store.enqueue({ projectId: f.project.id, memberId: member.id, kind: "report", text: "보고", wake: true });
   await f.orch.pump(member.id); await f.orch.pump(member.id);
@@ -520,7 +522,7 @@ test("unknown send keeps its fence and tells sleep refusal's real cause", async 
 });
 
 test("force sleep preserves a draft with a Korean 409 and restart clears old execution error", async () => {
-  const f = await fixture(), member = await f.orch.createMember(f.project.id, { name: "Worker" });
+  const f = await fixture(), member = await f.createWorker();
   f.draft("preserve me");
   try { await f.orch.sleepMember(member.id, { force: true }); throw new Error("expected refusal"); }
   catch (error) { expect(error).toBeInstanceOf(ApiError); expect((error as ApiError).status).toBe(409); expect((error as Error).message).toContain("입력칸에 글"); }
@@ -535,7 +537,7 @@ test("force sleep preserves a draft with a Korean 409 and restart clears old exe
 for (const started of [false, true]) test(`${started ? "progress" : "start"} advisory survives every emitted reattach observation until new progress`, async () => {
   const f = await fixture(0);
   f.started(started);
-  const member = await f.orch.createMember(f.project.id, { name: "Quiet worker" });
+  const member = await f.createWorker("Quiet worker");
   await f.orch.assign(f.project.id, member.handle, { text: "Think quietly" });
   if (started) await until(() => !!f.store.listPendingExecutions()[0]?.startedAt);
   const run = f.store.listPendingExecutions()[0]!;
@@ -571,7 +573,7 @@ for (const started of [false, true]) test(`${started ? "progress" : "start"} adv
 for (const anotherProject of [false, true]) test(`explicit owner retry wakes a passive notification in ${anotherProject ? "another" : "the original"} project exactly once`, async () => {
   const f = await fixture(60_000, 1000);
   const project = anotherProject ? f.store.createProject({ name: "Another project", cwd: f.project.cwd, chiefCli: f.project.chiefCli }) : f.project;
-  const member = await f.orch.createMember(project.id, { name: "Conductor" });
+  const member = await f.createWorker("Conductor", project.id);
   const d = f.store.enqueue({ projectId: project.id, memberId: member.id, kind: "system", text: "Existing notification", wake: false });
   const recovery = f.orch.deliveryRecovery;
   const identity = { terminalId: member.paneId, sessionId: member.sessionId,
@@ -625,7 +627,7 @@ test("confirmed missing Codex transcript rotates the session once while preservi
 
 test("daemon restart retains the nonzero-exit barrier and never relaunches queued input", async () => {
   const f = await fixture();
-  const member = await f.orch.createMember(f.project.id, { name: "Failed CLI" });
+  const member = await f.createWorker("Failed CLI");
   const terminal = f.terminals.get(member.paneId!)!;
   terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 1;
   await until(() => !!f.store.requireMember(member.id).executionIssue);
@@ -642,7 +644,7 @@ test("daemon restart retains the nonzero-exit barrier and never relaunches queue
 
 test("a CLI that exits while the daemon is down is fenced before recovery can deliver queued input", async () => {
   const f = await fixture();
-  const member = await f.orch.createMember(f.project.id, { name: "Offline exit" });
+  const member = await f.createWorker("Offline exit");
   await f.orch.shutdown();
   const terminal = f.terminals.get(member.paneId!)!;
   terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 1;
@@ -657,7 +659,7 @@ test("a CLI that exits while the daemon is down is fenced before recovery can de
 
 test("missing-session rotation journals the new generation and fences an ambiguous replacement across restart", async () => {
   const f = await fixture();
-  const member = await f.orch.createMember(f.project.id, { name: "Rotating session" });
+  const member = await f.createWorker("Rotating session");
   const generation = f.store.memberRevisions(member.id).sessionGeneration;
   const terminal = f.terminals.get(member.paneId!)!;
   terminal.state = "finished"; terminal.reason = "exited"; terminal.exit_code = 0;

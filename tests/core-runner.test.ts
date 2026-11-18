@@ -71,7 +71,7 @@ async function fixture() {
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   const runners: CoreRunner[] = [];
   fixtures.push({ dir, server, sockets, runners });
-  return { dir, socketPath, opts, terminals, calls, setScreen(value: string) { screen = value; }, setHook(value: typeof hook) { hook = value; }, runner(pollMs = 20, deps: CoreRunnerDeps = {}) { const runner = new CoreRunner({ socketPath, claudeBin: "/fake/claude", codexBin: "/fake/codex", claudeHome: join(dir, "claude-home"), codexHome: join(dir, "codex-home"), contextHome: dir }, { pollMs, rpcTimeoutMs: 100, sendTimeoutMs: 150, ...deps }); runners.push(runner); return runner; } };
+  return { dir, socketPath, opts, terminals, calls, setScreen(value: string) { screen = value; }, setHook(value: typeof hook) { hook = value; }, runner(pollMs = 20, deps: CoreRunnerDeps = {}, codexBin = "/fake/codex") { const runner = new CoreRunner({ socketPath, claudeBin: "/fake/claude", codexBin, claudeHome: join(dir, "claude-home"), codexHome: join(dir, "codex-home"), contextHome: dir }, { pollMs, rpcTimeoutMs: 100, sendTimeoutMs: 150, ...deps }); runners.push(runner); return runner; } };
 }
 afterEach(async () => { for (const f of fixtures.splice(0)) { await Promise.all(f.runners.map((runner) => runner.shutdown())); for (const socket of f.sockets) socket.destroy(); await new Promise<void>((resolve) => f.server.close(() => resolve())); rmSync(f.dir, { recursive: true, force: true }); } });
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 100 && !predicate(); i++) await Bun.sleep(10); expect(predicate()).toBe(true); };
@@ -1390,4 +1390,18 @@ test.each(["claude", "codex"] as const)("%s new 160x50 sessions preserve screen,
   expect(await runner.answerApproval(m, prompt!.fingerprint!, cli === "claude" ? 2 : 1)).toMatchObject({ ok: true });
   expect(f.calls.filter(c => c.method === "terminal.keys")).toHaveLength(1);
   expect(f.calls.filter(c => c.method === "terminal.read").every(c => c.params.lines === 0)).toBe(true);
+});
+
+test.each(["worker", "conductor"] as const)("Codex delivery instructions respect the native parallel boundary for a %s", async kind => {
+  const f = await fixture();
+  const bin = join(f.dir, "codex-inventory");
+  writeFileSync(bin, "#!/bin/sh\necho '[]'\n", { mode: 0o700 });
+  const runner = f.runner(10000, {}, bin);
+  const codex = member({ cli: "codex", kind, parallel: true, cwd: f.dir });
+  const started = await runner.start(codex, f.opts);
+  f.setScreen("› Ask Codex to do anything\n  GPT-6-Astra high Fast · /tmp\n  ← for agents · ? for shortcuts");
+  expect(await runner.send({ ...codex, paneId: started.paneId }, "Inspect the assigned work", f.opts)).toMatchObject({ ok: true });
+  const sent = f.calls.find(request => request.method === "terminal.send")!;
+  expect(sent.params.text).toContain("Inspect the assigned work");
+  expect(sent.params.text.includes("Use native subagents")).toBe(kind === "worker");
 });
