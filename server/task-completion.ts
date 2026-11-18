@@ -194,6 +194,20 @@ export function awaitingIntegrationReceipt(store: Store, row: CompletionReviewRo
   return !!artifact?.artifactBase && store.getMessage(row.report_id)?.taskId === row.task_id;
 }
 
+/** The branch report and its actual integration receipt are inspected in one review. */
+function reviewedWithSource(store: Store, receipt: CompletionReviewRow): boolean {
+  const source = store.db.query<CompletionReviewRow, [string, string]>(`SELECT r.* FROM task_completion_reviews r
+    JOIN messages m ON m.id=r.integration_report_id WHERE r.integration_report_id=? AND m.task_id=? LIMIT 1`).get(receipt.report_id, receipt.task_id);
+  if (!source || store.doneMark(source.task_id)?.id !== source.mark_id) return false;
+  if (source.status === "pending") return currentReview(store, source);
+  if (!source.reviewed_at || !source.reviewer_id) return false;
+  store.db.query(`UPDATE task_completion_reviews SET status=?, reviewed_at=?, reviewer_id=?, evidence=?
+    WHERE task_id=? AND report_id=? AND status='pending'`).run(source.status, source.reviewed_at, source.reviewer_id,
+      `원 업무 #${source.task_id}의 통합판 검수 · 보고 #${source.report_id} · ${source.evidence ?? ""}`, receipt.task_id, receipt.report_id);
+  store.queueProgress([receipt.task_id]);
+  return true;
+}
+
 export function isCompletionReviewPending(store: Store, taskId: string | null | undefined, reportId: string): boolean {
   const row = taskId ? latestCompletionReview(store, taskId) : null;
   return !!row && row.report_id === reportId && currentReview(store, row);
@@ -217,6 +231,7 @@ export function checkCompletionReviews(store: Store, now: number, intervalMs: nu
     for (const review of reviews) {
       const task = store.requireTask(review.task_id), project = store.requireProject(task.projectId);
       if (project.archived || !project.runnerEnabled || task.mergedInto || !currentReview(store, review) || completionReviewPaused(store, project.id, task.id)) continue;
+      if (reviewedWithSource(store, review)) continue;
       if (awaitingIntegrationReceipt(store, review)) continue;
       const reviewer = store.getFinalReviewer(project.id);
       if (!reviewer) continue;

@@ -7,6 +7,7 @@ export const SELF_INTEGRATION_SCHEMA = `
   ALTER TABLE task_completion_reviews ADD COLUMN main_base TEXT;
   ALTER TABLE task_completion_reviews ADD COLUMN main_commit TEXT;
   ALTER TABLE task_completion_reviews ADD COLUMN integration_report_id TEXT REFERENCES messages(id);
+  CREATE INDEX completion_review_integration_report ON task_completion_reviews(integration_report_id) WHERE integration_report_id IS NOT NULL;
   INSERT OR IGNORE INTO completion_changes(task_id)
     SELECT DISTINCT task_id FROM task_completion_reviews WHERE status IN ('pending','confirmed');
 `;

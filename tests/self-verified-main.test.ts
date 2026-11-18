@@ -97,6 +97,8 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   expect(latestCompletionReview(f.store, f.task.id)).toMatchObject({ status: "pending", main_base: f.base, main_commit: main });
   const due = checkCompletionReviews(f.store, Date.now() + 60_000, 30_000);
   expect(due.some(d => d.memberId === f.reviewer.id && d.text.includes(f.reportId))).toBe(true);
+  const receiptId = latestCompletionReview(f.store, f.task.id)!.integration_report_id!;
+  expect(due.some(d => d.text.includes("통과 보고 #" + receiptId))).toBe(false);
   const observed = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.task.id, report_id: f.reportId });
   expect(observed.isError, observed.text).toBeUndefined();
   expect(JSON.parse(observed.text)).toMatchObject({
@@ -104,6 +106,7 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
     patch: { state: "observed", commit: main, comparison: f.base, files: ["integration.txt", "settings.py", "verify.py"] },
   });
   expect(JSON.parse(observed.text).integration.reportId).toBeString();
+  expect(JSON.parse(observed.text).integration.report.checks).toContainEqual(expect.objectContaining({ name: "원격 main", result: "pass" }));
   const topic = await f.tool(f.reviewer, "task_review_evidence", { task_id: f.task.id, report_id: f.reportId, revision: "branch" });
   expect(JSON.parse(topic.text).patch).toMatchObject({ commit: f.head, files: ["settings.py", "verify.py"] });
   const defect = spawnSync("/usr/bin/python3", ["verify.py", ""], { cwd: f.project.cwd, encoding: "utf8" });
@@ -113,6 +116,8 @@ test("a worker receives one scoped integration, updates a real isolated remote, 
   const repair = await f.tool(f.reviewer, "task_review", issue);
   expect(repair.isError, repair.text).toBeUndefined();
   expect((await f.tool(f.reviewer, "task_review", issue)).isError).toBeUndefined();
+  checkCompletionReviews(f.store, Date.now() + 600_000, 30_000);
+  expect(latestCompletionReview(f.store, taskId)).toMatchObject({ status: "changes_requested", reviewer_id: f.reviewer.id });
   expect(f.store.taskProgress(f.task.id).stage).toBe("done");
   expect(f.store.listStageMarks(f.task.id).filter(m => m.stage === "merged")).toHaveLength(1);
   const fixes = f.store.listWork(f.project.id).filter(w => w.title === issue.repair_title);

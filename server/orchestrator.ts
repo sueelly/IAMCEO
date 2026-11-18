@@ -5062,10 +5062,13 @@ export class Orchestrator implements OrchestratorApi {
       this.store.db.query("UPDATE task_completion_reviews SET evidence_reader_id=? WHERE task_id=? AND report_id=? AND status='pending'")
         .run(member.id, task.id, report.id);
     }
+    const integratedReport = review.integration_report_id ? this.store.getMessage(review.integration_report_id) : null;
+    const integratedChecks = integratedReport ? this.store.getReportHarness(integratedReport.id)?.checks : null;
     return publicHarness({ task: { id: task.id, title: task.title, branch: task.branch }, contract,
       report: { id: report.id, title: report.title, body: report.body, who: report.who, taskId: report.taskId,
         checks: artifact.checks, claims: artifact.claims, artifactBranch: artifact.artifactBranch, artifactCommit: artifact.artifactCommit },
-      integration: review.main_commit ? { mainBase: review.main_base, mainCommit: review.main_commit, reportId: review.integration_report_id } : null,
+      integration: review.main_commit ? { mainBase: review.main_base, mainCommit: review.main_commit, reportId: review.integration_report_id,
+        report: integratedReport ? { title: integratedReport.title, body: integratedReport.body, checks: integratedChecks } : null } : null,
       patch });
   }
 
