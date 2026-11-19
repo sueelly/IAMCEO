@@ -602,6 +602,71 @@ for (const anotherProject of [false, true]) test(`explicit owner retry wakes a p
   expect(f.count("terminal.send")).toBe(1);
 });
 
+const stoppedStartCases = ["explicit stops", "mixed bundle", "no stop receipt", "new turn", "unknown baseline", "different PID", "missing PID", "different session", "other generation", "permission prompt", "working", "ownership conflict", "observation failed", "different items", "later execution", "active lease", "runner paused", "live reconciliation"] as const;
+for (const scenario of stoppedStartCases) test(`abandoned starting journal respects ${scenario}`, async () => {
+  const f = await fixture(60_000, 300);
+  const member = await f.createWorker();
+  const terminal = f.terminals.get(member.paneId!)!;
+  terminal.pid = 12345;
+  const at = new Date().toISOString();
+  const identity = { terminalId: member.paneId, sessionId: member.sessionId, sessionGeneration: f.store.memberRevisions(member.id).sessionGeneration,
+    process: { pid: terminal.pid, startedAt: null } };
+  const deliveries = ["one", "two"].map(text => f.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "instruction", text, wake: true }));
+  const ids = deliveries.map(d => d.id);
+  const recovery = f.orch.deliveryRecovery;
+  const dispatch = recovery.prepareDispatch(ids, identity, { turn: scenario === "unknown baseline" ? null : 0, inputEpoch: 0, serverEpoch: "fixture", logs: [], capturedAt: at });
+  f.store.updateDispatch(dispatch.dispatchId, "prepared", "write_started");
+  f.store.saveExecutionJournal({ runId: dispatch.dispatchId, projectId: member.projectId, memberId: member.id,
+    identity: { ...identity, sessionGeneration: scenario === "other generation" ? identity.sessionGeneration + 1 : identity.sessionGeneration,
+      sessionId: scenario === "different session" ? crypto.randomUUID() : identity.sessionId },
+    deliveryIds: scenario === "different items" ? [ids[0]!] : ids, turn: null, phase: "starting", result: null,
+    inputReceivedAt: null, startedAt: null, lastProgressAt: null, endedAt: null, reason: null, exitCode: null,
+    interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at });
+  for (const [index, id] of ids.entries()) {
+    f.store.setDeliveryStatus(id, "held", { holdReason: "delivery_unknown" });
+    const held = f.store.updateDeliveryRecovery(id, f.store.getDeliveryRecovery(id)!.version, { phase: "needs_owner", reason: "log_missing" });
+    if (index === 1 && scenario === "mixed bundle") continue;
+    if (index === 1 && scenario === "no stop receipt") {
+      f.store.setDeliveryStatus(id, "failed");
+      f.store.updateDeliveryRecovery(id, held.version, { phase: "stopped" });
+    } else {
+      await recovery.recover(id, { action: "stop_retry", expectedVersion: held.version, operationId: crypto.randomUUID() });
+    }
+  }
+  if (scenario === "later execution") f.store.saveExecutionJournal({ ...f.store.getExecutionJournal(dispatch.dispatchId)!,
+    runId: crypto.randomUUID(), phase: "ended", result: "success", inputReceivedAt: at, startedAt: at, endedAt: at, turn: 1 });
+  if (scenario === "active lease") f.store.saveLease({ memberId: member.id, identity, claimId: crypto.randomUUID(), leaseId: crypto.randomUUID(), expiresAt: Date.now() + 60_000, lastInputSequence: 0 });
+  if (scenario === "runner paused") f.store.patchProject(member.projectId, { runnerEnabled: false });
+  if (scenario !== "live reconciliation") await f.orch.shutdown();
+  if (scenario === "new turn") terminal.turn = 1;
+  if (scenario === "missing PID") terminal.pid = null;
+  if (scenario === "different PID") terminal.pid = 54321;
+  if (scenario === "permission prompt") terminal.status = { state: "idle", kind: "permission" };
+  if (scenario === "working") terminal.status = { state: "working" };
+  if (scenario === "ownership conflict") terminal.labels["iamceo.project"] = "elsewhere";
+  if (scenario === "observation failed") f.unavailable(true);
+  const next = scenario === "live reconciliation" ? f : f.orchestrator();
+  if (scenario === "live reconciliation") await next.orch.refreshConnection();
+  else await next.orch.recover();
+  const run = f.store.getExecutionJournal(dispatch.dispatchId)!;
+  const shouldClose = scenario === "explicit stops" || scenario === "live reconciliation";
+  expect(run.phase).toBe(shouldClose ? "interrupted" : scenario === "working" ? "running" : "starting");
+  if (shouldClose) {
+    expect(run).toMatchObject({ result: "interrupted", inputReceivedAt: null, startedAt: null, turn: null, interruptionNotifiedAt: null, reportRequestedAt: null });
+    expect(run.endedAt).toBeTruthy();
+    expect(run.reason).toContain("수신");
+    expect(f.store.getDispatch(run.runId)!.transportState).toBe("write_started");
+    expect(ids.map(id => f.store.requireDelivery(id).status)).toEqual(["failed", "failed"]);
+    expect(ids.map(id => f.store.getDeliveryRecovery(id)?.phase)).toEqual(["stopped", "stopped"]);
+    expect(next.orch.deliveryRecovery.fenced(member.id)).toBe(true);
+    await next.orch.shutdown();
+    await f.orchestrator().orch.recover();
+    expect(f.store.getExecutionJournal(run.runId)).toEqual(run);
+    expect(f.store.listDeliveries().map(d => d.id).sort()).toEqual([...ids].sort());
+  }
+  for (const method of ["terminal.send", "terminal.keys", "terminal.interrupt", "terminal.kill"]) expect(f.count(method)).toBe(0);
+});
+
 test("confirmed missing Codex transcript rotates the session once while preserving queued work and history", async () => {
   const f = await fixture();
   const member = await f.orch.createMember(f.project.id, { name: "Missing Codex", cli: "codex" });

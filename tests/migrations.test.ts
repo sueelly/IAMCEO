@@ -4,6 +4,8 @@ import { chmodSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { MIGRATIONS, openDb } from "../server/db.ts";
+import { optimizeStorage } from "../scripts/optimize-storage.ts";
+import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 import { reconcileNextCompletionFamily } from "../server/task-completion.ts";
 import { Store } from "../server/store.ts";
 import { DEFAULT_PUSH_PREFERENCES, PUSH_REPORT_GROUP_WINDOW_MS } from "../shared/push.ts";
@@ -732,4 +734,125 @@ test("v54 automatic completion backfills active cards once and respects later bo
   expect(again.boardRevision("p")).toBe(revision);
   again.addStageMark({ projectId: "p", taskId: "tk_w_legacy", stage: "reopen", memberId: null, who: "대표", evidence: "새 조건" });
   expect(again.getWork("w_legacy")).toMatchObject({ sec: "next", doneAt: null });
+});
+
+const timerAt = "2026-11-07T02:01:00.123Z";
+const timerReason = "진척 없이 121분(1번 시도)";
+function legacyWatch(db: Database, id: string, reason = timerReason, same = 1) {
+  db.query("INSERT INTO tasks(id,project_id,title,created_at,updated_at) VALUES(?,'p',?,?,?)").run(id, id, at, at);
+  const history = ["다른 검사", "검사"].map((name,i) => ({ at, messageId: "msg_"+i, who: "기존 직원", fingerprint: "fail:"+name, failed: [name] }));
+  db.query(`INSERT INTO task_watch(task_id,project_id,started_at,attempts,same_count,fingerprint,last_progress_at,tripped_at,trip_reason,history_json,updated_at)
+    VALUES(?,'p',?,2,?,'fail:검사',?,?,?,?,?)`).run(id, at, same, at, timerAt, reason, JSON.stringify(history), timerAt);
+}
+
+test("v57 restores only elapsed-time stops, keeps other gates and failure history, and never replays the release", () => {
+  const { path, runtime } = fixture(), old = historicalDb(path, 56);
+  for (const id of ["timer", "hold", "owner", "paused", "escalated", "changed"]) legacyWatch(old, id);
+  legacyWatch(old, "subminute", "진척 없이 0분(1번 시도)");
+  legacyWatch(old, "early", "진척 없이 5분(1번 시도)");
+  legacyWatch(old, "repeat", "같은 실패 3번(검사)", 3);
+  legacyWatch(old, "late-repeats", timerReason, 3);
+  legacyWatch(old, "past-repeats", timerReason, 1);
+  const intervening = ["a","a","a","b"].map((fingerprint,i) => ({ at, fingerprint, who:"기존 직원", failed:[], messageId:"m"+i }));
+  old.query("UPDATE task_watch SET attempts=4,history_json=? WHERE task_id='past-repeats'").run(JSON.stringify(intervening));
+  legacyWatch(old, "followup", "후속 조정 요청 3회 뒤에도 완료 근거가 바뀌지 않았습니다.");
+  legacyWatch(old, "custom", timerReason + " 검수자가 직접 보류");
+  old.query("INSERT INTO task_stage_marks(project_id,task_id,stage,evidence,who,at) VALUES('p','hold','hold','직접 보류','총괄',?)").run(timerAt);
+  old.exec("UPDATE decisions SET task_id='owner' WHERE id='decision'");
+  old.query("INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,created_at) VALUES('escalated','decision',?,?)").run(timerAt,timerAt);
+  old.query("INSERT INTO task_continuations(task_id,project_id,pause_token,pause_reason,paused_at,updated_at) VALUES('paused','p','pause','대표가 중단',?,?)").run(at, at);
+  const saved = old.query<Record<string, unknown>, []>("SELECT * FROM task_watch WHERE task_id='timer'").get()!;
+  old.close();
+
+  expect(optimizeStorage(runtime.paths.iamceoHome).verified).toBe(true);
+  const db = openDb(path);
+  const preview = new Store(db, new Bus(), undefined, { readOnly: true });
+  expect(preview.getTaskWatch("timer")?.trippedAt).toBe(timerAt);
+  db.exec("UPDATE task_watch SET trip_reason='총괄이 추가 점검을 요청했습니다' WHERE task_id='changed'");
+  const store = new Store(db, new Bus());
+  expect(store.pendingTaskIntervention("timer")).toBeNull();
+  for (const id of ["early", "subminute"]) expect(store.pendingTaskIntervention(id)).toBeNull();
+  expect(db.query("SELECT * FROM task_watch WHERE task_id='timer'").get()).toEqual({ ...saved, tripped_at: null, trip_reason: null, notice_delivery_id: null });
+  for (const id of ["repeat","late-repeats","past-repeats","followup","custom","escalated","changed"]) expect(store.getTaskWatch(id)?.trippedAt).toBe(timerAt);
+  expect(store.pendingTaskFailureDecision("escalated")?.id).toBe("decision");
+  expect(store.taskProgress("hold").stage).toBe("hold");
+  expect(store.taskProgress("owner").stage).toBe("owner");
+  expect(db.query("SELECT pause_token,pause_reason,paused_at FROM task_continuations WHERE task_id='paused'").get())
+    .toEqual({pause_token:"pause",pause_reason:"대표가 중단",paused_at:at});
+  expect(db.query("SELECT count(*) AS n FROM task_stage_marks WHERE stage='reopen'").get()).toEqual({n:0});
+  store.saveTaskWatch("p","timer",{ ...store.getTaskWatch("timer")!, trippedAt:timerAt, reason:"같은 실패 3번(검사)", same:3 });
+  expect(store.claimWatchNotice("timer","new-notice")).toBe(true);
+  db.close();
+  const reopened = new Store(track(openDb(path)),new Bus());
+  expect(reopened.getTaskWatch("timer")?.reason).toBe("같은 실패 3번(검사)");
+  expect(reopened.watchNoticeSent("timer")).toBe(true);
+});
+
+test("v57 retires only a proven untouched timer notice and preserves delivered and physically uncertain envelopes", () => {
+  const { path } = fixture("timer-notices.db"), old = historicalDb(path,56);
+  const cases = ["fresh","delivered","attempted","checking","manual","revised","no-recovery","receipt","older","executed","dispatch","wrong-task","other-body","other-episode"];
+  const body = (id: string) => `[시스템] 반복 감시: 업무 #${id} '기존 업무'의 막힘이 ${timerReason}. 이 업무의 자동 반복을 멈췄습니다.`;
+  for (const id of cases) {
+    legacyWatch(old,id);
+    const text = id === "other-body" ? "다른 시스템 지시" : id === "other-episode" ? body(id).replace(timerReason,"같은 실패 3번(검사)") : body(id);
+    old.query("INSERT INTO deliveries(id,project_id,member_id,task_id,kind,text,status,created_at) VALUES(?,'p','m',?,'system',?,'queued',?)")
+      .run("n-"+id, id === "wrong-task" ? "fresh" : id, text, timerAt);
+    old.query("INSERT INTO delivery_recovery(delivery_id,updated_at) VALUES(?,?)").run("n-"+id,timerAt);
+    old.query("UPDATE task_watch SET notice_delivery_id=? WHERE task_id=?").run("n-"+id,id);
+  }
+  old.exec("UPDATE deliveries SET status='delivered', delivered_at=created_at WHERE id='n-delivered'; UPDATE deliveries SET attempts=1 WHERE id='n-attempted'");
+  old.exec("UPDATE delivery_recovery SET phase='checking' WHERE delivery_id='n-checking'; UPDATE delivery_recovery SET version=2 WHERE delivery_id='n-revised'");
+  old.exec("DELETE FROM delivery_recovery WHERE delivery_id='n-no-recovery'");
+  old.query("UPDATE deliveries SET created_at=? WHERE id='n-older'").run(at);
+  old.query("INSERT INTO workflow_assignment_receipts VALUES('assignment','p','receipt','m','n-receipt','{}',?)").run(at);
+  old.query("INSERT INTO manual_inbox_batches(id,member_id,created_at) VALUES('batch','m',?)").run(at);
+  old.exec("INSERT INTO manual_inbox_items VALUES('batch','n-manual',0)");
+  old.query(`INSERT INTO execution_journal(run_id,member_id,project_id,generation,terminal_identity_json,delivery_ids_json,phase,created_at,updated_at)
+    VALUES('run','m','p',1,'{}','["n-executed"]','starting',?,?)`).run(at,at);
+  old.query(`INSERT INTO delivery_dispatches(id,project_id,member_id,bundle_marker,cli,backend,generation,terminal_identity_json,baseline_json,wire_text,wire_sha256,transport_state,created_at,updated_at)
+    VALUES('dispatch','p','m','marker','codex','headless',1,'{}','{}','old','x','write_started',?,?)`).run(at,at);
+  old.exec("INSERT INTO delivery_dispatch_items(dispatch_id,delivery_id,ordinal) VALUES('dispatch','n-dispatch',0)");
+  const retained = (db:Database) => db.query("SELECT d.*,r.* FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id=d.id WHERE d.id <> 'n-fresh' ORDER BY d.id").all();
+  const kept = retained(old);
+  old.close();
+
+  const db = track(openDb(path)), store = new Store(db,new Bus());
+  expect(store.requireDelivery("n-fresh")).toMatchObject({status:"failed", wake:false, attempts:0, deliveredAt:null, text:body("fresh")});
+  expect(store.getDeliveryRecovery("n-fresh")?.phase).toBe("stopped");
+  expect(retained(db)).toEqual(kept);
+  expect(store.watchNoticeSent("fresh")).toBe(false);
+  expect(store.claimWatchNotice("fresh","next-genuine-notice")).toBe(true);
+  expect(db.query("SELECT tripped_at,trip_reason,notice_delivery_id FROM legacy_task_timer_stops WHERE task_id='fresh'").get())
+    .toEqual({tripped_at:timerAt,trip_reason:timerReason,notice_delivery_id:"n-fresh"});
+});
+
+test("after v57 the normal coordinator continues an authorized timed-out task exactly once", () => {
+  const { path, runtime } = fixture("timer-continuation.db"), old = historicalDb(path, 56);
+  old.query("UPDATE projects SET cwd=? WHERE id='p'").run(runtime.paths.work);
+  const prior = new Store(old,new Bus());
+  const lead = prior.createMember({ projectId:"p", handle:"lead", name:"총괄", kind:"conductor", origin:"runner", backend:"core", status:"idle", cwd:runtime.paths.work });
+  for (const id of ["ready","held","owner"]) {
+    legacyWatch(old,id);
+    old.query("UPDATE tasks SET origin='owner' WHERE id=?").run(id);
+    const assignment = prior.enqueue({projectId:"p",memberId:"m",taskId:id,kind:"instruction",text:"계약의 미완료 조건을 확인합니다"});
+    prior.markDelivered(assignment.id);
+  }
+  prior.addStageMark({projectId:"p",taskId:"held",stage:"hold",evidence:"명시적 보류",memberId:lead.id,who:lead.name});
+  old.exec("UPDATE decisions SET task_id='owner' WHERE id='decision'");
+  const coordinator = (s:Store) => new TaskContinuationCoordinator(s, { intervalMs:1000, sameLimit:3 });
+  const before = coordinator(prior).check(Date.now()+2000, member => member.id === lead.id);
+  expect(before.map(d => d.taskId)).toEqual(["ready"]);
+  expect(before[0]?.text).toContain(timerReason);
+  old.close();
+
+  const db = openDb(path), current = new Store(db,new Bus());
+  const next = coordinator(current).check(Date.now()+3000, member => member.id === lead.id);
+  expect(next.map(d => d.taskId)).toEqual(["ready"]);
+  expect(next[0]?.text).toContain("업무 계속 진행");
+  expect(current.requireDelivery(before[0]!.id)).toMatchObject({status:"failed",wake:false});
+  db.close();
+  const again = new Store(track(openDb(path)),new Bus());
+  expect(coordinator(again).check(Date.now()+4500, member => member.id === lead.id)).toEqual([]);
+  expect(again.taskProgress("owner").stage).toBe("owner");
+  expect(again.taskProgress("held").stage).toBe("hold");
 });

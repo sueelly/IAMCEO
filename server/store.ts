@@ -1,3 +1,4 @@
+import { reconcileLegacyTimerStops } from "./legacy-timer-stops.ts";
 import { projectMainContract, projectMainPolicyPrefix } from "./project-main-policy.ts";
 import { describeTaskContext } from "./task-context.ts";
 import { assignmentPredecessor, buildWorkflow, orderAssignments, relatedWork, type WorkflowAssignment, type WorkflowOwnerFacts } from "./workflow.ts";
@@ -923,6 +924,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (!options.readOnly) {
       this.ensureHq();
       this.backfillWorkTasks();
+      reconcileLegacyTimerStops(this);
     }
   }
 
@@ -2652,11 +2654,6 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  /** 아직 멈추지 않은 반복 감시(시간 경계 확인용). */
-  listOpenTaskWatches(): { taskId: string; projectId: string; watch: WatchFact }[] {
-    return this.rows("SELECT * FROM task_watch WHERE tripped_at IS NULL").map((r) => ({ taskId: r.task_id, projectId: r.project_id, watch: toWatch(r) }));
-  }
-
   /** 완료 알림을 완료 표시 하나에 하나 만든다. 이미 있으면 그것을 돌려준다(재시도·두 화면·재시작에도 하나). */
   createTaskNotice(projectId: string, taskId: string, markId: number, lines: string[]): { id: string; created: boolean } {
     return this.transaction(() => {
@@ -4026,16 +4023,20 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     this.run("DELETE FROM terminal_leases WHERE member_id = ? AND claim_id = ?", memberId, claimId);
   }
 
-  inputState(memberId: string): RunnerRecoveryState {
-    const generation = this.memberRevisions(memberId).sessionGeneration;
+  activeTerminalLease(memberId: string, generation: number): TerminalLease | null {
     const r = this.row("SELECT * FROM terminal_leases WHERE member_id = ? AND generation = ? AND expires_at > ?", memberId, generation, Date.now());
+    return r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null;
+  }
+
+  inputState(memberId: string): RunnerRecoveryState {
+    const lease = this.activeTerminalLease(memberId, this.memberRevisions(memberId).sessionGeneration);
     // Select before hydrating large wire texts. Old generations can still hold a physical fence.
     const unresolvedDispatches = this.rows(`SELECT d.id FROM delivery_dispatches d WHERE d.member_id = ? AND (
       d.transport_state IN ('prepared', 'write_started', 'unknown') OR EXISTS (
         SELECT 1 FROM delivery_dispatch_items i JOIN delivery_recovery r ON r.delivery_id = i.delivery_id
         WHERE i.dispatch_id = d.id AND r.phase NOT IN ('none', 'resolved', 'stopped')
       )) ORDER BY d.created_at, d.rowid`, memberId).map(d => this.getDispatch(d.id)!);
-    return { lease: r ? { memberId, claimId: r.claim_id, leaseId: r.lease_id, identity: json(r.terminal_identity_json), expiresAt: r.expires_at, lastInputSequence: r.last_input_sequence } : null, unresolvedDispatches };
+    return { lease, unresolvedDispatches };
   }
 
   // ---- 전달 복구 CAS / 봉투 ----
@@ -4113,6 +4114,34 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (result.changes !== 1) throw new ApiError(409, "봉투 상태가 변경되었습니다");
       return this.getDispatch(id)!;
     });
+  }
+
+  /** A stopped phase alone is insufficient. Bind the actual stop receipts to every original input. */
+  explicitlyStoppedStart(run: ExecutionJournal): DeliveryDispatch | null {
+    if (run.phase !== "starting" || run.turn !== null || run.inputReceivedAt || run.startedAt || run.lastProgressAt ||
+        run.endedAt || run.result || !run.deliveryIds.length) return null;
+    const dispatch = this.getDispatch(run.runId);
+    if (!dispatch || dispatch.memberId !== run.memberId || dispatch.projectId !== run.projectId || dispatch.backend !== "core" ||
+        !["write_started", "unknown"].includes(dispatch.transportState) || stableJson(dispatch.identity) !== stableJson(run.identity) ||
+        dispatch.baseline.turn == null || dispatch.items.length !== run.deliveryIds.length ||
+        !dispatch.items.every((item, index) => item.deliveryId === run.deliveryIds[index])) return null;
+
+    const stopped = this.row(`SELECT COUNT(*) AS count FROM delivery_dispatch_items i
+      JOIN deliveries d ON d.id=i.delivery_id JOIN delivery_recovery r ON r.delivery_id=i.delivery_id
+      WHERE i.dispatch_id=? AND d.member_id=? AND d.project_id=? AND d.status='failed' AND r.phase='stopped'
+        AND EXISTS (SELECT 1 FROM delivery_recovery_operations o WHERE o.delivery_id=d.id AND o.created_at>=?
+          AND json_extract(o.request_json,'$.action')='stop_retry'
+          AND json_extract(o.request_json,'$.operationId')=o.operation_id
+          AND json_extract(o.result_json,'$.deliveryId')=d.id AND json_extract(o.result_json,'$.operationId')=o.operation_id
+          AND json_extract(o.result_json,'$.outcome')='stopped'
+          AND json_extract(o.result_json,'$.committedVersion')=json_extract(o.request_json,'$.expectedVersion')+1
+          AND json_extract(o.result_json,'$.committedVersion')<=r.version)
+      `, dispatch.dispatchId, run.memberId, run.projectId, dispatch.createdAt);
+    if (stopped?.count !== dispatch.items.length) return null;
+    // A later execution on this terminal makes attribution to this baseline uncertain.
+    const later = this.row(`SELECT 1 FROM execution_journal WHERE member_id=? AND generation=? AND
+      rowid>(SELECT rowid FROM execution_journal WHERE run_id=?) LIMIT 1`, run.memberId, run.identity.sessionGeneration, run.runId);
+    return later ? null : dispatch;
   }
 
   deliveryRecoveryOperation<T>(deliveryId: string, operationId: string, request: unknown, execute: () => T): T {

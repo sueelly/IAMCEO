@@ -1074,6 +1074,16 @@ export const MIGRATIONS: string[] = [
     policy_id INTEGER NOT NULL REFERENCES project_main_policies(id) ON DELETE CASCADE, task_id TEXT NOT NULL, rev INTEGER NOT NULL, branch TEXT NOT NULL,
     PRIMARY KEY(policy_id,task_id,rev,branch), FOREIGN KEY(task_id,rev) REFERENCES task_contracts(task_id,rev) ON DELETE CASCADE
   );`,
+  // v57: snapshot old timer episodes before a writable host reconciles their delivery evidence.
+  `CREATE TABLE legacy_task_timer_stops (
+    task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    tripped_at TEXT NOT NULL, trip_reason TEXT NOT NULL, notice_delivery_id TEXT,
+    outcome TEXT NOT NULL DEFAULT 'pending' CHECK(outcome IN ('pending','released','retained'))
+  );
+  INSERT INTO legacy_task_timer_stops(task_id,project_id,tripped_at,trip_reason,notice_delivery_id)
+    SELECT w.task_id,w.project_id,w.tripped_at,w.trip_reason,w.notice_delivery_id
+    FROM task_watch w JOIN tasks t ON t.id=w.task_id AND t.project_id=w.project_id
+    WHERE w.tripped_at IS NOT NULL AND w.trip_reason GLOB '진척 없이 [0-9]*분([0-9]*번 시도)';`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

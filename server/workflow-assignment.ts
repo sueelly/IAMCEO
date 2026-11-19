@@ -22,7 +22,7 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (member.finalReviewer) blockers.push("최종 검수 직원은 수행 완료 보고의 검수만 받습니다");
   const failureDecision = store.pendingTaskFailureDecision(taskId);
   const intervention = store.pendingTaskIntervention(taskId);
-  if (intervention) blockers.push(`업무 #${intervention.taskId}의 총괄 점검이 필요합니다: ${intervention.reason}. 바뀐 접근을 기록해 다시 연 뒤 배정하세요`);
+  if (intervention) blockers.push(`업무 #${intervention.taskId}에서 ${intervention.reason}. 총괄이 다음 시도의 방법을 정한 뒤 다시 배정합니다`);
   if (failureDecision) blockers.push(`같은 실패 세 번의 결재 #${failureDecision.id}에 대표 판단이 필요합니다. 결재함에서 재개 조건을 정해 주세요`);
   if (project.archived) blockers.push("보관된 프로젝트입니다");
   if (!project.runnerEnabled) blockers.push("프로젝트 실행이 꺼져 있습니다");
@@ -36,11 +36,12 @@ export function previewWorkflowAssignment(store: Store, projectId: string, taskI
   if (!context.originals.length && !bindingContract(contract)) blockers.push("확정된 지시를 확인할 수 없습니다");
   const lineage = new Set(context.lineage.map(t => t.id));
   const watches = context.lineage.map(t => store.getTaskWatch(t.id));
-  if (watches.some(w => w?.trippedAt)) blockers.push("반복 감시로 멈춘 업무입니다. 총괄이 원인과 바뀐 접근을 확인해야 합니다");
+  if (!intervention && watches.some(w => w?.trippedAt)) blockers.push("반복 감시로 멈춘 업무입니다. 총괄이 원인과 바뀐 접근을 확인해야 합니다");
   if (context.lineage.some(t => store.hasUnsettledTaskInput(t.id))) blockers.push("이 업무의 이전 입력 처리가 끝나지 않았습니다");
   const decisions = store.listOpenDecisions(projectId).filter(d => d.taskId && lineage.has(d.taskId));
   const todos = store.listTodos(projectId).filter(t => !t.done && t.taskId && lineage.has(t.taskId));
-  if (decisions.length || todos.length || ["hold", "held", "approval", "owner", "check"].includes(progress.stage)) blockers.push("승인·보류 또는 대표가 확인할 조건이 남아 있습니다");
+  if (decisions.length || todos.length || progress.stage === "owner") blockers.push("연결된 업무의 대표 응답을 기다립니다");
+  if (["hold", "held", "approval"].includes(progress.stage)) blockers.push(progress.next ?? "업무의 재개 조건을 기다립니다");
   if (member.origin === "manual") blockers.push("직접 연결한 세션은 이 화면에서 배정하지 않습니다");
   if (["asleep", "offline", "error"].includes(member.status)) blockers.push("직원의 연결과 실행 가능 여부를 먼저 확인해 주세요");
   if (member.executionState?.phase === "unknown" || member.lifecycleState && member.lifecycleState.phase !== "started_confirmed" || member.blockedReason === "status_unknown") blockers.push("직원의 실행 상태를 확인해야 합니다");

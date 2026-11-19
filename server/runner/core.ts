@@ -471,6 +471,27 @@ export class CoreRunner implements Runner {
     return track ? { observedAt: track.observedAt, failures: track.failures, failure: track.failure, lastError: track.lastError, identity: this.identity(track), inputEpoch: track.epoch, setupError: track.setupError,
       turn: track.terminal.state === "live" ? track.terminal.turn ?? null : null, state: track.terminal.state === "live" ? track.terminal.status?.state ?? null : null } : null;
   }
+  /** Read the native terminal after stop receipts. A matching idle turn says nothing about past input receipt. */
+  async confirmsIdleBaseline(member: RunnerMember, identity: RunnerTerminalIdentity, turn: number): Promise<boolean> {
+    const track = this.tracks.get(member.id);
+    if (!track || member.sessionId !== identity.sessionId || !identity.sessionId || !identity.terminalId ||
+        !identity.process?.pid || identity.process.startedAt !== null || track.terminal.address !== identity.terminalId || track.sessionId !== identity.sessionId ||
+        member.sessionGeneration !== identity.sessionGeneration) return false;
+    const epoch = track.epoch;
+    try {
+      const terminal = await this.call<CoreTerminal>("terminal.get", { terminal: identity.terminalId });
+      this.validateTrack(track);
+      this.assertMember(track, member);
+      return !this.sending.has(member.id) && !this.configuring.has(member.id) && !track.pending && !track.completing &&
+        !track.failures && !track.setupError && track.epoch === epoch && track.sessionId === identity.sessionId &&
+        track.status === "idle" && track.terminal.turn === turn && !track.terminal.status?.kind &&
+        (!track.compact || ["failed", "succeeded"].includes(track.compact.phase)) &&
+        this.owns(terminal, member) && (!terminal.labels["iamceo.session"] || terminal.labels["iamceo.session"] === identity.sessionId) &&
+        terminal.cwd === member.cwd && isProviderArgv(terminal.argv, providerFor(member), this.binOf(member)) &&
+        terminal.address === identity.terminalId && terminal.pid === identity.process.pid && terminal.state === "live" &&
+        terminal.turn === turn && terminal.status?.state === "idle" && !terminal.status.kind;
+    } catch { return false; }
+  }
   private async poll(): Promise<void> {
     if (this.polling || this.closed) return;
     this.polling = true;

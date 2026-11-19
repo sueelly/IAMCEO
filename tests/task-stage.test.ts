@@ -71,7 +71,7 @@ describe("막힘의 원인과 다음 차례", () => {
     await blocked(f, a, []);
     await blocked(f, b, [check("behavior", "fail", "저장 시험")]);
     expect(progressOf(f, a)).toMatchObject({ stage: "confirm", cause: "unknown", owner: "총괄" });
-    expect(progressOf(f, b)).toMatchObject({ stage: "fix", cause: "technical", owner: "철수" });
+    expect(progressOf(f, b)).toMatchObject({ stage: "fix", cause: "technical", owner: "총괄" });
   });
 
   test("대표 할 일이 열려 있을 때만 대표 차례다. 닫히면 원래 단계로 돌아간다", async () => {
@@ -87,14 +87,14 @@ describe("막힘의 원인과 다음 차례", () => {
 });
 
 describe("납품 뒤 단계: 검토·합치기·완료", () => {
-  test("검토자 막힘(실패)은 작성자가 고칠 차례로 보이고, 계약 판정(작성자 납품)은 그대로 남는다", async () => {
+  test("검토자 막힘(실패)은 총괄의 수정 조정으로 보이고, 계약 판정(작성자 납품)은 그대로 남는다", async () => {
     const f = fixture(), task = await newTask(f);
     await deliver(f, task);
     expect(progressOf(f, task)).toMatchObject({ stage: "delivered", owner: "총괄" });
     expect((await stage(f, task, "review", "영희에게 독립 검토 맡김")).isError).toBeUndefined();
     expect(progressOf(f, task)!.stage).toBe("review");
     await blocked(f, task, [check("behavior", "fail", "반례 2")], f.worker2, "검토 반례 실패");
-    expect(progressOf(f, task)).toMatchObject({ stage: "fix", cause: "technical", owner: "철수" });
+    expect(progressOf(f, task)).toMatchObject({ stage: "fix", cause: "technical", owner: "총괄" });
     // 의도된 보호: 다른 직원의 막힘은 작성자 완료 판정을 취소하지 않는다(단계는 따로 계산한다).
     const trace = JSON.parse((await f.tool(f.lead, "task_trace", { task_id: task })).text);
     expect(trace.currentCompletion.eligible).toBe(true);
@@ -202,20 +202,23 @@ describe("반복 감시", () => {
     expect((await f.tool(f.lead, "team_assign", { member: "철수", text: "저장 경로부터 다시", task_id: task })).isError).toBeUndefined();
   });
 
-  test("시간 경계: 직원 쪽 단계에서 진척 없이 2시간이면 한 번 멈춘다. 대표 차례는 세지 않는다", async () => {
+  test("한 번 실패한 뒤 이틀간 새 보고가 없어도 수정과 대표 대기를 보존하고 지시나 점검 공지를 추가하지 않는다", async () => {
     const f = fixture(), task = await newTask(f), owner = await newTask(f, ONE, "대표 기다림");
     await blocked(f, task, [check("regression", "fail", "저장 시험")]);
     await f.tool(f.worker, "todo", { title: "결제 확인", task_id: owner });
     await blocked(f, owner, [check("regression", "fail", "결제 시험")]);
+    const before = f.store.getTaskWatch(task);
+    const deliveries = f.store.listTaskDeliveries(task).map(d => d.id);
     const later = Date.now() + 2 * 60 * 60_000 + 1000;
     f.orch.checkTaskWatches(Date.now() + 60_000);
     expect(progressOf(f, task)!.stage).toBe("fix");
     f.orch.checkTaskWatches(later);
-    f.orch.checkTaskWatches(later + 60_000);
-    expect(progressOf(f, task)).toMatchObject({ stage: "check", cause: "loop" });
-    expect(progressOf(f, task)!.loop!.reason).toContain("진척 없이");
+    f.orch.checkTaskWatches(later + 48 * 60 * 60_000);
+    expect(f.store.getTaskWatch(task)).toEqual(before);
+    expect(progressOf(f, task)).toMatchObject({ stage: "fix", loop: { attempts: 1, same: 1, trippedAt: null } });
     expect(progressOf(f, owner)!.stage).toBe("owner");
-    expect(conductorSystem(f)).toHaveLength(1);
+    expect(conductorSystem(f)).toHaveLength(0);
+    expect(f.store.listTaskDeliveries(task).map(d => d.id)).toEqual(deliveries);
   });
 
   test("통과 완료가 오면 반복이 끝난다", async () => {

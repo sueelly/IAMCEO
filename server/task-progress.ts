@@ -60,6 +60,13 @@ export function latestWorkerOutcome(facts: ProgressFacts | undefined): ReportFac
   return facts?.reports.findLast(r => r.authorKind === "worker" && (r.kind === "완료" || r.kind === "막힘" || r.continuesWork));
 }
 
+/** A reported blocker needs team coordination until the current attempt is reopened. */
+export function unresolvedBlock(facts: ProgressFacts | undefined, outcome: ReportFact | undefined): boolean {
+  if (outcome?.kind !== "막힘") return false;
+  const reopened = facts?.marks.findLast(mark => mark.stage === "reopen");
+  return !reopened || reopened.at < outcome.at || (facts?.watch?.same ?? 0) > 0;
+}
+
 const CONDUCTOR = "총괄";
 const OWNER = "대표";
 const josaI = (name: string) => {
@@ -133,7 +140,7 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     return make("approval", "approval", `${a.who}의 터미널 승인 창이 열려 있습니다`, OWNER, a.at, []);
   }
   if (f.watch?.trippedAt) {
-    return make("check", "loop", `총괄 점검: ${f.watch.reason ?? "반복 멈춤"}`, CONDUCTOR, f.watch.trippedAt, f.watch.history.map((h) => h.messageId));
+    return make("check", "loop", `${f.watch.reason ?? "같은 문제가 반복되었습니다"} · 총괄이 다음 시도의 방법을 조정합니다`, CONDUCTOR, f.watch.trippedAt, f.watch.history.map((h) => h.messageId));
   }
   const stuck = f.held.filter((h) => holdCause(h.reason) !== "dependency");
   if (stuck.length) {
@@ -151,13 +158,19 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
   if (lastOutcome && (!progressMark || lastOutcome.at >= progressMark.at)) {
     if (lastOutcome.continuesWork) {
       const failures = lastOutcome.failed;
-      return make(failures.length ? "fix" : "working", failures.length ? "technical" : null,
+      return { ...make(failures.length ? "fix" : "working", failures.length ? "technical" : null,
         failures.length ? `${josaI(lastOutcome.who)} 이어서 수정할 검사: ${cut(failures)}` : `${josaI(lastOutcome.who)} 남은 완료 조건을 이어서 처리합니다`,
-        lastOutcome.who, lastOutcome.at, [lastOutcome.id]);
+        lastOutcome.who, lastOutcome.at, [lastOutcome.id]), continuesWork: true };
     }
     if (lastOutcome.kind === "막힘") {
       if (lastOutcome.failed.length) {
-        const fixer = delivery && delivery.memberId && delivery.memberId !== lastOutcome.memberId && delivery.seq < lastOutcome.seq ? delivery.who : lastOutcome.who;
+        const assignee = delivery?.memberId && delivery.memberId !== lastOutcome.memberId && delivery.seq < lastOutcome.seq ? delivery : lastOutcome;
+        const fixer = assignee.who;
+        if (unresolvedBlock(f, lastOutcome)) {
+          const assigned = assignee.authorKind === "worker" ? ` · 수정 담당 ${fixer}` : "";
+          return make("fix", "technical", `총괄이 수정 범위를 조정합니다${assigned} · 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`,
+            CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
+        }
         const busy = f.reports.some((r) => r.seq > lastOutcome.seq && r.who === fixer && r.kind === "진행");
         return make("fix", "technical", `${josaI(fixer)} ${busy ? "고치는 중" : "고칠 차례"}: 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`, fixer, lastOutcome.at, [lastOutcome.id]);
       }
@@ -178,10 +191,10 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
       r.kind === "완료" && r.passed && !r.failed.length && !r.notRun.length && r.at <= progressMark.at && r.seq < lastOutcome.seq) : null;
     if (reviewDelivery?.memberId && lastOutcome.memberId && lastOutcome.memberId !== reviewDelivery.memberId
       && lastOutcome.passed && !lastOutcome.failed.length && !lastOutcome.notRun.length) {
-      return make("merge", null, "검토 통과 · 총괄이 메인에 합칠 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id, reviewDelivery.id]);
+      return make("merge", null, "검토 통과 · 담당자의 원격 main 통합 근거를 기다립니다", CONDUCTOR, lastOutcome.at, [lastOutcome.id, reviewDelivery.id]);
     }
     const d = delivery ?? lastOutcome;
-    return make("delivered", null, "총괄이 독립 검토를 맡기거나 합칠 차례", CONDUCTOR, d.at, [d.id]);
+    return make("delivered", null, "납품 보고가 도착했습니다. 완료 조건의 검증 근거를 확인할 차례입니다", CONDUCTOR, d.at, [d.id]);
   }
   if (progressMark) {
     const basis = [`mark:${progressMark.id}`];
@@ -208,9 +221,9 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
 
 // ---- 반복 감시 ----
 
-/** 같은 실패 3번은 2026-11-18 대표 정책이다. 2시간은 별도의 진척 확인 간격이다. */
-export const DEFAULT_WATCH_LIMITS = { sameLimit: 3, idleMs: 2 * 60 * 60_000 } as const;
-export interface WatchLimits { sameLimit: number; idleMs: number }
+/** 같은 실패가 세 번 보고되면 총괄이 접근을 재검토한다. */
+export const DEFAULT_WATCH_LIMITS = { sameLimit: 3 } as const;
+export interface WatchLimits { sameLimit: number }
 const HISTORY = 10;
 
 /**
@@ -236,13 +249,6 @@ export function watchOnReport(prev: WatchFact | null, r: ReportFact, limits: Wat
     return { next: { ...next, trippedAt: r.at, reason }, trip: reason, quiet: false };
   }
   return { next, trip: null, quiet: false };
-}
-
-/** 시간 경계: 직원 쪽 단계(고칠 것·확인 대기)에서 마지막 진척 뒤 idleMs 가 지나면 한 번 멈춘다. 대표·승인·보류 기다림은 세지 않는다. */
-export function watchOnTick(w: WatchFact | null, stage: TaskStage, now: number, limits: WatchLimits = DEFAULT_WATCH_LIMITS): string | null {
-  if (!w || w.trippedAt || (stage !== "fix" && stage !== "confirm")) return null;
-  const idle = now - Date.parse(w.lastProgressAt);
-  return idle >= limits.idleMs ? `진척 없이 ${Math.floor(idle / 60_000)}분(${w.attempts}번 시도)` : null;
 }
 
 /** 총괄이 다시 열면 멈춤을 푼다. 시작 시각·시도 수·기록은 남기고, 같은 실패 연속 수와 진척 시각은 새로 센다. */

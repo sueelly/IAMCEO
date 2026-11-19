@@ -1,3 +1,4 @@
+import { deriveProgress } from "../server/task-progress.ts";
 import { expect, test } from "bun:test";
 import { fixture } from "./fixtures/harness-fixture.ts";
 import { buildWorkflow } from "../server/workflow.ts";
@@ -9,7 +10,7 @@ const task = (f: F, title: string) => f.store.ensureSourceTask({ projectId: f.pr
 const assign = (f: F, taskId: string) => f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, taskId, kind: "instruction", text: "승인된 지시", wake: true });
 
 test.each([
-  ["fix", "blocked"], ["confirm", "waiting"], ["check", "blocked"], ["hold", "blocked"],
+  ["fix", "blocked"], ["confirm", "review"], ["check", "blocked"], ["hold", "blocked"],
   ["delivered", "review"], ["review", "review"], ["merge", "review"], ["merged", "review"], ["applied", "review"],
 ] as const)("an unfinished %s outcome stays visible without old sequence enrollment", (stage, state) => {
   const f = fixture(), t = task(f, stage);
@@ -75,7 +76,7 @@ test("a newer unresolved report survives a board completion record", () => {
   f.store.upsertWork({ ...board, sec: "done" });
   f.store.db.query("UPDATE work SET done_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(board.id);
   f.store.createMessage({ projectId: f.project.id, taskId: `tk_${board.id}`, memberId: f.worker.id, who: f.worker.name, kind: "막힘", title: "남은 확인", body: "검증이 끝나지 않았습니다" });
-  expect(f.store.projectWorkflow(f.project.id).nodes[0]).toMatchObject({ memberId: f.worker.id, historical: false, state: "waiting", label: "확인 대기" });
+  expect(f.store.projectWorkflow(f.project.id).nodes[0]).toMatchObject({ memberId: f.worker.id, historical: false, state: "review", label: "팀 확인 대기" });
 });
 
 test("a manually completed linked board row cannot hide its unfinished modern task", () => {
@@ -275,4 +276,55 @@ test("an explicit task hold does not ask the owner to retry an input already ref
   f.store.addStageMark({ projectId: f.project.id, taskId: t.id, stage: "reopen", evidence: "선행 자료 인계", memberId: f.lead.id, who: f.lead.name });
   expect(node()).toMatchObject({ ownerActionRequired: true, label: "전달 재시도 한도" });
   expect(f.store.requireDelivery(d.id)).toMatchObject({ status: "held", attempts: 0 });
+});
+
+test("보류한 업무와 연결된 하위 업무에 실제 재개 조건이 표시된다", () => {
+  const f = fixture(), parent = task(f, "인계할 자료 검증"), child = task(f, "검증 결과 반영");
+  f.store.db.query("UPDATE tasks SET parent_task_id=? WHERE id=?").run(parent.id, child.id);
+  assign(f, parent.id);
+  assign(f, child.id);
+  const evidence = "원 실행의 종료 영수증이 도착하면 인계를 재개합니다";
+  f.store.addStageMark({ projectId: f.project.id, taskId: parent.id, stage: "hold", evidence, memberId: f.lead.id, who: f.lead.name });
+  const nodes = f.store.projectWorkflow(f.project.id).nodes;
+  const direct = nodes.find(n => n.taskId === parent.id)!, inherited = nodes.find(n => n.taskId === child.id)!;
+  for (const node of [direct, inherited]) {
+    expect(node).toMatchObject({ state: "blocked", label: "보류", ownerActionRequired: false });
+    expect(node.reason).toContain(evidence);
+  }
+  expect(inherited.reason).toContain(parent.title);
+});
+
+test("진행판의 업무 보류는 종료된 과거 지시보다 먼저 실제 조건을 보여준다", () => {
+  const f = fixture(), t = task(f, "외부 인계 대기");
+  const input = assign(f, t.id);
+  f.store.markDelivered(input.id);
+  f.store.db.query("DELETE FROM task_sequence WHERE task_id=?").run(t.id);
+  const detail = "기존 자료가 전달되면 작업을 재개합니다";
+  f.store.upsertWork({ projectId: f.project.id, title: t.title, sec: "hold", taskId: t.id, who: f.worker.name, detail });
+  expect(f.store.projectWorkflow(f.project.id).nodes.find(n => n.taskId === t.id)).toMatchObject({
+    historical: false, state: "blocked", label: "보류", reason: detail, ownerActionRequired: false,
+  });
+});
+
+
+test("반복 감시와 한 번의 막힘을 서로 다른 팀 처리로 표시한다", () => {
+  const f = fixture(), t = task(f, "자동 처리 예외");
+  for (const [stage, state, label] of [["check", "blocked", "재시도 조정"], ["confirm", "review", "팀 확인 대기"]] as const) {
+    const progress = { ...f.store.taskProgress(t.id), stage, next: "담당 팀에서 원인을 확인합니다" };
+    expect(buildWorkflow([{ ...t, progress }], [], [], []).nodes[0]).toMatchObject({ state, label, ownerActionRequired: false });
+  }
+});
+
+test("직원이 이어 고칠 검사와 외부 도움이 필요한 막힘을 구분한다", () => {
+  const f = fixture(), t = task(f, "저장 검사 보완");
+  assign(f, t.id);
+  const base = f.store.taskProgressFacts(f.project.id).get(t.id)!;
+  const report = { id: "msg_repair", seq: 1, at: t.createdAt, kind: "진행" as const, memberId: f.worker.id,
+    who: f.worker.name, authorKind: "worker" as const, continuesWork: true, failed: ["저장 검사"], notRun: [], checks: 1, passed: false };
+  for (const [outcome, state] of [[report, "waiting"], [{ ...report, kind: "막힘" as const, continuesWork: false }, "blocked"]] as const) {
+    const progress = deriveProgress({ ...base, reports: [outcome] });
+    const n = buildWorkflow([{ ...t, progress }], [f.worker], [], [{ taskId: t.id, memberId: f.worker.id, at: t.createdAt, kind: outcome.kind, title: "저장 검사" }]).nodes[0]!;
+    expect(n).toMatchObject({ state, ownerActionRequired: false, reason: progress.next });
+    if (outcome.continuesWork) expect(n.label).toBe("담당자 수정 예정");
+  }
 });

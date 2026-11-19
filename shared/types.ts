@@ -352,7 +352,7 @@ export interface Task {
 
 /**
  * 업무 단계(대표 2026-11-17: 목록과 대화가 맞고, 막힘·적용 없이 끝나지 않게).
- * new 시작 전 · working 진행 중 · owner 대표 차례 · approval 승인 창 · held 전달 보류 · check 총괄 점검(반복 감시) ·
+ * new 시작 전 · working 진행 중 · owner 대표 차례 · approval 승인 창 · held 전달 보류 · check 재시도 조정(반복 감시) ·
  * fix 고칠 것 · confirm 확인 대기 · delivered 작성자 납품 · review 검토 중 · merge 합치기 대기 · merged 메인 합침(통합 뒤 확인) ·
  * applied 대표 화면 반영 · hold 보류 · done 완료.
  */
@@ -365,6 +365,8 @@ export type TaskBlockCause = "technical" | "pending" | "dependency" | "owner" | 
 /** 총괄이 남기는 단계 표시. reopen 은 완료·점검·보류를 푼다. */
 export type TaskStageMark = "review" | "merged" | "applied" | "done" | "hold" | "reopen";
 export interface TaskProgress {
+  /** 담당 직원이 남은 검사를 직접 이어서 고친다고 보고했다. */
+  continuesWork?: true;
   finalReview?: { status: "pending" | "confirmed" | "changes_requested"; reportId: string; contractRev: number; at: string };
   stage: TaskStage;
   cause: TaskBlockCause | null;

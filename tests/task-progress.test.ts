@@ -1,6 +1,6 @@
 // 업무 단계 계산의 단위 시험: 원인 가르기, 완료는 끝 단계, 판 번호, 실패 지문, 감시 경계. 순수 함수만 본다.
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_WATCH_LIMITS, deriveProgress, fingerprint, holdCause, watchOnReopen, watchOnReport, watchOnTick, type ProgressFacts, type ReportFact } from "../server/task-progress.ts";
+import { DEFAULT_WATCH_LIMITS, deriveProgress, fingerprint, holdCause, watchOnReopen, watchOnReport, type ProgressFacts, type ReportFact } from "../server/task-progress.ts";
 import { needsAction, newerProgress, stageSec } from "../shared/task-stage.ts";
 import { applyToProject } from "../web/src/lib/store.ts";
 import { hasTaskRows, noticeTasks, workRows } from "../web/src/lib/task-list.ts";
@@ -101,11 +101,14 @@ describe("단계 계산", () => {
     expect(deriveProgress(f).stage).not.toBe("merge");
   });
 
-  test("검토자가 실패한 막힘을 보고하면 작성자가 고칠 차례로 남는다", () => {
+  test("검토자의 막힘은 총괄이 조정하고, 다시 열면 원 작성자가 고친다", () => {
     const f = empty();
     f.reports.push(report("완료", { at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 }));
     f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
     f.reports.push(report("막힘", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", failed: ["회귀"], checks: 2 }));
+    expect(deriveProgress(f)).toMatchObject({ stage: "fix", owner: "총괄" });
+    expect(deriveProgress(f).next).toContain("철수");
+    f.marks.push({ id: 1, stage: "reopen", who: "총괄", at: "2026-11-17T23:59:00.000Z", evidence: "수정 범위를 확인했습니다" });
     expect(deriveProgress(f)).toMatchObject({ stage: "fix", owner: "철수" });
   });
 
@@ -167,10 +170,6 @@ describe("반복 감시 경계", () => {
     expect(repeated).toEqual(first);
     expect(repeated).toMatchObject({ attempts: 1, same: 1, trippedAt: null });
   });
-  test("기본값은 같은 실패 3번·2시간이다(기존 재시도 상한과 같고 늘리지 않는다)", () => {
-    expect(limits).toEqual({ sameLimit: 3, idleMs: 2 * 60 * 60_000 });
-  });
-
   test("지문이 바뀌면 진척으로 보고 연속 수를 새로 센다. 같은 지문 3번이면 한 번만 멈춘다", () => {
     const a = () => report("막힘", { failed: ["저장"], checks: 1 });
     let r = watchOnReport(null, a(), limits);
@@ -195,14 +194,16 @@ describe("반복 감시 경계", () => {
     expect(fingerprint({ failed: [], notRun: [], checks: 0 })).toBe("unknown");
   });
 
-  test("시간 경계는 직원 쪽 단계(고칠 것·확인 대기)에서만 센다", () => {
-    const w = watchOnReport(null, report("막힘", { failed: ["저장"], checks: 1, at: "2026-11-17T00:00:00.000Z" }), limits).next!;
-    const at = Date.parse("2026-11-17T02:00:01.000Z");
-    expect(watchOnTick(w, "fix", Date.parse("2026-11-17T01:59:00.000Z"), limits)).toBeNull();
-    expect(watchOnTick(w, "fix", at, limits)).toContain("진척 없이 120분");
-    expect(watchOnTick(w, "owner", at, limits)).toBeNull();
-    expect(watchOnTick(w, "approval", at, limits)).toBeNull();
-    expect(watchOnTick(w, "held", at, limits)).toBeNull();
+  test("보고 간격이 길어도 세 번째 동일 실패 보고에서 한 번만 멈춘다", () => {
+    const failed = (at: string) => report("막힘", { at, failed: ["저장"], checks: 1 });
+    const first = watchOnReport(null, failed("2026-11-17T00:00:00.000Z"));
+    const second = watchOnReport(first.next, failed("2026-11-18T00:00:00.000Z"));
+    expect(second.next).toMatchObject({ attempts: 2, same: 2, trippedAt: null });
+    const third = failed("2026-11-20T00:00:00.000Z");
+    const stopped = watchOnReport(second.next, third);
+    expect(stopped.next).toMatchObject({ attempts: 3, same: 3, trippedAt: third.at });
+    expect(stopped.trip).toContain("같은 실패 3번");
+    expect(watchOnReport(stopped.next, third)).toMatchObject({ next: stopped.next, trip: null });
   });
 });
 
@@ -218,9 +219,16 @@ describe("팀 목록 한 줄 규칙", () => {
   test("업무를 가리키는 항목은 손으로 정한 칸보다 업무 단계를 따르고, 진행판에 없는 업무도 같은 목록에 오른다", () => {
     const rows = workRows([item("w_1", "done", "tk_a")], [task("tk_a", prog("confirm", "총괄이 확인할 차례")), task("tk_b", prog("fix", "철수가 고칠 차례")), task("tk_old", prog("fix", "x", { rev: "2026-10-01T00:00:00.000Z" })), task("tk_new", prog("new"))], now);
     expect(rows.map((r) => [r.key, r.sec, r.label, r.next])).toEqual([
-      ["w_1", "doing", "확인 대기", "총괄이 확인할 차례"],
+      ["w_1", "doing", "팀 확인 대기", "총괄이 확인할 차례"],
       ["tk_b", "doing", "고칠 것", "철수가 고칠 차례"],
     ]);
+  });
+
+  test("연결한 보류 카드의 대기 조건은 팀 목록에서도 볼 수 있다", () => {
+    const card = { ...item("w_hold", "hold", "tk_a"), detail: "검수 자료가 도착하면 재개" };
+    expect(workRows([card], [task("tk_a", prog("new"))], now)[0]).toMatchObject({
+      sec: "hold", label: "보류", detail: card.detail,
+    });
   });
 
   test("가리키지 않는 옛 항목은 칸을 그대로 두고, 그 항목의 업무는 두 번 올리지 않는다", () => {

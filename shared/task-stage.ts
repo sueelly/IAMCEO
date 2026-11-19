@@ -7,9 +7,9 @@ export const STAGE_LABEL: Record<TaskStage, string> = {
   owner: "대표 차례",
   approval: "승인 창",
   held: "전달 보류",
-  check: "총괄 점검",
+  check: "재시도 조정",
   fix: "고칠 것",
-  confirm: "확인 대기",
+  confirm: "팀 확인 대기",
   delivered: "작성자 납품",
   review: "검토 중",
   merge: "합치기 대기",
@@ -18,6 +18,10 @@ export const STAGE_LABEL: Record<TaskStage, string> = {
   hold: "보류",
   done: "완료",
 };
+
+export function taskStageLabel(p: Pick<TaskProgress, "stage" | "continuesWork">): string {
+  return p.stage === "fix" && p.continuesWork ? "담당자 수정 예정" : STAGE_LABEL[p.stage];
+}
 
 /** 팀 목록의 칸: 완료·보류·시작 전만 따로 두고 나머지는 진행 중이다. */
 export function stageSec(stage: TaskStage): WorkSec {

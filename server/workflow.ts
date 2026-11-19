@@ -2,7 +2,7 @@ import { deliveryWaitText, memberIssueLabel, providerIssueKind } from "../shared
 import type { ProgressFacts } from "./task-progress.ts";
 import type { Member, Task, WorkItem } from "../shared/types.ts";
 import { WORKFLOW_OBSERVATION_MAX_AGE_MS, type ProjectWorkflow, type WorkflowInputBlock, type WorkflowNode } from "../shared/workflow.ts";
-import { STAGE_LABEL } from "../shared/task-stage.ts";
+import { taskStageLabel } from "../shared/task-stage.ts";
 
 export interface WorkflowAssignment {
   taskId: string;
@@ -240,8 +240,17 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
         reason: prompt?.reason ?? "실행 상태를 확인하지 못했습니다. 직원의 연결 상태를 확인해 주세요", action: memberAction };
     }
     if (inRun && (!verified || e?.phase === "unknown")) return { ...n, state: "unknown", label: "실행 상태 미확인", reason: "마지막 관측으로 현재 실행을 확정할 수 없습니다", action: memberAction };
-    if (hold && a?.inputBlocks?.some(b => b.phase === "resolved" && b.reason === "not_received" && b.retryReason === "rejected_limit")) {
-      return { ...n, historical: false, state: "blocked", label: "보류", reason: p?.next ?? w?.detail ?? "선행 업무의 보류가 풀리면 재시도 조건을 확인합니다" };
+    if (hold) {
+      const sourceId = a?.suspendedBy?.taskId ?? task.id;
+      const source = taskById.get(sourceId);
+      const sourceCard = board.get(sourceId);
+      const reason = pausedTasks.get(sourceId)?.reason ||
+        (source?.progress?.stage === "hold" && source.progress.next) ||
+        (sourceCard?.sec === "hold" && sourceCard.detail) || "진행판에 보류로 기록되어 있습니다";
+      const parent = a?.suspendedBy;
+      return { ...n, historical: false, current: inRun, state: "blocked", label: "보류",
+        reason: parent && parent.taskId !== task.id ? `‘${parent.title}’에서 대기 중입니다. ${reason}` : reason,
+        ...(a?.inputBlocks?.length ? { inputBlock: a.inputBlocks[0] } : {}) };
     }
     if (a?.protected || a?.held) {
       const block = a.inputBlocks?.find(b => !["stopped", "resolved"].includes(b.phase)) ?? a.inputBlocks?.[0];
@@ -252,7 +261,6 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
       return { ...n, ownerActionRequired: ordinaryHold && n.current && (loginRequired || nativePrompt), historical: false, state: "blocked", label: explanation.label, reason: explanation.reason,
         ...(block ? { inputBlock: block } : {}), action: "thread" in explanation && explanation.thread ? n.action : memberAction };
     }
-    if (a?.suspendedBy) return { ...n, current: inRun, state: "blocked", label: "보류", reason: `‘${a.suspendedBy.title}’의 보류·중단 범위에 포함됩니다` };
     if (a?.awaitingOwner && a.awaitingOwner.taskId !== task.id) {
       const gate = a.awaitingOwner;
       return { ...n, state: "blocked", label: "선행 응답 대기",
@@ -260,11 +268,11 @@ export function buildWorkflow(tasks: readonly Task[], members: readonly Member[]
         action: gate.terminal ? { label: "업무 보기", tab: "thread", sub: gate.taskId } : { label: "결재함 열기", tab: "inbox", sub: null } };
     }
     if (blocker) return { ...n, state: "waiting", label: "선행 업무 대기", reason: `‘${taskMap.get(blocker.taskId)!.title}’의 직원 담당 단계가 끝나거나 보류되어 순서가 풀리면 시작합니다` };
-    if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: STAGE_LABEL[p.stage], reason: p.next };
-    if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, ownerActionRequired: p.stage === "approval" && nativePrompt && n.current, state: p.stage === "confirm" ? "waiting" : "blocked", label: STAGE_LABEL[p.stage], reason: p.next,
+    if (p && ["delivered", "review", "merge", "merged", "applied"].includes(p.stage)) return { ...n, state: "review", label: taskStageLabel(p), reason: p.next };
+    if (p?.stage === "fix" && p.continuesWork) return { ...n, state: a?.queued ? "queued" : "waiting", label: taskStageLabel(p), reason: p.next };
+    if (p && ["fix", "confirm", "check", "hold", "held", "approval"].includes(p.stage)) return { ...n, ownerActionRequired: p.stage === "approval" && nativePrompt && n.current, state: p.stage === "confirm" ? "review" : "blocked", label: taskStageLabel(p), reason: p.next,
       action: p.stage === "approval" ? memberAction : n.action };
     if (n.historical) return { ...n, state: "review", label: "이전 지시", reason: "이전에 전달된 지시입니다. 이 업무의 완료 근거는 아직 기록되지 않았습니다" };
-    if (w?.sec === "hold") return { ...n, state: "blocked", label: "보류", reason: w.detail || "진행판에서 보류한 업무입니다. 총괄이 재개 조건을 확인할 차례입니다" };
     if (!m || !a) return { ...n, label: p?.stage === "working" ? "담당 확인" : "배정 전", reason: p?.next ?? (w?.who ? `진행판 담당은 ‘${w.who}’입니다. 현재 직원 한 명과 일치하지 않아 담당을 확인해야 합니다` : "담당 직원이 아직 배정되지 않았습니다") };
     if (a.source === "board" && (!p || p.stage === "new")) return { ...n, label: "착수 대기", reason: "진행판에 담당이 지정되어 있습니다. 실행 지시의 전달은 아직 확인되지 않았습니다" };
     const issue = memberIssueLabel(m);

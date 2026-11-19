@@ -13,7 +13,7 @@ import { Attachments } from "../components/Attachments";
 import { Badge, Empty, Markdown, Time } from "../components/ui";
 import { kindTone } from "../lib/tone";
 import { workIdOf } from "../lib/tasks";
-import { needsAction, STAGE_LABEL } from "@shared/task-stage";
+import { needsAction, taskStageLabel } from "@shared/task-stage";
 import { cardCopyText, foldLabel, foldPreview, foldThread, isCardCopy, splitOwnerAction, splitOwnerLine, type KindOf, type ThreadItem } from "../lib/thread-view";
 import { useGate } from "../components/ConnectGate";
 import { HqLeadStrip } from "./Inbox";
@@ -87,10 +87,10 @@ function TaskBar({ task, expanded, onFlow }: { task: Task; expanded: boolean; on
       {/* 맡은 직원은 적지 않는다. 업무에는 여러 직원이 붙고, 누가 썼는지는 글마다 보인다. */}
       {task.branch || task.worktree ? <span className="th-task__meta">{[task.branch, task.worktree].filter(Boolean).join(" · ")}</span> : null}
       {/* 단계는 누가 무엇을 해야 할 때와 끝났을 때만 적는다(늘 떠 있는 상태 글을 늘리지 않는다). 팀 목록과 같은 값이다. */}
-      {task.progress?.stage === "done" ? <span className="th-task__stage" data-stage="done">{task.progress.finalReview?.status === "pending" ? "수행 완료 · 최종 검수 대기" : STAGE_LABEL.done}</span> : null}
+      {task.progress?.stage === "done" ? <span className="th-task__stage" data-stage="done">{task.progress.finalReview?.status === "pending" ? "수행 완료 · 최종 검수 대기" : taskStageLabel(task.progress)}</span> : null}
       {needsAction(task.progress) ? (
         <span className="th-task__next" data-stage={task.progress!.stage}>
-          <b>{STAGE_LABEL[task.progress!.stage]}</b> {task.progress!.next}
+          <b>{taskStageLabel(task.progress!)}</b> {task.progress!.next}
         </span>
       ) : null}
     </div>

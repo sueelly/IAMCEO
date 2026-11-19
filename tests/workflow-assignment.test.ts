@@ -237,3 +237,12 @@ test("a failed descendant requires conductor intervention before assigning its p
   expect(() => commitWorkflowAssignment(f.store, f.project.id, f.task.id, { operationId: randomUUID(), memberId: f.worker.id, revision: preview.revision })).toThrow();
   expect(f.store.listTaskDeliveries(f.task.id).filter(d => d.memberId === f.worker.id)).toHaveLength(0);
 });
+
+test("재시도 조정 미리보기는 내부 조정을 대표 응답으로 안내하지 않는다", () => {
+  const f = setup(), at = new Date().toISOString();
+  f.store.saveTaskWatch(f.project.id, f.task.id, { startedAt: at, attempts: 3, same: 3, fingerprint: "fail:저장",
+    lastProgressAt: at, trippedAt: at, reason: "같은 저장 검사 실패 3회", history: [], updatedAt: at });
+  const reasons = f.preview().blockers.join(" ");
+  expect(reasons).toContain("같은 저장 검사 실패 3회");
+  expect(reasons).not.toContain("대표가 확인");
+});

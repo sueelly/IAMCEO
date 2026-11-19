@@ -85,11 +85,11 @@ import { normalizeHome } from "./home-owner.ts";
 import type { AgentToolDef, AgentToolResult, AskWaitResult, OrchestratorApi } from "./orchestrator-api.ts";
 import { sanitizeName } from "./files.ts";
 import { josa, renderFinalReviewer, renderRole } from "./roles.ts";
-import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, watchOnTick, latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
+import { DEFAULT_WATCH_LIMITS, watchOnReopen, watchOnReport, latestWorkerOutcome, type MarkFact } from "./task-progress.ts";
 import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-continuation.ts";
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
 import { orderAssignments, relatedWork } from "./workflow.ts";
-import { STAGE_LABEL } from "../shared/task-stage.ts";
+import { taskStageLabel } from "../shared/task-stage.ts";
 import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
@@ -377,8 +377,6 @@ export interface OrchestratorTimings {
   manualOfflineMs: number;
   /** 실행기가 켜졌는지 꺼졌는지 다시 보는 간격. 화면의 입력 허용이 이것을 따른다. */
   healthMs: number;
-  /** 반복 감시(구현 기본값, 대표 정책 아님): 직원 쪽 단계에서 진척 없이 이만큼 지나면 자동 반복을 멈추고 총괄에게 한 번 알린다. */
-  loopIdleMs: number;
   /** 반복 감시: 같은 실패 지문의 막힘이 이만큼 이어지면 멈춘다. 기존 재시도 상한(3)과 같다. */
   loopSameLimit: number;
   /** 미완료 업무의 후속 조정을 다시 확인하는 최소 간격. 실행·모델 한도는 바꾸지 않는다. */
@@ -396,7 +394,6 @@ const DEFAULT_TIMINGS: OrchestratorTimings = {
   manualIdleMs: 5 * 60_000,
   manualOfflineMs: 30 * 60_000,
   healthMs: 5000,
-  loopIdleMs: DEFAULT_WATCH_LIMITS.idleMs,
   loopSameLimit: DEFAULT_WATCH_LIMITS.sameLimit,
   continuationMs: 30_000,
 };
@@ -1347,12 +1344,36 @@ export class Orchestrator implements OrchestratorApi {
       const observed = runner instanceof CoreRunner ? runner.observationState(member.id) : null;
       if (!runner || !observed || observed.failures || observed.identity.terminalId !== run.identity.terminalId) continue;
       if (this.settleRecoveredStart(member, run, observed)) continue;
+      if (runner instanceof CoreRunner && await this.settleStoppedStart(member, run, runner)) continue;
       const observation = this.executionObservation(member, { source: "core", observedAt: observed.observedAt, freshness: "fresh", ownership: "verified", consecutiveFailures: 0, error: observed.setupError });
       if (observation.error?.code === "progress_stalled" || observation.error?.code === "start_stalled" ||
           member.statusObservation?.error?.code === "progress_stalled" || member.statusObservation?.error?.code === "start_stalled") {
         this.store.patchMember(member.id, { statusObservation: observation });
       }
     }
+  }
+
+  private async settleStoppedStart(member: Member, run: ExecutionJournal, runner: CoreRunner): Promise<boolean> {
+    const eligible = (current: Member) => {
+      const rt = this.runtime(current.id), project = this.store.requireProject(current.projectId);
+      return !this.closed && !project.archived && project.runnerEnabled && !this.archiving.has(project.id) && current.status !== "asleep" &&
+        !this.configWrites.has(current.id) && current.origin !== "manual" && current.backend === "core" && current.paneId === run.identity.terminalId &&
+        current.sessionId === run.identity.sessionId && this.store.memberRevisions(current.id).sessionGeneration === run.identity.sessionGeneration &&
+        !rt.closing && !rt.starting && !rt.reopening && !rt.pumping && !rt.stopRequest && !this.terminalMutations.has(current.id) &&
+        !this.pendingLifecycle(current.id) && !this.store.activeTerminalLease(current.id, run.identity.sessionGeneration);
+    };
+    if (run.phase !== "starting" || !eligible(member)) return false;
+    const dispatch = this.store.explicitlyStoppedStart(run);
+    if (!dispatch || dispatch.baseline.turn == null || !await runner.confirmsIdleBaseline(
+      this.runnerMember(member, this.store.requireProject(member.projectId)), run.identity, dispatch.baseline.turn)) return false;
+    return this.store.transaction(() => {
+      const current = this.store.getMember(member.id), journal = this.store.getExecutionJournal(run.runId);
+      if (!current || !journal || !eligible(current) || !this.store.explicitlyStoppedStart(journal)) return false;
+      const at = new Date().toISOString();
+      this.store.saveExecutionJournal({ ...journal, phase: "interrupted", result: "interrupted", endedAt: at, updatedAt: at,
+        reason: "원래 입력 전체의 추가 전달이 중지되었습니다. 과거 수신 여부는 확인되지 않았습니다." });
+      return true;
+    });
   }
 
   /** Compose observation and execution evidence atomically. A successful reattach is not new output:
@@ -4578,7 +4599,7 @@ export class Orchestrator implements OrchestratorApi {
       if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
       // 반복 감시: 멈춘 뒤 같은 실패의 막힘은 총괄을 다시 깨우지 않는다. 처음 멈출 때 총괄에게 한 번 알린다.
       const watch = this.watchReport(message, input.continueWork === true);
-      if (watch.trip && taskId) noticeTo = this.watchNoticeDelivery(member.projectId, taskId, watch.trip)?.memberId ?? null;
+      if (watch.trip && taskId) noticeTo = this.store.ensureTaskFailureNotice(taskId)?.memberId ?? null;
       if (taskId && member.kind === "worker") synchronizeRelatedTaskCompletion(this.store, taskId);
       if (main && base && link && task) {
         this.store.db.query("UPDATE task_completion_reviews SET main_base=?,main_commit=?,integration_report_id=? WHERE task_id=? AND report_id=?")
@@ -4917,7 +4938,7 @@ export class Orchestrator implements OrchestratorApi {
     if (p.stage === "new") return null;
     const hint = p.stage === "delivered" || p.stage === "merge" || p.stage === "merged" || p.stage === "applied" || p.stage === "review"
       ? ` · 단계를 옮기면 task_stage(task_id "${taskId}")로 남긴다(검토 맡김 review · 메인 합침 merged · 대표 화면 반영 applied · 완료 done)` : "";
-    return `업무 단계: ${STAGE_LABEL[p.stage]}${p.next ? ` · ${p.next}` : ""}${hint}`;
+    return `업무 단계: ${taskStageLabel(p)}${p.next ? ` · ${p.next}` : ""}${hint}`;
   }
 
   /** 보고 하나로 반복 감시를 옮긴다(같은 거래 안). 처음 멈추면 trip 을, 멈춘 뒤 같은 실패면 quiet 를 준다. */
@@ -4939,34 +4960,17 @@ export class Orchestrator implements OrchestratorApi {
         this.store.resetWatchNotice(message.taskId);
       }
     }
-    const { next, trip, quiet } = watchOnReport(prev, { ...fact, correctsMessageId }, { sameLimit: this.timings.loopSameLimit, idleMs: this.timings.loopIdleMs });
+    const { next, trip, quiet } = watchOnReport(prev, { ...fact, correctsMessageId }, { sameLimit: this.timings.loopSameLimit });
     if (next !== saved) this.store.saveTaskWatch(message.projectId, message.taskId, next);
     return { quiet, trip };
   }
 
-  /** 멈춘 감시의 총괄 알림을 같은 거래 안에서 만든다. 감시 하나에 한 번(이미 보냈으면 null). */
-  private watchNoticeDelivery(projectId: string, taskId: string, reason: string): Delivery | null {
-    return this.store.ensureTaskFailureNotice(taskId);
-  }
-
-  /** 시간 경계: 직원 쪽 단계에서 진척 없이 오래 지난 감시를 한 번 멈춘다. 대표·승인·보류 기다림은 세지 않는다. */
-  checkTaskWatches(now = Date.now()): void {
+  /** 보고로 발생한 총괄 점검 알림을 복구한다. 미완료 업무의 다음 실행은 기존 후속 조정기가 예약한다. */
+  checkTaskWatches(_now?: number): void {
     // Recover undelivered conductor interventions without creating owner cards.
     for (const row of this.store.db.query("SELECT task_id,project_id FROM task_watch WHERE tripped_at IS NOT NULL").all() as { task_id: string; project_id: string }[]) {
       if (this.store.getProject(row.project_id)?.archived) continue;
       const notice = this.store.ensureTaskFailureNotice(row.task_id);
-      if (notice) void this.pump(notice.memberId);
-    }
-    const limits = { sameLimit: this.timings.loopSameLimit, idleMs: this.timings.loopIdleMs };
-    for (const { taskId, projectId, watch } of this.store.listOpenTaskWatches()) {
-      if (this.store.getProject(projectId)?.archived) continue;
-      const reason = watchOnTick(watch, this.store.taskProgress(taskId).stage, now, limits);
-      if (!reason) continue;
-      const at = new Date(now).toISOString();
-      const notice = this.store.transaction(() => {
-        this.store.saveTaskWatch(projectId, taskId, { ...watch, trippedAt: at, reason, updatedAt: at });
-        return this.watchNoticeDelivery(projectId, taskId, reason);
-      });
       if (notice) void this.pump(notice.memberId);
     }
   }

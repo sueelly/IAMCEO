@@ -8,7 +8,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { STAGE_LABEL } from "../shared/task-stage.ts";
+import { taskStageLabel } from "../shared/task-stage.ts";
 import { CLI_PROVIDERS, CONDUCTOR_TOOLS, FINAL_REVIEW_TOOLS, FINAL_REVIEWER_TOOLSET, fileKindOf, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Attachment, type FileKind, type Member, type StopResult } from "../shared/types.ts";
 import { FilePublication, importPath, prepareImport, MAX_ARTIFACT_BYTES, MAX_UPLOAD_BYTES, type PreparedImport, type SavedFile } from "./files.ts";
 import { createStorageReferences } from "./storage-maintenance.ts";
@@ -794,7 +794,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "일 항목(진행 중·예정·보류·완료)을 id 와 함께 본다. 압축 뒤 항목을 옮기거나 지울 때 먼저 부른다.",
     z.strictObject({}),
     (orch, member) => reply(JSON.stringify(orch.store.listWork(member.projectId).map((w) => ({ id: w.id, sec: w.sec, title: w.title, detail: w.detail, who: w.who,
-      ...(w.taskId ? { task_id: w.taskId, stage: STAGE_LABEL[orch.store.taskProgress(w.taskId).stage] } : {}) })))),
+      ...(w.taskId ? { task_id: w.taskId, stage: taskStageLabel(orch.store.taskProgress(w.taskId)) } : {}) })))),
   ),
 
   work_remove: tool(
@@ -827,8 +827,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       const item = orch.setWork(member.projectId, { ...rest, ...(task_id !== undefined ? { taskId: task_id } : {}) });
       if (item.taskId) {
         const progress = orch.store.taskProgress(item.taskId);
-        const warn = item.sec === "done" && progress.stage !== "done" ? ` 업무 단계는 아직 '${STAGE_LABEL[progress.stage]}'입니다. 팀 목록은 업무 단계를 보입니다. 끝났으면 task_stage(done)로 근거를 남기세요` : "";
-        return reply(withLint(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${STAGE_LABEL[progress.stage]}).${warn}`, lintTask(a.title)));
+        const warn = item.sec === "done" && progress.stage !== "done" ? ` 업무 단계는 아직 '${taskStageLabel(progress)}'입니다. 팀 목록은 업무 단계를 보입니다. 끝났으면 task_stage(done)로 근거를 남기세요` : "";
+        return reply(withLint(`일 항목 #${item.id} → 업무 #${item.taskId}(단계 ${taskStageLabel(progress)}).${warn}`, lintTask(a.title)));
       }
       const task = orch.store.getTask(Store.workTaskId(item.id));
       return reply(withLint(`일 항목 #${item.id}${task ? ` · 대화 작업 #${task.id}(대표 대화 화면의 작업 칩). 이 일로 맡기는 team_assign 과 이 일에 관한 네 post·ask·file 에 task_id "${task.id}" 를 넣는다. 그래야 지시·보고가 이 칩에 모인다` : ""}`, lintTask(a.title)));
@@ -845,7 +845,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
         integrationReport: a.integration_report, mainCommit: a.main_commit });
       const p = r.progress;
       const followup = r.followup?.taskId ? ` · 예정 업무 #${r.followup.taskId} '${r.followup.title}'` : "";
-      return reply(`${r.repeated ? "이미 완료로 남아 있습니다" : "남겼습니다"} · 업무 #${a.task_id} 단계 ${STAGE_LABEL[p.stage]}${p.next ? ` · 다음: ${p.next}` : ""}${r.noticeId ? ` · 완료 알림 #${r.noticeId}` : ""}${followup}`);
+      return reply(`${r.repeated ? "이미 완료로 남아 있습니다" : "남겼습니다"} · 업무 #${a.task_id} 단계 ${taskStageLabel(p)}${p.next ? ` · 다음: ${p.next}` : ""}${r.noticeId ? ` · 완료 알림 #${r.noticeId}` : ""}${followup}`);
     },
   ),
 
