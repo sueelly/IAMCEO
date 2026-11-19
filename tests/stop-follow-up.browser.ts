@@ -1,9 +1,9 @@
 // 웹의 멈춤·'멈추고 이 글로 이어가기': 받는 사람이 일하는 중이면 입력칸 위에 무엇이 멈추는지(직원·실행·작업)와 두 버튼이 보이고,
 // 이어가기는 글을 먼저 대기열에 고정한 뒤 멈추며, 멈춘 턴이 끝난 뒤 한 번만 전달된다.
 // 실제 서버(http.ts)·실제 화면·격리 DB. CLI 는 가짜 core 실행기다(실제 CLI 의 멈춤 키 반응은 보지 않는다).
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { Bus } from "../server/bus.ts";
@@ -16,7 +16,7 @@ import { Store } from "../server/store.ts";
 import type { Backend, Member, Project } from "../shared/types.ts";
 
 const CODE = "stop-follow-up-code";
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-stop-shots-"));
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-stop-shots-");
 mkdirSync(SHOTS, { recursive: true });
 
 class FakeCore implements Runner {
@@ -68,7 +68,7 @@ async function endTurn(id: string, turn: number) {
 }
 
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-stop-web-"));
+  const home = testTempDir("iamceo-stop-web-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

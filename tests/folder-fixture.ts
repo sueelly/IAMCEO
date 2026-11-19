@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { testTempDir } from "./fixtures/test-run-dirs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { loadConfig } from "../server/config.ts";
@@ -8,7 +9,7 @@ import type { OrchestratorApi } from "../server/orchestrator-api.ts";
 import { Store } from "../server/store.ts";
 
 export async function folderFixture(path?: string, environment?: (home: string) => Record<string, string>) {
-  const root = mkdtempSync("/private/tmp/iamceo-folders-"), home = join(root, "home");
+  const root = testTempDir("iamceo-folders-", "/private/tmp"), home = join(root, "home");
   mkdirSync(home);
   const config = loadConfig({ IAMCEO_HOME: join(root, "state"), IAMCEO_PORT: "0", ...environment?.(home) });
   const bus = new Bus(), store = new Store(openDb(config.dbPath), bus);

@@ -1,15 +1,15 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import type { Bus } from "../server/bus.ts";
 import { startServer } from "../server/http.ts";
 import { fixture } from "./fixtures/harness-fixture.ts";
+import { managedRunRoot, testTempDir } from "./fixtures/test-run-dirs";
 
 function retainBrowserFailure(f: ReturnType<typeof fixture>, error: unknown) {
-  const root = process.env.IAMCEO_TEST_RUN_ROOT;
-  if (!root) return;
-  const dir = mkdtempSync(join(root, "owner-home-"));
+  if (!managedRunRoot()) return;
+  const dir = testTempDir("owner-home-");
   writeFileSync(join(dir, "failure.log"), error instanceof Error ? error.stack || error.message : String(error), {mode:0o600});
   writeFileSync(join(dir, "iamceo.db"), f.store.db.serialize(), {mode:0o600});
 }

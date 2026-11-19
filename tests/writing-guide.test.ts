@@ -1,6 +1,6 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exportRoles, renderRole, WRITING_GUIDE } from "../server/roles.ts";
 import { providerLaunch } from "../server/runner/providers.ts";
@@ -35,7 +35,7 @@ describe("글 지침", () => {
   });
 
   test("화면·사용자 흐름·아키텍처의 검토 가능한 산출물을 모든 역할에 전달한다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-artifact-guide-"));
+    const dir = testTempDir("iamceo-artifact-guide-");
     for (const kind of KINDS) {
       writeFileSync(join(dir, `${kind}.md`), "맞춤 승인 규칙");
       for (const rolesDir of [undefined, dir]) {
@@ -50,7 +50,7 @@ describe("글 지침", () => {
   });
 
   test("사용자 정의 역할도 최신 공통 작성 지침을 받고 작성자의 역할 내용은 보존된다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-custom-guide-"));
+    const dir = testTempDir("iamceo-custom-guide-");
     for (const kind of KINDS) {
       writeFileSync(join(dir, `${kind}.md`), "승인 규칙과 {{PROJECT}}의 고유 역할을 보존한다.");
       const custom = renderRole(kind, vars, dir);
@@ -60,7 +60,7 @@ describe("글 지침", () => {
   });
 
   test("내보낸 역할을 다시 사용해도 최신 지침이 중복되지 않는다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-export-guide-"));
+    const dir = testTempDir("iamceo-export-guide-");
     for (const path of exportRoles(dir)) {
       const kind = path.split("/").at(-1)!.replace(".example.md", "") as MemberKind;
       writeFileSync(join(dir, `${kind}.md`), readFileSync(path, "utf8"));
@@ -69,7 +69,7 @@ describe("글 지침", () => {
   });
 
   test("이전 글 지침이 들어 있는 사용자 역할에도 최신 기준이 추가된다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-old-guide-"));
+    const dir = testTempDir("iamceo-old-guide-");
     writeFileSync(join(dir, "worker.md"), "승인 규칙\n" + HEAD + "\n설명은 60자까지 쓴다.");
     const result = renderRole("worker", vars, dir);
     expect(result).toContain("승인 규칙");
@@ -78,7 +78,7 @@ describe("글 지침", () => {
   });
 
   test("Claude·Codex·Antigravity 세 CLI 모두 지침이 든 역할 글을 받는다", () => {
-    const root = mkdtempSync(join(tmpdir(), "iamceo-guide-cli-"));
+    const root = testTempDir("iamceo-guide-cli-");
     const rules = renderRole("worker", vars);
     const opts: StartOpts = { systemPromptFile: join(root, "rules.md"), mcpConfigFile: join(root, "mcp.json"), resume: false, projectName: "P" };
     writeFileSync(opts.systemPromptFile, rules);

@@ -1,11 +1,11 @@
 // 사용자 요청 10건을 한 흐름으로: 가져온(연결 안 된) 프로젝트 → 총괄 시작 → 결재 2단계 → 결재된 항목 → 홈 할 일 → 자료 아티팩트 → 편입 창 → 전체 설정 → 직원별 덮어쓰기.
 // 실제 서버 프로세스 + Playwright chromium + 가짜 claude. 가짜가 받은 argv·환경을 로그에서 직접 본다. 라이브 herdr·실제 ~/.iamceo·실제 claude 는 쓰지 않는다.
 // IAMCEO_SHOTS=<폴더> 를 주면 docs/shots 이름 그대로 캡처를 남긴다(가짜 데이터). 없으면 임시 폴더에 남긴다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Bootstrap, Decision, FileDoc, Member, ProjectState } from "../shared/types.ts";
@@ -18,7 +18,7 @@ afterAll(async () => { await core.stop(); });
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
-const WORK = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-integrated-")));
+const WORK = realpathSync(testTempDir("iamceo-integrated-"));
 const HOME = join(WORK, "iamceo-home");
 // 본사 폴더가 진짜 홈(사용자 이름)으로 화면에 나오지 않게 서버의 HOME 도 바꾼다.
 const USER_HOME = join(WORK, "demo-home");

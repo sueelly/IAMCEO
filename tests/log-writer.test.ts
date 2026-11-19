@@ -1,11 +1,12 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BoundedLogWriter } from "../server/log-writer.ts";
 
 describe("bounded dedicated log writer", () => {
   test("rotation closes/reopens its FD; bytes after rotation reach a new inode and total disk is bounded", () => {
-    const dir = mkdtempSync("/private/tmp/iamceo-log-");
+    const dir = testTempDir("iamceo-log-", "/private/tmp");
     const path = join(dir, "server.log");
     const writer = new BoundedLogWriter(path, { maxBytes: 16, generations: 3, maxPendingBytes: 256 });
     writer.write(Buffer.from("a".repeat(16))); writer.flush();
@@ -24,7 +25,7 @@ describe("bounded dedicated log writer", () => {
   });
 
   test("queue overflow is counted, bounded, and caller buffer reuse cannot alter accepted bytes", () => {
-    const path = join(mkdtempSync("/private/tmp/iamceo-log-"), "stderr.log");
+    const path = join(testTempDir("iamceo-log-", "/private/tmp"), "stderr.log");
     const writer = new BoundedLogWriter(path, { maxBytes: 100, maxPendingBytes: 8 });
     const bytes = Buffer.from("accepted");
     expect(writer.write(bytes)).toBe(true);
@@ -39,7 +40,7 @@ describe("bounded dedicated log writer", () => {
   });
 
   test("one generation and existing oversized logs remain within bounds; unsafe paths fail", () => {
-    const dir = mkdtempSync("/private/tmp/iamceo-log-");
+    const dir = testTempDir("iamceo-log-", "/private/tmp");
     const path = join(dir, "server.log");
     writeFileSync(path, "legacy".repeat(100));
     const writer = new BoundedLogWriter(path, { maxBytes: 10, generations: 1 });

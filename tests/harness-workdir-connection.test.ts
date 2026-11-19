@@ -1,8 +1,7 @@
 // Historical synthetic databases only. No operational home, report or execution log is opened.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { MIGRATIONS, openDb } from "../server/db.ts";
@@ -45,7 +44,7 @@ function snapshot(db: Database) {
 }
 
 for (const version of [35, 37, 38, 39, 40]) test(`v${version}→연결판 이주·재열기는 원 행/명령/과거NULL/명시 위치와 업무 상태를 보존한다`, () => {
-  const path = join(mkdtempSync(join(tmpdir(), `workdir-v${version}-`)), "synthetic.db");
+  const path = join(testTempDir(`workdir-v${version}-`), "synthetic.db");
   const old = new Database(path, { create: true });
   old.exec("PRAGMA foreign_keys=ON");
   for (let i = 0; i < version; i++) old.exec(MIGRATIONS[i]!);

@@ -1,8 +1,8 @@
 // 웹 팀 화면의 전달 알림: 입력 전 거절 한도에 걸린 지시가 보이고, 대표 인증으로 '다시 확인'을 한 번 누르면
 // 같은 전달(ID·표지·원문)을 한 번 더 보낼 차례가 되며 목록이 갱신된다. 실제 서버(http.ts)·실제 화면·격리 DB. 실제 CLI·세션은 없다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { Bus } from "../server/bus.ts";
@@ -15,7 +15,7 @@ import type { DeliveryDispatch } from "../server/service-contracts.ts";
 import type { Delivery, Member, Project } from "../shared/types.ts";
 
 const CODE = "delivery-notice-test-code";
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-delivery-shots-"));
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-delivery-shots-");
 mkdirSync(SHOTS, { recursive: true });
 
 let server: RunningServer;
@@ -48,7 +48,7 @@ function exhausted(text: string) {
 }
 
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-delivery-web-"));
+  const home = testTempDir("iamceo-delivery-web-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
   const config = loadConfig(env);

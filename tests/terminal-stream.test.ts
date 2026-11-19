@@ -1,6 +1,7 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
-import { existsSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { loadConfig } from "../server/config.ts";
@@ -22,7 +23,7 @@ const until = async (predicate: () => boolean) => {
 };
 
 async function fixture(simulateDetach = false, restoreDelay = 150, cli: "claude" | "codex" = "claude") {
-  const dir = mkdtempSync("/private/tmp/iamceo-terminal-test-");
+  const dir = testTempDir("iamceo-terminal-test-", "/private/tmp");
   const binary = join(dir, "fake-core");
   const script = join(dir, "fake-core.ts");
   writeFileSync(script, `import { writeFileSync } from 'node:fs';
@@ -115,7 +116,7 @@ exec ${quote(process.execPath)} ${quote(script)} "$@"
     peers.forEach(s => s.destroy()); await new Promise<void>(resolve => rpc.close(() => resolve()));
     db.close();
     for (const { pid } of pids()) expect(alive(pid)).toBe(false);
-    rmSync(dir, { recursive: true, force: true });
+    releaseTestDir(dir);
   });
   const headers = { Authorization: `Bearer ${config.accessCode}` };
   async function status(query = "mode=observe", id = member.id, authorization = true) {

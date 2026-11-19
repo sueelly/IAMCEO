@@ -1,6 +1,7 @@
 // 검수에서 확인한 결함의 회귀 시험. 실행기는 가짜, 저장소·전달 펌프·도구·HTTP 는 진짜다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Member } from "../shared/types.ts";
@@ -121,8 +122,8 @@ afterAll(async () => {
 });
 
 async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabled?: boolean; notifier?: (t: string, b: string) => void; kind?: Backend; serve?: boolean; second?: FakeRunner } = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-")));
-  const work = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-work-")));
+  const home = realpathSync(testTempDir("iamceo-regress-"));
+  const work = realpathSync(testTempDir("iamceo-regress-work-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
   const config = loadConfig(env);
@@ -278,7 +279,7 @@ describe("file 도구 경로", () => {
   test("접속 코드·토큰·DB·개인 키·작업 폴더 밖은 거부, 작업 폴더 안은 된다", async () => {
     const t = await setup();
     const w = (await t.orch.addMember(t.project.id, { name: "철수", role: "개발" })).member;
-    const outside = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-out-")));
+    const outside = realpathSync(testTempDir("iamceo-out-"));
     writeFileSync(join(outside, "secret.txt"), "FAKE-SECRET");
     writeFileSync(join(outside, "id_rsa"), "FAKE-KEY");
     writeFileSync(join(t.work, ".env"), "TOKEN=1");
@@ -734,7 +735,7 @@ describe("직접 띄운 CLI", () => {
 
 describe("headless 실행기", () => {
   test("세션 id 가 UUID 가 아니면 claude 를 띄우지 않는다", async () => {
-    const marker = join(realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-"))), "spawned");
+    const marker = join(realpathSync(testTempDir("iamceo-regress-")), "spawned");
     const runner = new HeadlessRunner({ claudeBin: "/bin/false" });
     closers.push(() => runner.shutdown());
     const m: RunnerMember = { id: "m1", projectId: "p", handle: "w", name: "w", cwd: tmpdir(), sessionId: "--dangerously-skip-permissions", paneId: null, model: null, effort: null, subagentModel: null, permissionMode: "auto", kind: "worker" };
@@ -848,7 +849,7 @@ describe("일 목록·알림·자료·보관", () => {
   });
 
   test("Tailscale 이 늦게 올라와도 그 주소를 열고, 화면 주소 목록에 나온다", async () => {
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-regress-")));
+    const home = realpathSync(testTempDir("iamceo-regress-"));
     const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
     updateConfigFile({ accessCode: "code" }, env);
     const config = { ...loadConfig(env), hosts: ["127.0.0.1"], hostsAuto: true };
@@ -979,7 +980,7 @@ describe("2차 검수 회귀: 폴더·파일 경계", () => {
   test("team_add cwd: 프로젝트 밖·데이터 폴더는 거부, 안쪽은 된다, 밖은 대표 글에 그 경로가 있을 때만", async () => {
     const t = await setup();
     const lead = (await t.orch.addMember(t.project.id, { name: "보조", kind: "conductor", handle: "boss" })).member;
-    const out = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-outside-")));
+    const out = realpathSync(testTempDir("iamceo-outside-"));
     const inner = join(t.work, "sub");
     mkdirSync(inner);
     for (const cwd of ["/etc", "/", out, t.home, join(t.home, "run")]) {
@@ -1012,7 +1013,7 @@ describe("2차 검수 회귀: 폴더·파일 경계", () => {
 
   test("본사(cwd=홈): ~/.claude.json·셸 기록·다른 CLI 인증은 거부한다(홈을 시작 전에 격리한 프로세스)", async () => {
     // 실제 홈을 건드리지 않게 HOME 을 프로세스 시작 전에 정하고, homedir() 가 다르면 멈춘다.
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-fakehome-")));
+    const home = realpathSync(testTempDir("iamceo-fakehome-"));
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "home-secrets.ts")], { env: { ...process.env, HOME: home }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     expect(code, `${out}\n${err}`).toBe(0);
@@ -1396,7 +1397,7 @@ describe("2차 검수 회귀: REST", () => {
 describe("역할 템플릿 꺼내기", () => {
   test("exportRoles 는 example 만 쓰고, 승인 규칙이 빠진 맞춤 템플릿은 경고한다", async () => {
     const { exportRoles, renderRole, NATIVE_PARALLEL_GUIDE, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } = await import("../server/roles.ts");
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-roles-x-")));
+    const dir = realpathSync(testTempDir("iamceo-roles-x-"));
     const paths = exportRoles(dir);
     expect(paths.map((p) => p.split("/").at(-1)).sort()).toEqual(["conductor.example.md", "root.example.md", "worker.example.md"]);
     expect(readFileSync(join(dir, "worker.example.md"), "utf8")).toContain("## 승인");
@@ -1418,7 +1419,7 @@ describe("역할 템플릿 꺼내기", () => {
 
 describe("재시작 뒤 effort 유지", () => {
   test("비어 있는 직급 effort 만 채우고 대표가 정한 값은 두어 세션 인자에 항상 들어간다", () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-effort-"));
+    const home = testTempDir("iamceo-effort-");
     const store = new Store(openDb(join(home, "iamceo.db")), new Bus());
     store.patchSettings({ ranks: { lead: { effort: "max" } } });
     store.fillRankEfforts("xhigh");

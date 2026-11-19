@@ -1,6 +1,6 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONDUCTOR_TOOLS, MANUAL_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Backend, type Member } from "../shared/types.ts";
 import { handleAgentTool, listAgentTools } from "../server/agent-tools.ts";
@@ -68,7 +68,7 @@ afterAll(async () => {
 });
 
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), "iamceo-tools-"));
+  const root = testTempDir("iamceo-tools-");
   const home = join(root, "work"); mkdirSync(home);
   const env = { IAMCEO_HOME: join(root, "state"), IAMCEO_PORT: "0", CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex") };
   mkdirSync(env.CLAUDE_CONFIG_DIR); mkdirSync(env.CODEX_HOME);
@@ -83,6 +83,7 @@ async function setup() {
   cleanups.push(async () => {
     await orch.shutdown();
     await server.stop();
+    store.db.close();
   });
   const project = store.createProject({ name: "시험", cwd: home });
   const lead = await orch.ensureConductor(project.id);

@@ -1,8 +1,7 @@
 // 판 정리: 결재 닫기(ask_close)·할 일 정리(todo_close)·판 보기(board), 주기 정리, '지금 판 정리' API, 마이그레이션.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONDUCTOR_TOOLS, ROOT_TOOLS, WORKER_TOOLS, type Backend, type Member, type Todo } from "../shared/types.ts";
 import { listAgentTools } from "../server/agent-tools.ts";
@@ -79,7 +78,7 @@ function deliveryBody(store: Store, sent: { memberId: string; text: string }): s
 }
 
 async function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-board-"));
+  const home = testTempDir("iamceo-board-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -93,6 +92,7 @@ async function setup() {
   cleanups.push(async () => {
     await orch.shutdown();
     await server.stop();
+    store.db.close();
   });
   const project = store.createProject({ name: "시험", cwd: home });
   const lead = await orch.ensureConductor(project.id);
@@ -498,7 +498,7 @@ describe("지금 판 정리 API·설정", () => {
 
 describe("마이그레이션", () => {
   test("닫힌 결재에 이유를, 끝낸 할 일에 끝남을 채우고 나머지는 그대로 둔다", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "iamceo-board-migrate-")), "old.db");
+    const path = join(testTempDir("iamceo-board-migrate-"), "old.db");
     const before = MIGRATIONS.findIndex((m) => m.includes("board_tidied_at"));
     expect(before).toBeGreaterThanOrEqual(0);
     expect(before).toBeLessThan(MIGRATIONS.length);
@@ -517,6 +517,7 @@ describe("마이그레이션", () => {
     db.close();
 
     const store = new Store(openDb(path), new Bus());
+    cleanups.push(async () => { store.db.close(); });
     expect(store.requireDecision("d_closed")).toMatchObject({ status: "closed", closeKind: null, closedBy: "시스템", closedAt: "2026-01-02T00:00:00.000Z" });
     expect(store.requireDecision("d_closed").closeReason).toContain("명부에서 빠져");
     expect(store.requireDecision("d_open")).toMatchObject({ status: "open", closeKind: null, closeReason: null, closedBy: null, closedAt: null });

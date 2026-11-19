@@ -1,8 +1,8 @@
 // 설정 통일·연결 상태·직급별 모델·자료 종류(spec §3·§5·§6·§7). 실행기는 가짜, 저장소·전달 펌프·도구·HTTP 는 진짜다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Backend, Member, ProjectSummary, WsEvent } from "../shared/types.ts";
 import { DEFAULT_RANKS, fileKindOf, memberConfig, memberRank } from "../shared/types.ts";
@@ -94,8 +94,8 @@ afterAll(async () => {
 });
 
 async function setup(opts: { backend?: Backend | null; runnerEnabled?: boolean } = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-unified-")));
-  const work = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-unified-work-")));
+  const home = realpathSync(testTempDir("iamceo-unified-"));
+  const work = realpathSync(testTempDir("iamceo-unified-work-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0", CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex") };
   mkdirSync(env.CLAUDE_CONFIG_DIR); mkdirSync(env.CODEX_HOME);
   writeFileSync(join(env.CLAUDE_CONFIG_DIR, ".claude.json"), JSON.stringify({ additionalModelOptionsCache: [{ value: "claude-fable-5-1[1m]", label: "Fable" }] }));
@@ -385,7 +385,7 @@ describe("자료 종류", () => {
     expect(await t.call(writer, "file", { title: "빔", html: "  " })).toMatchObject({ isError: true });
 
     // 작업 폴더 밖, 비밀 이름, 하드 링크는 html 로도 못 읽는다.
-    const outside = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-out-")));
+    const outside = realpathSync(testTempDir("iamceo-out-"));
     writeFileSync(join(outside, "x.html"), "비밀");
     expect(await t.call(writer, "file", { title: "밖", path: join(outside, "x.html") })).toMatchObject({ isError: true });
     expect(await t.call(writer, "file", { title: "데이터", path: join(t.home, "config.json") })).toMatchObject({ isError: true });
@@ -619,7 +619,7 @@ describe("실행 방식 전환의 안전", () => {
 
 describe("마이그레이션", () => {
   function oldDb(): string {
-    const path = join(mkdtempSync(join(tmpdir(), "iamceo-migrate-")), "old.db");
+    const path = join(testTempDir("iamceo-migrate-"), "old.db");
     const db = new Database(path, { create: true });
     db.exec("PRAGMA foreign_keys = ON");
     for (let v = 0; v < 4; v++) db.exec(MIGRATIONS[v]!);
@@ -863,7 +863,7 @@ describe("직급별 모델·effort", () => {
       expect(renderRole(kind, { ...vars, SUBAGENT_EFFORT: "" })).not.toContain("SUBAGENT_EFFORT");
       expect(renderRole(kind, { ...vars, SUBAGENT_EFFORT: rule })).toContain(rule);
     }
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
+    const dir = testTempDir("iamceo-roles-");
     writeFileSync(join(dir, "worker.md"), "승인 규칙만 있는 고친 템플릿");
     expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: rule }, dir)).toContain(rule);
     expect(renderRole("worker", { ...vars, SUBAGENT_EFFORT: "" }, dir)).toBe(`승인 규칙만 있는 고친 템플릿\n\n${NATIVE_PARALLEL_GUIDE}\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);
@@ -1097,7 +1097,7 @@ describe("Store 프로젝트 관리·manual 영속 경계", () => {
   });
 
   test("manual batch는 ACK 전 재조회되고 보관 중 소비하지 않으며 ACK rollback도 원자적", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-manual-store-"));
+    const dir = testTempDir("iamceo-manual-store-");
     const path = join(dir, "store.db");
     let db = openDb(path);
     try {

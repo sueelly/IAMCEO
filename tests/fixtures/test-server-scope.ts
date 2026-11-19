@@ -1,3 +1,4 @@
+import { managedRunRoot } from "./test-run-dirs";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -16,7 +17,10 @@ export function createTestServerScope({ graceMs = 2000 } = {}) {
     const env = options.env;
     if (env?.IAMCEO_TEST !== "1" || !env.IAMCEO_HOME) throw new Error("Explicit isolated test environment required");
     const home = realpathSync(env.IAMCEO_HOME);
-    const inside = [realpathSync(tmpdir()), realpathSync("/tmp")].some((root) => {
+    const roots = [realpathSync(tmpdir()), realpathSync("/tmp")];
+    const run = managedRunRoot();
+    if (run) roots.push(run);
+    const inside = roots.some((root) => {
       const path = relative(root, home);
       return path !== "" && !path.startsWith("..") && !isAbsolute(path);
     });

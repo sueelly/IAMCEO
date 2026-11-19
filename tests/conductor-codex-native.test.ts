@@ -1,6 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { loadConfig } from "../server/config.ts";
@@ -18,7 +18,7 @@ for (const role of ["conductor", "reviewer", "worker", "root"] as const) test.sk
   const config = loadConfig(runtime.childEnv());
   const store = new Store(openDb(config.dbPath), new Bus());
   const orch = new Orchestrator({ config, store, runners: new Map(), providerHomes: runtime.providerHomes, serverUrl: "http://127.0.0.1:1" });
-  const root = mkdtempSync(join(tmpdir(), "iamceo-native-policy-"));
+  const root = testTempDir("iamceo-native-policy-");
   const home = join(root, "codex"); mkdirSync(home);
   let resolveRequest!: (names: string[]) => void;
   const request = new Promise<string[]>(resolve => { resolveRequest = resolve; });
@@ -54,7 +54,7 @@ for (const role of ["conductor", "reviewer", "worker", "root"] as const) test.sk
     expect(await child.exited).toBe(1); // The fixture intentionally refuses generation after inspecting tools.
   } finally {
     child?.kill(); if (child) await child.exited;
-    await server.stop(true); rmSync(root, { recursive: true, force: true });
+    await server.stop(true); releaseTestDir(root);
     await orch.shutdown(); store.db.close(); await runtime.stop();
   }
 }, 20_000);

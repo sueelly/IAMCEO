@@ -1,6 +1,7 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, symlinkSync } from "node:fs";
-import { networkInterfaces, tmpdir } from "node:os";
+import { symlinkSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Attachment, Bootstrap, Decision, Member, Message, MessagePage, Project, ProjectState, Settings, Todo, WsEvent } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -17,7 +18,7 @@ const SESSION_3 = "33333333-3333-4333-8333-333333333333";
 const CODE = "test-access-code";
 
 function makeConfig(hosts: string[] = ["127.0.0.1"]): Config {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-http-"));
+  const home = testTempDir("iamceo-http-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts }, env);
   return loadConfig(env);
@@ -148,7 +149,7 @@ beforeAll(async () => {
     server = await startServer({ config, store, bus, orch: fake.orch });
   }
   base = `http://127.0.0.1:${server.port}`;
-  cwd = mkdtempSync(join(tmpdir(), "iamceo-cwd-"));
+  cwd = testTempDir("iamceo-cwd-");
   projectId = store.createProject({ name: "시험", cwd }).id;
 });
 
@@ -353,6 +354,7 @@ describe("접근 제어", () => {
       expect((await fetch(`http://127.0.0.1:${running.port}/api/bootstrap`, { headers: auth })).status).toBe(200);
     } finally {
       await running.stop();
+      s.db.close();
     }
   });
 
@@ -398,12 +400,16 @@ describe("접근 제어", () => {
     const c = makeConfig(["127.0.0.1", "203.0.113.1"]);
     const b = new Bus();
     const s = new Store(openDb(c.dbPath), b);
-    const warn = console.warn;
-    console.warn = () => {};
-    const running = await startServer({ config: c, store: s, bus: b, orch: fakeOrch(s).orch });
-    console.warn = warn;
-    expect(running.hosts).toEqual(["127.0.0.1"]);
-    await running.stop();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    let running: RunningServer | undefined;
+    try {
+      running = await startServer({ config: c, store: s, bus: b, orch: fakeOrch(s).orch });
+      expect(running.hosts).toEqual(["127.0.0.1"]);
+    } finally {
+      warn.mockRestore();
+      await running?.stop();
+      s.db.close();
+    }
   });
 });
 
@@ -519,6 +525,7 @@ describe("REST", () => {
       expect(s.requireDecision(d.id).choice).toBe("a");
     } finally {
       await running.stop();
+      s.db.close();
     }
   });
 
@@ -992,6 +999,7 @@ describe("/agent", () => {
       expect(await res.json()).toEqual({ done: false });
     } finally {
       await running.stop();
+      s.db.close();
     }
   }, 15_000);
 

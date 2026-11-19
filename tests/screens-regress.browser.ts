@@ -1,10 +1,11 @@
 // 화면 쪽 회귀 시험: 실제 서버 + Playwright chromium + 가짜 claude. 라이브 herdr·실제 ~/.iamceo·실제 claude 를 쓰지 않는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
 import { createTestServerScope } from "./fixtures/test-server-scope";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { networkInterfaces, tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Decision, Member, Message, Project, ProjectState } from "../shared/types.ts";
@@ -17,7 +18,7 @@ const servers = createTestServerScope();
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
-const WORK = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-e2e-regress-")));
+const WORK = realpathSync(testTempDir("iamceo-e2e-regress-"));
 const HOME = join(WORK, "home");
 const PROJECT_DIR = join(WORK, "project");
 mkdirSync(PROJECT_DIR);
@@ -517,7 +518,7 @@ describe("연결", () => {
 
   test("접속 코드가 바뀌면 코드 입력 화면으로 간다", async () => {
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-code-")));
+    const home = realpathSync(testTempDir("iamceo-code-"));
     const homeEnv = { IAMCEO_HOME: home };
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, homeEnv);
     const spawn = () => servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ ...homeEnv, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
@@ -607,7 +608,7 @@ describe("연결", () => {
 
   test("다른 폴더에서 켜도 화면이 뜬다(소스 실행)", async () => {
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-cwd-")));
+    const home = realpathSync(testTempDir("iamceo-cwd-"));
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
     const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: WORK, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
@@ -635,7 +636,7 @@ describe("연결", () => {
     const lan = Object.values(networkInterfaces()).flat().find((a) => a && a.family === "IPv4" && !a.internal && !a.address.startsWith("100."))?.address;
     if (!lan) return; // 망이 없으면 건너뛴다
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-hosts-")));
+    const home = realpathSync(testTempDir("iamceo-hosts-"));
     updateConfigFile({ accessCode: CODE, port, hosts: ["0.0.0.0"] }, { IAMCEO_HOME: home });
     const open0 = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port) }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     try {
@@ -900,7 +901,7 @@ describe("core 실행 환경·설정 화면", () => {
 describe("서버 강제 종료", () => {
   test("SIGHUP은 IAMCEO만 끝내고 core가 소유한 진행 세션은 유지한다", async () => {
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-hup-")));
+    const home = realpathSync(testTempDir("iamceo-hup-"));
     const log = join(home, "fake.jsonl");
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
     const proc = servers.spawn([process.execPath, CLI, "serve"], { cwd: ROOT, env: env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port), FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_SESSIONS: join(home, "s") }), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
@@ -927,7 +928,7 @@ describe("서버 강제 종료", () => {
 
   test("SIGKILL 뒤 재시작은 core의 같은 세션을 다시 연결하고 중복 실행하지 않는다", async () => {
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-orphan-")));
+    const home = realpathSync(testTempDir("iamceo-orphan-"));
     const log = join(home, "fake.jsonl");
     updateConfigFile({ accessCode: CODE, port, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
     const childEnv = env({ IAMCEO_HOME: home, IAMCEO_PORT: String(port), FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_SESSIONS: join(home, "sessions") });
@@ -979,7 +980,7 @@ describe("서버 강제 종료", () => {
 
   test("남의 pid 는 건드리지 않는다(명령줄이 세션과 다르면 그대로)", async () => {
     const port = freePort();
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-orphan2-")));
+    const home = realpathSync(testTempDir("iamceo-orphan2-"));
     mkdirSync(join(home, "run"), { recursive: true });
     const innocent = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     writeFileSync(join(home, "run", "m_x.turn.json"), JSON.stringify({ pid: innocent.pid, sessionId: "11111111-1111-4111-8111-111111111111" }));

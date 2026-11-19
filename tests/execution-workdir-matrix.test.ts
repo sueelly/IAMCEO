@@ -1,10 +1,10 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 test("순차 실행기는 실제 하위 실패·미실행을 성공으로 세지 않고 비정상 종료로 전달한다", async () => {
-  const root = mkdtempSync(join(tmpdir(), "test-matrix-"));
+  const root = testTempDir("test-matrix-");
   const base = join(root, "base"), candidate = join(root, "candidate");
   const files = ["tests/pass.test.ts", "tests/fail.test.ts", "tests/skip.test.ts"];
   for (const dir of [base, candidate]) {
@@ -29,7 +29,7 @@ test("순차 실행기는 실제 하위 실패·미실행을 성공으로 세지
 }, 20_000);
 
 test("순차 실행기는 목록에 있지만 연결판에서 사라진 파일을 미실행으로 남긴다", async () => {
-  const root = mkdtempSync(join(tmpdir(), "matrix-missing-")), base = join(root, "base"), candidate = join(root, "candidate");
+  const root = testTempDir("matrix-missing-"), base = join(root, "base"), candidate = join(root, "candidate");
   for (const dir of [base, candidate]) {
     mkdirSync(join(dir, "tests"), { recursive: true });
     writeFileSync(join(dir, "tests/pass.test.ts"), 'import {test,expect} from "bun:test";test("pass",()=>expect(1).toBe(1));\n');

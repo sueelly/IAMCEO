@@ -1,5 +1,6 @@
+import { releaseTestDir, testTempDir } from "./test-run-dirs";
 import { createServer, type Socket } from 'node:net';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Bus } from '../../server/bus.ts';
 import { loadConfig } from '../../server/config.ts';
@@ -11,7 +12,7 @@ import type { CoreTerminal } from '../../server/runner/core-client.ts';
 
 export const composer = (footer = '') => `result\n✻ Sautéed for 1m 11s · done 12:33 PM\n\n${'─'.repeat(50)}\n❯ \n${'─'.repeat(50)}\n${footer}`;
 export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
-  const dir = mkdtempSync('/private/tmp/iamceo-queue-status-');
+  const dir = testTempDir('iamceo-queue-status-', "/private/tmp");
   const socketPath = join(dir, 'c.sock');
   const home = join(dir, 'home'); mkdirSync(home);
   const claudeHome = join(dir, 'claude'); mkdirSync(claudeHome);
@@ -90,7 +91,7 @@ export async function createQueueStatusFixture(maxConcurrentTurns = 2) {
     for (const socket of sockets) socket.destroy();
     await new Promise<void>(done => server.close(() => done()));
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    releaseTestDir(dir);
   };
   const member = await orch.createMember(project.id, { name: 'Fixture worker', cli: 'claude' });
   return { dir, config, bus, store, orch, project, runner, member, terminals, writes, controls, keys, stop, setScreen(value: string, fullyRead = true) { screen = value; complete = fullyRead; },

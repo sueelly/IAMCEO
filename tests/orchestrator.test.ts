@@ -1,7 +1,7 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { WRITING_GUIDE } from "../server/roles.ts";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ApprovalPrompt, Backend, Decision, DecisionOption, Delivery, Member, Project, Todo } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -72,7 +72,7 @@ interface Call {
 }
 
 async function setup(opts: { home?: string; directives?: string; timings?: Partial<OrchestratorTimings>; serve?: boolean } = {}) {
-  const home = opts.home ?? mkdtempSync(join(tmpdir(), "iamceo-orch-"));
+  const home = opts.home ?? testTempDir("iamceo-orch-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: FAKE }, env);
   const config = loadConfig(env);
@@ -89,6 +89,7 @@ async function setup(opts: { home?: string; directives?: string; timings?: Parti
   const stop = async () => {
     await orch.shutdown();
     await server.stop();
+    store.db.close();
   };
   let stopped = false;
   cleanups.push(async () => {
@@ -839,7 +840,7 @@ class ScriptedRunner implements Runner {
 }
 
 function scripted(timings: Partial<OrchestratorTimings> = {}, backend: Backend = "herdr") {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-script-"));
+  const home = testTempDir("iamceo-script-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

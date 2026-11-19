@@ -1,4 +1,5 @@
 // 합성 실행 메타데이터만 사용한다. 실제 검사·직원·제공자 기록을 실행하거나 바꾸지 않는다.
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
 import { matchExecChecks, parseCodexLog, parseClaudeLog } from "../server/harness-evidence.ts";
 import type { ReportCheckInput } from "../server/harness.ts";
@@ -108,15 +109,15 @@ test("a declared registered task subdirectory still supports per-check locations
 });
 
 test("declaring workdir does not authorize cd escapes or symlinks", async () => {
-  const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = await import("node:fs");
-  const dir = mkdtempSync("/private/tmp/iamceo-declared-cwd-");
+  const { mkdirSync, symlinkSync } = await import("node:fs");
+  const dir = testTempDir("iamceo-declared-cwd-", "/private/tmp");
   try {
     const root = dir + "/task", outside = dir + "/outside";
     mkdirSync(root); mkdirSync(outside); symlinkSync(outside, root + "/alias");
     expect(matchExecChecks([check(root + "/alias")], evidence(event(root + "/alias")), () => null, root).results).toEqual([]);
     const escaped = "cd ../outside && " + command;
     expect(matchExecChecks([{ ...check(root), command: escaped }], evidence(event(root, { command: escaped })), () => null, root).results).toEqual([]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { releaseTestDir(dir); }
 });
 
 for (const [label, actual, declared, shell, accepted] of [
@@ -125,17 +126,17 @@ for (const [label, actual, declared, shell, accepted] of [
   ["a trailing slash is the same starting directory", registered, registered + "/", "bun test", true],
   ["relative cd uses the normalized declared starting directory", registered, registered + "/./", "cd tests && bun test", true],
 ] as const) test(label, async () => {
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { writeFileSync } = await import("node:fs");
   const { inspectProviderEvidence } = await import("../server/harness-evidence.ts");
   const row = event(actual, { command: shell });
   const result = matchExecChecks([{ ...check(declared), command: shell }], evidence(row), () => null, registered);
   expect(result.results.some(r => r.status === "matched")).toBe(accepted);
-  const root = mkdtempSync("/private/tmp/iamceo-starting-workdir-");
+  const root = testTempDir("iamceo-starting-workdir-", "/private/tmp");
   try {
     const path = root + "/synthetic.jsonl";
     writeFileSync(path, JSON.stringify(row) + "\n");
     const diagnostic = inspectProviderEvidence("codex", { path, home: root, root }, since, shell, registered, () => null, null, declared);
     expect(diagnostic.comparison.status === "matched").toBe(accepted);
     expect(diagnostic.events.candidates[0]).toMatchObject({ cwdMatch: accepted ? "match" : "different", proof: accepted ? "ok" : "absent" });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { releaseTestDir(root); }
 });

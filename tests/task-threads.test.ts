@@ -1,7 +1,6 @@
 // 작업별 대화: 작업 등록(안정 id)·대표 글의 작업 고정·직원 보고의 작업 이음·작업별 페이지·재시도.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Delivery, Member, MessagePage, Task } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -48,7 +47,7 @@ afterAll(async () => {
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 async function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-task-"));
+  const home = testTempDir("iamceo-task-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -62,6 +61,7 @@ async function setup() {
   cleanups.push(async () => {
     await orch.shutdown();
     await server.stop();
+    store.db.close();
   });
   const project = store.createProject({ name: "시험", cwd: home });
   const lead = await orch.ensureConductor(project.id);

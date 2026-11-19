@@ -1,12 +1,13 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rename } from "node:fs/promises";
 import { Folders } from "../server/folders.ts";
 import { GitHub, githubEnvironment } from "../server/github.ts";
 
 function fixture(script = 'printf cloned > content') {
-  const root = mkdtempSync("/private/tmp/iamceo-clone-security-");
+  const root = testTempDir("iamceo-clone-security-", "/private/tmp");
   const home = join(root, "home"), stateHome = join(root, "state"), bin = join(root, "bin"), outside = join(root, "outside");
   for (const path of [home, stateHome, bin, outside]) mkdirSync(path);
   const git = join(bin, "git"); writeFileSync(git, "#!/bin/sh\n" + script); chmodSync(git, 0o755);

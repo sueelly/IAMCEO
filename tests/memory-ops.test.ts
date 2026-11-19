@@ -1,8 +1,8 @@
 // 기억 운영: 프로젝트 기본값, 일 시작 전 검색, 총괄의 대표 결정 선별 기록, 대기열(장애·응답 유실·대체 순서·빠진 결재), 도구 목록 갱신.
 // 문서 계약을 흉내 낸 가짜 게이트웨이로 본다. 이 시험이 통과해도 실제 게이트웨이 확인은 아니다(따로 한다).
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Backend, Member } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -105,7 +105,7 @@ async function until(check: () => boolean, what = "조건") {
 const settle = () => Bun.sleep(40);
 
 async function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-memops-"));
+  const home = testTempDir("iamceo-memops-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "access-code-for-test", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -124,7 +124,12 @@ async function setup() {
   const server = await startServer({ config, store, bus, orch });
   const url = server.urls[0]!;
   orch.setServerUrl(url);
-  cleanups.push(async () => { await orch.shutdown(); await server.stop(); gw.stop(); });
+  cleanups.push(async () => {
+    await orch.shutdown();
+    await server.stop();
+    gw.stop();
+    store.db.close();
+  });
   const call = async (member: Member, name: string, args: Record<string, unknown> = {}): Promise<AgentToolResult> => {
     const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }) });
     return (await res.json()) as AgentToolResult;

@@ -1,5 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
+import { join } from "node:path";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -16,7 +17,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await stop(); });
 
 async function fixture(herdrInfo: () => Promise<HerdrInfo> = async () => unavailable, suppliedBus = new Bus()) {
-  const home = mkdtempSync("/private/tmp/iamceo-realtime-");
+  const home = testTempDir("iamceo-realtime-", "/private/tmp");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -32,7 +33,7 @@ async function fixture(herdrInfo: () => Promise<HerdrInfo> = async () => unavail
   let server = await startServer({ config, store, bus, orch });
   while (server.port === 7878) { await server.stop(); server = await startServer({ config, store, bus, orch }); }
   const base = `http://127.0.0.1:${server.port}`;
-  cleanup.push(async () => { await Bun.sleep(0); await server.stop(); store.db.close(); rmSync(home, { recursive: true }); });
+  cleanup.push(async () => { await Bun.sleep(0); await server.stop(); store.db.close(); releaseTestDir(home); });
   const sync = async (query = ""): Promise<SyncSnapshot> => {
     const response = await fetch(`${base}/api/sync${query}`, { headers: auth });
     expect(response.status).toBe(200);
@@ -240,9 +241,10 @@ describe("v1/v2 WebSocket", () => {
       // Bun 1.3.14는 서버 선종료 WS 뒤 다른 서버를 만들면 native panic이
       // 발생한다. 경계 시험의 모든 검증을 자식에서 실행해 다른 시험과 격리한다.
       const runtime = createIsolatedRuntime();
-      const child = Bun.spawn([process.execPath, "test", import.meta.path, "--test-name-pattern", "epoch 회전은"], {
+      const child = Bun.spawn([process.execPath, "test", "--preload", join(import.meta.dir, "fixtures/test-run-preload.ts"), import.meta.path, "--test-name-pattern", "epoch 회전은"], {
         cwd: runtime.paths.work,
-        env: { ...runtime.childEnv(), IAMCEO_EPOCH_CHILD: "1" },
+        env: { ...runtime.childEnv(), IAMCEO_EPOCH_CHILD: "1", IAMCEO_TEST_RUN_ROOT: process.env.IAMCEO_TEST_RUN_ROOT,
+          IAMCEO_TEST_RUN_TOKEN: process.env.IAMCEO_TEST_RUN_TOKEN },
         stdin: "ignore", stdout: "pipe", stderr: "pipe",
       });
       const timeout = setTimeout(() => child.kill("SIGKILL"), 4000);
