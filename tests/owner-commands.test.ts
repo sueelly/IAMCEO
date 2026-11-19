@@ -204,3 +204,17 @@ test("a delayed explicit correction uses its own ended run receipt only in the s
   f.store.saveReportReferences(f.project.id,{sourceMessageId:update.id,fileIds:[],decisionIds:[],authoredAt:update.at,sequence:2,correctsMessageId:first.id},a.id);
   expect(ownerCommandItem(f.store,f.project.id,a.id)).toMatchObject({stage:"waiting",result:{messageId:update.id}});
 });
+
+test("이전 업무와 새 명령에서 미전송 대표 입력은 진행 대신 실제 수신 대기로 보인다", () => {
+  const f = fixture(), pr = f.project.id;
+  const task = f.store.ensureSourceTask({projectId:pr,sourceRef:"legacy-receipt",title:"진척 확인",origin:"owner"}).task;
+  f.store.db.query("INSERT INTO owner_command_legacy_tasks(task_id,project_id,created_at) VALUES(?,?,?)").run(task.id,pr,task.createdAt);
+  const msg = f.store.createMessage({projectId:pr,taskId:task.id,mine:true,kind:"나",body:"확인해 줘",delivery:"queued"});
+  f.input(f.worker,msg.id);
+  expect(ownerCommandItem(f.store,pr,task.id)).toMatchObject({stage:"waiting",detail:expect.stringContaining("전달 대기")});
+  f.store.registerOwnerCommand(msg.id);
+  f.store.db.query(`INSERT INTO delivery_dispatches(id,project_id,member_id,bundle_marker,cli,backend,generation,terminal_identity_json,
+    baseline_json,wire_text,wire_sha256,transport_state,created_at,updated_at) VALUES('prior',?,?,'marker','codex','core',0,'{}','{}','old','sha','write_started',?,?)`).run(pr,f.worker.id,msg.at,msg.at);
+  expect(ownerCommandItem(f.store,pr,msg.id)).toMatchObject({stage:"waiting",detail:expect.stringContaining("이전 입력의 수신 여부")});
+  expect(f.store.listDeliveries(pr)[0]?.attempts).toBe(0);
+});

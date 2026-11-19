@@ -124,6 +124,21 @@ interface ReportRow {
 }
 interface SourceRow { title: string; taskId: string | null; delivery: DeliveryStatus | null; deliveryNote: string | null }
 
+function queuedOwnerInput(store: Store, projectId: string, key: Key) {
+  // A historical task may contain several original requests. Read the most recent one
+  // before checking its delivery, so an older undelivered message cannot mask a later receipt.
+  const match = key.kind === "task" ? "task_id" : "id";
+  return rows<{ at: string; name: string; fenced: number }>(store, `SELECT m.at, member.name,
+    EXISTS(SELECT 1 FROM delivery_dispatches p WHERE p.member_id=d.member_id AND p.project_id=d.project_id
+      AND p.transport_state IN ('write_started','unknown')) AS fenced
+    FROM messages m JOIN deliveries d ON d.ref_id=m.id AND d.project_id=m.project_id AND d.ref_type='message'
+      AND d.kind='user_message' AND d.status='queued' AND d.attempts=0 AND d.delivered_at IS NULL
+    JOIN members member ON member.id=d.member_id AND member.project_id=m.project_id
+    WHERE m.id=(SELECT id FROM messages WHERE project_id=? AND mine=1 AND ${match}=? ORDER BY at DESC,rowid DESC LIMIT 1)
+      AND m.delivery IN ('queued','held') AND NOT EXISTS(SELECT 1 FROM delivery_dispatch_items i WHERE i.delivery_id=d.id)
+    LIMIT 1`, projectId, key.id)[0];
+}
+
 function projectItems(store: Store, projectId: string, keys: Key[]): OwnerCommandItem[] {
   const scopes = keys.map(k => scopeTasks(store, projectId, k));
   const taskIds = new Set(scopes.flat());
@@ -157,6 +172,18 @@ function projectItems(store: Store, projectId: string, keys: Key[]): OwnerComman
       UNION ALL SELECT id,title,'todo' AS kind FROM todos q WHERE q.project_id=? AND q.done=0 AND ${link("q","todo")}
       ORDER BY id`, projectId, k.id, k.id, projectId, k.id);
     const status = commandStatus(scope, source, questions, report, legacy);
+    const pending = queuedOwnerInput(store, projectId, k);
+    if (pending && !questions.length && !report?.systemAnswer) {
+      const detail = pending.fenced
+        ? pending.name + "에게 보낸 이전 입력의 수신 여부를 확인하고 있습니다. 새 지시는 전달 대기 중입니다."
+        : pending.name + "에게 보낼 대표 지시가 전달 대기 중입니다.";
+      if (!legacy || !report || report.at <= pending.at) {
+        status.stage = "waiting";
+        status.detail = detail;
+      } else {
+        status.detail = [status.detail, detail].filter(Boolean).join(" ");
+      }
+    }
     const milestones = commandMilestones(store, projectId, scopes[index]!, legacy ? null : k.id);
     return { id: k.id, kind: k.kind, projectId, title: source.title, taskId: source.taskId ?? (scopes[index]!.length === 1 ? scopes[index]![0]! : null), at: k.at, ...status, result, questions, milestones };
   });
@@ -183,7 +210,8 @@ function commandStatus(scope: TaskProgress[], source: SourceRow, questions: Owne
   if (unfinished && ["held","hold","check","confirm","review","approval","owner","merged","applied"].includes(unfinished.stage)) {
     return { stage: "waiting", detail: unfinished.next || "업무 확인을 기다립니다." };
   }
-  if (report || legacy || source.delivery === "delivered") return { stage: "working", detail: unfinished?.next || report?.title || "담당자가 명령을 받았습니다." };
+  if (legacy && !report) return { stage: "waiting", detail: unfinished?.next || "기존 업무의 결과 기록을 기다립니다." };
+  if (report || source.delivery === "delivered") return { stage: "working", detail: unfinished?.next || report?.title || "담당자가 명령을 받았습니다." };
   return { stage: "accepted", detail: "명령을 접수했습니다." };
 }
 
