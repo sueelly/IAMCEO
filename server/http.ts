@@ -1052,6 +1052,11 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const body = (await req.clone().text()).trim() ? await parseBody(req, StopSchema) : {};
       return Response.json(await orch.stopMember(id!, { by: "user", expectRunId: body.expectRunId ?? null, expectGeneration: body.expectGeneration ?? null }));
     }),
+    route("POST", "/api/members/:id/retire", async (_req, _url, [id]) => {
+      if (!orch.retireMember) throw new ApiError(501, "직원 명부 해제를 지원하지 않습니다");
+      await orch.retireMember(id!);
+      return Response.json({ ok: true });
+    }),
     route("POST", "/api/members/:id/close", memberAction(async (id) => {
       if (!orch.memberClose) throw new ApiError(501, "지원하지 않습니다");
       await orch.memberClose(id);

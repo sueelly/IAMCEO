@@ -388,7 +388,7 @@ const MEMBER_SELECT = `SELECT m.*, (SELECT COUNT(*) FROM deliveries d WHERE d.me
   e.last_progress_at AS execution_last_progress_at, e.ended_at AS execution_ended_at,
   e.result AS execution_result, e.reason AS execution_reason, e.exit_code AS execution_exit_code,
   (SELECT json_group_array(t.task_id) FROM (SELECT DISTINCT d.task_id FROM json_each(e.delivery_ids_json) j JOIN deliveries d ON d.id = j.value WHERE d.task_id IS NOT NULL) t) AS execution_task_ids_json
-  FROM members m
+  FROM active_members m
   LEFT JOIN lifecycle_journal l ON l.rowid = (
     SELECT j.rowid FROM lifecycle_journal j
     WHERE j.member_id = m.id AND j.project_id = m.project_id AND j.generation = m.session_generation
@@ -1239,7 +1239,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (!patch.name) throw new ApiError(400, "프로젝트 이름이 필요합니다");
       const lead = this.getConductor(id);
       const name = this.projectConductorName(patch.name);
-      if (lead?.kind === "conductor" && (lead.name === conductorName(project.name) || lead.name === this.projectConductorName(project.name)) && this.row("SELECT 1 FROM members WHERE project_id = ? AND id != ? AND name = ?", id, lead.id, name)) {
+      if (lead?.kind === "conductor" && (lead.name === conductorName(project.name) || lead.name === this.projectConductorName(project.name)) && this.row("SELECT 1 FROM active_members WHERE project_id = ? AND id != ? AND name = ?", id, lead.id, name)) {
         throw new ApiError(409, "새 총괄 이름과 같은 직원이 있습니다");
       }
     }
@@ -1286,10 +1286,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       `SELECT p.id, p.name, p.is_hq, p.cwd, p.now, p.runner_enabled, p.max_concurrent_turns, p.archived,
          (SELECT COUNT(*) FROM decisions d WHERE d.project_id = p.id AND d.status = 'open') AS decision_count,
          (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.done = 0) AS todo_count,
-         (SELECT COUNT(*) FROM members m WHERE m.project_id = p.id AND m.status = 'working') AS working_count,
-         (SELECT COUNT(*) FROM members m WHERE m.project_id = p.id AND m.status = 'blocked' AND m.blocked_reason = 'permission') AS blocked_count,
-         (SELECT COUNT(*) FROM members m WHERE m.project_id = p.id AND m.status = 'error') AS error_count,
-         (SELECT COUNT(*) FROM members m WHERE m.project_id = p.id) AS member_count
+         (SELECT COUNT(*) FROM active_members m WHERE m.project_id = p.id AND m.status = 'working') AS working_count,
+         (SELECT COUNT(*) FROM active_members m WHERE m.project_id = p.id AND m.status = 'blocked' AND m.blocked_reason = 'permission') AS blocked_count,
+         (SELECT COUNT(*) FROM active_members m WHERE m.project_id = p.id AND m.status = 'error') AS error_count,
+         (SELECT COUNT(*) FROM active_members m WHERE m.project_id = p.id) AS member_count
        FROM projects p WHERE p.archived = 0 ORDER BY p.is_hq DESC, p.created_at, p.rowid`,
     ).map((r) => ({
       id: r.id,
@@ -1370,11 +1370,11 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   listMembers(projectId: string): Member[] {
-    return this.rows(`${MEMBER_SELECT} WHERE m.project_id = ? ORDER BY m.created_at, m.rowid`, projectId).map(r => this.memberWithWait(r));
+    return this.rows(`${MEMBER_SELECT} WHERE m.project_id = ? ORDER BY m.created_at, m.roster_rowid`, projectId).map(r => this.memberWithWait(r));
   }
 
   listAllMembers(): Member[] {
-    return this.rows(`${MEMBER_SELECT} ORDER BY m.created_at, m.rowid`).map(r => this.memberWithWait(r));
+    return this.rows(`${MEMBER_SELECT} ORDER BY m.created_at, m.roster_rowid`).map(r => this.memberWithWait(r));
   }
 
   getMemberByHandle(projectId: string, handle: string): Member | null {
@@ -1390,7 +1390,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 프로젝트의 총괄(본사는 root). */
   getConductor(projectId: string): Member | null {
-    const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.kind IN ('root','conductor') ORDER BY m.created_at, m.rowid LIMIT 1`, projectId);
+    const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.kind IN ('root','conductor') ORDER BY m.created_at, m.roster_rowid LIMIT 1`, projectId);
     return r ? this.memberWithWait(r) : null;
   }
 
@@ -1445,7 +1445,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (input.kind === "worker" && RESERVED_HANDLES.has(input.handle)) throw new ApiError(400, `총괄 자리의 핸들이라 직원에게 쓸 수 없습니다: ${input.handle}`);
       if (!HANDLE_RE.test(input.handle)) throw new ApiError(400, "핸들은 영문 소문자로 시작하고 영문 소문자·숫자·_·- 만 쓸 수 있습니다(32자 이내)");
       if (this.getMemberByHandle(input.projectId, input.handle)) throw new ApiError(409, `이미 있는 핸들입니다: ${input.handle}`);
-      if (this.row("SELECT 1 FROM members WHERE project_id = ? AND name = ?", input.projectId, input.name)) {
+      if (this.row("SELECT 1 FROM active_members WHERE project_id = ? AND name = ?", input.projectId, input.name)) {
         throw new ApiError(409, `이미 있는 이름입니다: ${input.name}`);
       }
       const id = newId("m_");
@@ -1573,6 +1573,39 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   touchMember(id: string): void {
     const at = nowIso();
     this.run("UPDATE members SET updated_at = ?, manual_activity_at = CASE WHEN origin = 'manual' THEN ? ELSE manual_activity_at END WHERE id = ?", at, at, id);
+  }
+
+  /** Historical authorship survives retirement and grants no execution rights. */
+  historicalWorker(projectId: string, id: string): { id: string; name: string } | null {
+    return this.db.query<{ id: string; name: string }, [string, string]>(
+      "SELECT id,name FROM members WHERE project_id=? AND id=? AND kind='worker'").get(projectId, id);
+  }
+
+  isRetiredMember(id: string): boolean {
+    return !!this.row("SELECT 1 FROM members WHERE id=? AND retired_at IS NOT NULL", id);
+  }
+
+  retireSleepingMember(id: string): void {
+    this.transaction(() => {
+      if (this.isRetiredMember(id)) return;
+      const member = this.requireMember(id);
+      if (member.origin !== "runner" || member.status !== "asleep" || member.paneId || member.subagents ||
+          member.finalReviewer && !member.standbyReviewer) {
+        throw new ApiError(409, "프로세스가 종료된 휴면 직원만 명부에서 뺄 수 있습니다. 기본 검수 담당자는 유지됩니다");
+      }
+      const input = this.inputState(id);
+      if (input.lease || input.unresolvedDispatches.length || this.listOpenDecisionsByMember(id).length ||
+          this.row("SELECT 1 FROM deliveries WHERE member_id=? AND status IN ('queued','delivering','held') LIMIT 1", id) ||
+          this.row("SELECT 1 FROM execution_journal WHERE member_id=? AND phase NOT IN ('ended','interrupted') LIMIT 1", id) ||
+          this.row(`SELECT 1 FROM task_completion_reviews r JOIN deliveries d ON d.id=r.delivery_id
+                    WHERE r.status='pending' AND d.member_id=? LIMIT 1`, id)) {
+        throw new ApiError(409, "남아 있는 실행·전달·결재·검수 기록을 먼저 확인해 주세요");
+      }
+      const at = nowIso();
+      this.run("UPDATE members SET retired_at=?, updated_at=?, retired_handle=handle, handle='#'||id WHERE id=?", at, at, id);
+      this.emit({ type: "member_removed", projectId: member.projectId, memberId: id });
+      this.emitProjects();
+    }, "immediate");
   }
 
   /** 그 직원의 전달·활동도 함께 사라진다(CASCADE). 대화·결재 기록은 남는다. */
@@ -3913,7 +3946,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   syncRevisions(projectId: string): SyncRevisions {
     this.requireProject(projectId);
-    return { settings: this.settingsRevision(), members: Object.fromEntries(this.rows("SELECT id, config_revision, session_generation FROM members WHERE project_id = ?", projectId).map((r) => [r.id, { configRevision: r.config_revision, sessionGeneration: r.session_generation }])), todos: Object.fromEntries(this.rows("SELECT id, revision FROM todos WHERE project_id = ?", projectId).map((r) => [r.id, r.revision])) };
+    return { settings: this.settingsRevision(), members: Object.fromEntries(this.rows("SELECT id, config_revision, session_generation FROM active_members WHERE project_id = ?", projectId).map((r) => [r.id, { configRevision: r.config_revision, sessionGeneration: r.session_generation }])), todos: Object.fromEntries(this.rows("SELECT id, revision FROM todos WHERE project_id = ?", projectId).map((r) => [r.id, r.revision])) };
   }
 
   private checkRevision(actual: number, expected: number): void {

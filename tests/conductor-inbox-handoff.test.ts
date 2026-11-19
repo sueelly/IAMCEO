@@ -59,13 +59,17 @@ test("미완료 판 정리는 수신 대행으로 한 번만 연결하고 임의
 test("직원이 남긴 실제 막힘만 수신 대행에게 연결하고, 대표 지시로 취급하거나 진행 보고를 다시 보내지 않는다", async () => {
   const f = setup(true);
   const task = f.store.ensureSourceTask({ projectId: f.project.id, title: "자료 대조", origin: "owner", sourceRef: "input-scope" }).task;
-  const report = f.store.createMessage({ projectId: f.project.id, taskId: task.id, kind: "막힘", memberId: f.worker.id,
-    who: f.worker.name, title: "다른 담당자의 자료가 필요합니다", body: "검산할 입력이 없습니다" });
+  const author = f.store.createMember({ projectId: f.project.id, handle: "former-author", name: "자료 대조 담당",
+    kind: "worker", origin: "runner", status: "asleep", cli: f.lead.cli });
+  const report = f.store.createMessage({ projectId: f.project.id, taskId: task.id, kind: "막힘", memberId: author.id,
+    who: author.name, title: "다른 담당자의 자료가 필요합니다", body: "검산할 입력이 없습니다" });
   const delivery = f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "report", taskId: task.id,
     text: report.title!, refType: "message", refId: report.id });
+  f.store.retireSleepingMember(author.id);
   await f.orch.pump(f.lead.id);
   expect(f.store.requireDelivery(delivery.id).memberId).not.toBe(f.lead.id);
-  expect(f.store.requireMessage(report.id).memberId).toBe(f.worker.id);
+  expect(f.store.requireMessage(report.id).memberId).toBe(author.id);
+  expect(f.store.getMember(author.id)).toBeNull();
 });
 
 test("대표가 총괄을 지정한 원문은 대행 영수증이 일치해야 전송되며 원 수신자와 실제 수신자를 함께 보존한다", async () => {
@@ -82,4 +86,17 @@ test("대표가 총괄을 지정한 원문은 대행 영수증이 일치해야 �
   expect(f.orch.deliveryRecovery.sourceRevision(input)).not.toBeNull();
   expect(f.orch.deliveryRecovery.sourceRevision({ ...input, id: "unrelated" })).toBeNull();
   expect(f.orch.deliveryRecovery.sourceRevision({ ...input, memberId: f.worker.id })).toBeNull();
+});
+
+test("이전에 명부에서 해제한 수신 대행은 보존하고 새 대표 지시는 새 수신자가 받는다", async () => {
+  const f = setup(true);
+  const previous = f.store.createMember({ projectId: f.project.id, handle: "retired-intake", name: "이전 수신 담당",
+    kind: "conductor", origin: "runner", status: "asleep", cli: f.lead.cli });
+  f.store.db.query("INSERT INTO conductor_intake(lead_id,relief_id) VALUES(?,?)").run(f.lead.id, previous.id);
+  f.store.retireSleepingMember(previous.id);
+  const message = await f.orch.sendUserMessage(f.project.id, { id: "next-after-retirement", text: "조정해줘" });
+  const item = f.store.listDeliveries(f.project.id).find(d => d.refId === message.id)!;
+  expect(item.status).toBe("delivered");
+  expect(item.memberId).not.toBe(previous.id);
+  expect(f.store.isRetiredMember(previous.id)).toBe(true);
 });

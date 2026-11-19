@@ -5,7 +5,7 @@ import type { Store } from "./store.ts";
 
 function reliefMember(store: Store, lead: Member): Member {
   const existing = store.conductorIntakeId(lead.id);
-  if (existing) return store.requireMember(existing);
+  if (existing && !store.isRetiredMember(existing)) return store.requireMember(existing);
   let handle = "command-intake";
   let name = "대표 지시 수신 총괄";
   for (let i = 2; store.findMember(lead.projectId, handle) || store.findMember(lead.projectId, name); i++) {
@@ -17,7 +17,8 @@ function reliefMember(store: Store, lead: Member): Member {
     kind: "conductor", origin: "runner", status: "offline", cwd: lead.cwd,
     cli: lead.cli, modelOverride: lead.modelOverride, effortOverride: lead.effortOverride,
   });
-  store.db.query("INSERT INTO conductor_intake(lead_id,relief_id) VALUES(?,?)").run(lead.id, relief.id);
+  store.db.query(`INSERT INTO conductor_intake(lead_id,relief_id) VALUES(?,?)
+    ON CONFLICT(lead_id) DO UPDATE SET relief_id=excluded.relief_id`).run(lead.id, relief.id);
   return relief;
 }
 
@@ -66,7 +67,7 @@ export function handoffConductorInputs(store: Store, lead: Member, pending: Deli
       } else if (input.kind === "report" && input.refType === "message" && input.refId) {
         const report = store.getMessage(input.refId);
         if (!report || report.mine || report.kind !== "막힘" || report.projectId !== project.id || !report.memberId ||
-            !input.taskId || report.taskId !== input.taskId || store.getMember(report.memberId)?.kind !== "worker" || scope.blocksAutomatic([input.taskId])) continue;
+            !input.taskId || report.taskId !== input.taskId || !store.historicalWorker(project.id, report.memberId) || scope.blocksAutomatic([input.taskId])) continue;
       } else if (input.kind === "system" && !input.refId && !input.refType) {
         const reviews = store.db.query<{ task_id: string; contract_task_id: string; status: string }, [string]>(
           "SELECT task_id,contract_task_id,status FROM task_completion_reviews WHERE attention_delivery_id=?").all(input.id);

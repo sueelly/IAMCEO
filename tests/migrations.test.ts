@@ -106,6 +106,13 @@ function backups(runtime: IsolatedRuntime): string[] {
 }
 
 // The fixture begins in the original schema; every historical data migration really runs.
+function historicalStore(db: Database): Store {
+  // Before retirement existed, every member was on the roster. Only the fixture connection
+  // needs this projection to exercise today's Store on the pre-migration database.
+  db.exec("CREATE TEMP VIEW active_members AS SELECT rowid AS roster_rowid, * FROM members");
+  return new Store(db, new Bus());
+}
+
 function historicalDb(path: string, target: number): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA foreign_keys = ON");
@@ -123,7 +130,7 @@ test("explicit execution contract migration preserves old revisions and leaves u
   const before = MIGRATIONS.findIndex(sql => sql.includes("ALTER TABLE task_contracts ADD COLUMN inputs"));
   expect(before).toBeGreaterThan(0);
   const { path } = fixture("legacy-contracts.db"), old = historicalDb(path, before);
-  const store = new Store(old, new Bus());
+  const store = historicalStore(old);
   const task = store.ensureSourceTask({ projectId: "p", sourceRef: "legacy-contract", title: "옛 계약", origin: "owner" }).task;
   old.query(`INSERT INTO task_contracts (task_id,rev,kind,goal,acceptance,scope,forbidden,evidence,checks,author,author_kind,source_message_id,at)
     VALUES (?,1,'other','원문 목표','["원래 합격 기준"]','원래 범위','["금지 원문"]','[]','[]','직원','worker','msg_original',?)`).run(task.id, at);
@@ -137,7 +144,7 @@ test("explicit execution contract migration preserves old revisions and leaves u
 for (const previous of [48, 49]) test(`existing v${previous} completion evidence is queued once and survives reopening`, () => {
   const { path } = fixture("completion-changes.db");
   const old = historicalDb(path, previous);
-  const store = new Store(old, new Bus());
+  const store = historicalStore(old);
   const target = store.ensureSourceTask({ projectId: "p", sourceRef: "existing-report", title: "기존 완료 보고", origin: "owner" }).task;
   old.query("INSERT INTO report_harness(message_id, task_id, member_id, contract_task_id, contract_rev, at) VALUES(?,?,?,?,1,?)")
     .run("report", target.id, "m", target.id, at);
@@ -159,7 +166,7 @@ for (const previous of [48, 49]) test(`existing v${previous} completion evidence
 
 test("deployed v38 continuation state survives the additive workflow receipt migration", () => {
   expect(MIGRATIONS[37]).toContain("CREATE TABLE task_continuations");
-  const {path}=fixture("deployed-v38.db"),old=historicalDb(path,38),store=new Store(old,new Bus());
+  const {path}=fixture("deployed-v38.db"),old=historicalDb(path,38),store=historicalStore(old);
   const task=store.ensureSourceTask({projectId:"p",sourceRef:"migration-continue",title:"멈춘 업무",origin:"owner"}).task;
   old.query("INSERT INTO task_continuations(task_id,project_id,pause_token,pause_reason,updated_at) VALUES(?,?,?,?,?)").run(task.id,"p","keep-stop","중단 보존",at);
   const before=old.query("SELECT id,scope_seq FROM deliveries ORDER BY id").all();old.close();
@@ -171,7 +178,7 @@ test("deployed v38 continuation state survives the additive workflow receipt mig
 });
 
 test("deployed v41 memory queues, execution caps and conversations survive archive migration", () => {
-  const { path } = fixture("deployed-v41.db"), old = historicalDb(path, 41), store = new Store(old, new Bus());
+  const { path } = fixture("deployed-v41.db"), old = historicalDb(path, 41), store = historicalStore(old);
   store.patchSettings({ maxConcurrentTurns: 24 });
   old.query("UPDATE projects SET max_concurrent_turns=7 WHERE id='p'").run();
   store.enqueueMemoryUpload({ eventId: "keep-sent", projectId: "p", refType: "decision", refId: "original", body: "{}" });
@@ -187,7 +194,7 @@ test("deployed v41 memory queues, execution caps and conversations survive archi
   expect(version(migrated)).toBe(MIGRATIONS.length);
   expect(migrated.query("SELECT * FROM memory_outbox ORDER BY event_id").all()).toEqual(queue);
   expect(migrated.query("SELECT * FROM deliveries ORDER BY id").all()).toEqual(deliveries);
-  expect(migrated.query("SELECT * FROM members ORDER BY id").all()).toEqual(members.map((member: any) => ({ ...member, codex_speed: "standard", final_reviewer: 0, parallel_preference: 1, standby_reviewer: 0 })));
+  expect(migrated.query("SELECT * FROM members ORDER BY id").all()).toEqual(members.map((member: any) => ({ ...member, codex_speed: "standard", final_reviewer: 0, parallel_preference: 1, standby_reviewer: 0, retired_at: null, retired_handle: null })));
   expect(migrated.query("SELECT * FROM settings").all()).toEqual(settings);
   expect(migrated.query("SELECT max_concurrent_turns FROM projects WHERE id='p'").get()).toEqual({ max_concurrent_turns: 7 });
   expect(migrated.query("SELECT * FROM memory_archive_sources").all()).toEqual([]);
@@ -831,7 +838,7 @@ test("v57 retires only a proven untouched timer notice and preserves delivered a
 test("after v57 the normal coordinator continues an authorized timed-out task exactly once", () => {
   const { path, runtime } = fixture("timer-continuation.db"), old = historicalDb(path, 56);
   old.query("UPDATE projects SET cwd=? WHERE id='p'").run(runtime.paths.work);
-  const prior = new Store(old,new Bus());
+  const prior = historicalStore(old);
   const lead = prior.createMember({ projectId:"p", handle:"lead", name:"총괄", kind:"conductor", origin:"runner", backend:"core", status:"idle", cwd:runtime.paths.work });
   for (const id of ["ready","held","owner"]) {
     legacyWatch(old,id);

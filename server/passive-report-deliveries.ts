@@ -38,9 +38,9 @@ function redundantSystemNotice(store: Store, d: Delivery): string | null {
     const id = /에게 직접 지시했습니다 #([^\s(]+)/.exec(text)?.[1];
     const msg = id && store.getMessage(id);
     if (!msg || !msg.mine || msg.projectId !== projectId || !msg.targetMemberId || msg.taskId !== d.taskId) return null;
-    const worker = store.getMember(msg.targetMemberId);
+    const worker = store.historicalWorker(projectId, msg.targetMemberId);
     const task = d.taskId ? store.getTask(d.taskId) : null;
-    if (!worker || worker.projectId !== projectId || worker.kind !== "worker" || (task && task.projectId !== projectId)) return null;
+    if (!worker || (task && task.projectId !== projectId)) return null;
     const name = msg.targetName ?? worker.name;
     const original = store.db.query(`SELECT 1 FROM deliveries WHERE kind='user_message' AND ref_type='message'
       AND ref_id=? AND project_id=? AND member_id=? AND status='delivered'`).get(msg.id, projectId, worker.id);
@@ -129,8 +129,7 @@ function redundantReport(store: Store, d: Delivery): string | null {
   if (d.refType !== "message" || !d.refId) return null;
   const msg = store.getMessage(d.refId);
   if (!msg || msg.mine || !msg.memberId || msg.projectId !== d.projectId || msg.taskId !== d.taskId) return null;
-  const author = store.getMember(msg.memberId);
-  if (author?.kind !== "worker" || author.projectId !== d.projectId) return null;
+  if (!store.historicalWorker(d.projectId, msg.memberId)) return null;
   if (!d.wake && msg.taskId && msg.kind === "완료" && store.db.query("SELECT 1 FROM task_completion_reviews WHERE task_id=? AND report_id=?").get(msg.taskId,msg.id)) return "완료 보고가 업무의 독립 검수 절차에 접수됐습니다.";
   if (!d.wake && msg.kind === "알림" && msg.aboutMessageId && assignedRepair(store, d.projectId, "issue.id", msg.id)) return "담당자가 검수 지적에 연결된 수정 업무를 수신했습니다.";
   const refs = store.getReportReferences(msg.projectId, msg.id);
