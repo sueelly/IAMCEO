@@ -1,8 +1,8 @@
 // 격리된 가짜 세션·DB만 쓰는 API 회귀. 실제 QA 제출이나 진단은 호출하지 않는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { Database } from "bun:sqlite";
 import { MIGRATIONS, openDb } from "../server/db.ts";
@@ -76,7 +76,7 @@ for (const workdir of [null, "", "relative", "file:///fake/review", "file://remo
 });
 
 test("v35의 기존 검사 행은 원 command를 유지하고 workdir NULL로 전환한다", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "harness-workdir-v35-")), "synthetic.db");
+  const path = join(testTempDir("harness-workdir-v35-"), "synthetic.db");
   const old = new Database(path, { create: true });
   try {
     for (const sql of MIGRATIONS.slice(0, 35)) old.exec(sql);

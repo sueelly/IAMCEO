@@ -1,10 +1,10 @@
 // 실제 서버 프로세스 + 실제 화면(Playwright chromium) + 가짜 claude. 데스크톱·폰 두 창이 같은 서버를 함께 본다.
 // 가짜 세션의 도구 호출은 브리지 없이 HTTP 로 간다. 브리지와 컴파일 실행 파일은 맨 아래 묶음에서 따로 본다.
 // 라이브 herdr·실제 ~/.iamceo·실제 claude 는 쓰지 않는다. 캡처는 임시 폴더에 남긴다(IAMCEO_E2E_SHOTS 로 바꿀 수 있다).
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -20,8 +20,8 @@ const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
 const STEP_MS = 45_000;
 
-const WORK = mkdtempSync(join(tmpdir(), "iamceo-e2e-"));
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-shots-"));
+const WORK = testTempDir("iamceo-e2e-");
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-shots-");
 mkdirSync(SHOTS, { recursive: true });
 const HOME = join(WORK, "home");
 const PROJECT_DIR = join(WORK, "project");
@@ -866,7 +866,7 @@ describe("컴파일 실행 파일", () => {
   let binCode = "";
 
   beforeAll(async () => {
-    const build = Bun.spawnSync(["bun", "build", join(ROOT, "bin", "iamceo.ts"), "--compile", "--outfile", BIN], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
+    const build = Bun.spawnSync(["bun", "build", join(ROOT, "bin", "iamceo.ts"), "--compile", "--outfile", BIN], { cwd: WORK, stdout: "pipe", stderr: "pipe" });
     if (build.exitCode !== 0) throw new Error(`컴파일 실패: ${build.stderr.toString()}`);
     expect(existsSync(BIN)).toBe(true);
     updateConfigFile({ hosts: ["127.0.0.1"], accessCode: "bin-code" }, { IAMCEO_HOME: home });

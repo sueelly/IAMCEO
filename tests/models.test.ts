@@ -1,6 +1,6 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ModelCatalogReader } from "../server/models.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
@@ -11,7 +11,7 @@ import type { OrchestratorApi } from "../server/orchestrator-api.ts";
 import { Store } from "../server/store.ts";
 
 function fixture() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-models-"));
+  const home = testTempDir("iamceo-models-");
   const claudeHome = join(home, "claude"), codexHome = join(home, "codex");
   mkdirSync(claudeHome); mkdirSync(codexHome);
   const claudePath = join(claudeHome, ".claude.json"), codexPath = join(codexHome, "models_cache.json");

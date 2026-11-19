@@ -1,8 +1,8 @@
 // Actual HTTP/snapshot/UI exercise in an owned DB. No CLI, worker, live socket or approval is used.
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { reviewedPlacement } from "./fixtures/reviewed-placement.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page, type WebSocketRoute } from "playwright";
 import { Bus } from "../server/bus.ts";
@@ -15,7 +15,7 @@ import { TaskContinuationCoordinator } from "../server/task-continuation.ts";
 import type { Member, Project, Task } from "../shared/types.ts";
 
 const CODE = "workflow-fixture-code";
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-workflow-shots-"));
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-workflow-shots-");
 mkdirSync(SHOTS, { recursive: true });
 let home: string, server: RunningServer, orch: Orchestrator, store: Store, browser: Browser, base: string;
 let project: Project, registrar: Member, worker: Member, reviewer: Member;
@@ -23,7 +23,7 @@ let done: Task, current: Task, next: Task, derived: Task, unassigned: Task;
 let currentDeliveryId: string;
 
 beforeAll(async () => {
-  home = mkdtempSync(join(tmpdir(), "iamceo-workflow-web-"));
+  home = testTempDir("iamceo-workflow-web-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0", IAMCEO_ENABLE_CLI: "false" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
   const config = loadConfig(env), bus = new Bus();
@@ -55,7 +55,7 @@ afterAll(async () => {
   await orch?.shutdown();
   await server?.stop();
   store?.db.close();
-  if (home) rmSync(home, { recursive: true, force: true });
+  if (home) releaseTestDir(home);
   console.log(`workflow screenshots: ${SHOTS}`);
 });
 

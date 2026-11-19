@@ -1,10 +1,11 @@
 // 라이브 서버에 쓰지 않는다. 통합 시험은 sessions/iamceo-test-* 격리 서버에서만, 칸 안 claude 는 가짜다.
 process.env.IAMCEO_TEST = "1";
 
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { MemberKind } from "../shared/types.ts";
 import { rpc } from "../server/runner/herdr-client.ts";
 import { HerdrRunner, backgroundWait, conductorTraces, detectHerdr, exitHintShown, inputLooksEmpty, inputText, inspectPane, listAgents, screenContextPct, transcriptTurnEnded } from "../server/runner/herdr.ts";
@@ -176,7 +177,7 @@ describe("안전장치", () => {
 
 // ---- 가짜 소켓 서버: 격리 herdr 로 만들 수 없는 상황(무응답·프로토콜 차이·연결 끊김) ----
 function mockServer(handler: (method: string, params: any) => unknown | undefined) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-herdr-mock-")));
+  const dir = realpathSync(testTempDir("iamceo-herdr-mock-"));
   const path = join(dir, "s.sock");
   const subs = new Set<any>();
   const calls: Array<{ method: string; params: any }> = [];
@@ -578,7 +579,7 @@ describe("가짜 소켓 서버", () => {
       if (method === "agent.get") return { agent: { ...mockAgent(), pane_id: params.target, tab_id: `${String(params.target).split(":")[0]}:t1`, interactive_ready: true } };
       return { type: "ok" };
     });
-    const inbox = mkdtempSync(join(tmpdir(), "iamceo-inbox-"));
+    const inbox = testTempDir("iamceo-inbox-");
     const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: inbox, claudeHome: "/nonexistent" });
     const o: StartOpts = { ...OPTS, resume: false, herdrTabId: "w5:t1", projectName: "내 프로젝트", projectSessions: ["s-mine"] };
     const first = await r.start(member({ sessionId: null, paneId: null }), o);
@@ -603,7 +604,7 @@ describe("가짜 소켓 서버", () => {
       if (method === "agent.start") return new Error("boom");
       return { type: "ok" };
     });
-    const inbox = mkdtempSync(join(tmpdir(), "iamceo-inbox-"));
+    const inbox = testTempDir("iamceo-inbox-");
     const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: inbox, claudeHome: "/nonexistent" });
     await expect(r.start(member({ sessionId: SID, paneId: "w5:p1" }), { ...OPTS, herdrTabId: "w5:t1", projectSessions: ["s-lead"] })).rejects.toThrow();
     const started = srv.calls.filter((c) => c.method === "agent.start");
@@ -635,7 +636,7 @@ describe("가짜 소켓 서버", () => {
       if (method === "agent.start") { panes.current = params.pane_id; argv = ["claude", "--mcp-config", "/m"]; return { type: "ok" }; }
       return { type: "ok" };
     });
-    const inbox = mkdtempSync(join(tmpdir(), "iamceo-inbox-"));
+    const inbox = testTempDir("iamceo-inbox-");
     const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: inbox, claudeHome: "/nonexistent" });
     const seen: RunnerEvent[] = [];
     r.on((e) => seen.push(e));
@@ -683,7 +684,7 @@ describe("가짜 소켓 서버", () => {
       if (method === "agent.prompt" && String(params.text).startsWith("/add-dir")) { screen = `Added ${params.text.slice(9)}\n${EMPTY_SCREEN}`; return { type: "ok" }; }
       return { type: "ok" };
     });
-    const inbox = mkdtempSync(join(tmpdir(), "iamceo-inbox-"));
+    const inbox = testTempDir("iamceo-inbox-");
     const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: inbox, claudeHome: "/nonexistent" });
     const seen: RunnerEvent[] = [];
     r.on((e) => seen.push(e));
@@ -715,7 +716,7 @@ describe("가짜 소켓 서버", () => {
   });
 
   test("기록을 이어 읽어 서브에이전트 수와 도구 활동을 낸다", async () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-claude-"));
+    const home = testTempDir("iamceo-claude-");
     const dir = join(home, "projects", "-tmp");
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `${SID}.jsonl`);
@@ -752,7 +753,7 @@ describe("가짜 소켓 서버", () => {
   });
 
   test("꺼진 사이 끝난 턴: 입력 뒤의 글만 돌려준다", async () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-claude-"));
+    const home = testTempDir("iamceo-claude-");
     const dir = join(home, "projects", "-tmp");
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `${SID}.jsonl`);
@@ -774,7 +775,7 @@ describe("가짜 소켓 서버", () => {
   });
 
   test("입력만 있고 API 오류로 끝난 턴은 noOutput, 일하다 난 오류는 아니다", async () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-claude-"));
+    const home = testTempDir("iamceo-claude-");
     const dir = join(home, "projects", "-tmp");
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `${SID}.jsonl`);
@@ -1720,7 +1721,7 @@ describe("격리 herdr 서버", () => {
 
   test("격리 서버 안의 임시 파일만 만들었다", () => {
     expect(readdirSync(inbox, { recursive: true }).some((f) => String(f).endsWith("msg_long1.md"))).toBe(true);
-    expect(h.dir.startsWith(realpathSync(tmpdir()))).toBe(true);
+    expect(dirname(h.dir)).toBe(realpathSync(process.env.IAMCEO_TEST_RUN_ROOT ?? tmpdir()));
   });
 });
 
@@ -1744,7 +1745,7 @@ describe("2차 검수 회귀: 칸 소유·전달(가짜 소켓)", () => {
       if (method === "workspace.create") return { tab: { tab_id: "w9:t1" }, root_pane: { pane_id: "w9:p1" } };
       return { type: "ok" };
     });
-    const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: mkdtempSync(join(tmpdir(), "iamceo-inbox-")), claudeHome: "/nonexistent", settleMs: 20, promptTimeoutMs: 150, stallMs: 150 });
+    const r = new HerdrRunner({ socketPath: srv.path }, { inboxDir: testTempDir("iamceo-inbox-"), claudeHome: "/nonexistent", settleMs: 20, promptTimeoutMs: 150, stallMs: 150 });
     const seen: RunnerEvent[] = [];
     r.on((e) => seen.push(e));
     const closed = () => srv.calls.filter((c) => c.method === "pane.close").map((c) => c.params.pane_id);
@@ -2053,7 +2054,7 @@ describe("2차 검수 회귀: 칸 소유·전달(가짜 소켓)", () => {
   });
 
   test("promptSeen: 세션 기록이나 화면에 표지가 있을 때만 true", async () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-claude-home-"));
+    const home = testTempDir("iamceo-claude-home-");
     const dir = join(home, "projects", "x");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${S}.jsonl`), '{"text":"#msg_rec"}\n');

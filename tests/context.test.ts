@@ -1,3 +1,4 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { HerdrRunner, inputLooksEmpty, screenContextPct } from "../server/runner/herdr.ts";
 import { CoreRunner } from "../server/runner/core.ts";
 import { transcriptPath } from "../server/runner/transcript.ts";
@@ -6,8 +7,7 @@ import { readCodexContext } from "../server/runner/codex-context.ts";
 // 문맥 % 의 창 크기: 배우기·맞추기·고르는 순서·저장·초기화. 임시 IAMCEO_HOME 만 쓴다(라이브 홈·herdr 소켓을 건드리지 않는다).
 import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Backend, ContextWindowSource, Member } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -26,7 +26,7 @@ afterAll(async () => {
 });
 
 function tempHome(prefix = "iamceo-ctx-"): { home: string; env: Record<string, string> } {
-  const home = mkdtempSync(join(tmpdir(), prefix));
+  const home = testTempDir(prefix);
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], coreBin: join(home, "missing-core") }, env);
   return { home, env };
@@ -190,7 +190,7 @@ describe("저장과 초기화", () => {
   });
 
   for (const beforeProvider of [false, true]) test(`마이그레이션 ${beforeProvider ? "provider 이력 전" : "context window 전"}: 창 크기 칸을 더하고, herdr 가 부풀려 적은 % 는 비운다(headless 값은 둔다)`, () => {
-    const path = join(mkdtempSync(join(tmpdir(), "iamceo-ctx-migrate-")), "old.db");
+    const path = join(testTempDir("iamceo-ctx-migrate-"), "old.db");
     const before = MIGRATIONS.findIndex((m) => m.includes(beforeProvider ? "ADD COLUMN chief_cli" : "ADD COLUMN context_window "));
     expect(before).toBeGreaterThan(0);
     const db = new Database(path, { create: true });
@@ -464,7 +464,7 @@ describe("실측 우선순위", () => {
 });
 
 function wrapperFixture(safetyTimeoutMs?: number) {
-  const home = mkdtempSync(join(tmpdir(), "iamceo wrapper's "));
+  const home = testTempDir("iamceo wrapper's ");
   const project = join(home, "project"); const user = join(home, "claude");
   mkdirSync(join(project, ".claude"), { recursive: true }); mkdirSync(user);
   const managed = join(home, "managed.json");
@@ -544,7 +544,7 @@ describe("Claude 상태줄 래퍼", () => {
 });
 
 test("Codex rollout tail: 마지막 사용량, 부분 줄, 누적량 제외, 세션 확인", () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-codex-context-")); const dir = join(home, "sessions/2026/11/07"); mkdirSync(dir, { recursive: true });
+  const home = testTempDir("iamceo-codex-context-"); const dir = join(home, "sessions/2026/11/07"); mkdirSync(dir, { recursive: true });
   const id = "session-codex"; const path = join(dir, `rollout-2026-11-07-${id}.jsonl`);
   const event = (tokens: number, window: number) => JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { model_context_window: window, last_token_usage: { total_tokens: tokens }, total_token_usage: { total_tokens: 9_000_000 } } } });
   writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id, cwd: "/tmp", timestamp: "2026-11-07", base_instructions: "fixture".repeat(10000) } }) + "\n" + " ".repeat(150_000) + "\n" + event(100_000, 258_400) + "\n" + event(190_000, 475_000) + '\n{"partial":');
@@ -569,7 +569,7 @@ test("컴파일 바이너리도 BUN_BE_BUN=1 로 같은 상태줄 스크립트�
   const f = wrapperFixture(); f.settings(join(f.user, "settings.json"), "/bin/cat");
   const entry = join(f.home, "entry.ts"); const binary = join(f.home, "compiled bun's binary");
   writeFileSync(entry, 'throw new Error("compiled entry must not run");');
-  const compile = Bun.spawn([process.execPath, "build", "--compile", entry, "--outfile", binary], { stdout: "pipe", stderr: "pipe" });
+  const compile = Bun.spawn([process.execPath, "build", "--compile", entry, "--outfile", binary], { cwd: f.home, stdout: "pipe", stderr: "pipe" });
   const [code] = await Promise.all([compile.exited, new Response(compile.stdout).text(), new Response(compile.stderr).text()]);
   expect(code).toBe(0);
   const wrapper = writeStatuslineWrapper(f.home, { managedSettingsPath: f.managed, execPath: binary });
@@ -589,7 +589,7 @@ function herdrTurnFixture({ model = "opus[1m]", screen = "", tokens = 190_000 }:
   const events: RunnerEvent[] = [];
   const track = { m: { id: "fake-herdr", model }, sessionId: "session-1", paneId: "fake-pane", inTurn: true, bgTurn: null, turnGen: 0 };
   const runner = Object.assign(Object.create(HerdrRunner.prototype), {
-    tracks: new Map([[track.m.id, track]]), stopped: false, contextHome: mkdtempSync(join(tmpdir(), "iamceo-finish-turn-")),
+    tracks: new Map([[track.m.id, track]]), stopped: false, contextHome: testTempDir("iamceo-finish-turn-"),
     stopTail() {}, lastTurn: () => ({ finalText: "done", isError: true, noOutput: true, contextTokens: tokens, model: "claude-opus-5-5" }),
     readPane: async () => screen, report: () => events.push({ type: "status", memberId: track.m.id, status: "idle" }),
     emit: (e: RunnerEvent) => events.push(e),
@@ -640,7 +640,7 @@ for (const model of ["claude-opus-5-5", null]) test(`herdr finishTurn: 모델 ${
 });
 
 for (const model of ["claude-opus-5-5", null]) test(`core reportContext: 모델 ${model}, 잘린 상태줄과 임시 transcript 로 19% 를 보고한다`, async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-core-context-"));
+  const home = testTempDir("iamceo-core-context-");
   const claudeHome = join(home, "claude"); const contextHome = join(home, "context-home");
   mkdirSync(contextHome);
   const events: RunnerEvent[] = [];

@@ -1,7 +1,6 @@
 // 진행판 일 항목 → 대화 작업 칩: 만들면 바로 생기고(실시간 task 이벤트), 고치면 따라 바뀌며, 완료·삭제하면 칩에서 숨는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Task, WsEvent } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -13,7 +12,7 @@ import { Store } from "../server/store.ts";
 import { chipTasks, taskActivity, workIdOf } from "../web/src/lib/tasks";
 
 function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-worktask-"));
+  const home = testTempDir("iamceo-worktask-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

@@ -1,6 +1,5 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { Bus } from "../server/bus";
@@ -62,7 +61,7 @@ let base = "";
 let files: FileDoc[];
 let even: Task, odd: Task;
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-files-page-"));
+  const home = testTempDir("iamceo-files-page-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: code, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env), bus = new Bus();

@@ -1,10 +1,10 @@
 // 결재함에서 직원 CLI 승인 창에 답하기(대표 2026-11-17 "터미널 승인하는 거 결재함에서 클릭할 수 있도록 해").
 // core 칸은 격리 가짜 소켓(실제 CLI·herdr-core 없음), 오케스트레이터는 실제 SQLite 다. 단계(창 확인·응답 기록·터미널 접수·이후 상태)와
 // 낡은 카드·다른 직원/프로젝트·중복·응답 유실·재시작을 본다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CoreRunner } from "../server/runner/core.ts";
 import type { CoreTerminal } from "../server/runner/core-client.ts";
@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 async function coreFixture() {
-  const dir = mkdtempSync(join(tmpdir(), "iamceo-inbox-approval-"));
+  const dir = testTempDir("iamceo-inbox-approval-");
   const socketPath = join(dir, "c.sock");
   const opts: StartOpts = { systemPromptFile: join(dir, "rules.md"), mcpConfigFile: join(dir, "mcp.json"), resume: false, projectName: "Test" };
   writeFileSync(opts.systemPromptFile, "rules");
@@ -150,7 +150,7 @@ class PromptRunner implements Runner {
 }
 
 async function orchSetup(screen = fx("claude-bash-permission.txt"), provider: "claude" | "codex" = "claude") {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-inbox-orch-"));
+  const home = testTempDir("iamceo-inbox-orch-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "access-code-for-test-0001", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

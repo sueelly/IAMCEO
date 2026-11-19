@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { copyFileSync, symlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { chromium } from "playwright";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -14,10 +15,16 @@ test("the standard build embeds a production screen within the first-load transf
   const env = { ...runtime.childEnv(), IAMCEO_LOG_WRITER: "0", IAMCEO_PORT: String(port) };
   const settings = loadConfig(env);
   updateConfigFile({ hosts: ["127.0.0.1"] }, env);
-  const build = Bun.spawn([process.execPath, "run", "build"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+  // Exercise the package script in an isolated cwd: Bun also writes compile intermediates there.
+  copyFileSync(join(root, "package.json"), join(runtime.paths.work, "package.json"));
+  symlinkSync(join(root, "scripts"), join(runtime.paths.work, "scripts"), "dir");
+  const binary = join(runtime.paths.bin, "iamceo");
+  const build = Bun.spawn([process.execPath, "run", "build", "--outfile", binary], {
+    cwd: runtime.paths.work, env, stdout: "pipe", stderr: "pipe",
+  });
   const [buildCode, buildError] = await Promise.all([build.exited, new Response(build.stderr).text(), new Response(build.stdout).text()]);
   expect({ code: buildCode, error: buildCode === 0 ? "" : buildError }).toEqual({ code: 0, error: "" });
-  const child = Bun.spawn([join(root, "dist/iamceo"), "serve"], { cwd: runtime.paths.work, env, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([binary, "serve"], { cwd: runtime.paths.work, env, stdout: "pipe", stderr: "pipe" });
   const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
   let browser;
   try {

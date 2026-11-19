@@ -1,6 +1,6 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   antigravityDraft, antigravityExactComposer, antigravityFolderTrust, antigravityMemberHome, antigravityTranscriptPath,
@@ -22,7 +22,7 @@ const trustDialog = (cwd: string) => `Accessing workspace:\n\n${cwd}\n\nDo you t
 
 const CONV = "4414bdf0-180a-409b-a991-7122de6085a8";
 const OTHER = "0d6c5a1e-2b3f-4c4d-9e8f-001122334455";
-const dir = () => mkdtempSync(join(tmpdir(), "iamceo-agy-test-"));
+const dir = () => testTempDir("iamceo-agy-test-");
 const member = (extra: Partial<RunnerMember> = {}): RunnerMember => ({ id: "member-agy", sessionGeneration: 1, projectId: "p", cli: "antigravity", handle: "g", name: "Gemini", cwd: "/tmp",
   sessionId: null, paneId: null, model: null, effort: null, subagentModel: null, permissionMode: "default", kind: "worker", origin: "managed", parallel: false, ...extra } as RunnerMember);
 function opts(root: string): StartOpts {

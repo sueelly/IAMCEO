@@ -1,6 +1,7 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { readFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -14,7 +15,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
 async function fixture() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-connections-"));
+  const home = testTempDir("iamceo-connections-");
   updateConfigFile({ accessCode: "isolated-connection-code", hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
   const config = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0" });
   const bus = new Bus(), store = new Store(openDb(config.dbPath), bus);
@@ -23,7 +24,7 @@ async function fixture() {
     cliCommand: () => "/fixture/current/iamceo",
   } as unknown as OrchestratorApi;
   const server: RunningServer = await startServer({ config, store, bus, orch });
-  cleanups.push(async () => { await server.stop(); store.db.close(); rmSync(home, { recursive: true, force: true }); });
+  cleanups.push(async () => { await server.stop(); store.db.close(); releaseTestDir(home); });
   async function request(path: string, host: string, patch?: unknown, auth = true) {
     return fetch(`http://127.0.0.1:${server.port}${path}`, {
       method: patch === undefined ? "GET" : "PATCH",

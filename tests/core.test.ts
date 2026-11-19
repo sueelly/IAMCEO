@@ -1,6 +1,7 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CODEX_RANKS, DEFAULT_RANKS, type WsEvent } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -9,7 +10,7 @@ import { newId, openDb } from "../server/db.ts";
 import { importPath, resolveInside, sanitizeName, saveUpload } from "../server/files.ts";
 import { ApiError, MAX_ACTIVITY_PER_MEMBER, Store } from "../server/store.ts";
 
-const tempDir = () => mkdtempSync(join(tmpdir(), "iamceo-core-"));
+const tempDir = () => testTempDir("iamceo-core-");
 
 function makeStore() {
   const bus = new Bus();
@@ -482,7 +483,7 @@ describe("files", () => {
 
 test("Finder PATH discovers installed user CLIs without a login shell and honors explicit paths", async () => {
   const { chmodSync, mkdirSync } = await import("node:fs");
-  const userHome = mkdtempSync(join(tmpdir(), "iamceo-finder-home-"));
+  const userHome = testTempDir("iamceo-finder-home-");
   const appHome = join(userHome, "app");
   const codex = join(userHome, ".npm-global", "bin", "codex");
   const claude = join(userHome, ".local", "bin", "claude");

@@ -1,6 +1,7 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile, type Config } from "../server/config.ts";
@@ -19,7 +20,7 @@ const request = (path: string, method = "GET", auth = true) => fetch(origin + pa
 });
 
 beforeAll(async () => {
-  home = mkdtempSync(join(import.meta.dir, ".readonly-fixture-"));
+  home = testTempDir("readonly-fixture-");
   updateConfigFile({ accessCode: code, hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
   config = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0" });
   const db = openDb(config.dbPath); const store = new Store(db, new Bus());
@@ -37,7 +38,7 @@ beforeAll(async () => {
   before = digest(config.dbPath);
   view = await startReadOnlyView(config, "readonly-test-build"); origin = `http://127.0.0.1:${view.server.port}`;
 });
-afterAll(async () => { await view?.stop(); rmSync(home, { recursive: true, force: true }); });
+afterAll(async () => { await view?.stop(); releaseTestDir(home); });
 
 test("restored fenced data is readable with normal authentication", async () => {
   expect((await request("/api/bootstrap", "GET", false)).status).toBe(401);

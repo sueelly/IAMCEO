@@ -1,3 +1,4 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ test("mixed realpath observations reject the secret FD before any read; identity
 });
 
 test("FIFO fixture is rejected before opening within a subprocess deadline", async () => {
-  const root = fs.mkdtempSync("/private/tmp/iamceo-fifo-");
+  const root = testTempDir("iamceo-fifo-", "/private/tmp");
   const fifo = join(root, "pipe");
   expect(Bun.spawnSync(["/usr/bin/mkfifo", fifo]).exitCode).toBe(0);
   const child = Bun.spawn([process.execPath, "tests/fixtures/local-file-fifo.ts", root], { stdout: "pipe", stderr: "pipe" });
@@ -39,7 +40,7 @@ test("FIFO fixture is rejected before opening within a subprocess deadline", asy
 }, 5000);
 
 test("growth, truncation and same-size mutation during reading reject with 409", () => {
-  const root = fs.mkdtempSync("/private/tmp/iamceo-changing-");
+  const root = testTempDir("iamceo-changing-", "/private/tmp");
   const path = join(root, "a.txt"), localStore = { requireProject: () => ({ cwd: root }), listMembers: () => [] } as unknown as Store;
   try {
     for (const mutate of [() => fs.appendFileSync(path, "growth"), () => fs.truncateSync(path, 1), () => { fs.writeFileSync(path, "xxxx"); fs.utimesSync(path, 1, 1); }]) {
@@ -68,7 +69,7 @@ test("opened FD hard links are rejected before read and links created during rea
 });
 
 test("attachment copy refuses a hard link created after prepareImport and during copying", async () => {
-  const root = fs.mkdtempSync("/private/tmp/iamceo-copy-");
+  const root = testTempDir("iamceo-copy-", "/private/tmp");
   const path = join(root, "movie.mp4"), alias = join(root, "alias.mp4"); fs.writeFileSync(path, "fixture video");
   const input = prepareImport(path); fs.linkSync(path, alias);
   const publication = new FilePublication(join(root, "uploads"));
@@ -87,7 +88,7 @@ test("attachment copy refuses a hard link created after prepareImport and during
 
 
 test("employee file tool shares secret-name and relocated state/provider-home protection in an isolated HOME", async () => {
-  const home = fs.realpathSync(fs.mkdtempSync("/private/tmp/iamceo-fakehome-"));
+  const home = fs.realpathSync(testTempDir("iamceo-fakehome-", "/private/tmp"));
   const child = Bun.spawn([process.execPath, "tests/fixtures/home-secrets.ts", "--extended"], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
   const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(code, errors).toBe(0);
@@ -98,7 +99,7 @@ test("employee file tool shares secret-name and relocated state/provider-home pr
 
 
 test("configuration and environment credential roots canonicalize aliases independently, including a missing descendant", () => {
-  const root = fs.mkdtempSync("/private/tmp/iamceo-roots-");
+  const root = testTempDir("iamceo-roots-", "/private/tmp");
   const actual = join(root, "actual"); fs.mkdirSync(actual);
   const alias = join(root, "alias"); fs.symlinkSync(actual, alias);
   const roots = configuredSecretRoots({ home: join(alias, "state"), claudeHome: join(alias, "claude"), codexHome: join(alias, "codex") },
@@ -111,7 +112,7 @@ test("configuration and environment credential roots canonicalize aliases indepe
 });
 
 test("project artifacts, home workspaces, narrow basenames and relocated defaults share employee and local-file policy in an isolated HOME", async () => {
-  const home = fs.mkdtempSync("/private/tmp/iamceo-fakehome-");
+  const home = testTempDir("iamceo-fakehome-", "/private/tmp");
   const child = Bun.spawn([process.execPath, "tests/fixtures/file-path-policy.ts"], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
   const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(code, errors).toBe(0);

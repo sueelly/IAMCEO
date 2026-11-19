@@ -1,14 +1,29 @@
 // No import-time config reads, listeners, environment mutations, or provider discovery.
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { releaseTestDir, testTempDir } from "./test-run-dirs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { CoreRunnerOptions } from "../../server/runner/core";
 
 export interface ProviderHomes { claudeHome: string; codexHome: string; contextHome: string }
 export type IsolatedRuntime = ReturnType<typeof createIsolatedRuntime>;
 
+/** Child probes accept only this fixture's canonical data and working directories. */
+export function isIsolatedProbeRoot(root: string) {
+  if (process.env.IAMCEO_TEST !== "1" || !/^iq-[A-Za-z0-9]{6}$/.test(basename(root)) ||
+      process.env.IAMCEO_HOME !== join(root, "iamceo") || process.cwd() !== join(root, "work")) return false;
+  try {
+    if (realpathSync(process.env.IAMCEO_HOME) !== process.env.IAMCEO_HOME) return false;
+    const parent = dirname(root);
+    if (parent === "/private/tmp") return true;
+    const marker = join(parent, ".owner");
+    return /^run-[a-z0-9_]{8}$/.test(basename(parent)) && lstatSync(marker).isFile() &&
+      /^[a-f0-9]{32}$/.test(readFileSync(marker, "utf8"));
+  } catch { return false; }
+}
+
 export function createIsolatedRuntime() {
   // Short, canonical Unix socket paths also work on Darwin (104-byte sockaddr_un).
-  const dir = realpathSync(mkdtempSync("/private/tmp/iq-"));
+  const dir = realpathSync(testTempDir("iq-", "/private/tmp"));
   const paths = Object.freeze({
     home: join(dir, "home"), iamceoHome: join(dir, "iamceo"), work: join(dir, "work"),
     claudeHome: join(dir, "claude"), codexHome: join(dir, "codex"), contextHome: join(dir, "context"),
@@ -149,7 +164,7 @@ await import(${JSON.stringify(fakeClaude)});
       await Promise.all([...servers].map((server) => server.stop(true)));
       // Never follow a replaced root when cleaning up.
       if (lstatSync(dir).isSymbolicLink() || realpathSync(dir) !== dir) throw new Error("Fixture root ownership changed");
-      rmSync(dir, { recursive: true });
+      releaseTestDir(dir);
     })();
     return stopping;
   }

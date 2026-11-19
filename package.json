@@ -18,7 +18,7 @@
   "scripts": {
     "start": "bun bin/iamceo.ts serve",
     "dev": "bun --watch bin/iamceo.ts serve",
-    "test": "bun test tests",
+    "test": "/usr/bin/python3 scripts/test-run.py bun test tests",
     "typecheck": "tsc --noEmit",
     "build": "bun scripts/build-app.ts",
     "build:release": "bun scripts/build-release.ts",

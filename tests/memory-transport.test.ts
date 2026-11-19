@@ -1,5 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus.ts";
 import { openDb } from "../server/db.ts";
@@ -12,7 +13,7 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
 type Body = { project_id: string; experience: { event_id: string } };
 const acknowledged = (body: Body) => Response.json({ ...body.experience, id: `exp-${body.experience.event_id}`, project_id: body.project_id }, { status: 201 });
 function fixture(reply: (body: Body, init: RequestInit) => Promise<Response> = async body => acknowledged(body)) {
-  const home = mkdtempSync("/private/tmp/iamceo-memory-transport-"), keyFile = join(home, "key");
+  const home = testTempDir("iamceo-memory-transport-", "/private/tmp"), keyFile = join(home, "key");
   writeFileSync(keyFile, "isolated-memory-transport-key", { mode: 0o600 });
   const db = openDb(":memory:"), store = new Store(db, new Bus());
   const one = store.createProject({ name: "첫 프로젝트", cwd: home }), two = store.createProject({ name: "두 번째 프로젝트", cwd: home });
@@ -24,7 +25,7 @@ function fixture(reply: (body: Body, init: RequestInit) => Promise<Response> = a
   memory.setProjectGate(id => enabled.has(id));
   let closed = false;
   const closeDb = () => { db.close(); closed = true; };
-  cleanups.push(async () => { memory.stop(); await memory.drain?.(); if (!closed) closeDb(); rmSync(home, { recursive: true, force: true }); });
+  cleanups.push(async () => { memory.stop(); await memory.drain?.(); if (!closed) closeDb(); releaseTestDir(home); });
   function enqueue(id: string, projectId = one.id, body?: string) {
     store.enqueueMemoryUpload({ eventId: id, projectId, refType: "archive_message", refId: id,
       body: body ?? JSON.stringify({ event_id: id, kind: "outcome", summary: id, content: `원문 ${id}`, source: { task_id: "task-original", service: "iamceo" } }) });

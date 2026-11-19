@@ -1,6 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { providerLaunch } from "../server/runner/providers.ts";
 
@@ -8,7 +8,7 @@ import { providerLaunch } from "../server/runner/providers.ts";
 // no account credential, production session or billed model request is used.
 const binary = process.env.IAMCEO_CODEX_POLICY_BIN;
 test.skipIf(!binary)("installed Codex executes routine conductor tools and denies staff control and outside tools", async () => {
-  const root = mkdtempSync(join(tmpdir(), "iamceo-native-policy-"));
+  const root = testTempDir("iamceo-native-policy-");
   const home = join(root, "codex"); mkdirSync(home);
   const observed = new Set<string>();
   const calls = ["post", "team_assign", "team_stop"];
@@ -74,6 +74,6 @@ test.skipIf(!binary)("installed Codex executes routine conductor tools and denie
     expect(readFileSync(received, "utf8").trim().split("\n").sort()).toEqual(["post", "team_assign"]);
   } finally {
     child?.kill(); if (child) await child.exited;
-    await server.stop(true); rmSync(root, { recursive: true, force: true });
+    await server.stop(true); releaseTestDir(root);
   }
 }, 20_000);

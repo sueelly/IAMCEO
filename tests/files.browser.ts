@@ -1,9 +1,9 @@
 // 자료 화면: 종류별 보기를 실제 서버(가짜 claude)와 브라우저로 본다. 악성 아티팩트는 진짜 화면 안에서 격리를 뚫지 못해야 한다.
 // IAMCEO_SHOTS=<폴더> 를 주면 캡처를 남긴다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from "playwright";
 import type { FileDoc, Member, Project, ProjectState } from "../shared/types.ts";
@@ -18,7 +18,7 @@ afterAll(async () => { await core.stop(); });
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
-const WORK = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-files-")));
+const WORK = realpathSync(testTempDir("iamceo-files-"));
 const HOME = join(WORK, "home");
 const DIR = join(WORK, "project");
 mkdirSync(HOME);

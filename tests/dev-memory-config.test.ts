@@ -1,12 +1,13 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as memory from "../server/integrations/dev-memory.ts";
 
 const homes: string[] = [];
-afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
+afterEach(() => { for (const home of homes.splice(0)) releaseTestDir(home); });
 function fixture(value?: unknown) {
-  const home = mkdtempSync("/private/tmp/iamceo-memory-config-");
+  const home = testTempDir("iamceo-memory-config-", "/private/tmp");
   homes.push(home);
   const path = join(home, "development-memory.json"), keyFile = join(home, "gateway-key");
   if (value !== undefined) writeFileSync(path, JSON.stringify(value), { mode: 0o600 });

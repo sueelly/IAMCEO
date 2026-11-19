@@ -1,7 +1,7 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Member, Backend } from "../shared/types.ts";
 import { memberConfig, DEFAULT_RANKS } from "../shared/types.ts";
@@ -39,7 +39,7 @@ class FakeCore implements Runner {
 const cleanup: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 function fixture() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-core-server-"));
+  const home = testTempDir("iamceo-core-server-");
   const config = loadConfig({ IAMCEO_HOME: home, IAMCEO_PORT: "0" });
   const bus = new Bus();
   const db = openDb(config.dbPath);
@@ -167,7 +167,7 @@ test("member creation and optimistic decisions use authenticated REST contracts"
 
 
 test("pre-migration backup preserves old rows, provider and session without mutating the snapshot", () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-migration-backup-"));
+  const home = testTempDir("iamceo-migration-backup-");
   const path = join(home, "iamceo.db");
   // Build the actual historical prefix; later migrations may add dependent indexes/triggers.
   const providerMigration = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE member_session_history"));

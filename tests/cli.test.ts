@@ -1,7 +1,7 @@
 // bin/iamceo.ts 와 가져오기. 시험 소켓·임시 폴더만 쓰고 launchctl·claude 는 부르지 않는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Backend, Member, Project, ProjectState } from "../shared/types.ts";
 import { buildId, launchdPlist, service, servicePath, waitForReadiness } from "../bin/iamceo.ts";
@@ -39,7 +39,7 @@ async function cli(home: string, args: string[], opts: { stdin?: string; env?: R
   return { stdout, stderr, code };
 }
 
-const newHome = () => mkdtempSync(join(tmpdir(), "iamceo-cli-"));
+const newHome = () => testTempDir("iamceo-cli-");
 const stops: (() => void | Promise<void>)[] = [];
 const servers = createTestServerScope();
 afterAll(async () => {
@@ -69,7 +69,7 @@ async function serve(home: string, port: number) {
 
 describe("접근 범위", () => {
   test("setup --hosts: lan·직접 적기·기본, 0.0.0.0 은 거부", async () => {
-    const home = mkdtempSync(join(tmpdir(), "iamceo-cli-hosts-"));
+    const home = testTempDir("iamceo-cli-hosts-");
     const readHosts = () => (JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as { hosts?: string[] }).hosts;
     const bad = await cli(home, ["setup", "--backend", "core", "--port", "7878", "--hosts", "0.0.0.0"]);
     expect(bad.code).toBe(1);
@@ -436,6 +436,7 @@ describe("가져오기", () => {
     stops.push(async () => {
       await orch.shutdown();
       await server.stop();
+      store.db.close();
     });
 
     store.patchSettings({ backend: "herdr" });
@@ -605,7 +606,7 @@ test("같은 홈의 다른 포트 데몬은 DB/복구 전에 거부하고 종료
 
 test("컴파일 산출물의 서비스 감독 프로세스가 로그·build ID·port0·SIGTERM 정리를 연결한다", async () => {
   const home = newHome(); const binary = join(home, "iamceo");
-  const compile = Bun.spawn([process.execPath, "build", CLI, "--compile", "--outfile", binary], { stdout: "ignore", stderr: "pipe" });
+  const compile = Bun.spawn([process.execPath, "build", CLI, "--compile", "--outfile", binary], { cwd: home, stdout: "ignore", stderr: "pipe" });
   const diagnostics = new Response(compile.stderr).text();
   expect(await compile.exited, await diagnostics).toBe(0);
   updateConfigFile({ hosts: ["127.0.0.1"] }, { IAMCEO_HOME: home });
