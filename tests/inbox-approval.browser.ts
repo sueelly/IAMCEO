@@ -1,7 +1,7 @@
 // 결재함 '승인 대기'에서 core 직원 CLI 의 승인 창에 답하기(대표 2026-11-17 "터미널 승인하는 거 결재함에서 클릭할 수 있도록 해").
 // 실제 서버(http.ts)·실제 CoreRunner·실제 화면·격리 DB. core 는 격리 가짜 소켓이고 실제 CLI·모델은 없다(창 글은 Claude Code 2.1.322 실측 캡처).
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
@@ -57,7 +57,13 @@ const runsThen = (m: Member, output: string, report = false) => () => {
   h.screen = composer(`⏺ Bash(touch probe-claude.txt && ls -l probe-claude.txt)\n  ⎿  Running…`);
   // 직원이 결과를 보고한 뒤 턴을 끝낸다(보고 없이 끝나면 서버가 보고 보완을 보내 다시 일하게 된다)
   setTimeout(async () => {
-    if (report) await orch.recordPost(store.requireMember(m.id), { kind: "완료", title: "시험 파일을 만들었습니다", taskId: task.id });
+    if (report) {
+      const path = join(runtime.paths.work, "probe-claude.txt");
+      writeFileSync(path, "");
+      expect(statSync(path).size).toBe(0);
+      await orch.recordPost(store.requireMember(m.id), { kind: "완료", title: "시험 파일을 만들었습니다", taskId: task.id, contractRev: 1,
+        checks: [{ kind: "real", name: "승인한 시험 파일 확인", result: "pass", criterion: 1, evidence: "격리 작업 폴더의 probe-claude.txt가 빈 파일이다" }] });
+    }
     h.terminal.status = { state: "idle" } as CoreTerminal["status"]; h.terminal.turn = (h.terminal.turn ?? 0) + 1; h.screen = composer(output);
   }, 600);
 };
@@ -93,7 +99,10 @@ beforeAll(async () => {
         else if (method === "terminal.send") {
           if (p.force) { h.onKeys?.([p.text]); result = { turn: h.terminal.turn }; }
           else if (h.terminal.status?.state !== "idle") result = undefined;
-          else { h.terminal.status = { state: "working" }; result = { turn: h.terminal.turn, started: true }; }
+          else if (/^\/effort ultracode (on|off)$/.test(p.text)) {
+            h.screen = composer(`${p.text}\nUltracode ${p.text.endsWith("on") ? "on" : "off"} (this session only)`);
+            result = { turn: h.terminal.turn, started: true };
+          } else { h.terminal.status = { state: "working" }; result = { turn: h.terminal.turn, started: true }; }
         } else if (method === "terminal.keys") { h.onKeys?.(p.keys); result = { turn: h.terminal.turn }; }
         else if (method === "terminal.interrupt") { h.terminal.status = { state: "idle" }; result = { outcome: "stopped" }; }
         else if (method === "terminal.kill") { h.terminal.state = "finished"; result = h.terminal; }
@@ -118,10 +127,12 @@ beforeAll(async () => {
   orch.setServerUrl(base);
   pay = await orch.createMember(project.id, { name: "결제 연동", cli: "claude" });
   task = orch.saveTask(pay, { title: "환불 기능", branch: "feat/refund" }).task;
-  await orch.recordPost(pay, { kind: "진행", title: "환불 설계 시작", taskId: task.id });
-  // 업무가 붙은 실행을 하나 연다(카드의 '업무' 칸). 실제 CLI 대신 가짜 소켓이 일하는 중으로 받는다.
-  await orch.sendUserMessage(project.id, { text: "환불 기능 시험 파일을 만들어 주세요", targetMemberId: pay.id, taskId: task.id });
-  for (let i = 0; i < 50 && store.requireMember(pay.id).status !== "working"; i++) await settle(40);
+  await orch.sendUserMessage(project.id, { intent: "execute", text: "환불 기능 시험 파일을 만들어 주세요", targetMemberId: pay.id, taskId: task.id,
+    contract: { kind: "other", goal: "승인한 시험 파일을 만든다", inputs: ["대표의 환불 기능 시험 지시"], outputs: ["빈 probe-claude.txt"],
+      scope: "격리 폴더에서 시험 파일을 만든다", constraints: [], exclusions: [], acceptance: ["probe-claude.txt가 빈 파일로 생성됐다"], checks: ["real"] } });
+  for (let i = 0; i < 100 && !store.listPendingExecutions().some(run => run.memberId === pay.id && run.inputReceivedAt); i++) await settle(40);
+  const active = store.listPendingExecutions().find(run => run.memberId === pay.id && run.inputReceivedAt);
+  expect(active?.deliveryIds.map(id => store.deliveryTaskId(id))).toEqual([task.id]);
   browser = await chromium.launch();
 });
 
@@ -158,6 +169,8 @@ describe("결재함에서 직원 CLI 승인 창에 답하기", () => {
   test("데스크톱: 직원·업무·창 글·선택지와 고르면 생기는 일을 보고, 승인하면 한 번 들어가 단계가 나뉘어 보인다", async () => {
     block(pay, BASH, runsThen(pay, "⏺ Bash(touch probe-claude.txt && ls -l probe-claude.txt)\n  ⎿  -rw-r--r--  1 me  staff  0 Nov 17 12:00 probe-claude.txt", true));
     await waitBlocked(pay);
+    const prompt = await orch.memberNativePrompt(pay.id);
+    expect(prompt.context?.taskId).toBe(task.id);
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await openInbox(page);
     const c = card(page);
