@@ -1107,6 +1107,12 @@ export const MIGRATIONS: string[] = [
    CREATE INDEX owner_command_legacy_page ON owner_command_legacy_tasks(project_id,created_at DESC,task_id DESC);`,
   // Routine reports remain in the shared feed. Recovery must not invent a terminal delivery.
   `ALTER TABLE report_references ADD COLUMN board_only INTEGER NOT NULL DEFAULT 0 CHECK(board_only IN (0,1));`,
+  // Retain stable author and reviewer IDs when an owner removes a sleeping runner from the roster.
+  `ALTER TABLE members ADD COLUMN retired_at TEXT;
+   ALTER TABLE members ADD COLUMN retired_handle TEXT;
+   CREATE VIEW active_members AS SELECT m.rowid AS roster_rowid, m.* FROM members m WHERE m.retired_at IS NULL;
+   DROP INDEX members_project_standby_reviewer;
+   CREATE UNIQUE INDEX members_project_standby_reviewer ON members(project_id) WHERE standby_reviewer=1 AND retired_at IS NULL;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

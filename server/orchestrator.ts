@@ -2955,6 +2955,18 @@ export class Orchestrator implements OrchestratorApi {
     return result("stopped");
   }
 
+  async retireMember(memberId: string): Promise<void> {
+    if (this.store.isRetiredMember(memberId)) return;
+    const member = this.store.requireMember(memberId);
+    const rt = this.runtime(memberId);
+    if (rt.starting || rt.reopening || rt.pumping || rt.closing || rt.background || this.isBusy(member) ||
+        this.pendingLifecycle(memberId) || this.terminalMutations.has(memberId) || this.configWrites.has(memberId)) {
+      throw new ApiError(409, "진행 중인 실행이나 세션 변경을 마친 뒤 명부에서 뺄 수 있습니다");
+    }
+    this.store.retireSleepingMember(memberId);
+    this.clearRuntime(memberId, rt);
+  }
+
   /** 화면의 '명부에서 빼기'. 직접 띄운 세션만. 실행기 세션은 총괄이 team_close 로 닫는다. */
   async memberClose(memberId: string): Promise<void> {
     const member = this.store.requireMember(memberId);

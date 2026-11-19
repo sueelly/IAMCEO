@@ -133,6 +133,7 @@ export interface OrchestratorApi {
   stopMember?(memberId: string, opts: { by: string } & StopReq): Promise<StopResult>;
   /** 직접 띄운 세션을 명부에서 뺀다. */
   memberClose?(memberId: string): Promise<void>;
+  retireMember?(memberId: string): Promise<void>;
   /** 직접 띄운 CLI 의 도구 호출로 상태를 고친다. */
   noteManualCall?(member: Member, tool: string): void;
   /** herdr 칸 화면. 없으면 빈 글. */
