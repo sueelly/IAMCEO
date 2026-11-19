@@ -1084,6 +1084,9 @@ export const MIGRATIONS: string[] = [
     SELECT w.task_id,w.project_id,w.tripped_at,w.trip_reason,w.notice_delivery_id
     FROM task_watch w JOIN tasks t ON t.id=w.task_id AND t.project_id=w.project_id
     WHERE w.tripped_at IS NOT NULL AND w.trip_reason GLOB '진척 없이 [0-9]*분([0-9]*번 시도)';`,
+  // v58: some v57 releases were counted as retained when a SQLite trigger enqueued completion work.
+  `ALTER TABLE legacy_task_timer_stops ADD COLUMN v57_recheck TEXT CHECK(v57_recheck IN ('pending','verified','unchanged'));
+   UPDATE legacy_task_timer_stops SET v57_recheck='pending' WHERE outcome='retained';`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

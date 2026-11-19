@@ -40,7 +40,7 @@ export default function WorkflowDetail({ node, task, state, online, onClose, onF
       {[...actions].map(([href, label]) => <a key={href} className="wf-action" href={href} onClick={onClose}>{label}<span aria-hidden="true"> →</span></a>)}
       <dl className="wf-detail__facts">
         {node.assignmentSource === "report" || node.assignmentSource === "board" ? <><dt>담당 근거</dt><dd>{node.assignmentSource === "report" ? "이 직원이 수행 보고를 남겼습니다" : "진행판에서 이 직원을 담당으로 지정했습니다"}</dd></> : null}
-        {task?.progress ? <><dt>업무 단계</dt><dd>{taskStageLabel(task.progress)}{task.progress.next ? <p>{task.progress.next}</p> : null}</dd></> : null}
+        {task?.progress ? <><dt>업무 단계</dt><dd>{taskStageLabel(task.progress)}{task.progress.next && task.progress.next !== node.reason ? <p>{task.progress.next}</p> : null}</dd></> : null}
         {node.lastActivity ? <><dt>{["text", "tool", "tool_result", "error", "turn_start", "turn_end", "system", "compact"].includes(node.lastActivity.kind) ? online && executing(node) ? "최근 실행" : "마지막 실행" : "마지막 보고"}</dt><dd>{node.lastActivity.title}<Time iso={node.lastActivity.at} /></dd></> : null}
         {node.observedAt ? <><dt>상태 확인</dt><dd><Time iso={node.observedAt} /></dd></> : null}
         {node.counts.queued || node.counts.held || node.counts.notices ? <><dt>전달</dt><dd>{[node.counts.queued ? `대기 ${node.counts.queued}` : "", node.counts.held ? `보류 ${node.counts.held}` : "", node.counts.notices ? `알림 ${node.counts.notices}` : ""].filter(Boolean).join(" · ")}</dd></> : null}

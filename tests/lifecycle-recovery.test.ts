@@ -338,7 +338,7 @@ test("Codex gone then wake with an unknown native ID cannot create a fresh conve
   expect(f.store.requireMember(member.id).paneId).toBe(member.paneId);
 });
 
-test("restart recognizes a later settled core turn without interruption or another send", async () => {
+test("restart recognizes a later settled core turn and sends only its missing-report followup", async () => {
   const f = await fixture(); const member = await f.createWorker();
   await f.orch.assign(f.project.id, member.handle, { text: "Finish while away" });
   const run = f.store.listPendingExecutions()[0]!;
@@ -347,7 +347,18 @@ test("restart recognizes a later settled core turn without interruption or anoth
   terminal.turn = 1; terminal.status = { state: "done" };
   const next = f.orchestrator(); await next.orch.recover();
   expect(f.store.getExecutionJournal(run.runId)).toMatchObject({ phase: "ended", result: "success", interruptionNotifiedAt: null });
-  expect(f.count("terminal.send")).toBe(1); expect(f.count("terminal.run")).toBe(1);
+  const followup = f.store.getReportFollowup(run.runId)!;
+  expect(followup).toMatchObject({ rootRunId: run.runId, memberId: member.id, projectId: member.projectId });
+  await until(() => f.store.requireDelivery(followup.deliveryId).status === "delivered");
+
+  const dispatches = f.store.listDispatches(member.id);
+  expect(dispatches.map(d => d.items.map(item => item.deliveryId))).toEqual([run.deliveryIds, [followup.deliveryId]]);
+  expect(dispatches[0]!.dispatchId).toBe(run.runId);
+  const sends = f.calls.filter(call => call.method === "terminal.send").map(call => call.params.text);
+  expect(sends).toEqual(dispatches.map(d => d.wireText));
+  expect(sends.filter(text => text?.includes("Finish while away"))).toHaveLength(1);
+  expect(f.count("terminal.run")).toBe(1);
+  expect(f.count("terminal.interrupt")).toBe(0);
 });
 
 test("a write whose reply was lost settles from log receipt once a later turn is seen, then asks for the missing report", async () => {

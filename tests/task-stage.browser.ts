@@ -90,6 +90,7 @@ test("업무 흐름과 대화가 팀 점검·보류 사유와 대표 할 일을 
         expect(await page.locator(".wf-node").filter({ hasText: pay.title }).evaluateAll(nodes =>
           [...new Set(nodes.map(node => node.getAttribute("data-task-id")))])).toEqual([pay.id]);
         let dialog = await detail(hold);
+        expect((await dialog.innerText()).split(suspended).length - 1).toBe(1);
         expect(await dialog.locator(".wf-detail__reason").innerText()).toContain(suspended);
         await page.keyboard.press("Escape");
         dialog = await detail(old);
@@ -97,7 +98,7 @@ test("업무 흐름과 대화가 팀 점검·보류 사유와 대표 할 일을 
         expect(await dialog.locator(".wf-detail__facts").innerText()).toContain("자동으로 다시 보내지 않습니다");
         await page.keyboard.press("Escape");
         dialog = await detail(pay);
-        expect(await dialog.locator(".wf-detail__facts").innerText()).toContain(fix);
+        expect(await dialog.innerText()).toContain(fix);
         await dialog.getByRole("link", { name: /업무 대화/ }).click();
         const payThread = page.locator(".th-task").filter({ hasText: pay.title });
         await payThread.waitFor();
@@ -106,7 +107,7 @@ test("업무 흐름과 대화가 팀 점검·보류 사유와 대표 할 일을 
         dialog = await detail(merge);
         const facts = await dialog.locator(".wf-detail__facts").innerText();
         expect(facts).toContain("팀 확인 대기");
-        expect(facts).toContain("통합 뒤 회귀");
+        expect(await dialog.innerText()).toContain("통합 뒤 회귀");
         await dialog.getByRole("link", { name: /업무 대화/ }).click();
         const thread = page.locator(".th-task").filter({ hasText: merge.title });
         await thread.waitFor();

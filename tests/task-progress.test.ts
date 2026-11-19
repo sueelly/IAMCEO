@@ -27,7 +27,7 @@ describe("단계 계산", () => {
     f.todos.push({ id: "td_1", title: "로그인", at: "2026-11-17T10:03:00.000Z" });
     expect(deriveProgress(f)).toMatchObject({ stage: "owner", owner: "대표" });
     f.marks.push({ id: 1, stage: "hold", at: "2026-11-17T10:04:00.000Z", who: "총괄", evidence: "다음 주로" });
-    expect(deriveProgress(f)).toMatchObject({ stage: "hold", cause: "hold" });
+    expect(deriveProgress(f)).toMatchObject({ stage: "hold", cause: "hold", next: "다음 주로" });
     f.marks.push({ id: 2, stage: "done", at: "2026-11-17T10:05:00.000Z", who: "총괄", evidence: "확인" });
     expect(deriveProgress(f)).toMatchObject({ stage: "done", cause: null, next: null });
   });

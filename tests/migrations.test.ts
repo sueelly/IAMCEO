@@ -814,6 +814,8 @@ test("v57 retires only a proven untouched timer notice and preserves delivered a
   old.exec("INSERT INTO delivery_dispatch_items(dispatch_id,delivery_id,ordinal) VALUES('dispatch','n-dispatch',0)");
   const retained = (db:Database) => db.query("SELECT d.*,r.* FROM deliveries d LEFT JOIN delivery_recovery r ON r.delivery_id=d.id WHERE d.id <> 'n-fresh' ORDER BY d.id").all();
   const kept = retained(old);
+  // The live completion reconciler drains its queue before a later deployment.
+  old.exec("DELETE FROM completion_changes");
   old.close();
 
   const db = track(openDb(path)), store = new Store(db,new Bus());
@@ -855,4 +857,65 @@ test("after v57 the normal coordinator continues an authorized timed-out task ex
   expect(coordinator(again).check(Date.now()+4500, member => member.id === lead.id)).toEqual([]);
   expect(again.taskProgress("owner").stage).toBe("owner");
   expect(again.taskProgress("held").stage).toBe("hold");
+});
+
+test("v58 reconciles v57 clears with trigger side effects, keeping new episodes, explicit reopens and physical inputs", () => {
+  const { path, runtime } = fixture(), old = historicalDb(path, 56);
+  const ids = ["untouched","later-report","uncertain","other-reopen","family-reopen","manual","new-stop","new-notice","new-watch","replaced","escalated","absent"];
+  const later = "2026-11-07T03:00:00.000Z";
+  for (const id of ids) {
+    const reason = ["later-report","family-reopen"].includes(id) ? timerReason : "진척 없이 121분(2번 시도)";
+    legacyWatch(old, id, reason);
+    const body = `[시스템] 반복 감시: 업무 #${id} '이전 업무'의 막힘이 ${reason}. 이 업무의 자동 반복을 멈췄습니다.`;
+    old.query("INSERT INTO deliveries(id,project_id,member_id,task_id,kind,text,status,created_at) VALUES(?,'p','m',?,'system',?,'queued',?)")
+      .run("notice-"+id, id, body, timerAt);
+    old.query("INSERT INTO delivery_recovery(delivery_id,updated_at) VALUES(?,?)").run("notice-"+id, timerAt);
+    old.query("UPDATE task_watch SET notice_delivery_id=? WHERE task_id=?").run("notice-"+id,id);
+  }
+  old.exec(MIGRATIONS[56]!);
+  old.exec("PRAGMA user_version=57; DELETE FROM completion_changes");
+  // Reproduce the shipped v57 comparison. Bun includes completion_changes inserts
+  // from the v49 trigger in run().changes even though exactly one watch changed.
+  for (const id of ids) {
+    const rows = old.query("UPDATE task_watch SET tripped_at=NULL,trip_reason=NULL,notice_delivery_id=NULL WHERE task_id=?").run(id);
+    old.query("UPDATE legacy_task_timer_stops SET outcome=? WHERE task_id=?").run(rows.changes === 1 ? "released" : "retained", id);
+  }
+  expect(old.query("SELECT count(*) AS n FROM legacy_task_timer_stops WHERE outcome='retained'").get()).toEqual({n:ids.length});
+  old.query("UPDATE task_watch SET updated_at=?,last_progress_at=?,history_json=json_set(history_json,'$[#-1].at',?) WHERE task_id IN ('later-report','family-reopen')")
+    .run(later,later,later);
+  for (const parent of ["other-reopen","family-reopen"]) {
+    const child = parent+"-child";
+    old.query("INSERT INTO tasks(id,project_id,parent_task_id,title,created_at,updated_at) VALUES(?,'p',?,?,?,?)").run(child,parent,child,at,at);
+    old.query("INSERT INTO task_stage_marks(project_id,task_id,stage,evidence,who,at) VALUES('p',?,'reopen','다른 업무의 계획 변경','총괄',?)")
+      .run(child,later);
+  }
+  old.exec("UPDATE delivery_recovery SET phase='checking' WHERE delivery_id='notice-uncertain'");
+  old.query("INSERT INTO task_stage_marks(project_id,task_id,stage,evidence,who,at) VALUES('p','manual','reopen','계획 변경','총괄',?)").run(later);
+  old.query("UPDATE task_watch SET tripped_at=?,trip_reason='새 반복 실패',same_count=3 WHERE task_id='new-stop'").run(later);
+  old.exec("UPDATE task_watch SET notice_delivery_id='new-notice-id' WHERE task_id='new-notice'");
+  old.query("UPDATE task_watch SET started_at=?,updated_at=?,last_progress_at=? WHERE task_id='new-watch'").run(later,later,later);
+  old.query("UPDATE task_watch SET updated_at=? WHERE task_id='replaced'").run(later);
+  old.query("INSERT INTO task_failure_escalations(task_id,decision_id,tripped_at,created_at) VALUES('escalated','decision',?,?)").run(timerAt,timerAt);
+  old.exec("DELETE FROM task_watch WHERE task_id='absent'");
+  const snapshots = (db: Database) => db.query("SELECT * FROM task_watch ORDER BY task_id").all();
+  const before = snapshots(old);
+  old.close();
+
+  expect(optimizeStorage(runtime.paths.iamceoHome).verified).toBe(true);
+  const db = openDb(path), store = new Store(db, new Bus());
+  const outcome = (db:Database,id:string) => db.query("SELECT outcome FROM legacy_task_timer_stops WHERE task_id=?").get(id);
+  for (const id of ids) {
+    const eligible = ["untouched","later-report","uncertain","other-reopen"].includes(id);
+    expect(outcome(db,id),id).toEqual({outcome:eligible ? "released" : "retained"});
+    expect(store.requireDelivery("notice-"+id).status,id).toBe(eligible && id !== "uncertain" ? "failed" : "queued");
+  }
+  expect(snapshots(db)).toEqual(before);
+  expect(store.getDeliveryRecovery("notice-uncertain")?.phase).toBe("checking");
+  db.exec("UPDATE delivery_recovery SET phase='none' WHERE delivery_id='notice-uncertain'");
+  const doneRecovery = store.getDeliveryRecovery("notice-untouched");
+  db.close();
+  const again = new Store(track(openDb(path)), new Bus());
+  expect(again.getDeliveryRecovery("notice-untouched")).toEqual(doneRecovery);
+  expect(again.requireDelivery("notice-uncertain").status).toBe("queued");
+  expect(snapshots(again.db)).toEqual(before);
 });
