@@ -747,7 +747,21 @@ export interface Bootstrap {
   rankOverrides: Record<Exclude<Rank, "staff">, number>;
 }
 
+export const PROJECT_PROGRESS_LIMIT = 30;
+export interface ProjectProgressUpdate {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  memberId: string;
+  who: string;
+  title: string;
+  body: string;
+  at: string;
+}
+
 export interface ProjectState {
+  /** 최근 직원 진행 기록. at와 id 내림차순. */
+  progressUpdates?: ProjectProgressUpdate[];
   workflow?: import("./workflow.ts").ProjectWorkflow;
   project: Project;
   members: Member[];
@@ -794,6 +808,7 @@ export type WsEvent =
   | { type: "todo"; todo: Todo }
   | { type: "work"; projectId: string; work: WorkItem[] }
   | { type: "message"; message: Message }
+  | { type: "progressUpdate"; update: ProjectProgressUpdate }
   | { type: "file"; file: FileDoc }
   | { type: "task"; task: Task }
   | { type: "activity"; projectId: string; activity: Activity }

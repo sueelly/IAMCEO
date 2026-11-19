@@ -4548,7 +4548,6 @@ export class Orchestrator implements OrchestratorApi {
       if (!about || about.projectId !== member.projectId || about.mine || !about.memberId || about.memberId === member.id) throw new ApiError(400, "about_report_id 는 이 프로젝트 다른 직원 보고의 원본 id 여야 합니다(받은 글의 '보고 원본 #' 줄)");
     }
     const closure = this.postClosure(member, input);
-    const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
     // 고정 출처: 이어 준 결재·자료, 정정하는 자신의 이전 보고
     const taskId = this.memberTask(member, input.taskId, [
       input.decisionId ? this.store.getDecision(input.decisionId)?.taskId : null,
@@ -4634,10 +4633,11 @@ export class Orchestrator implements OrchestratorApi {
     const internal = !publicEvidence && (input.kind === "진행" || confirmation);
     if (priorCheckpoint && (priorCheckpoint.taskId !== taskId || !internal)) throw new ApiError(400, "내부 진행 기록은 같은 업무의 진행에서만 정정할 수 있습니다");
     const saveProgress = () => {
-      const saved = this.store.saveCheckpoint(member, taskId, { title: input.title, body: input.body ?? "", checks,
+      const saved = this.store.saveCheckpoint(member, taskId, { kind: input.kind === "진행" ? "진행" : "알림",
+        title: input.title, body: withOwnerLine(input.body, input.ownerAction), checks,
         contractTaskId: contract?.taskId ?? null, contractRev: recordRev, correctsId: input.correctsMessageId ?? null,
         aboutReportId: input.aboutReportId ?? null, sourceCommandId: input.sourceCommandId, continuesWork: input.continueWork === true });
-      if (input.kind === "진행") this.setMemberStatus(member, input.title, input.nextAction);
+      if (input.kind === "진행") this.patchMemberStatus(member, input.title, input.nextAction);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "checkpoint", refId: saved.id, ...closure });
       if (input.continueWork && taskId) {
         const watch = this.watchReport({ ...saved, kind: "진행" }, true, input.correctsMessageId);
@@ -4649,7 +4649,7 @@ export class Orchestrator implements OrchestratorApi {
     if (internal) {
       const checkpoint = this.store.transaction(saveProgress);
       rt.posted = true;
-      if (noticeTo) await this.pump(noticeTo);
+      if (noticeTo) void this.pump(noticeTo);
       return checkpoint;
     }
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
@@ -4657,8 +4657,8 @@ export class Orchestrator implements OrchestratorApi {
       title: rt.direct ? `(직접) ${input.title}` : input.title,
       body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId, aboutMessageId: input.aboutReportId ?? null,
     }), message => {
-      // Older clients can attach a deliverable and record their next repair in a single post.
-      if (input.continueWork) saveProgress();
+      // 진행에 첨부한 결과물은 기존 공개 글에 보존하고, 진행사항에도 같은 거래에서 기록한다.
+      if (input.kind === "진행") saveProgress();
       else if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null }, input.sourceCommandId);
       if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, artifact, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
@@ -4677,13 +4677,18 @@ export class Orchestrator implements OrchestratorApi {
       const routine = (message.kind === "진행" || message.kind === "알림") && !input.correctsMessageId &&
         !input.aboutReportId && !input.reviewNeeded && !input.decisionId && !files.length && !parseOwnerLine(message.body);
       const wake = this.reportWakesConductor(message);
-      if (member.kind === "worker" && (routine || message.kind === "완료" && !wake || watch.quiet)) {
+      if (input.kind === "진행" || (member.kind === "worker" && (routine || message.kind === "완료" && !wake || watch.quiet))) {
         this.store.db.query("UPDATE report_references SET board_only=1 WHERE source_message_id=?").run(message.id);
         return [];
       }
+      const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
       return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake, refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
+    if (input.kind === "진행") {
+      if (noticeTo) void this.pump(noticeTo);
+      return message;
+    }
     if (taskId && member.kind === "worker" && this.store.doneMark(taskId)) {
       for (const worker of this.store.listMembers(member.projectId).filter(m => m.kind === "worker")) void this.pump(worker.id);
     }
@@ -4978,7 +4983,17 @@ export class Orchestrator implements OrchestratorApi {
     this.notifier(`IAMCEO · ${normalizeSpace(title).slice(0, 60)}`, normalizeSpace(body).slice(0, 200));
   }
 
-  setMemberStatus(member: Member, now: string, next?: string): Member {
+  setMemberStatus(member: Member, now: string, next?: string, taskId?: string): Member {
+    const scope = taskId !== undefined ? this.memberTask(member, taskId) : null;
+    return this.store.transaction(() => {
+      const updated = this.patchMemberStatus(member, now, next);
+      this.store.saveCheckpoint(updated, scope, { kind: "상태", title: updated.now, body: next === undefined ? "" : updated.next,
+        continuesWork: false, checks: [], contractTaskId: null, contractRev: null, correctsId: null, aboutReportId: null });
+      return updated;
+    });
+  }
+
+  private patchMemberStatus(member: Member, now: string, next?: string): Member {
     return this.store.patchMember(member.id, { now: normalizeSpace(now), ...(next !== undefined ? { next: normalizeSpace(next) } : {}) });
   }
 

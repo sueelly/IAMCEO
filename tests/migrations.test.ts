@@ -926,3 +926,21 @@ test("v58 reconciles v57 clears with trigger side effects, keeping new episodes,
   expect(again.requireDelivery("notice-uncertain").status).toBe("queued");
   expect(snapshots(again.db)).toEqual(before);
 });
+
+test("prior checkpoints retain progress while review and decision receipts stay internal", () => {
+  const before = MIGRATIONS.findIndex(sql => sql.includes("ADD COLUMN checkpoint_kind"));
+  expect(before).toBeGreaterThan(0);
+  const { path } = fixture("progress-feed.db");
+  const old = historicalDb(path, before);
+  for (const [id, closure] of [["routine", null], ["work", "continuing"], ["ack", "reviewed"], ["hold", "waiting"]] as const) {
+    old.query(`INSERT INTO task_checkpoints (id,project_id,member_id,who,at,after_message_seq,title,body,continues_work,checks_json)
+      VALUES (?,'p','m','원 작성자',?,0,?,'',?,'[]')`).run(id, at, id, closure === "continuing" ? 1 : 0);
+    if (closure) old.query(`INSERT INTO report_closures(member_id,project_id,kind,ref_type,ref_id,at)
+      VALUES ('m','p',?,'checkpoint',?,?)`).run(closure, id, at);
+  }
+  old.close();
+  const next = track(openDb(path));
+  const state = new Store(next, new Bus()).projectState("p", { compact: true });
+  expect(state.progressUpdates?.map(row => [row.id, row.who])).toEqual([["work","원 작성자"],["routine","원 작성자"]]);
+  expect(next.query("SELECT COUNT(*) AS total FROM task_checkpoints").get()).toEqual({ total: 4 });
+});

@@ -276,7 +276,7 @@ test("대표 단순 현황 조회는 실행기 없이 DB에서 답하고 중복 
   expect(f.runner.sent).toHaveLength(0);
 });
 
-test("진행 기록은 업무에만 저장하고 자료·대표 요청과 정정은 공개한다", async () => {
+test("진행 기록과 대표 요청은 총괄 전달 없이 볼 수 있고 공개 보고 정정은 유지한다", async () => {
   const f = fixture(), lead = f.member("conductor"), worker = f.member();
   f.store.patchProject(f.project.id, { runnerEnabled: false });
   const taskId = defaultTaskId(f.store, f.project.id);
@@ -285,6 +285,10 @@ test("진행 기록은 업무에만 저장하고 자료·대표 요청과 정정
   expect(f.store.getCheckpoint(progress.id)).toMatchObject({ taskId, memberId: worker.id });
   const action = await f.orch.recordPost(worker, { taskId, kind: "진행", title: "실물 검수 필요", ownerAction: "실물을 확인해 주세요" });
   expect(f.store.requireMessage(action.id).kind).toBe("알림");
+  expect(f.store.listPending(lead.id).filter(d => d.refId === action.id)).toHaveLength(0);
+  expect(f.store.projectState(f.project.id).progressUpdates?.map(update => update.title)).toEqual(
+    expect.arrayContaining(["검증 중", "실물 검수 필요"]),
+  );
   const correction = await f.orch.recordPost(worker, { taskId, kind: "알림", title: "앞선 결과 정정", correctsMessageId: action.id });
   expect(f.store.listPending(lead.id).filter(d => d.refId === correction.id)).toHaveLength(1);
   expect(f.store.listDeliveries().some(d => d.refId === progress.id)).toBe(false);

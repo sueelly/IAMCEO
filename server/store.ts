@@ -56,6 +56,7 @@ import type {
   Project,
   ProjectConnection,
   ProjectState,
+  ProjectProgressUpdate,
   ProjectSummary,
   Rank,
   Settings,
@@ -66,7 +67,7 @@ import type {
   WorkSec,
   WsEvent,
 } from "../shared/types.ts";
-import { CLI_PROVIDERS, DEFAULT_CODEX_RANKS, DEFAULT_RANKS, FILE_KINDS, fileKindOf } from "../shared/types.ts";
+import { CLI_PROVIDERS, PROJECT_PROGRESS_LIMIT, DEFAULT_CODEX_RANKS, DEFAULT_RANKS, FILE_KINDS, fileKindOf } from "../shared/types.ts";
 import type { MemberRevisions, OperationKind, OperationReceipt, OperationStatus, SyncRevisions, ManualInboxBatch } from "../shared/operations.ts";
 import type { DeliveryDispatch, DeliveryIntentResult, DeliveryRecoveryRecord, DomainRecorder, LifecycleJournal, DecisionFollowUp, MessageReadStore, ProjectPatchStore, RunnerRecoveryStore, TerminalLease, RunnerRecoveryState, ReportReferences, BoardReview } from "./service-contracts.ts";
 import type { RunnerTerminalIdentity } from "./runner/types.ts";
@@ -1322,6 +1323,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       doneDecisionCount: this.row("SELECT COUNT(*) AS n FROM decisions WHERE project_id = ? AND status != 'open'", id)!.n as number,
       todos: this.listTodos(id),
       work: this.listWork(id),
+      progressUpdates: this.listProgressUpdates(id),
       messages: opts.compact ? [] : this.listMessages(id, { limit: 200 }),
       files: opts.compact ? this.listFilePage(id).items.map(file => ({ ...file, body: "" })) : this.listFiles(id),
       tasks,
@@ -2555,6 +2557,17 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return out;
   }
 
+  private listProgressUpdates(projectId: string): ProjectProgressUpdate[] {
+    // Old progress was posted as a message. Read its original row without copying it into the task history.
+    const columns = "id, project_id AS projectId, task_id AS taskId, member_id AS memberId, who, title, body, at";
+    const checkpoints = this.hasTaskCheckpoints ? `SELECT ${columns} FROM task_checkpoints
+      WHERE project_id=$project AND checkpoint_kind IN ('진행','상태') UNION ALL` : "";
+    return this.db.query<ProjectProgressUpdate, { $project: string; $limit: number }>(`${checkpoints}
+      SELECT ${columns} FROM messages WHERE project_id=$project AND kind='진행' AND mine=0
+        AND member_id IS NOT NULL AND target_member_id IS NULL AND title NOT LIKE '(직접) %'
+      ORDER BY at DESC, id DESC LIMIT $limit`).all({ $project: projectId, $limit: PROJECT_PROGRESS_LIMIT });
+  }
+
   getCheckpoint(id: string) {
     if (!this.hasTaskCheckpoints) return null;
     const r = this.row("SELECT * FROM task_checkpoints WHERE id=?", id);
@@ -2564,21 +2577,24 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       continuesWork: !!r.continues_work, checks: json<ReportCheckInput[]>(r.checks_json) } : null;
   }
 
-  saveCheckpoint(member: Member, taskId: string | null, input: { title: string; body: string; continuesWork: boolean;
+  saveCheckpoint(member: Member, taskId: string | null, input: { kind?: "상태" | "진행" | "알림"; title: string; body: string; continuesWork: boolean;
     checks: ReportCheckInput[]; contractTaskId: string | null; contractRev: number | null; correctsId: string | null; aboutReportId: string | null; sourceCommandId?: string | null }) {
-    const id = newId("cp_"), at = nowIso();
+    const id = newId("cp_"), at = nowIso(), kind = input.kind ?? "진행";
+    const title = cleanText(input.title), body = cleanText(input.body);
     this.run(`INSERT INTO task_checkpoints(id,project_id,task_id,member_id,who,at,after_message_seq,title,body,
-      continues_work,contract_task_id,contract_rev,checks_json,corrects_id,about_report_id)
-      VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(rowid),0) FROM messages),?,?,?,?,?,?,?,?)`,
-      id, member.projectId, taskId, member.id, member.name, at, cleanText(input.title), cleanText(input.body),
-      input.continuesWork ? 1 : 0, input.contractTaskId, input.contractRev, JSON.stringify(input.checks), input.correctsId, input.aboutReportId);
-    captureOwnerCommandEvidence(this, member.id, "checkpoint", id, input.correctsId ?? input.aboutReportId,
+      continues_work,contract_task_id,contract_rev,checks_json,corrects_id,about_report_id,checkpoint_kind)
+      VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(rowid),0) FROM messages),?,?,?,?,?,?,?,?,?)`,
+      id, member.projectId, taskId, member.id, member.name, at, title, body,
+      input.continuesWork ? 1 : 0, input.contractTaskId, input.contractRev, JSON.stringify(input.checks), input.correctsId, input.aboutReportId, kind);
+    if (kind !== "상태") captureOwnerCommandEvidence(this, member.id, "checkpoint", id, input.correctsId ?? input.aboutReportId,
       input.sourceCommandId ? { id: input.sourceCommandId } : undefined);
     if (taskId && input.continuesWork) {
       this.run("INSERT OR IGNORE INTO completion_changes(task_id) VALUES(?)", taskId);
       this.queueProgress([taskId]);
     }
-    return { id, projectId: member.projectId, memberId: member.id, taskId, at, internal: true as const };
+    const entry = { id, projectId: member.projectId, memberId: member.id, taskId, at };
+    if (kind !== "알림") this.emit({ type: "progressUpdate", update: { ...entry, who: member.name, title, body } });
+    return { ...entry, internal: true as const };
   }
 
   /** 보고 한 건의 단계 근거(검사 결과·지금 계약 판정). 반복 감시가 쓴다. */
@@ -3816,7 +3832,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   /** since 이후에 그 직원이 쓴 글이 있는가(이번 턴에 이미 보고했는가). */
   hasPostSince(memberId: string, since: string): boolean {
     return !!this.row("SELECT 1 FROM messages WHERE member_id=? AND at>=? LIMIT 1", memberId, since) ||
-      (this.hasTaskCheckpoints && !!this.row("SELECT 1 FROM task_checkpoints WHERE member_id=? AND at>=? LIMIT 1", memberId, since));
+      (this.hasTaskCheckpoints && !!this.row("SELECT 1 FROM task_checkpoints WHERE member_id=? AND at>=? AND checkpoint_kind<>'상태' LIMIT 1", memberId, since));
   }
 
   /** 대표가 이 프로젝트에서 보낸 글에 그 첨부가 붙어 있는가. 다른 프로젝트의 첨부를 지시로 끌어오지 못하게 한다. */

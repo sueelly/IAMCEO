@@ -1154,6 +1154,38 @@ function useClockTick() {
   }, []);
 }
 
+function ProgressFeed({ state }: { state: ProjectState }) {
+  const updates = state.progressUpdates ?? [];
+  if (!updates.length) return <p className="wf-empty">아직 등록된 진행사항이 없습니다.</p>;
+  const tasks = new Map(state.tasks?.map(task => [task.id, task]));
+  function taskName(id: string): string {
+    let task = tasks.get(id);
+    const visited = new Set<string>();
+    while (task?.mergedInto && !visited.has(task.id)) {
+      const next = tasks.get(task.mergedInto);
+      if (!next) break;
+      visited.add(task.id);
+      task = next;
+    }
+    return task?.title ?? id;
+  }
+  return (
+    <ol className="tm-progress-feed">
+      {updates.map(update => (
+        <li key={update.id} data-progress-id={update.id}>
+          <div className="tm-progress-meta">
+            <span>{update.who}</span>
+            <Time iso={update.at} />
+          </div>
+          {update.taskId && <p className="tm-progress-task">{taskName(update.taskId)}</p>}
+          <h3>{update.title}</h3>
+          {update.body && update.body !== update.title && <p className="tm-progress-body">{update.body}</p>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export default function Team() {
   const state = useProject();
   return state ? <TeamContent key={state.project.id} state={state} /> : null;
@@ -1168,12 +1200,13 @@ function TeamContent({ state }: { state: ProjectState }) {
       at: number;
       onReturn?: () => void;
     } | null>(null),
-    [menu, setMenu] = useState<
+    [localMenu, setMenu] = useState<
       "report" | "memory" | "records" | "create" | null
     >(null);
   const Overlay = useMediaQuery(MQ_DESKTOP) ? Drawer : Sheet;
   useClockTick();
   const { project, members, work } = state;
+  const menu = route.sub === "progress" ? "progress" : localMenu;
   const memberOrigin = useRef<HTMLElement | null>(null);
   const closeMember = () => {
     navigate({ sub: null });
@@ -1256,11 +1289,14 @@ function TeamContent({ state }: { state: ProjectState }) {
           return false;
         }}
         focusRequest={focus}
-        headerActions={actionMenu}
+        headerActions={<>
+          <GlassButton size="s" variant="ghost" href={routeHash({ projectId: project.id, tab: "team", sub: "progress" })}>진행사항</GlassButton>
+          {actionMenu}
+        </>}
         onRecords={() => setMenu("records")}
       />
       <MemberDetail
-        memberId={route.sub}
+        memberId={menu === "progress" ? null : route.sub}
         compactAt={compactAt}
         view={view}
         onClose={closeMember}
@@ -1270,14 +1306,18 @@ function TeamContent({ state }: { state: ProjectState }) {
       <Overlay
         open={menu !== null && menu !== "create"}
         title={
-          menu === "report"
+          menu === "progress" ? "진행사항" : menu === "report"
             ? "팀 상황"
             : menu === "memory"
               ? "개발 기억"
               : "진행판 기록"
         }
-        onClose={() => setMenu(null)}
+        onClose={() => {
+          if (menu === "progress") navigate({ sub: null });
+          setMenu(null);
+        }}
       >
+        {menu === "progress" && <ProgressFeed state={state} />}
         {menu === "report" ? (
           project.now ? (
             <>

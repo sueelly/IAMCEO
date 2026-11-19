@@ -207,3 +207,13 @@ textarea.input.tm-send__input { resize:none; }
 .tm-term-input__row { display: flex; gap: 8px; min-width: 0; }
 .tm-term-input__row .input { flex: 1; min-width: 0; }
 .tm-term-input__keys { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.tm-progress-feed { list-style:none; padding:0; margin:0; }
+.tm-progress-feed li { display:grid; gap:5px; padding-block:16px; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+.tm-progress-feed li:first-child { padding-top:0; }
+.tm-progress-feed li:last-child { border-bottom:0; }
+.tm-progress-meta { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 10px; font-size:13px; color:var(--ink-2); }
+.tm-progress-meta time { color:var(--ink-3); }
+.tm-progress-task { margin:0; font-size:13px; color:var(--ink-2); }
+.tm-progress-feed h3 { margin:0; font-size:16px; line-height:1.45; }
+.tm-progress-body { margin:0; color:var(--ink-2); line-height:1.6; white-space:pre-wrap; }

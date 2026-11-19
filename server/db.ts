@@ -1140,6 +1140,15 @@ export const MIGRATIONS: string[] = [
        EXISTS(SELECT 1 FROM conductor_intake_receipts WHERE source_message_id=NEW.id AND project_id=NEW.project_id)
      BEGIN UPDATE messages SET delivery_note=(SELECT relief_name || ' 대행' FROM conductor_intake_receipts
        WHERE source_message_id=NEW.id AND project_id=NEW.project_id LIMIT 1) WHERE id=NEW.id; END;`,
+  // Previous versions persisted progress and internal receipts in the same table.
+  `ALTER TABLE task_checkpoints ADD COLUMN checkpoint_kind TEXT NOT NULL DEFAULT '진행'
+     CHECK(checkpoint_kind IN ('진행','상태','알림'));
+   UPDATE task_checkpoints SET checkpoint_kind='알림' WHERE id IN
+     (SELECT ref_id FROM report_closures WHERE ref_type='checkpoint' AND kind IN ('reviewed','waiting'));
+   CREATE INDEX task_checkpoints_progress_page ON task_checkpoints(project_id, at DESC, id DESC)
+     WHERE checkpoint_kind IN ('진행','상태');
+   CREATE INDEX messages_progress_page ON messages(project_id, at DESC, id DESC)
+     WHERE kind='진행' AND mine=0 AND member_id IS NOT NULL AND target_member_id IS NULL;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

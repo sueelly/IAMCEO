@@ -19,6 +19,7 @@ import type {
   SyncSnapshot,
   WsEvent,
 } from "@shared/types";
+import { PROJECT_PROGRESS_LIMIT } from "@shared/types";
 import type { ServerCapabilities, SyncRevisions } from "@shared/operations";
 import { newerProgress } from "@shared/task-stage";
 import { CursorHistory, compareMessages, mergeHistoryMessages } from "./history";
@@ -192,6 +193,14 @@ export function applyToProject(p: ProjectState, e: WsEvent): ProjectState {
       return { ...p, decisions: upsertDecision(p.decisions, e.decision), doneDecisionCount: p.doneDecisionCount + doneDelta(p.decisions, e.decision) };
     case "todo":
       return e.todo.projectId === id ? { ...p, todos: upsert(p.todos, e.todo) } : p;
+    case "progressUpdate": {
+      const { update } = e;
+      if (update.projectId !== id) return p;
+      const rows = (p.progressUpdates ?? []).filter(row => row.id !== update.id);
+      const index = rows.findIndex(row => row.at < update.at || (row.at === update.at && row.id < update.id));
+      rows.splice(index < 0 ? rows.length : index, 0, update);
+      return { ...p, progressUpdates: rows.slice(0, PROJECT_PROGRESS_LIMIT) };
+    }
     case "work":
       return e.projectId === id ? { ...p, work: e.work } : p;
     case "message":

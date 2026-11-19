@@ -190,6 +190,39 @@ describe("공통 도구", () => {
     expect(store.requireMember(lead.id)).toMatchObject({ now: "다른 일", next: "정리" });
   });
 
+  test("status: 직원이 현재 행동을 저장하면 대표가 다음 행동과 업무를 읽고 직원은 즉시 계속한다", async () => {
+    const { store, project, orch, runner, call } = await setup();
+    const { member } = await orch.addMember(project.id, { name: "편집 담당", handle: "editor" });
+    const taskId = defaultTaskId(store, project.id);
+    const queue = store.listDeliveries(project.id);
+    const memberStatus = store.requireMember(member.id).status;
+    const input = { now: "회차 편집기에서 씬 순서를 확인했습니다", next: "저장 후 순서를 다시 확인합니다" };
+    const response = await call(member, "status", input);
+    expect(response.isError).toBeUndefined();
+    expect(response.wait).toBeUndefined();
+    expect(store.projectState(project.id).progressUpdates).toContainEqual(expect.objectContaining({
+      taskId: null, who: member.name, title: input.now, body: input.next,
+    }));
+    const scoped = { task_id: taskId, now: "회차 편집기에서 저장한 씬 순서를 확인했습니다" };
+    const operation = { operationId: "editor-update" };
+    const saved = await orch.handleAgentOperation(member, "status", scoped, operation);
+    expect(saved.isError).toBeUndefined();
+    expect(await orch.handleAgentOperation(member, "status", scoped, operation)).toEqual(saved);
+    const updates = store.projectState(project.id).progressUpdates!;
+    expect(updates.filter(update => update.title === scoped.now)).toHaveLength(1);
+    expect(updates.find(update => update.title === scoped.now)).toMatchObject({ taskId, body: "" });
+    const otherProject = store.createProject({ name: "다른 프로젝트", cwd: project.cwd });
+    const invalid = await call(member, "status", { task_id: defaultTaskId(store, otherProject.id), now: "옮겨 적은 진행" });
+    expect(invalid.isError).toBe(true);
+    expect(store.projectState(otherProject.id).progressUpdates).toEqual([]);
+    expect(store.projectState(project.id).progressUpdates).toEqual(updates);
+    expect(store.requireMember(member.id).now).toBe(scoped.now);
+    expect(store.hasPostSince(member.id, "1970-01-01")).toBe(false);
+    expect(store.requireMember(member.id).status).toBe(memberStatus);
+    expect(store.listDeliveries(project.id)).toEqual(queue);
+    expect(runner.sent).toHaveLength(0);
+  });
+
   test("ask: 실행기 직원은 카드 등록 후 즉시 반환, 대기 상태", async () => {
     const { store, project, orch, call } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
@@ -235,7 +268,7 @@ describe("공통 도구", () => {
     expect(store.listDecisions(project.id)).toHaveLength(0);
   });
 
-  test("post: 진행은 내부 기록에 두고 검증한 완료와 자료는 게시한다", async () => {
+  test("post: 진행은 대표 진행사항에 한 번 저장하고 검증한 완료와 자료는 게시한다", async () => {
     const { store, project, orch, lead, runner, call } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
     const taskId = defaultTaskId(store, project.id);
@@ -245,6 +278,10 @@ describe("공통 도구", () => {
     const file = store.createFile({ projectId: project.id, taskId, title: "보고서" });
     const progress = await call(w, "post", { task_id: taskId, kind: "진행", title: "반쯤" });
     expect(progress.text).toContain("업무 기록");
+    expect(progress.wait).toBeUndefined();
+    expect(store.projectState(project.id).progressUpdates?.filter(update => update.title === "반쯤")).toEqual([
+      expect.objectContaining({ taskId, who: w.name, memberId: w.id }),
+    ]);
     expect(runner.sent).toHaveLength(0);
     expect(store.listPending(lead.id)).toHaveLength(0);
     const r = await call(w, "post", { task_id: taskId, kind: "완료", title: "다 했다", body: "핵심", file_ids: [file.id], contract_rev: 1,
