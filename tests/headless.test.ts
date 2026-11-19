@@ -1,6 +1,6 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { renderRole, TERMINAL_APPROVAL_GUIDE, WRITING_GUIDE } from "../server/roles.ts";
 import { buildClaudeArgs, childEnv, claudeInput, HeadlessRunner, isMissingSessionError, StreamParser } from "../server/runner/headless.ts";
@@ -16,7 +16,7 @@ afterAll(async () => {
 });
 
 function setup(timings = {}, extraEnv: Record<string, string> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "iamceo-headless-"));
+  const dir = testTempDir("iamceo-headless-");
   const logPath = join(dir, "calls.jsonl");
   const sessions = join(dir, "sessions");
   const runner = new HeadlessRunner(
@@ -367,7 +367,7 @@ describe("도움 함수", () => {
   });
 
   test("transcript 파일: 없으면 null, 꼬리만 읽어 잘린 첫 줄을 버린다", () => {
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-transcript-"));
+    const dir = testTempDir("iamceo-transcript-");
     expect(transcriptPath("/Users/a.b/c_d", "sid", dir)).toBe(join(dir, "projects", "-Users-a-b-c-d", "sid.jsonl"));
     expect(readTranscriptTail(join(dir, "없음.jsonl"))).toBeNull();
     const file = join(dir, "s.jsonl");
@@ -384,7 +384,7 @@ describe("도움 함수", () => {
     expect(text).toContain("철수");
     expect(text).toContain("{{NAME}}");
     expect(text).not.toContain("{{ROLE}}");
-    const dir = mkdtempSync(join(tmpdir(), "iamceo-roles-"));
+    const dir = testTempDir("iamceo-roles-");
     writeFileSync(join(dir, "worker.md"), "맞춤 {{NAME}}/{{ROLE}}");
     // 고친 템플릿은 그대로 쓰되, 터미널 승인 안내와 공통 작성 기준은 빠지지 않게 끝에 붙는다(tests/terminal-approval-guide.test.ts)
     expect(renderRole("worker", vars, dir)).toBe(`맞춤 철수/개발\n\n${TERMINAL_APPROVAL_GUIDE.trim()}\n\n${WRITING_GUIDE.trim()}\n`);

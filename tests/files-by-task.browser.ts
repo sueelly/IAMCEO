@@ -1,8 +1,8 @@
 // 자료 화면의 업무 거르기(대표 2026-11-16): 입력칸에서 고른 업무가 자료 목록에도 걸린다.
 // 실제 서버(http.ts)·실제 화면·격리 DB. 실제 CLI·세션은 없고, 자료와 보고는 서버 저장소·도구 처리기로 남긴다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { Bus } from "../server/bus.ts";
@@ -15,7 +15,7 @@ import { Store } from "../server/store.ts";
 import type { Backend, FileDoc, Member, Project, Task } from "../shared/types.ts";
 
 const CODE = "files-task-test-code";
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-files-task-shots-"));
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-files-task-shots-");
 mkdirSync(SHOTS, { recursive: true });
 
 class FakeRunner implements Runner {
@@ -54,7 +54,7 @@ let fSearch: FileDoc;
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-files-task-web-"));
+  const home = testTempDir("iamceo-files-task-web-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

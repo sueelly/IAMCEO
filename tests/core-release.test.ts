@@ -1,6 +1,6 @@
 import { createServer, type Socket } from "node:net";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { transcriptPath } from "../server/runner/transcript";
 import { randomUUID } from "node:crypto";
 import { Bus } from "../server/bus";
@@ -13,7 +13,7 @@ import type { CoreTerminal } from "../server/runner/core-client";
 import { Store } from "../server/store";
 import type { Member, Message, MessagePage } from "../shared/types";
 import type { OperationReceipt } from "../shared/operations";
-import { createIsolatedRuntime } from "./fixtures/isolated-runtime";
+import { isIsolatedProbeRoot, createIsolatedRuntime } from "./fixtures/isolated-runtime";
 import { defaultTaskId, withDefaultTask } from "./fixtures/default-task.ts";
 
 /** Real runner/orchestrator/SQLite/HTTP; only the generation-1 core peer is fake.
@@ -132,7 +132,9 @@ export async function createReleaseFixture() {
 // mounted on the product API; all listening sockets are fixture-owned port0.
 if (process.argv[2] === "--crash-write") {
   const path = process.argv[3]!, projectId = process.argv[4]!, memberId = process.argv[5]!, phase = process.argv[6]!;
-  if (!path.startsWith("/private/tmp/iq-") || !["source", "intent", "committed"].includes(phase)) throw new Error("Unsafe crash fixture");
+  const root = dirname(dirname(path));
+  if (!isIsolatedProbeRoot(root) || path !== join(root, "iamceo", "iamceo.db") ||
+      !["source", "intent", "committed"].includes(phase)) throw new Error("Unsafe crash fixture");
   const db = openDb(path), store = new Store(db, new Bus());
   const enqueue = store.enqueue.bind(store);
   store.enqueue = input => {

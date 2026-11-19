@@ -1,9 +1,9 @@
 // 라이트 테마 남은 일 시험: 앱 아이콘·파비콘 색, '권장' 배지 대비, 폰 폭 아래 탭 건수 겹침.
 // 실제 서버 + Playwright chromium + 가짜 claude. 라이브 herdr·실제 ~/.iamceo·실제 claude 를 쓰지 않는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import type { Project } from "../shared/types.ts";
@@ -16,7 +16,7 @@ afterAll(async () => { await core.stop(); });
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
-const WORK = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-light-")));
+const WORK = realpathSync(testTempDir("iamceo-light-"));
 const HOME = join(WORK, "home");
 const CODE = "light-code";
 

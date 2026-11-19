@@ -1,7 +1,8 @@
 // Browser → real HTTP/SQLite → response rendering, with no real CLI processes.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -11,7 +12,7 @@ import { Store } from "../server/store";
 import type { OrchestratorApi } from "../server/orchestrator-api";
 import type { Message, SendMessageReq } from "../shared/types";
 
-const root = mkdtempSync("/private/tmp/iamceo-web-native-browser-");
+const root = testTempDir("iamceo-web-native-browser-", "/private/tmp");
 const code = "isolated-browser-code";
 let server: RunningServer, browser: Browser, store: Store, bus: Bus, projectId: string, base: string;
 const contexts: BrowserContext[] = [];

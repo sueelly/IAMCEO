@@ -1,11 +1,12 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Folders } from "../server/folders.ts";
 import { GitHub, githubRepo } from "../server/github.ts";
 import { folderFixture } from "./folder-fixture.ts";
 
-const bin = mkdtempSync("/private/tmp/iamceo-fake-github-");
+const bin = testTempDir("iamceo-fake-github-", "/private/tmp");
 function executable(name: string, script: string, directory = bin) {
   const path = join(directory, name); writeFileSync(path, "#!/bin/sh\n" + script); chmodSync(path, 0o755);
 }
@@ -45,7 +46,7 @@ test("list sorts newest first, filters and caches for 60 seconds", async () => {
   try { expect((await gh.repos()).available).toBe(true); } finally { writeFileSync(join(bin, "gh"), script); }
 });
 test("missing gh and logged out gh return availability without credentials", async () => {
-  const empty = mkdtempSync("/private/tmp/iamceo-no-gh-");
+  const empty = testTempDir("iamceo-no-gh-", "/private/tmp");
   expect((await new GitHub(new Folders(f.home), { PATH: empty, IAMCEO_TEST: "1" }).repos()).available).toBe(false);
   executable("gh", "printf ghp_SECRET >&2; exit 1", empty);
   const result = await new GitHub(new Folders(f.home), { PATH: empty, IAMCEO_TEST: "1" }).repos();
@@ -76,7 +77,7 @@ test("duplicate, invalid repo/name and outside parent are refused", async () => 
   expect((await f.request("/api/github/clone/unknown")).status).toBe(404);
 });
 test("git fallback uses argument array and timed out jobs clean up", async () => {
-  const onlyGit = mkdtempSync("/private/tmp/iamceo-only-git-");
+  const onlyGit = testTempDir("iamceo-only-git-", "/private/tmp");
   executable("git", 'printf "%s\\n" "$@" > "./args"', onlyGit);
   const service = new GitHub(new Folders(f.home), { PATH: onlyGit, IAMCEO_TEST: "1" }, undefined, { freeBytes: async () => 10 * 1024 ** 3 });
   const { jobId } = await service.clone({ repo: "owner/fallback", parent: f.home });
@@ -95,7 +96,7 @@ test("only three concurrent clones may run", async () => {
   for (const job of jobs) expect((await finish(job.jobId)).status).toBe("done");
 });
 test("timeout kills git descendants before cleaning the target", async () => {
-  const tools = mkdtempSync("/private/tmp/iamceo-forked-git-");
+  const tools = testTempDir("iamceo-forked-git-", "/private/tmp");
   executable("git", '(/bin/sleep 0.2; printf leaked > "./late") &\nwait', tools);
   const service = new GitHub(new Folders(f.home), { PATH: tools, IAMCEO_TEST: "1" }, 25, { freeBytes: async () => 10 * 1024 ** 3 });
   const { jobId } = await service.clone({ repo: "owner/descendant", parent: f.home });

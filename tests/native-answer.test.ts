@@ -1,8 +1,8 @@
 // 대화에서 직원 CLI 창에 직접 답하기: core 칸(격리 가짜 소켓)과 orchestrator 영수증·귀속 검사.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CoreRunner } from "../server/runner/core.ts";
 import type { CoreTerminal } from "../server/runner/core-client.ts";
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), "iamceo-native-answer-"));
+  const dir = testTempDir("iamceo-native-answer-");
   const socketPath = join(dir, "c.sock");
   const opts: StartOpts = { systemPromptFile: join(dir, "rules.md"), mcpConfigFile: join(dir, "mcp.json"), resume: false, projectName: "Test" };
   writeFileSync(opts.systemPromptFile, "rules");
@@ -171,7 +171,7 @@ class PromptRunner implements Runner {
 }
 
 async function orchSetup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-native-orch-"));
+  const home = testTempDir("iamceo-native-orch-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

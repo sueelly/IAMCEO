@@ -1,7 +1,7 @@
 // 보관·전달·편입·연결의 경계(spec §3.1·§6). 실행기는 가짜, 저장소·전달 펌프·도구·HTTP 는 진짜다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Backend, Member } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -84,7 +84,7 @@ afterEach(async () => {
 });
 
 async function setup(opts: { timings?: Partial<OrchestratorTimings>; runnerEnabled?: boolean } = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-gate-")));
+  const home = realpathSync(testTempDir("iamceo-gate-"));
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
   const config = loadConfig(env);

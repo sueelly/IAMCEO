@@ -1,8 +1,7 @@
 // 총괄의 직원 관리(effort 를 넣은 추가·설정 바꾸기·새 세션 열기)와 터미널 조작(읽기·글·키)을 가짜 core 실행기로 본다.
 // 가짜 실행기는 실제 PTY 가 아니다. 조작권은 실제 store(terminal_leases)에 저장해 서버의 세대·조작권·입력 순번 검사를 그대로 거친다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Member } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -63,7 +62,7 @@ afterAll(async () => { for (const c of cleanups) await c(); });
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 async function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-staff-"));
+  const home = testTempDir("iamceo-staff-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -74,7 +73,11 @@ async function setup() {
   const server = await startServer({ config, store, bus, orch });
   const url = server.urls[0]!;
   orch.setServerUrl(url);
-  cleanups.push(async () => { await orch.shutdown(); await server.stop(); });
+  cleanups.push(async () => {
+    await orch.shutdown();
+    await server.stop();
+    store.db.close();
+  });
   const project = store.createProject({ name: "직원 관리", cwd: home });
   store.setChiefCli(project.id, "claude");
   const lead = await orch.ensureConductor(project.id);

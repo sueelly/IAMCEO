@@ -1,7 +1,8 @@
 // 개발 기억(Hindsight 게이트웨이) 연결: 문서 계약대로 움직이는 가짜 게이트웨이로 서버 업로드·직원 도구·범위·중복·실패를 본다.
 // 이 시험이 통과해도 실제 연결 확인은 아니다(실제 게이트웨이 확인은 따로 한다).
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Member } from "../shared/types.ts";
@@ -103,7 +104,7 @@ afterAll(async () => { for (const c of cleanups) await c(); });
 const settle = () => new Promise((r) => setTimeout(r, 40));
 
 async function setup(opts: { memory: boolean; keyFile?: string } = { memory: true }) {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-mem-"));
+  const home = testTempDir("iamceo-mem-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -121,7 +122,12 @@ async function setup(opts: { memory: boolean; keyFile?: string } = { memory: tru
   const server = await startServer({ config, store, bus, orch });
   const url = server.urls[0]!;
   orch.setServerUrl(url);
-  cleanups.push(async () => { await orch.shutdown(); await server.stop(); gw.stop(); });
+  cleanups.push(async () => {
+    await orch.shutdown();
+    await server.stop();
+    gw.stop();
+    store.db.close();
+  });
   const call = async (member: Member, name: string, args: Record<string, unknown> = {}): Promise<AgentToolResult> => {
     const res = await fetch(`${url}/agent/tool`, { method: "POST", headers: { Authorization: `Bearer ${store.getMemberToken(member.id)}`, "Content-Type": "application/json" }, body: JSON.stringify({ name, args: withDefaultTask(store, member, name, args) }) });
     return (await res.json()) as AgentToolResult;

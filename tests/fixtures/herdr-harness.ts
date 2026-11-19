@@ -1,13 +1,14 @@
 // 격리 herdr 서버를 PTY 로 띄운다. 라이브 서버와 소켓·세션 이름이 겹치지 않는다(§9).
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { testTempDir } from "./test-run-dirs";
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { rpc } from "../../server/runner/herdr-client.ts";
 
 export interface IsolatedHerdr {
   name: string;
   socketPath: string;
-  /** 시험 임시 폴더. 지우지 않고 남긴다(§0). */
+  /** 이 격리 서버에 배정한 임시 폴더. */
   dir: string;
   fakeDir: string;
   fakeClaudePath: string;
@@ -33,12 +34,13 @@ function cleanEnv(extra: Record<string, string>): Record<string, string> {
 
 // 컴파일 결과가 커서 소스가 그대로면 다시 쓴다.
 async function buildFakeClaude(): Promise<{ binDir: string; path: string }> {
-  const binDir = join(import.meta.dir, "..", ".tmp", "herdr-fake-bin");
+  const run = process.env.IAMCEO_TEST_RUN_ROOT;
+  const binDir = run ? join(run, "herdr-fake-bin-" + process.pid) : join(import.meta.dir, "..", ".tmp", "herdr-fake-bin");
   mkdirSync(binDir, { recursive: true });
   const out = join(binDir, "claude");
   const entry = join(import.meta.dir, "herdr-fake-tui.ts");
   if (existsSync(out) && statSync(out).mtimeMs > statSync(entry).mtimeMs) return { binDir: realpathSync(binDir), path: realpathSync(out) };
-  const build = Bun.spawn(["bun", "build", entry, "--compile", "--outfile", out], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: cleanEnv({}) });
+  const build = Bun.spawn(["bun", "build", entry, "--compile", "--outfile", out], { cwd: binDir, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: cleanEnv({}) });
   const code = await build.exited;
   if (code !== 0) throw new Error(`가짜 claude 빌드 실패: ${await new Response(build.stderr).text()}`);
   return { binDir: realpathSync(binDir), path: realpathSync(out) };
@@ -52,7 +54,7 @@ export interface IsolatedOptions {
 }
 
 export async function startIsolatedHerdr(opts: IsolatedOptions = {}): Promise<IsolatedHerdr> {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-herdr-")));
+  const dir = realpathSync(testTempDir("iamceo-herdr-"));
   const fakeDir = join(dir, "fake");
   const zdot = join(dir, "zdot");
   for (const d of [fakeDir, zdot, join(dir, "work")]) mkdirSync(d, { recursive: true });

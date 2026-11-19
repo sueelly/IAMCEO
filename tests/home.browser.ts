@@ -1,11 +1,11 @@
 // 홈 화면과 5칸 탭: 실제 서버 + Playwright chromium + 가짜 claude. 라이브 herdr·실제 ~/.iamceo 를 쓰지 않는다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
 import { Database } from "bun:sqlite";
 import { Store } from "../server/store.ts";
 import { Bus } from "../server/bus.ts";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Member, MemberStatus, Project, ProjectState } from "../shared/types.ts";
@@ -19,7 +19,7 @@ afterAll(async () => { await core.stop(); });
 const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "bin", "iamceo.ts");
 const FAKE = join(ROOT, "tests", "fixtures", "fake-claude.ts");
-const WORK = realpathSync(mkdtempSync(join(tmpdir(), "iamceo-e2e-home-")));
+const WORK = realpathSync(testTempDir("iamceo-e2e-home-"));
 const HOME = join(WORK, "home");
 const PROJECT_DIR = join(WORK, "project");
 const SHOTS = process.env.IAMCEO_SHOTS ?? join(WORK, "shots");

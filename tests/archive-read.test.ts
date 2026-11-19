@@ -1,5 +1,5 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { Bus } from "../server/bus.ts";
 import { loadConfig, updateConfigFile } from "../server/config.ts";
 import { openDb } from "../server/db.ts";
@@ -24,7 +24,7 @@ const headers = { Authorization: `Bearer ${CODE}` };
 const get = (path: string) => fetch(base + path, { headers });
 
 beforeAll(async () => {
-  home = mkdtempSync("/private/tmp/iamceo-archive-read-");
+  home = testTempDir("iamceo-archive-read-", "/private/tmp");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);
@@ -47,7 +47,7 @@ beforeAll(async () => {
   bus.subscribe((event) => events.push(event.type));
 });
 
-afterAll(async () => { await server.stop(); store.db.close(); rmSync(home, { recursive: true }); });
+afterAll(async () => { await server.stop(); store.db.close(); releaseTestDir(home); });
 
 describe("archive read HTTP", () => {
   test("목록·상태·page·단건·around는 원본을 읽고 runner/pump/이벤트가 0회다", async () => {

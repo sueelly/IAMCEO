@@ -1,8 +1,8 @@
 // 웹 대화의 작업 고르기: 직원 선택 옆에 작업이 최신순으로 가로로 놓이고, 고르면 그 작업 대화만 보이며, 보낸 글은 보낸 순간의 작업에 남는다.
 // 실제 서버(http.ts)·실제 화면·격리 DB. 실제 CLI·세션은 없고, 직원 보고는 서버의 같은 도구 처리기(recordPost)로 남긴다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { Bus } from "../server/bus.ts";
@@ -15,7 +15,7 @@ import { Store } from "../server/store.ts";
 import type { Backend, Member, Project, Task } from "../shared/types.ts";
 
 const CODE = "task-thread-test-code";
-const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? mkdtempSync(join(tmpdir(), "iamceo-task-shots-"));
+const SHOTS = process.env.IAMCEO_E2E_SHOTS ?? testTempDir("iamceo-task-shots-");
 mkdirSync(SHOTS, { recursive: true });
 
 class FakeRunner implements Runner {
@@ -61,7 +61,7 @@ async function stored(body: string) {
 }
 
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-task-web-"));
+  const home = testTempDir("iamceo-task-web-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: CODE, hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

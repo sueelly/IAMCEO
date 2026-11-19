@@ -1,8 +1,7 @@
 // 모든 글의 업무: 대표 글·자료·보고 보완·서버 알림이 업무 없이 남지 않고, 새 업무 이름은 비밀값·내부 번호 없이 글의 목적 문장으로 만든다(임시 이름).
 // 재시도해도 업무가 늘지 않고, 옛 글 정리는 원문을 바꾸지 않으며 묶음 단위로 되돌린다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Backend, Delivery } from "../shared/types.ts";
 import { Bus } from "../server/bus.ts";
@@ -15,7 +14,7 @@ import { applyTaskBackfill, planTaskBackfill, undoTaskBackfill } from "../server
 import { datedTitle, scrubTaskText, taskTitleFrom } from "../server/task-names.ts";
 
 function setup() {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-everywhere-"));
+  const home = testTempDir("iamceo-everywhere-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "code", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env);

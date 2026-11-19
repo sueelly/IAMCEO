@@ -1,7 +1,6 @@
 // 아티팩트가 실제 브라우저에서 돌고, 격리를 뚫지 못하는지 본다. 페이지·빈 칸·CSP 는 실제 서버의 것이다.
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, webkit, type Browser, type BrowserType, type Page } from "playwright";
 import { ARTIFACT_FRAME_PATH, ARTIFACT_SANDBOX, ARTIFACT_STATIC_SANDBOX, buildArtifactSrcdoc } from "../shared/artifact-kit.ts";
@@ -17,7 +16,7 @@ let orch: Orchestrator;
 let base = "";
 
 beforeAll(async () => {
-  const home = mkdtempSync(join(tmpdir(), "iamceo-artifact-"));
+  const home = testTempDir("iamceo-artifact-");
   const env = { IAMCEO_HOME: home, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "비밀접속코드", hosts: ["127.0.0.1"], claudeBin: "/bin/false" }, env);
   const config = loadConfig(env);

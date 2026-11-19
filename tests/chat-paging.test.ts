@@ -1,6 +1,5 @@
+import { testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { MessageScope, WsEvent } from "../shared/types.ts";
@@ -11,7 +10,7 @@ import { ApiError, Store } from "../server/store.ts";
 const databases: Database[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), "iamceo-page-")), "fixture.db");
+  const path = join(testTempDir("iamceo-page-"), "fixture.db");
   const db = openDb(path);
   databases.push(db);
   const bus = new Bus();

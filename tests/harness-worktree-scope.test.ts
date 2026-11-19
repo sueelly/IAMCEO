@@ -1,3 +1,4 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
 import { matchExecChecks, parseCodexLog } from "../server/harness-evidence.ts";
 
@@ -58,10 +59,10 @@ test("a matching cd command cannot move the actual check outside its assigned wo
   expect(result.results).toEqual([]);
 });
 test("a symbolic link inside the worktree cannot borrow a different directory's success", async () => {
-  const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = await import("node:fs");
-  const dir = mkdtempSync("/private/tmp/iamceo-proof-scope-");
+  const { mkdirSync, symlinkSync } = await import("node:fs");
+  const dir = testTempDir("iamceo-proof-scope-", "/private/tmp");
   try {
     mkdirSync(dir + "/task"); mkdirSync(dir + "/outside"); symlinkSync(dir + "/outside", dir + "/task/alias");
     expect(matchExecChecks([check], { status: "ok", code: "ok", ...parseCodexLog(log(dir + "/task/alias"), since) }, () => null, dir + "/main", dir + "/task").results).toEqual([]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { releaseTestDir(dir); }
 });

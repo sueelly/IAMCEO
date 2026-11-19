@@ -1,5 +1,5 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { openDb } from "../server/db";
@@ -10,7 +10,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
 
 function fixture() {
-  const root = mkdtempSync("/private/tmp/iamceo-notice-cost-");
+  const root = testTempDir("iamceo-notice-cost-", "/private/tmp");
   const db = openDb(join(root, "test.db")), bus = new Bus(), store = new Store(db, bus);
   const project = store.createProject({ name: "read-only fixture", cwd: root });
   const member = store.createMember({ projectId: project.id, name: "worker", handle: "worker", kind: "worker" });
@@ -26,7 +26,7 @@ function fixture() {
       return (...params: unknown[]) => { reads++; statements.push(String(args[0])); return value.apply(target, params); };
     } });
   }) as typeof db.query;
-  cleanups.push(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
+  cleanups.push(() => { db.close(); releaseTestDir(root); });
   const measure = <T>(read: () => T) => { reads = 0; statements.length = 0; const start = performance.now(); const result = read(); return { result, reads, ms: performance.now() - start }; };
   return { root, db, bus, store, project, member, recovery, measure, statements };
 }

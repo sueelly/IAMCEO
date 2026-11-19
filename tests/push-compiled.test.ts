@@ -9,12 +9,12 @@ import { PushStore } from "../server/push/store";
 import { PushWorker } from "../server/push/worker";
 import { openDb } from "../server/db";
 import { DEFAULT_PUSH_BUNDLE_ID } from "../shared/push";
-import { createIsolatedRuntime } from "./fixtures/isolated-runtime";
+import { createIsolatedRuntime, isIsolatedProbeRoot } from "./fixtures/isolated-runtime";
 
 // The exact same probe runs as Bun source and a standalone compiled binary.
 // The only origin override is the injected transport; production TLS stays on.
 async function probe(root: string, port: number) {
-  if (!root.startsWith("/private/tmp/iq-") || !Number.isInteger(port) || port <= 0 || port === 7878) throw new Error("Unsafe APNs fixture");
+  if (!isIsolatedProbeRoot(root) || !Number.isInteger(port) || port <= 0 || port === 7878) throw new Error("Unsafe APNs fixture");
   const config = loadAPNsConfig(join(root, "iamceo"));
   const cert = readFileSync(join(root, "config", "tls.crt"));
   const clients: APNsClient[] = [];

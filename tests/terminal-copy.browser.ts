@@ -1,7 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { expect, test } from "bun:test";
 import { chromium } from "playwright";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -11,7 +10,7 @@ import type { OrchestratorApi } from "../server/orchestrator-api";
 import { Store } from "../server/store";
 
 test("Team copies freshly managed SSH settings and never copies stale text after a lookup failure", async () => {
-  const root = mkdtempSync(join(tmpdir(), "iamceo-terminal-browser-"));
+  const root = testTempDir("iamceo-terminal-browser-");
   const env = { IAMCEO_HOME: root, IAMCEO_PORT: "0" };
   updateConfigFile({ accessCode: "isolated-browser-connection", hosts: ["127.0.0.1"] }, env);
   const config = loadConfig(env), bus = new Bus(), store = new Store(openDb(config.dbPath), bus);
@@ -72,5 +71,5 @@ test("Team copies freshly managed SSH settings and never copies stale text after
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("preserve clipboard");
     expect(connectionReads).toBe(3); expect(errors).toEqual([]);
     await context.close();
-  } finally { await browser.close(); await server.stop(); store.db.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { await browser.close(); await server.stop(); store.db.close(); releaseTestDir(root); }
 }, 30000);

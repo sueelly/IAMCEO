@@ -1,6 +1,6 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../server/bus";
 import { loadConfig, updateConfigFile } from "../server/config";
@@ -12,7 +12,7 @@ import type { OrchestratorApi } from "../server/orchestrator-api";
 const stops: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const stop of stops.splice(0)) await stop(); });
 async function fixture() {
-  const root = mkdtempSync("/private/tmp/iamceo-sync-cache-");
+  const root = testTempDir("iamceo-sync-cache-", "/private/tmp");
   updateConfigFile({ accessCode: "isolated-sync-cache", hosts: ["127.0.0.1"] }, { IAMCEO_HOME: root });
   const config = loadConfig({ IAMCEO_HOME: root, IAMCEO_PORT: "0" });
   const db = openDb(config.dbPath), bus = new Bus(), store = new Store(db, bus);
@@ -20,7 +20,7 @@ async function fixture() {
   const orch = { cliCommand: () => "/fixture/iamceo", herdrInfo: async () => ({ installed: false, running: false, version: null, protocol: null, compatible: false, warning: null }) } as unknown as OrchestratorApi;
   const server = await startServer({ config, store, bus, orch });
   const builds = spyOn(store, "projectState");
-  stops.push(async () => { builds.mockRestore(); await server.stop(); db.close(); rmSync(root, { recursive: true, force: true }); });
+  stops.push(async () => { builds.mockRestore(); await server.stop(); db.close(); releaseTestDir(root); });
   async function sync(opts: { host?: string; projectId?: string; compact?: boolean; auth?: boolean } = {}) {
     const query = new URLSearchParams({ projectId: opts.projectId ?? project.id });
     if (opts.compact !== false) query.set("view", "compact");

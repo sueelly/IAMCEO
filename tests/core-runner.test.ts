@@ -1,7 +1,7 @@
+import { releaseTestDir, testTempDir } from "./fixtures/test-run-dirs";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server, type Socket } from "node:net";
-import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, renameSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CoreRunner, codexDraft, ensureCoreServer, type CoreRunnerDeps, type CoreCompactState } from "../server/runner/core.ts";
 import { CoreError, coreRpc, type CoreTerminal } from "../server/runner/core-client.ts";
@@ -27,7 +27,7 @@ const member = (extra: Partial<RunnerMember> = {}): RunnerMember => ({ id: "memb
 interface Request { jsonrpc: string; id: string; method: string; params: Record<string, any> }
 const fixtures: { dir: string; server: Server; sockets: Set<Socket>; runners: CoreRunner[] }[] = [];
 async function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), "iamceo-core-test-"));
+  const dir = testTempDir("iamceo-core-test-");
   const socketPath = join(dir, "c.sock");
   const opts: StartOpts = { systemPromptFile: join(dir, "rules.md"), mcpConfigFile: join(dir, "mcp.json"), resume: false, projectName: "Test" };
   writeFileSync(opts.systemPromptFile, "IAMCEO test instructions\nKeep user tools.");
@@ -73,7 +73,7 @@ async function fixture() {
   fixtures.push({ dir, server, sockets, runners });
   return { dir, socketPath, opts, terminals, calls, setScreen(value: string) { screen = value; }, setHook(value: typeof hook) { hook = value; }, runner(pollMs = 20, deps: CoreRunnerDeps = {}, codexBin = "/fake/codex") { const runner = new CoreRunner({ socketPath, claudeBin: "/fake/claude", codexBin, claudeHome: join(dir, "claude-home"), codexHome: join(dir, "codex-home"), contextHome: dir }, { pollMs, rpcTimeoutMs: 100, sendTimeoutMs: 150, ...deps }); runners.push(runner); return runner; } };
 }
-afterEach(async () => { for (const f of fixtures.splice(0)) { await Promise.all(f.runners.map((runner) => runner.shutdown())); for (const socket of f.sockets) socket.destroy(); await new Promise<void>((resolve) => f.server.close(() => resolve())); rmSync(f.dir, { recursive: true, force: true }); } });
+afterEach(async () => { for (const f of fixtures.splice(0)) { await Promise.all(f.runners.map((runner) => runner.shutdown())); for (const socket of f.sockets) socket.destroy(); await new Promise<void>((resolve) => f.server.close(() => resolve())); releaseTestDir(f.dir); } });
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 100 && !predicate(); i++) await Bun.sleep(10); expect(predicate()).toBe(true); };
 
 test("coordinator stop preflight refuses a fresh native prompt while owner stop remains available", async () => {
