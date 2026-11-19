@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import type { Member, MemberStatus, Project, ProjectState } from "../shared/types.ts";
+import type { Member, MemberStatus, Message, Project, ProjectState } from "../shared/types.ts";
 import { updateConfigFile } from "../server/config.ts";
 import { auditContrast, auditLayout } from "./fixtures/layout-audit.ts";
 import { httpDefaultTask } from "./fixtures/default-task.ts";
@@ -120,7 +120,18 @@ async function fullProject() {
   await tool(a!.token, "todo", { title: "로고 원본 파일 보내기", detail: "시안에 넣을 **로고**가 필요합니다.\n\n- SVG 면 좋습니다\n- 없으면 PNG" });
   await tool(b!.token, "todo", { title: "결제 시험 계정 만들어 주기", detail: "카드사 시험 계정이 있어야 결제 흐름을 돌릴 수 있습니다." });
   await tool(c!.token, "todo", { title: "상세 없는 일" });
-  for (let i = 1; i <= 6; i++) await tool(a!.token, "post", { kind: "진행", title: `보고 ${i}번`, body: `보고 ${i} 내용` });
+  for (let i = 1; i <= 6; i++) {
+    const text = `랜딩 개편 ${i}번째 시안의 접수 내용을 확인해 주세요`;
+    const request = await api<Message>("POST", `/api/projects/${p.id}/messages`, { intent: "execute", text, targetMemberId: a!.member.id,
+      newTaskTitle: `시안 ${i} 접수 확인`, contract: { kind: "other", goal: "시안 요청의 접수 내용을 확인한다", inputs: [text],
+        outputs: ["접수 확인 결과"], scope: "대표 요청과 업무의 연결을 대조한다", constraints: [], exclusions: [],
+        acceptance: ["저장된 대표 원문과 접수 내용이 일치한다"], checks: ["real"] } });
+    expect(request.body).toBe(text);
+    expect(request.taskId).toBeTruthy();
+    const result = await tool(a!.token, "post", { kind: "완료", task_id: request.taskId, title: `보고 ${i}번`, body: `시안 ${i} 접수 완료`,
+      contract_rev: 1, checks: [{ kind: "real", name: "접수 원문 대조", result: "pass", criterion: 1, evidence: `업무 ${request.taskId}의 대표 원문 ${request.id}와 접수 내용 일치` }] });
+    expect(result.isError, result.text).not.toBe(true);
+  }
   for (let i = 1; i <= 4; i++) {
     await tool(b!.token, "file", { title: `자료 ${i}번`, summary: "요약", content: `# 자료 ${i}` });
     await Bun.sleep(5);
