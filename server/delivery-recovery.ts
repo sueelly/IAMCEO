@@ -10,7 +10,7 @@ export type DeliveryRecoveryStore = Pick<Store,
   "withDeliveryRead" | "deliveryNoticePreviews" | "listUnlinkedFailedMessages" |
   "transaction" | "afterCommit" | "requireProject" | "listProjects" | "requireMember" | "getMember" | "listMembers" | "memberRevisions" | "getSettings" |
   "listDeliveries" | "requireDelivery" | "getDelivery" | "enqueue" | "getDeliveryRecovery" | "updateDeliveryRecovery" | "listDeliveryRecoveries" |
-  "getDeliveryRetry" | "patchDeliveryRetry" | "saveDispatch" | "getDispatch" | "listDispatches" | "listDeliveryDispatches" | "physicalDeliveryIds" | "hasLogicalDeliveryFence" | "updateDispatch" | "inputState" |
+  "matchesConductorHandoff" | "getDeliveryRetry" | "patchDeliveryRetry" | "saveDispatch" | "getDispatch" | "listDispatches" | "listDeliveryDispatches" | "physicalDeliveryIds" | "hasLogicalDeliveryFence" | "updateDispatch" | "inputState" |
   "deliveryRecoveryOperation" | "markDelivered" | "markHeld" | "markFailed" | "setDeliveryStatus" | "setMessageDelivery" |
   "getMessage" | "requireMessage" | "listMessagePage" | "getDecision" | "setDecisionStatus" | "getTodo" | "todoRevision" | "appendActivity">;
 
@@ -113,8 +113,11 @@ export class DeliveryRecovery implements DeliveryRecoveryService {
     if (!delivery.refType || !delivery.refId) return hash({ text: delivery.text, memberId: delivery.memberId });
     if (delivery.refType === "message") {
       const m = this.store.getMessage(delivery.refId);
-      return m && m.projectId === delivery.projectId && (delivery.kind !== "user_message" || m.targetMemberId === null || m.targetMemberId === delivery.memberId)
-        ? hash({ id: m.id, body: m.body, title: m.title, attachments: m.attachments, targetMemberId: m.targetMemberId, memberId: delivery.memberId }) : null;
+      if (!m || m.projectId !== delivery.projectId) return null;
+      if (delivery.kind === "user_message" && m.targetMemberId && m.targetMemberId !== delivery.memberId) {
+        if (!this.store.matchesConductorHandoff(delivery, m.targetMemberId)) return null;
+      }
+      return hash({ id: m.id, body: m.body, title: m.title, attachments: m.attachments, targetMemberId: m.targetMemberId, memberId: delivery.memberId });
     }
     if (delivery.refType === "decision") {
       const d = this.store.getDecision(delivery.refId);

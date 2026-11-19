@@ -84,10 +84,14 @@ beforeAll(async () => {
   store.createMessage({ projectId: project.id, mine: true, who: "나", kind: "나", body: "작업 전의 옛 지시" });
   store.createMessage({ projectId: project.id, memberId: lead.id, who: lead.name, kind: "답변", body: "옛 답변" });
   taskPay = orch.saveTask(pay, { title: "환불 기능", branch: "feat/refund", worktree: "/repo/.claude/worktrees/refund" }).task;
+  orch.saveTask(lead, { taskId: taskPay.id, contract: { kind: "other", goal: "부분 환불 요청을 검토서에 정리해 전달한다",
+    inputs: ["대표의 부분 환불 요청"], outputs: ["부분 환불 검토서"], scope: "요청과 산출물을 환불 기능 업무에 연결한다",
+    constraints: [], exclusions: [], acceptance: ["환불 기능 업무에 연결한 검토서에 대표의 요청 원문이 있다"], checks: ["real"] } });
   await settle();
   taskSearch = orch.saveTask(search, { title: "검색 속도", branch: "feat/search-speed", worktree: "/repo/.claude/worktrees/search" }).task;
-  await orch.recordPost(pay, { kind: "진행", title: "환불 설계 시작", taskId: taskPay.id });
-  await orch.recordPost(search, { kind: "진행", title: "검색 색인 점검", taskId: taskSearch.id });
+  // 기존 대화에 남은 진행 글도 업무별로 조회할 수 있다.
+  store.createMessage({ projectId: pay.projectId, memberId: pay.id, who: pay.name, kind: "진행", title: "환불 설계 시작", taskId: taskPay.id });
+  store.createMessage({ projectId: search.projectId, memberId: search.id, who: search.name, kind: "진행", title: "검색 색인 점검", taskId: taskSearch.id });
   browser = await chromium.launch();
 });
 
@@ -186,10 +190,16 @@ describe("웹 작업별 대화", () => {
     // 2) 업무B(검색)로 옮겨도 받는 사람(결제 연동)은 그대로. 그 사이 결제 직원의 늦은 보고는 원래 업무(환불)에 붙는다
     await selectTask(page, "검색 속도");
     await expect(target()).resolves.toBe("@결제 연동");
-    await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 넣음", taskId: taskPay.id });
+    const request = await stored("부분 환불도 넣어 주세요");
+    const refundFile = store.createFile({ projectId: project.id, memberId: pay.id, who: pay.name, taskId: taskPay.id,
+      title: "부분 환불 검토서", body: `대표 요청: ${request.body}`, kind: "document" });
+    expect(store.getFile(refundFile.id)).toMatchObject({ taskId: taskPay.id, body: "대표 요청: 부분 환불도 넣어 주세요" });
+    await orch.recordPost(store.requireMember(pay.id), { kind: "완료", title: "부분 환불 검토서 전달", taskId: taskPay.id,
+      fileIds: [refundFile.id], contractRev: 1, checks: [{ name: "검토서의 요청 원문과 업무 확인", kind: "real", result: "pass",
+        evidence: `자료 ${refundFile.id}에 원문 ${request.id}의 요청과 환불 업무가 연결됐다`, criterion: 1 }] });
     // 업무를 밝히지 않은 늦은 보고는 받지 않는다(화면에서 보고 있는 검색 업무에도 붙지 않는다)
     await expect(orch.recordPost(store.requireMember(pay.id), { kind: "알림", title: "작업 없는 늦은 글" })).rejects.toThrow("task_id");
-    expect(store.listMessages(project.id).find((m) => m.title.endsWith("부분 환불 넣음"))!.taskId).toBe(taskPay.id);
+    expect(store.listMessages(project.id).find((m) => m.title.endsWith("부분 환불 검토서 전달"))!.taskId).toBe(taskPay.id);
     await settle();
     await page.waitForTimeout(300);
     text = await listText(page);
@@ -214,7 +224,7 @@ describe("웹 작업별 대화", () => {
     // 4) 같은 업무(환불)를 다른 직원(검색 개선)에게도 보낸다 → 같은 업무 id 로 남는다
     await selectTask(page, "환불 기능");
     await expect(target()).resolves.toBe("@검색 개선");
-    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 검토서 전달"));
     await page.getByLabel("입력칸").fill("환불 화면의 검색도 봐 주세요");
     await page.getByLabel("입력칸").press("Enter");
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("환불 화면의 검색도 봐 주세요"));
@@ -229,7 +239,7 @@ describe("웹 작업별 대화", () => {
     await expect(page.locator(".th-task").count()).resolves.toBe(0);
     await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("작업 전의 옛 지시"));
     text = await listText(page);
-    for (const s of ["작업 전의 옛 지시", "부분 환불 넣음", "검색 색인 점검", "환불 화면의 검색도 봐 주세요"]) expect(text).toContain(s);
+    for (const s of ["작업 전의 옛 지시", "부분 환불 검토서 전달", "검색 색인 점검", "환불 화면의 검색도 봐 주세요"]) expect(text).toContain(s);
     // 총괄로 돌려도 업무 선택(없음)은 그대로
     await pickTarget(null);
     await expect(target()).resolves.toBe("총괄");
@@ -250,14 +260,14 @@ describe("웹 작업별 대화", () => {
   test("폰 폭: 업무가 많으면 한 줄에 들어가는 만큼 이름 전체를 보이고, '+N'으로 전체 목록을 열어 고른다. 업무를 둔 채 받는 사람만 바꿔 보낸다", async () => {
     // 폰 한 줄보다 긴 이름의 업무(가장 덜 최근)
     const long = orch.saveTask(pay, { title: "폰 한 줄보다 훨씬 긴 업무 이름이라서 맨 앞 칩 옆에 다 들어가지 않는 업무", branch: "feat/long" }).task;
-    await orch.recordPost(pay, { kind: "진행", title: "긴 이름 업무 시작", taskId: long.id });
+    store.createMessage({ projectId: pay.projectId, memberId: pay.id, who: pay.name, kind: "진행", title: "긴 이름 업무 시작", taskId: long.id });
     await settle();
     for (let i = 1; i <= 7; i++) {
       const who = i % 2 ? pay : search;
       const t = orch.saveTask(who, { title: `추가 작업 ${i}번 제목이 조금 길다`, branch: `feat/extra-${i}` }).task;
       extra.push(t);
       // 글이 없는 업무는 칩에서 빠지므로, 업무마다 보고 하나를 남긴다
-      await orch.recordPost(who, { kind: "진행", title: `추가 작업 ${i}번 시작`, taskId: t.id });
+      store.createMessage({ projectId: who.projectId, memberId: who.id, who: who.name, kind: "진행", title: `추가 작업 ${i}번 시작`, taskId: t.id });
       await settle();
     }
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -303,7 +313,7 @@ describe("웹 작업별 대화", () => {
     await selectTask(page, "환불 기능", "tap");
     await expect(chip(page, "환불 기능").getAttribute("aria-hidden")).resolves.toBeNull();
     await page.locator(".th-task").waitFor();
-    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 넣음"));
+    await page.waitForFunction(() => document.querySelector(".th-list")?.textContent?.includes("부분 환불 검토서 전달"));
     await expect(page.getByLabel("입력칸").isVisible()).resolves.toBe(true);
     await expect(page.locator(".cmp-chip--target").isVisible()).resolves.toBe(true);
     // 폰에서도 업무를 골라 둔 채 받는 사람만 바꾼다
@@ -506,8 +516,8 @@ describe("웹 작업별 대화", () => {
     await expect(chip(page, "환불 정산 확인").count()).resolves.toBe(0);
     // 두 직원과 총괄이 같은 업무에 글을 쓴다 → 칩은 하나, 세 글이 모두 보인다
     const lead = store.listMembers(project.id).find((m) => m.kind === "conductor")!;
-    await orch.recordPost(store.requireMember(lead.id), { kind: "진행", title: "정산 확인 맡김", taskId: `tk_${item.id}` });
-    await orch.recordPost(pay, { kind: "진행", title: "정산 숫자 뽑는 중", taskId: `tk_${item.id}` });
+    store.createMessage({ projectId: lead.projectId, memberId: lead.id, who: lead.name, kind: "진행", title: "정산 확인 맡김", taskId: `tk_${item.id}` });
+    store.createMessage({ projectId: pay.projectId, memberId: pay.id, who: pay.name, kind: "진행", title: "정산 숫자 뽑는 중", taskId: `tk_${item.id}` });
     await orch.recordPost(search, { kind: "알림", title: "정산 검색 조건 확인", taskId: `tk_${item.id}` });
     await settle();
     await chip(page, "환불 정산 확인").waitFor();

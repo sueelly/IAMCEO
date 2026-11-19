@@ -44,7 +44,7 @@ test("업무 흐름과 대화가 팀 점검·보류 사유와 대표 할 일을 
   const completed = f.store.taskProgress(doc.id);
   expect(completed).toMatchObject({ stage: "done", finalReview: { status: "pending", contractRev: 1 } });
   const noticeId = completed.notice!.id;
-  const fix = "총괄이 수정 범위를 조정합니다 · 수정 담당 철수 · 실패 1건(환불 반례)";
+  const fix = "환불 반례 확인 · 실패 1건(환불 반례)";
   expect(f.store.taskProgress(pay.id).next).toBe(fix);
   expect(f.store.taskProgress(merge.id).stage).toBe("confirm");
 
@@ -106,12 +106,12 @@ test("업무 흐름과 대화가 팀 점검·보류 사유와 대표 할 일을 
         if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
         dialog = await detail(merge);
         const facts = await dialog.locator(".wf-detail__facts").innerText();
-        expect(facts).toContain("팀 확인 대기");
+        expect(facts).toContain("미확인 항목");
         expect(await dialog.innerText()).toContain("통합 뒤 회귀");
         await dialog.getByRole("link", { name: /업무 대화/ }).click();
         const thread = page.locator(".th-task").filter({ hasText: merge.title });
         await thread.waitFor();
-        expect(await thread.innerText()).toContain("팀 확인 대기");
+        expect(await thread.innerText()).toContain("미확인 항목");
         expect(await thread.innerText()).toContain("통합 뒤 회귀");
         await page.screenshot({ path: join(shots, `thread-${tag}.png`) });
 

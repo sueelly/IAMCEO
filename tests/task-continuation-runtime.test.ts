@@ -129,15 +129,50 @@ test("a worker records repair progress without a report-only turn and resumes th
     contractRev: 1, continueWork: true,
     checks: [{ name: "regression", kind: "regression", result: "fail", evidence: "Observed the regression failure" }],
   });
+  expect(f.store.listMessages(f.project.id).filter(m => m.kind === "진행")).toHaveLength(0);
+  expect(f.store.listDeliveries().filter(d => d.kind === "report")).toHaveLength(0);
+  expect(f.store.latestTaskChecks(task.id)[0]?.evidence).toContain("regression failure");
   expect(f.pendingRun(f.worker)?.runId).toBe(interruptedRun.runId);
   await f.end(f.worker);
   expect(f.store.getReportFollowup(interruptedRun.runId)).toBeNull();
   expect(f.store.doneMark(task.id)).toBeNull();
   const [followup] = f.check(Date.now() + 120_000);
   expect(followup).toMatchObject({ memberId: f.worker.id, taskId: task.id });
-  expect(followup!.text).toContain("regression");
+  expect(followup!.text).toContain("Regression failure needs a local fix");
+  expect(followup!.text).toContain("The owner of this assignment can repair the failing branch and rerun the check.");
+  expect(followup!.text).toContain("Observed the regression failure");
   await f.orch.pump(f.worker.id);
   expect(f.pendingRun(f.worker)?.deliveryIds).toContain(followup!.id);
+});
+
+test("status carries repair evidence across turns without posting a report", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const worker = f.store.requireMember(f.worker.id);
+  const changed = await f.orch.handleAgentTool(worker, "status", {
+    now: "Rerunning the receipt check", next: "Verify the corrected field", task_id: task.id,
+    continue_work: true, contract_rev: 1, checks: [{ kind: "regression", name: "receipt", result: "fail", evidence: "wrong receipt" }],
+  });
+  expect(changed.isError).toBeUndefined();
+  const id = /#(cp_\w+)/.exec(changed.text)![1]!;
+  expect(f.store.getMessage(id)).toBeNull();
+  expect(f.store.requireMember(worker.id)).toMatchObject({ now: "Rerunning the receipt check", next: "Verify the corrected field" });
+  const viaPost = await f.orch.handleAgentTool(worker, "post", { report_id: id });
+  expect(JSON.parse(viaPost.text)).toMatchObject({ internal: true, continuesWork: true, checks: [{ name: "receipt" }] });
+  expect(f.store.getTaskWatch(task.id)?.same).toBe(1);
+  await f.end(worker);
+  expect(f.check(Date.now() + 120_000)[0]).toMatchObject({ memberId: worker.id, taskId: task.id });
+});
+
+test("legacy progress can publish a real artifact while the same assignment continues", async () => {
+  const f = fixture(), task = await startApprovedWork(f);
+  const file = f.store.createFile({ projectId: f.project.id, taskId: task.id, title: "검토용 문서" });
+  const receipt = await f.orch.recordPost(f.store.requireMember(f.worker.id), { taskId: task.id, kind: "진행",
+    title: "검토용 문서 전달", body: "문서를 첨부하고 남은 검사를 이어 갑니다", fileIds: [file.id], contractRev: 1, continueWork: true });
+  expect(f.store.requireMessage(receipt.id)).toMatchObject({ kind: "알림", taskId: task.id, fileId: file.id });
+  expect(f.store.taskProgressFacts(task.projectId).get(task.id)?.reports.some(r => r.continuesWork)).toBe(true);
+  expect(f.store.listMessages(task.projectId).some(m => m.kind === "진행")).toBe(false);
+  await f.end(f.worker);
+  expect(f.check(Date.now() + 120_000)[0]).toMatchObject({ taskId: task.id, memberId: f.worker.id });
 });
 
 test("a worker who returned without a result resumes authorized work before a report-only request", async () => {

@@ -153,11 +153,11 @@ describe("manual batch 수신", () => {
   });
 });
 
-test("역할 지침은 core 명시 post와 정상 미보고 예외·응답 유실 ID를 설명한다", () => {
+test("역할 지침은 결과 게시와 착수·위임 확인 생략 및 응답 유실 ID를 설명한다", () => {
   for (const name of ["root", "conductor", "worker"]) {
     const role = readFileSync(join(import.meta.dir, "..", "server", "roles", `${name}.md`), "utf8");
     expect(role).toContain("core는 턴 마지막 글을 자동 게시하지 않는다");
-    expect(role).toContain("미보고 예외");
+    expect(role).toContain("착수·위임 확인과 중간 진행 보고는 생략한다");
     expect(role).toContain("operation_id");
     expect(role).not.toContain("마지막 글은 그대로 대화에 올라간다");
   }

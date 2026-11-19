@@ -352,8 +352,8 @@ export interface Task {
 
 /**
  * 업무 단계(대표 2026-11-17: 목록과 대화가 맞고, 막힘·적용 없이 끝나지 않게).
- * new 시작 전 · working 진행 중 · owner 대표 차례 · approval 승인 창 · held 전달 보류 · check 재시도 조정(반복 감시) ·
- * fix 고칠 것 · confirm 확인 대기 · delivered 작성자 납품 · review 검토 중 · merge 합치기 대기 · merged 메인 합침(통합 뒤 확인) ·
+ * new 시작 전 · working 진행 중 · owner 대표 차례 · approval 승인 창 · held 전달 보류 · check 진전 없음(반복 감시) ·
+ * fix 검사 실패 · confirm 미확인 항목 · delivered 작성자 납품 · review 검토 중 · merge 합치기 대기 · merged 메인 합침(통합 뒤 확인) ·
  * applied 대표 화면 반영 · hold 보류 · done 완료.
  */
 export type TaskStage = "new" | "working" | "owner" | "approval" | "held" | "check" | "fix" | "confirm" | "delivered" | "review" | "merge" | "merged" | "applied" | "hold" | "done";

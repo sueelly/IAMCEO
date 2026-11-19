@@ -217,7 +217,7 @@ test("owner stop retains the review and blocks further verdicts and delivery", a
     result: "changes_requested", evidence: "중단 전 발견", repair_title: "수정" })).isError).toBe(true);
 });
 
-test("a review finding creates one scoped repair and a conductor notification", async () => {
+test("a review finding creates one scoped repair without sending a second request to the conductor", async () => {
   const f = await pendingReview();
   const args = { task_id: f.source.id, report_id: f.report.id, result: "changes_requested", reviewed_commit: f.head,
     evidence: "재시작 후 설정이 초기화되는 재현을 확인했습니다", repair_title: "재시작 뒤 설정 초기화 수정" };
@@ -226,7 +226,7 @@ test("a review finding creates one scoped repair and a conductor notification", 
   expect(f.store.taskProgress(f.source.id).finalReview?.status).toBe("changes_requested");
   expect(latestCompletionReview(f.store, f.source.id)?.reviewed_commit).toBeNull();
   expect(f.store.listWork(f.project.id).filter(w => w.title === args.repair_title)).toHaveLength(1);
-  expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id && d.text.includes(args.repair_title))).toHaveLength(1);
+  expect(f.store.listDeliveries(f.project.id).filter(d => d.memberId === f.lead.id && d.text.includes(args.repair_title))).toHaveLength(0);
 });
 
 test("an existing unassigned review repair reaches its original worker with the bound scope while the lead is busy", async () => {

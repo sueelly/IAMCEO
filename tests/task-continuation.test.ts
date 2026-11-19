@@ -65,6 +65,42 @@ test("an explicit blocker retires a queued worker continuation before dispatch",
   expect(f.next.check(f.start + 10_000, () => true)[0]?.memberId).toBe(f.lead.id);
 });
 
+test("a received worker assignment after a blocker replaces a stranded conductor reminder", () => {
+  const f = fixture(), task = f.task("실패 뒤 담당 배정", false); contractFor(f, task);
+  const owner = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "user_message", text: "운영 원본에 접근하지 말고 격리 환경만 검사", taskId: task.id });
+  f.store.markDelivered(owner.id);
+  const blocked = f.blocked(task);
+  const old = f.next.check(f.start, () => true)[0]!;
+  expect(old.memberId).toBe(f.lead.id);
+  const instruction = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "확인한 원인을 바탕으로 두 실패 사례만 수정", taskId: task.id });
+  const after = new Date(Date.parse(blocked.at) + 100).toISOString();
+  f.store.markDelivered(instruction.id);
+  f.db.query("UPDATE deliveries SET created_at=?,delivered_at=? WHERE id=?").run(after, after, instruction.id);
+  expect(f.store.taskProgress(task.id)).toMatchObject({ stage: "working", owner: f.worker.name, basis: [blocked.id, instruction.id] });
+  const next = f.coordinator().check(f.start + 10000, m => m.id === f.worker.id);
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({ memberId: f.worker.id, taskId: task.id });
+  expect(next[0]!.text).toContain(owner.text);
+  expect(next[0]!.text).toContain(instruction.text);
+  expect(f.store.requireDelivery(old.id).status).toBe("failed");
+  expect(f.next.canDispatch(next[0]!)).toBe(true);
+  expect(f.coordinator().check(f.start + 20000, () => true)).toEqual([]);
+});
+
+test("an uncertain conductor handoff stays protected after the worker receives a new assignment", () => {
+  const f = fixture(), task = f.task("조정 수신 여부 불명", false); contractFor(f, task);
+  const report = f.blocked(task);
+  const old = f.next.check(f.start, () => true)[0]!;
+  f.store.markHeld(old.id, "delivery_unknown");
+  f.db.query("UPDATE deliveries SET attempts=1 WHERE id=?").run(old.id);
+  const input = f.store.enqueue({ projectId: f.project.id, memberId: f.worker.id, kind: "instruction", text: "새 검사 범위", taskId: task.id });
+  f.store.markDelivered(input.id);
+  const after = new Date(Date.parse(report.at) + 100).toISOString();
+  f.db.query("UPDATE deliveries SET created_at=?,delivered_at=? WHERE id=?").run(after, after, input.id);
+  expect(f.coordinator().check(f.start + 10000, () => true)).toEqual([]);
+  expect(f.store.requireDelivery(old.id)).toMatchObject({ status: "held", attempts: 1 });
+});
+
 test("changing the binding contract retires a worker reminder carrying the previous revision", () => {
   const f = fixture(), task = f.task("contract revision", false); contractFor(f, task);
   const queued = f.next.check(f.start, () => true)[0]!;

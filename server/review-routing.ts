@@ -75,6 +75,10 @@ export function untouchedQueuedInput(store: Store, delivery: Delivery, expectedW
   const r = store.getDeliveryRecovery(delivery.id), retry = store.getDeliveryRetry(delivery.id);
   if (!r || r.phase !== "none" || r.version !== 1 || r.activeCheckMs || r.nextCheckAt || r.lastCheckedAt || r.marker || r.autoAttempts || r.checkCount || r.reason || r.evidence.length ||
       retry.retryReason || retry.sourceRevision || retry.correctionRevision || retry.retryScope) return false;
+  return hasNoInputHistory(store, delivery);
+}
+
+export function hasNoInputHistory(store: Store, delivery: Delivery): boolean {
   if (store.listDeliveryDispatches(delivery.id).length ||
       store.db.query("SELECT 1 FROM delivery_recovery_operations WHERE delivery_id=? LIMIT 1").get(delivery.id)) return false;
   return !store.db.query(`SELECT 1 FROM execution_journal e,json_each(e.delivery_ids_json) j WHERE e.member_id=? AND j.value=?

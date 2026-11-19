@@ -30,9 +30,9 @@ class AckRunner implements Runner {
   async screen() { return ""; }
   async shutdown() {}
   on(callback: (e: RunnerEvent) => void) { this.callback = callback; }
-  end(m: Member, turn = 1) {
+  end(m: Member, turn = 1, finalText = "") {
     this.busy.delete(m.id);
-    this.callback({ type: "turn_end", memberId: m.id, terminalId: m.paneId, sessionGeneration: 0, turn, finalText: "", isError: false });
+    this.callback({ type: "turn_end", memberId: m.id, terminalId: m.paneId, sessionGeneration: 0, turn, finalText, isError: false });
   }
 }
 const cleanups: (() => Promise<void>)[] = [];
@@ -69,9 +69,9 @@ function fixture(kind: "conductor" | "root" = "conductor") {
     expect(result.isError, result.text).not.toBe(true);
     return result;
   };
-  const start = () => orch.sendUserMessage(project.id, { text: "결제 오류를 검토해 주세요", id: "owner-command" });
-  const end = async (turn = 1) => {
-    runner.end(store.requireMember(lead.id), turn);
+  const start = () => orch.sendUserMessage(project.id, { taskId, text: "결제 오류를 검토해 주세요", id: "owner-command" });
+  const end = async (turn = 1, finalText = "") => {
+    runner.end(store.requireMember(lead.id), turn, finalText);
     await until(() => store.listActivity(lead.id).filter(a => a.kind === "turn_end").length >= turn);
   };
   const restart = async () => {
@@ -84,51 +84,29 @@ function fixture(kind: "conductor" | "root" = "conductor") {
 }
 
 for (const kind of ["conductor", "root"] as const) {
-  test(`${kind}: post 없이 맡기면 직원별 시스템 줄을 한 번만 남긴다`, async () => {
-    const f = fixture(kind); const w = f.member(), other = f.member();
+  test(`${kind}: 위임과 재시작은 실행 근거만 남긴다`, async () => {
+    const f = fixture(kind), worker = f.member();
     await f.start();
-    if (kind === "root") {
-      // 본사는 현재 팀 도구를 노출하지 않는다. 서버의 방어 규칙 자체는 같은 수준으로 검증한다.
-      await f.orch.assign(f.project.id, w.handle, { taskId: f.taskId, text: "결제 오류 확인\n둘째 줄은 요약하지 않는다" }, f.lead);
-      await f.orch.assign(f.project.id, other.handle, { taskId: f.taskId, text: "가".repeat(80) }, f.lead);
-    } else {
-      await f.tool("team_assign", { member: w.handle, text: "결제 오류 확인\n둘째 줄은 요약하지 않는다" });
-      await f.tool("team_assign", { member: other.handle, text: "가".repeat(80) });
-    }
-    expect(f.notices()).toHaveLength(0);
+    await f.orch.assign(f.project.id, worker.handle, { taskId: f.taskId, text: "결제 검토" }, f.lead);
+    const progress = await f.tool("post", { kind: "진행", title: "검토를 맡겼습니다" });
+    expect(progress.text).not.toContain("보고했습니다");
+    expect(f.store.listMessages(f.project.id).filter(m => m.kind === "진행")).toHaveLength(0);
     await f.end();
-    expect(f.notices().map(m => m.body)).toEqual([`총괄이 ${w.name}에게 맡겼습니다: 결제 오류 확인`, `총괄이 ${other.name}에게 맡겼습니다: ${"가".repeat(60)}`]);
-    expect(f.notices().every(m => m.kind === "시스템" && m.who === "시스템" && m.memberId === null)).toBe(true);
-    f.runner.end(f.store.requireMember(f.lead.id));
-    await Bun.sleep(10);
-    expect(f.notices()).toHaveLength(2);
+    expect(f.notices()).toHaveLength(0);
+    expect(f.store.listReportClosures(f.lead.id, "").some(c => c.kind === "delegated")).toBe(true);
     await f.restart();
-    f.runner.end(f.store.requireMember(f.lead.id));
-    await Bun.sleep(10);
-    expect(f.notices()).toHaveLength(2);
-  });
-}
-
-test("대기열 배정은 앞 일 뒤 시작을 표시하고 같은 직원은 한 줄로 합친다", async () => {
-  const f = fixture(); const w = f.member();
-  await f.start();
-  await f.tool("team_assign", { member: w.handle, text: "앞 일" });
-  await f.tool("team_assign", { member: w.handle, text: "다음 일" });
-  await f.end();
-  expect(f.notices().map(m => m.body)).toEqual([`총괄이 ${w.name}에게 맡겼습니다: 다음 일 (앞 일 끝나면 시작)`]);
-});
-
-for (const postFirst of [true, false]) {
-  test(`실제 post가 ${postFirst ? "배정 전" : "배정 후"} 있으면 재시작 후에도 시스템 줄을 남기지 않는다`, async () => {
-    const f = fixture(); const w = f.member();
-    await f.start();
-    if (postFirst) await f.tool("post", { kind: "진행", title: "알겠습니다. 검토 담당에게 맡기겠습니다" });
-    await f.tool("team_assign", { member: w.handle, text: "결제 확인" });
-    if (!postFirst) await f.tool("post", { kind: "진행", title: "알겠습니다. 검토 담당에게 맡겼습니다" });
-    await f.restart(); await f.end();
     expect(f.notices()).toHaveLength(0);
   });
 }
+
+test("배정만 한 실행이 마지막에 남긴 접수 문장은 자동 게시되지 않는다", async () => {
+  const f = fixture(), worker = f.member();
+  await f.start();
+  await f.tool("team_assign", { member: worker.handle, text: "영수증 확인" });
+  await f.end(1, "영수증 확인을 맡겼습니다");
+  expect(f.store.listMessages(f.project.id).some(m => m.body === "영수증 확인을 맡겼습니다")).toBe(false);
+  expect(f.store.listDeliveries().some(d => d.kind === "report")).toBe(false);
+});
 
 test("직원 보고로 깨어난 턴에 다음 직원에게 맡기면 시스템 줄을 남기지 않는다", async () => {
   const f = fixture(); const w = f.member(), next = f.member();
@@ -149,58 +127,14 @@ test("보고 턴에 묶여 온 wake=false 대표 답은 대표가 깨운 턴으�
   await f.end(); expect(f.notices()).toHaveLength(0);
 });
 
-test("배정 뒤 ask는 post가 아니므로 누락된 배정 확인을 보완한다", async () => {
-  const f = fixture(); const w = f.member();
-  await f.start(); await f.tool("team_assign", { member: w.handle, text: "결제 검토" });
-  await f.tool("ask", { title: "검토 범위", detail: "추가 범위를 선택해 주세요" });
-  await f.end(); expect(f.notices()).toHaveLength(1);
-});
-
-test("배정 중 서버 재시작 뒤에도 턴 종료 때 한 번만 보완한다", async () => {
-  const f = fixture(); const w = f.member();
-  await f.start(); await f.tool("team_assign", { member: w.handle, text: "결제 검토" });
-  await f.restart();
-  expect(f.notices()).toHaveLength(0);
-  await f.end(); expect(f.notices()).toHaveLength(1);
-  await f.restart(); f.runner.end(f.store.requireMember(f.lead.id));
-  await Bun.sleep(10); expect(f.notices()).toHaveLength(1);
-});
-
-for (const posted of [false, true]) {
-  test(`대표 원문 재전달도 ${posted ? "기존 post" : "기존 시스템 안내"}와 중복되지 않는다`, async () => {
-    const f = fixture(); const w = f.member();
-    await f.start(); await f.tool("team_assign", { member: w.handle, text: "결제 검토" });
-    if (posted) await f.tool("post", { kind: "진행", title: "알겠습니다. 검토를 맡겼습니다" });
-    await f.end();
-    const expected = posted ? 0 : 1;
-    expect(f.notices()).toHaveLength(expected);
-    f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "user_message", text: '[대표] "결제 오류를 검토해 주세요"', refType: "message", refId: "owner-command" });
-    await f.restart();
-    await until(() => f.runner.busy.has(f.lead.id));
-    await f.tool("team_assign", { member: w.handle, text: "결제 검토" });
-    await f.end(2); expect(f.notices()).toHaveLength(expected);
-  });
-}
-
-test("서버 부재 중 종료는 execution journal과 새 idle 관측으로도 보완한다", async () => {
-  const f = fixture(); const w = f.member();
-  await f.start(); await f.tool("team_assign", { member: w.handle, text: "결제 검토" });
-  await f.restart();
-  f.runner.busy.delete(f.lead.id);
-  f.runner.callback({ type: "status", memberId: f.lead.id, terminalId: f.lead.paneId, sessionGeneration: 0, turn: 1, status: "idle" });
-  await until(() => f.notices().length === 1);
-  f.runner.end(f.store.requireMember(f.lead.id));
-  await Bun.sleep(10); expect(f.notices()).toHaveLength(1);
-});
-
-test("team_add와 team_resume의 실제 첫 지시도 배정 확인에 포함한다", async () => {
-  const f = fixture(); const w = f.member();
-  f.store.patchMember(w.id, { status: "asleep" });
+test("질문을 올리고 배정한 턴에는 결재 카드만 남는다", async () => {
+  const f = fixture(), worker = f.member();
   await f.start();
-  await f.tool("team_add", { name: "결제 구현", role: "결제", first_instruction: "새 결제 구현" });
-  await f.tool("team_resume", { member: w.handle, first_instruction: "이어 검토" });
+  await f.tool("team_assign", { member: worker.handle, text: "결제 검토" });
+  await f.tool("ask", { title: "검토 범위", detail: "추가 범위를 선택해 주세요" });
   await f.end();
-  expect(f.notices().map(m => m.body)).toEqual(["총괄이 결제 구현에게 맡겼습니다: 새 결제 구현", `총괄이 ${w.name}에게 맡겼습니다: 이어 검토`]);
+  expect(f.notices()).toHaveLength(0);
+  expect(f.store.listOpenDecisionsByMember(f.lead.id)).toHaveLength(1);
 });
 
 test("지시 없는 team_add·team_resume와 실패한 배정은 확인 안내를 만들지 않는다", async () => {
@@ -221,7 +155,7 @@ test("신규 직원 기동 실패로 취소된 첫 지시는 배정으로 알리
   await f.end(); expect(f.notices()).toHaveLength(0);
 });
 
-test("대표 결재 답 턴의 ask_close follow_up도 배정 안내를 남긴다", async () => {
+test("대표 결재 답 턴의 ask_close follow_up도 배정 안내를 생략한다", async () => {
   const f = fixture(); const w = f.member();
   const pending = await f.orch.registerAsk(f.lead, { title: "결제 검토", detail: "어떻게 할까요", taskId: defaultTaskId(f.store, f.project.id) });
   await f.orch.answerDecision(pending.decision.id, { note: "검토를 시작하도록 승인합니다" });
@@ -231,20 +165,14 @@ test("대표 결재 답 턴의 ask_close follow_up도 배정 안내를 남긴다
   const other = f.store.createDecision({ projectId: f.project.id, taskId: f.taskId, memberId: w.id, who: w.name, title: "중복 질문" });
   await f.tool("ask_close", { id: other.id, kind: "decided", reason: "대표가 정함", user_quote: source.body,
     follow_up: { kind: "instruction", member_id: w.id, text: "결제 오류 검토", source_message_id: source.id } });
-  await f.end(); expect(f.notices().map(m => m.body)).toEqual([`총괄이 ${w.name}에게 맡겼습니다: 결제 오류 검토`]);
+  await f.end(); expect(f.notices()).toHaveLength(0);
 });
 
-test("역할 렌더: 대표 지시 직후 확인·배정 안내, 예고 금지, 대기 중 침묵을 구분한다", () => {
+test("직원·총괄·본사의 역할은 착수·위임 확인을 요청하지 않는다", () => {
   const vars = { PROJECT: "P", NAME: "N", ROLE: "R", CONDUCTOR: "C" };
-  for (const kind of ["conductor", "root"] as const) {
+  for (const kind of ["worker", "conductor", "root"] as const) {
     const role = renderRole(kind, vars);
-    expect(role).toContain("알겠다는 확인과 누구에게 무엇을 맡겼는지 한두 줄로 답한다");
-    expect(role).toContain("`follow_up`으로 후속 지시를 보낸 경우도 같다");
-    expect(role).toContain('"언제 알려드리겠다" 같은 예고는 쓰지 않는다');
-    expect(role).not.toContain("직원에게 위임한 뒤 보고 대기,");
+    expect(role).not.toContain("알겠다는 확인");
+    expect(role).toContain("착수·위임 확인");
   }
-  const conductor = renderRole("conductor", vars);
-  expect(conductor).toContain("직원 보고를 기다리는 동안에는 따로 말하지 않는다");
-  expect(conductor).toContain("직원 보고를 받아 다음 직원에게 넘기는 턴에는 필요한 소식만");
-  expect(renderRole("worker", vars)).toContain("첫 `status` 직후 바로 `post`(진행)로 알겠다는 확인과 무엇을 하겠는지");
 });

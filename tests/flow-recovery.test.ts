@@ -276,16 +276,18 @@ test("대표 단순 현황 조회는 실행기 없이 DB에서 답하고 중복 
   expect(f.runner.sent).toHaveLength(0);
 });
 
-test("일상적인 진행 보고는 업무에 남고 복구 후에도 총괄 터미널로 복사되지 않는다", async () => {
-  const f = fixture(); const lead = f.member("conductor"), worker = f.member();
+test("진행 기록은 업무에만 저장하고 자료·대표 요청과 정정은 공개한다", async () => {
+  const f = fixture(), lead = f.member("conductor"), worker = f.member();
   f.store.patchProject(f.project.id, { runnerEnabled: false });
   const taskId = defaultTaskId(f.store, f.project.id);
-  const progress = await f.orch.recordPost(worker, { taskId, kind: "진행", title: "검증 중", body: "등록된 범위의 검사 중입니다" });
-  expect(f.store.requireMessage(progress.id).taskId).toBe(taskId);
-  expect(f.store.listReportsMissingDeliveries(f.project.id).map(m => m.id)).not.toContain(progress.id);
-  expect(f.store.listPending(lead.id).filter(d => d.refId === progress.id)).toHaveLength(0);
-  const correction = await f.orch.recordPost(worker, { taskId, kind: "알림", title: "앞선 결과 정정", correctsMessageId: progress.id });
+  const progress = await f.orch.recordPost(worker, { taskId, kind: "진행", title: "검증 중" });
+  expect(f.store.getMessage(progress.id)).toBeNull();
+  expect(f.store.getCheckpoint(progress.id)).toMatchObject({ taskId, memberId: worker.id });
+  const action = await f.orch.recordPost(worker, { taskId, kind: "진행", title: "실물 검수 필요", ownerAction: "실물을 확인해 주세요" });
+  expect(f.store.requireMessage(action.id).kind).toBe("알림");
+  const correction = await f.orch.recordPost(worker, { taskId, kind: "알림", title: "앞선 결과 정정", correctsMessageId: action.id });
   expect(f.store.listPending(lead.id).filter(d => d.refId === correction.id)).toHaveLength(1);
+  expect(f.store.listDeliveries().some(d => d.refId === progress.id)).toBe(false);
 });
 
 test("업그레이드는 확실히 미전송인 일반 보고 사본만 종료하고 원본·시도 기록·직원 지시는 보존한다", async () => {
@@ -293,8 +295,8 @@ test("업그레이드는 확실히 미전송인 일반 보고 사본만 종료�
   f.store.patchProject(f.project.id, { runnerEnabled: false });
   const taskId = defaultTaskId(f.store, f.project.id);
   const old = async (title: string) => {
-    const msg = await f.orch.recordPost(worker, { taskId, kind: "진행", title });
-    f.store.db.query("UPDATE report_references SET board_only=0 WHERE source_message_id=?").run(msg.id);
+    const msg = f.store.createMessage({ projectId: f.project.id, memberId: worker.id, who: worker.name, taskId, kind: "진행", title });
+    f.store.saveReportReferences(f.project.id, { sourceMessageId: msg.id, authoredAt: msg.at, sequence: 1, decisionIds: [], fileIds: [], correctsMessageId: null });
     return f.store.enqueue({ projectId: f.project.id, memberId: lead.id, kind: "report", refType: "message", refId: msg.id, text: title, wake: false, taskId });
   };
   const safe = await old("진행 기록"), attempted = await old("이전 전송 시도");

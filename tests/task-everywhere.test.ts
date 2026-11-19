@@ -114,12 +114,13 @@ describe("대표 글·자료의 업무", () => {
     await t.orch.shutdown();
   });
 
-  test("직원에게 직접 보낸 글의 총괄 알림도 그 글의 업무에 붙는다. 본사 대화는 업무를 쓰지 않는다", async () => {
+  test("직원에게 직접 보낸 글은 해당 업무에 붙는다. 본사 대화는 업무를 쓰지 않는다", async () => {
     const t = setup();
     const m = await t.orch.sendUserMessage(t.project.id, { text: "철수야 로그 봐 줘", targetMemberId: t.w.id });
-    const notice = t.store.listDeliveries(t.project.id).find((d) => d.memberId === t.lead.id && d.kind === "system")!;
-    expect(t.store.deliveryTaskId(notice.id)).toBe(m.taskId!);
-    expect(notice.text).toContain(`작업 #${m.taskId}`);
+    const command = t.store.listDeliveries(t.project.id).find(d => d.memberId === t.w.id && d.refId === m.id)!;
+    expect(t.store.deliveryTaskId(command.id)).toBe(m.taskId!);
+    expect(command.text).toContain(`작업 #${m.taskId}`);
+    expect(t.store.listDeliveries(t.project.id).some(d => d.memberId === t.lead.id && d.text.includes(m.id))).toBe(false);
     const hq = await t.orch.sendUserMessage("hq", { text: "본사에 묻는 말" });
     expect(hq.taskId ?? null).toBeNull();
     expect(t.store.listTasks("hq")).toHaveLength(0);

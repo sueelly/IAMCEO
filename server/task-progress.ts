@@ -5,6 +5,7 @@ import type { MemberKind, MessageKind, TaskBlockCause, TaskProgress, TaskStage, 
 
 export interface ReportFact {
   id: string;
+  title?: string;
   /** 글 순서(rowid). 같은 시각이어도 순서를 정한다. */
   seq: number;
   at: string;
@@ -42,6 +43,7 @@ export interface WatchFact {
 }
 export interface HeldFact { id: string; who: string; reason: string | null; at: string }
 export interface ProgressFacts {
+  workerFollowup?: { memberId: string; who: string; sourceId: string; receivedAt: string };
   finalReview?: TaskProgress["finalReview"];
   reports: ReportFact[];
   decisions: { id: string; title: string; at: string }[];
@@ -58,6 +60,19 @@ export interface ProgressFacts {
 
 export function latestWorkerOutcome(facts: ProgressFacts | undefined): ReportFact | undefined {
   return facts?.reports.findLast(r => r.authorKind === "worker" && (r.kind === "완료" || r.kind === "막힘" || r.continuesWork));
+}
+
+/** A fresh instruction takes precedence over the blocker it addresses. A failed
+ * independent review can return to the author still assigned to this scope. */
+export function canFollowBlockedReport(facts: ProgressFacts, outcome: ReportFact, memberId: string, createdAt: string): boolean {
+  if (outcome.kind !== "막힘") return false;
+  if (createdAt > outcome.at) return true;
+  if (!outcome.failed.length || outcome.authorKind !== "worker" || outcome.memberId === memberId) return false;
+  const review = activeMarks(facts.marks).at(-1);
+  if (review?.stage !== "review" || review.at > outcome.at) return false;
+  const author = facts.reports.findLast(r => r.kind === "완료" && r.authorKind === "worker" && r.passed &&
+    !r.failed.length && !r.notRun.length && r.seq < outcome.seq && r.at <= review.at);
+  return author?.memberId === memberId;
 }
 
 /** A reported blocker needs team coordination until the current attempt is reopened. */
@@ -125,7 +140,7 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
   // 완료는 끝 단계다. 뒤에 온 글·이벤트는 되돌리지 않는다(총괄이 다시 열 때만).
   if (done) return make("done", null, f.finalReview?.status === "pending" ? "독립 최종 검수 대기 · 후속 업무 진행" : null, null, done.at, [`mark:${done.id}`]);
   const last = active.at(-1);
-  if (last?.stage === "hold") return make("hold", "hold", last.evidence, CONDUCTOR, last.at, [`mark:${last.id}`]);
+  if (last?.stage === "hold") return make("hold", "hold", last.evidence, null, last.at, [`mark:${last.id}`]);
 
   if (f.decisions.length) {
     const d = f.decisions[0]!;
@@ -140,13 +155,15 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
     return make("approval", "approval", `${a.who}의 터미널 승인 창이 열려 있습니다`, OWNER, a.at, []);
   }
   if (f.watch?.trippedAt) {
-    return make("check", "loop", `${f.watch.reason ?? "같은 문제가 반복되었습니다"} · 총괄이 다음 시도의 방법을 조정합니다`, CONDUCTOR, f.watch.trippedAt, f.watch.history.map((h) => h.messageId));
+    const outcome = f.reports.findLast(r => r.kind === "막힘");
+    const detail = [outcome?.title, f.watch.reason ?? "같은 문제가 반복되었습니다"].filter(Boolean).join(" · ");
+    return make("check", "loop", detail, CONDUCTOR, f.watch.trippedAt, f.watch.history.map((h) => h.messageId));
   }
   const stuck = f.held.filter((h) => holdCause(h.reason) !== "dependency");
   if (stuck.length) {
     const h = stuck[0]!, cause = holdCause(h.reason);
     const why = HOLD_WHY[cause] ?? "보류";
-    return make("held", cause, `${h.who}에게 갈 입력 ${stuck.length}건 보류(${why}) · 자동으로 다시 보내지 않습니다. 총괄이 확인할 차례`, CONDUCTOR, h.at, stuck.map((x) => x.id));
+    return make("held", cause, `${h.who}에게 갈 입력 ${stuck.length}건 보류(${why}) · 자동으로 다시 보내지 않습니다`, cause === "owner" ? OWNER : null, h.at, stuck.map((x) => x.id));
   }
 
   const outcomes = f.reports.filter((r) => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
@@ -163,23 +180,28 @@ export function deriveProgress(f: ProgressFacts): TaskProgress {
         lastOutcome.who, lastOutcome.at, [lastOutcome.id]), continuesWork: true };
     }
     if (lastOutcome.kind === "막힘") {
+      const followup = f.workerFollowup;
+      if (followup) {
+        const detail = lastOutcome.failed.length ? `남은 검사 · ${cut(lastOutcome.failed)}` : lastOutcome.title;
+        return make("working", null, [`${followup.who} 담당`, detail].filter(Boolean).join(" · "), followup.who,
+          maxTime([followup.receivedAt, lastOutcome.at]), [lastOutcome.id, followup.sourceId]);
+      }
       if (lastOutcome.failed.length) {
         const assignee = delivery?.memberId && delivery.memberId !== lastOutcome.memberId && delivery.seq < lastOutcome.seq ? delivery : lastOutcome;
         const fixer = assignee.who;
         if (unresolvedBlock(f, lastOutcome)) {
-          const assigned = assignee.authorKind === "worker" ? ` · 수정 담당 ${fixer}` : "";
-          return make("fix", "technical", `총괄이 수정 범위를 조정합니다${assigned} · 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`,
+          const report = lastOutcome.title ?? "검사 실패";
+          return make("fix", "technical", `${report} · 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`,
             CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
         }
         const busy = f.reports.some((r) => r.seq > lastOutcome.seq && r.who === fixer && r.kind === "진행");
         return make("fix", "technical", `${josaI(fixer)} ${busy ? "고치는 중" : "고칠 차례"}: 실패 ${lastOutcome.failed.length}건(${cut(lastOutcome.failed)})`, fixer, lastOutcome.at, [lastOutcome.id]);
       }
       if (!lastOutcome.checks && !lastOutcome.notRun.length) {
-        return make("confirm", "unknown", "검사 근거 없는 막힘 · 총괄이 원인을 확인할 차례", CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
+        return make("confirm", "unknown", lastOutcome.title ?? "검사 근거 없이 막힘이 기록됐습니다", CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
       }
       const what = lastOutcome.notRun.length ? `남은 확인 ${lastOutcome.notRun.length}건(${cut(lastOutcome.notRun)})` : "남은 확인";
-      const after = progressMark?.stage === "merged" || progressMark?.stage === "applied" ? "합친 뒤" : "검토·통합";
-      return make("confirm", "pending", `${what} · 총괄이 ${after} 확인 순서를 정할 차례`, CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
+      return make("confirm", "pending", [lastOutcome.title, what].filter(Boolean).join(" · "), CONDUCTOR, lastOutcome.at, [lastOutcome.id]);
     }
     // 완료
     if (progressMark?.stage === "merged" || progressMark?.stage === "applied") {

@@ -1,3 +1,4 @@
+import { canFollowBlockedReport } from "../server/task-progress.ts";
 // 업무 단계 계산의 단위 시험: 원인 가르기, 완료는 끝 단계, 판 번호, 실패 지문, 감시 경계. 순수 함수만 본다.
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_WATCH_LIMITS, deriveProgress, fingerprint, holdCause, watchOnReopen, watchOnReport, type ProgressFacts, type ReportFact } from "../server/task-progress.ts";
@@ -107,9 +108,34 @@ describe("단계 계산", () => {
     f.marks.push({ id: 1, stage: "review", at: "2026-11-17T11:00:00.000Z", who: "총괄", evidence: "영희에게 독립 검토 맡김" });
     f.reports.push(report("막힘", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", who: "영희", failed: ["회귀"], checks: 2 }));
     expect(deriveProgress(f)).toMatchObject({ stage: "fix", owner: "총괄" });
-    expect(deriveProgress(f).next).toContain("철수");
+    expect(deriveProgress(f).next).toContain("회귀");
     f.marks.push({ id: 1, stage: "reopen", who: "총괄", at: "2026-11-17T23:59:00.000Z", evidence: "수정 범위를 확인했습니다" });
     expect(deriveProgress(f)).toMatchObject({ stage: "fix", owner: "철수" });
+  });
+
+  test("독립 검토에서 실패한 검사만 현재 배정과 통과 납품이 일치하는 작성자에게 되돌린다", () => {
+    const f = empty();
+    const sourceAt = "2026-11-17T09:00:00.000Z";
+    const accepted = report("완료", { at: "2026-11-17T10:00:00.000Z", passed: true, checks: 2 });
+    const failure = report("막힘", { at: "2026-11-17T12:00:00.000Z", memberId: "w2", failed: ["저장"], checks: 1 });
+    f.reports.push(accepted, failure);
+    expect(canFollowBlockedReport(f, failure, "w1", sourceAt)).toBe(false);
+    f.marks.push({ id: 1, stage: "review", who: "총괄", at: "2026-11-17T11:00:00.000Z", evidence: "독립 검토" });
+    expect(canFollowBlockedReport(f, failure, "w1", sourceAt)).toBe(true);
+    expect(canFollowBlockedReport(f, failure, "w2", sourceAt)).toBe(false);
+    expect(canFollowBlockedReport(f, failure, "다른 직원", sourceAt)).toBe(false);
+    expect(canFollowBlockedReport(f, { ...failure, failed: [], notRun: ["기기 미도착"] }, "w1", sourceAt)).toBe(false);
+    accepted.passed = false;
+    expect(canFollowBlockedReport(f, failure, "w1", sourceAt)).toBe(false);
+  });
+
+  test("미확인 항목에는 최근 보고에서 실제로 기다리는 근거를 표시한다", () => {
+    const f = empty();
+    f.reports.push(report("막힘", { title: "로그인 단말의 실측 자료가 도착하지 않았습니다", notRun: ["별도 단말 로그인"], checks: 1 }));
+    const progress = deriveProgress(f);
+    expect(progress.next).toContain("로그인 단말의 실측 자료가 도착하지 않았습니다");
+    expect(progress.next).toContain("별도 단말 로그인");
+    expect(progress.next).not.toContain("순서를 정할 차례");
   });
 
   test("잠든 세션을 기다리는 입력은 막힘이 아니라 진행 중(의존 대기)이다", () => {
@@ -219,8 +245,8 @@ describe("팀 목록 한 줄 규칙", () => {
   test("업무를 가리키는 항목은 손으로 정한 칸보다 업무 단계를 따르고, 진행판에 없는 업무도 같은 목록에 오른다", () => {
     const rows = workRows([item("w_1", "done", "tk_a")], [task("tk_a", prog("confirm", "총괄이 확인할 차례")), task("tk_b", prog("fix", "철수가 고칠 차례")), task("tk_old", prog("fix", "x", { rev: "2026-10-01T00:00:00.000Z" })), task("tk_new", prog("new"))], now);
     expect(rows.map((r) => [r.key, r.sec, r.label, r.next])).toEqual([
-      ["w_1", "doing", "팀 확인 대기", "총괄이 확인할 차례"],
-      ["tk_b", "doing", "고칠 것", "철수가 고칠 차례"],
+      ["w_1", "doing", "미확인 항목", "총괄이 확인할 차례"],
+      ["tk_b", "doing", "검사 실패", "철수가 고칠 차례"],
     ]);
   });
 

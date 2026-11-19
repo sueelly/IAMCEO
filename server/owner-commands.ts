@@ -5,9 +5,9 @@ import type { DeliveryStatus, MessageKind, TaskProgress } from "../shared/types.
 import { ApiError, type Store } from "./store.ts";
 import { deriveProgress } from "./task-progress.ts";
 
-type Kind = "message" | "decision" | "todo" | "delivery" | "stage";
+type Kind = "message" | "decision" | "todo" | "delivery" | "stage" | "checkpoint";
 type Key = { id: string; at: string; kind: "command" | "task" };
-const tables = { message: "messages", decision: "decisions", todo: "todos", delivery: "deliveries", stage: "task_stage_marks" } as const;
+const tables = { message: "messages", decision: "decisions", todo: "todos", delivery: "deliveries", stage: "task_stage_marks", checkpoint: "task_checkpoints" } as const;
 function rows<T>(store: Store, sql: string, ...args: SQLQueryBindings[]): T[] {
   return store.db.query<T, SQLQueryBindings[]>(sql).all(...args);
 }
@@ -63,8 +63,8 @@ export function captureOwnerCommandEvidence(store: Store, memberId: string, type
   let commandId: string | null = null, runId: string | null = null;
   if (about) {
     commandId = rows<{ id: string }>(store, `SELECT c.message_id AS id FROM owner_command_evidence e JOIN owner_commands c ON c.message_id=e.command_id
-      WHERE e.ref_type='message' AND e.ref_id=? AND c.project_id=?`, about, member.projectId)[0]?.id ?? null;
-    const prior = selection ? store.getMessage(about) : null;
+      WHERE e.ref_type=? AND e.ref_id=? AND c.project_id=?`, about.startsWith('cp_') ? 'checkpoint' : 'message', about, member.projectId)[0]?.id ?? null;
+    const prior = selection ? (store.getMessage(about) ?? store.getCheckpoint(about)) : null;
     if (!commandId || (selection && (selection.id !== commandId || (prior?.taskId && prior.taskId !== ref.taskId)))) return fail();
   }
   if (!about || selection) {

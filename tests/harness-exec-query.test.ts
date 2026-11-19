@@ -170,7 +170,7 @@ for (const extra of [{ path: "/fake/secret" }, { session_id: "arbitrary" }, { me
 test("진단 권한: 정상 통과 검사와 실행 검사가 아닌 항목은 조회 대상으로 받지 않는다", async () => {
   const s = await setup("claude"); writeExec(s.isolated.paths.claudeHome, s.member, command);
   const r = await s.tool(s.member, "post", { task_id: s.task, kind: "진행", title: "정상 검사", contract_rev: 1, checks: [{ name: "성공", kind: "behavior", result: "pass", evidence: "대조", command }] });
-  expect((await s.query(s.member, { report_id: id(r, "msg") })).isError).toBe(true);
+  expect((await s.query(s.member, { report_id: id(r, "cp") })).isError).toBe(true);
   const r2 = await s.tool(s.member, "post", { task_id: s.task, kind: "막힘", title: "실행 검사 밖", contract_rev: 1, checks: [{ name: "자료", kind: "real", result: "fail", evidence: "화면 미확인", command }] });
   expect((await s.query(s.member, { report_id: id(r2, "msg") })).isError).toBe(true);
 });

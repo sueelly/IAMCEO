@@ -1,3 +1,4 @@
+import { handoffConductorInputs } from "./conductor-intake.ts";
 import { captureOwnerCommandEvidence } from "./owner-commands.ts";
 import { ownerCommandAllowsDelivery, ownerRequestsExecution, referencedOwnerTask, resolveOwnerCommandWorker } from "./owner-command-routing.ts";
 import { canAnswerOwnerStatus } from "../shared/owner-status-query.ts";
@@ -480,8 +481,9 @@ export interface PostInput {
   taskId?: string | null;
   /** 실제로 돌린 검사. 계약이 있는 업무의 완료는 이것으로 판정한다. */
   checks?: ReportCheckInput[];
-  /** 현재 담당 업무를 같은 계약으로 이어서 수행한다는 진행 보고. */
+  /** 현재 담당 업무의 같은 계약에서 이어갈 행동과 검사 근거를 저장한다. */
   continueWork?: boolean;
+  nextAction?: string;
   artifactCommit?: string;
   artifactBase?: string;
   mainCommit?: string;
@@ -1153,8 +1155,9 @@ export class Orchestrator implements OrchestratorApi {
   /** 서버에 저장된 실패 검사에서만 범위를 얻는다. 조회는 보고·근거·개선 후보·실행 기록을 갱신하지 않는다. */
   execDiagnose(caller: Member, taskId: string, reportId: string, checkIndex: number): Record<string, unknown> {
     const task = this.store.resolveTask(this.requireTaskInProject(caller, taskId));
-    const report = this.store.getMessage(reportId), harness = this.store.getReportHarness(reportId);
-    if (!report || report.projectId !== caller.projectId || report.mine || report.taskId !== task.id || !harness || harness.memberId !== report.memberId) throw new ApiError(404, "그 업무의 검사 보고를 찾을 수 없습니다");
+    const checkpoint = this.store.getCheckpoint(reportId);
+    const report = checkpoint ?? this.store.getMessage(reportId), harness = checkpoint ?? this.store.getReportHarness(reportId);
+    if (!report || report.projectId !== caller.projectId || ("mine" in report && report.mine) || report.taskId !== task.id || !harness || harness.memberId !== report.memberId) throw new ApiError(404, "그 업무의 검사 보고를 찾을 수 없습니다");
     const currentReview = latestCompletionReview(this.store, task.id);
     const reviewer = caller.finalReviewer && currentReview?.report_id === reportId && assignedReviewMember(this.store, caller, currentReview);
     if (caller.kind !== "conductor" && !reviewer && caller.id !== harness.memberId) throw new ApiError(403, "배정된 검수 또는 자신의 실패 검사만 진단할 수 있습니다");
@@ -1464,7 +1467,6 @@ export class Orchestrator implements OrchestratorApi {
         const reported = this.completedReportSince(member, run);
         const outcome = result === "interrupted" && reported ? "success" : result;
         this.store.saveExecutionJournal({ ...run, turn: turn ?? run.turn, phase: outcome === "interrupted" ? "interrupted" : "ended", result: outcome, reason, exitCode, endedAt: at, updatedAt: at });
-        this.store.finishDelegationAck(member.id, run.runId);
         if (outcome === "success") {
           this.completeExecutionReview(member, run);
           this.requestMissingReport(member, run);
@@ -1475,10 +1477,7 @@ export class Orchestrator implements OrchestratorApi {
           const runTask = runTasks.length === 1 ? runTasks[0]! : null;
           this.memberNotice(member, `${member.name}: 실행 ${run.runId} 중단 — ${reason ?? "종료 근거 없이 세션이 사라졌습니다"}`, this.runDeliveries(run));
           const conductor = this.store.getConductor(member.projectId);
-          // 대표가 멈춘 것은 대표가 이어서 지시한다. 총괄을 깨워 같은 일을 다시 시키게 하지 않는다. 총괄이 멈춘 것은 총괄이 이미 안다.
-          if (stoppedBy === "user") {
-            if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`대표가 ${member.name}의 실행 ${run.runId}을 직접 멈췄습니다. 전달 ${run.deliveryIds.join(", ")}. 이어서 할 지시는 대표가 직접 보냈거나 보냅니다. 같은 일을 다시 시키지 말고 판만 맞추세요.`), wake: false, taskId: runTask });
-          } else if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true, taskId: runTask });
+          if (!stoppedBy && conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", text: formatSystem(`${member.name}의 실행 ${run.runId}이 중단되었습니다. 전달 ${run.deliveryIds.join(", ")}. 기존 변경과 보고를 확인한 뒤 후속 지시를 결정하세요.`), wake: true, taskId: runTask });
         });
       }
     });
@@ -1523,22 +1522,20 @@ export class Orchestrator implements OrchestratorApi {
     const taskIds = open.map(d => this.reportTaskKey(this.store.deliveryTaskId(d.id)));
     const resuming = this.taskContinuations.resumableWorkerTasks(member, taskIds);
     if (taskIds.every(id => !!id && resuming.has(id))) return;
-    const reports = open.filter(d => d.kind === "report" && d.refType === "message" && d.refId).map(d => d.refId!);
-    const reviewHint = reports.length ? ` 직원 보고를 확인만 했으면 kind 알림에 about_report_id(${reports.map(id => `#${id}`).join(", ")})를 넣어 그 보고 확인을 마감하세요.` : "";
     // 보고 보완도 그 실행이 받은 업무를 밝힌다. 하나면 그 업무 줄을 붙이고, 여럿이면 업무마다 따로 보고하라고 적는다(서버가 고르지 않는다).
     const tasks = this.turnTasks(open).map(id => this.store.getTask(id)).filter((t): t is Task => !!t);
     const taskNote = tasks.length > 1 ? `\n이 실행은 여러 업무의 글을 받았습니다: ${tasks.map(t => `#${t.id} '${t.title}'`).join(", ")}. 업무마다 그 task_id 로 따로 post 하세요.`
       : tasks.length === 1 ? `\n${formatTaskLine(tasks[0]!)}` : "";
     this.store.claimExecutionNotice(run.runId, "report", () => {
       this.store.appendActivity(member.id, "system", `실행 ${run.runId}의 필수 보고가 없어 보고 보완을 요청했습니다`, `${run.runId}:missing_report`);
-      const supplement = this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.${reviewHint}`) + taskNote, taskId: tasks.length === 1 ? tasks[0]!.id : null });
+      const supplement = this.store.enqueue({ projectId: member.projectId, memberId: member.id, kind: "system", ...(this.recovering ? { nextAttemptAt: new Date(Date.now() + this.timings.retryMs).toISOString() } : {}), text: formatSystem(`보고 보완: 실행 ${run.runId}의 결과만 post로 알려 주세요. 기존 업무를 다시 실행하지 마세요. 완료·막힘 또는 질문/위임 대기 상태를 명시하세요.`) + taskNote, taskId: tasks.length === 1 ? tasks[0]!.id : null });
       this.store.recordReportFollowup(run.runId, member.id, member.projectId, supplement.id);
     });
   }
 
   /** 실행을 깨운 입력 중 보고가 필요한 것. 보고 보완(원인 실행에 이어진 전달·옛 글 머리)과 판 정리는 뺀다. */
   private reportDuties(deliveries: Delivery[]): Delivery[] {
-    return deliveries.filter(d => d.wake && !isTidy(d) && !isCompletionReviewDelivery(d) && (!this.taskContinuations.isContinuation(d.id) || this.store.requireMember(d.memberId).kind === "worker") && !this.store.getReportFollowupByDelivery(d.id) && !d.text.startsWith(formatSystem("보고 보완")));
+    return deliveries.filter(d => d.wake && d.kind !== "report" && !isTidy(d) && !isCompletionReviewDelivery(d) && (!this.taskContinuations.isContinuation(d.id) || this.store.requireMember(d.memberId).kind === "worker") && !this.store.getReportFollowupByDelivery(d.id) && !d.text.startsWith(formatSystem("보고 보완")));
   }
 
   /**
@@ -1569,7 +1566,7 @@ export class Orchestrator implements OrchestratorApi {
         continue;
       }
       const source = closure.refType === "message" ? this.store.getMessage(closure.refId)
-        : this.store.getDecision(closure.refId);
+        : closure.refType === "checkpoint" ? this.store.getCheckpoint(closure.refId) : this.store.getDecision(closure.refId);
       if (source) closedTasks.add(this.reportTaskKey(source.taskId));
     }
     const reviewed = new Set(closures.filter(c => c.kind === "reviewed").map(c => c.causeId));
@@ -1589,8 +1586,6 @@ export class Orchestrator implements OrchestratorApi {
     }
     this.store.settleReportFollowup(rootRunId, "unconfirmed", byRunId, () => {
       this.store.appendActivity(member.id, "system", `실행 ${rootRunId}의 보고가 보완 뒤에도 없어 보고 미확인으로 남겼습니다. 같은 보완으로 다시 깨우지 않습니다`, `${rootRunId}:report_unconfirmed`);
-      const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
-      if (conductor && conductor.id !== member.id) this.store.enqueue({ projectId: member.projectId, memberId: conductor.id, kind: "system", wake: false, text: formatSystem(`보고 미확인: ${member.name}의 실행 ${rootRunId} 결과 보고가 보고 보완 뒤에도 없습니다. 서버는 다시 재촉하지 않습니다. 다음에 판을 볼 때 이 직원의 상태와 결과를 확인하세요.`) });
     });
   }
 
@@ -1835,7 +1830,7 @@ export class Orchestrator implements OrchestratorApi {
       if (runner.isBusy(member.id) || fresh.status === "blocked") {
         // 턴이 이어지는 중이다. 재시작 전에 이미 post 했으면 턴 끝에 (자동) 보고를 또 내지 않는다.
         const since = this.store.lastTurnStart(member.id);
-        rt.posted = since !== null && this.store.hasMessageBySince(member.id, since);
+        rt.posted = since !== null && this.store.hasPostSince(member.id, since);
         return;
       }
       if (wasWorking && (await this.reportFinishedWhileAway(fresh, project, runner))) return;
@@ -1857,7 +1852,7 @@ export class Orchestrator implements OrchestratorApi {
     const finished = runner.finishedWhileAway(this.runnerMember(member, project), since);
     if (!finished) return false;
     const rt = this.runtime(member.id);
-    rt.posted = this.store.hasMessageBySince(member.id, since);
+    rt.posted = this.store.hasPostSince(member.id, since);
     await this.onTurnEnd(member, { type: "turn_end", memberId: member.id, finalText: finished.finalText, isError: finished.isError, ...(finished.isError ? { errorText: finished.finalText } : {}) });
     return true;
   }
@@ -2010,9 +2005,13 @@ export class Orchestrator implements OrchestratorApi {
 
   /** 판 정리 지시가 줄 서 있거나 지금 그 턴이 돈다. */
   private tidyPending(memberId: string): boolean {
-    if (this.runtimes.get(memberId)?.turn?.deliveries?.some(isTidy)) return true;
-    if (this.store.listPendingExecutions().some(run => run.memberId === memberId && run.deliveryIds.some(id => { const delivery = this.store.getDelivery(id); return delivery && isTidy(delivery); }))) return true;
-    return this.store.listPending(memberId).some(isTidy);
+    const recipients = [memberId, this.store.conductorIntakeId(memberId)].filter((id): id is string => !!id);
+    if (recipients.some(id => this.runtimes.get(id)?.turn?.deliveries?.some(isTidy))) return true;
+    if (this.store.listPendingExecutions().some(run => recipients.includes(run.memberId) && run.deliveryIds.some(id => {
+      const delivery = this.store.getDelivery(id);
+      return delivery && isTidy(delivery);
+    }))) return true;
+    return recipients.some(id => this.store.listPending(id).some(isTidy));
   }
 
   /**
@@ -2703,13 +2702,7 @@ export class Orchestrator implements OrchestratorApi {
         ...(role ? [`대표가 요청한 담당 역할: '${quotedInline(role)}'.`] : []),
         "task_trace에서 기존 배정·보류·최신 계약을 확인하세요. 미정인 범위와 완료 조건은 원문 근거로 구체화하고, 담당과 기준이 확정된 뒤 한 번 배정하세요.",
       ].join("\n") : original;
-      const intents: NewDelivery[] = [{ projectId, memberId: recipient.id, kind: "user_message",
-        text, refType: "message", refId: message.id }];
-      const conductor = this.store.getConductor(projectId);
-      const task = message.taskId ? this.store.getTask(message.taskId) : null;
-      if (target && conductor && conductor.id !== target.id) intents.push({ projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id} '${task.title}')` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false, taskId: task?.id ?? null });
-      return intents;
+      return [{ projectId, memberId: recipient.id, kind: "user_message", text, refType: "message", refId: message.id }];
     });
     if (booting) await (booting as Promise<void>).catch(e => console.warn(`${project.name} 총괄을 띄우지 못했습니다:`, (e as Error).message));
     // 총괄이 맡긴 업무에 대표가 직원에게 바로 끼어들었으면 개선 후보로 남긴다(지시가 모자랐거나 판이 늦었을 수 있다). 규칙은 바꾸지 않는다.
@@ -2768,8 +2761,6 @@ export class Orchestrator implements OrchestratorApi {
       const recipient = asker ?? conductor;
       const intents: NewDelivery[] = [];
       if (recipient && asker?.origin !== "manual") intents.push({ projectId: project.id, memberId: recipient.id, kind: "answer", text: formatAnswer(decision), refType: "decision", refId: decision.id });
-      if (conductor && recipient && conductor.id !== recipient.id) intents.push({ projectId: project.id, memberId: conductor.id, kind: "system",
-        text: formatSystem(`대표가 ${decision.who}의 결재에 답했습니다. 이미 ${decision.who}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.\n${formatAnswer(decision)}`), wake: false });
       return intents;
     });
     if (!changed) return decision;
@@ -3567,7 +3558,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async handleAgentTool(member: Member, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> {
-    const closes = REPORT_CLOSING_TOOLS.has(name);
+    const closes = REPORT_CLOSING_TOOLS.has(name) || (name === "status" && args.continue_work === true);
     if (closes) this.inflightReportTools.set(member.id, (this.inflightReportTools.get(member.id) ?? 0) + 1);
     try {
       return await this.runAgentTool(member, name, args, signal);
@@ -4517,7 +4508,9 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   // ---- 보고 ----
-  async recordPost(member: Member, input: PostInput): Promise<Message> {
+  async recordPost(member: Member, input: PostInput & { kind: "완료" | "막힘" | "질문" }): Promise<Message>;
+  async recordPost(member: Member, input: PostInput): Promise<Message | ReturnType<Store["saveCheckpoint"]>>;
+  async recordPost(member: Member, input: PostInput): Promise<Message | ReturnType<Store["saveCheckpoint"]>> {
     const rt = this.runtime(member.id);
     const files = (input.fileIds ?? []).map((id) => {
       const file = this.store.getFile(id);
@@ -4533,9 +4526,10 @@ export class Orchestrator implements OrchestratorApi {
       .slice(1)
       .map((f) => `[자료: ${f.title.replace(/[\[\]\\]/g, "\\$&")}](#/p/${encodeURIComponent(member.projectId)}/files/${encodeURIComponent(f.id)})`)
       .join("\n\n");
+    const priorCheckpoint = input.correctsMessageId ? this.store.getCheckpoint(input.correctsMessageId) : null;
     if (input.correctsMessageId) {
-      const previous = this.store.requireMessage(input.correctsMessageId);
-      if (previous.projectId !== member.projectId || previous.memberId !== member.id || previous.mine) throw new ApiError(400, "자신이 작성한 보고만 정정할 수 있습니다");
+      const previous = priorCheckpoint ?? this.store.requireMessage(input.correctsMessageId);
+      if (previous.projectId !== member.projectId || previous.memberId !== member.id || ("mine" in previous && previous.mine)) throw new ApiError(400, "자신이 작성한 보고만 정정할 수 있습니다");
     }
     if (input.aboutReportId) {
       const about = this.store.getMessage(input.aboutReportId);
@@ -4547,7 +4541,7 @@ export class Orchestrator implements OrchestratorApi {
     const taskId = this.memberTask(member, input.taskId, [
       input.decisionId ? this.store.getDecision(input.decisionId)?.taskId : null,
       ...files.map((f) => f.taskId),
-      input.correctsMessageId ? this.store.getMessage(input.correctsMessageId)?.taskId : null,
+      input.correctsMessageId ? priorCheckpoint?.taskId ?? this.store.getMessage(input.correctsMessageId)?.taskId : null,
     ]);
     if ((input.kind === "완료" || input.kind === "막힘") && this.memoryEnabledFor(member)) {
       const pending = this.memoryFeedback?.pending(member, taskId) ?? [];
@@ -4600,7 +4594,7 @@ export class Orchestrator implements OrchestratorApi {
     if (input.continueWork && (member.kind !== "worker" || input.kind !== "진행" || !taskId ||
       !this.repairWorkScope(member).includes(taskId) || !bindingContract(contract) ||
       missingExecutionContractFields(contract).length || input.contractRev !== contract?.rev)) {
-      throw new ApiError(409, "계속 수행은 지금 받은 직원 업무의 확정 계약 판을 contract_rev에 넣고 진행으로 보고해 주세요");
+      throw new ApiError(409, "지금 받은 직원 업무의 확정 계약 판을 확인하고 status에 task_id, contract_rev, continue_work: true로 남은 행동을 갱신해 주세요");
     }
     const claims = (input.claims ?? []).map(c => ({ text: cleanText(c.text).trim(), basis: c.basis, source: c.source ? cleanText(c.source).trim() || null : null, quote: c.quote ? cleanText(c.quote).trim() || null : null, criterion: c.criterion ?? null }));
     const gate = input.kind === "완료" ? this.gateCompletion(member, taskId, contract, checks, input.contractRev ?? null, claims,
@@ -4621,19 +4615,45 @@ export class Orchestrator implements OrchestratorApi {
     // 기록하는 판: 밝힌 판(1~지금 판)이 있으면 그 판, 없으면 지금 판. 완료는 위 판정에서 지금 판과 같아야 남는다.
     const recordRev = contract ? (input.contractRev && input.contractRev >= 1 && input.contractRev <= contract.rev ? input.contractRev : contract.rev) : null;
     let noticeTo: string | null = null;
+    const publicEvidence = !!(files.length || input.ownerAction || parseOwnerLine(input.body ?? "") || input.reviewNeeded ||
+      (input.correctsMessageId && !priorCheckpoint) || input.claims?.length || (input.decisionId && closure?.kind !== "waiting"));
+    const confirmation = input.kind === "알림" && !checks.length && !input.sourceCommandId &&
+      (closure?.kind === "reviewed" || closure?.kind === "waiting");
+    const internal = !publicEvidence && (input.kind === "진행" || confirmation);
+    if (priorCheckpoint && (priorCheckpoint.taskId !== taskId || !internal)) throw new ApiError(400, "내부 진행 기록은 같은 업무의 진행에서만 정정할 수 있습니다");
+    const saveProgress = () => {
+      const saved = this.store.saveCheckpoint(member, taskId, { title: input.title, body: input.body ?? "", checks,
+        contractTaskId: contract?.taskId ?? null, contractRev: recordRev, correctsId: input.correctsMessageId ?? null,
+        aboutReportId: input.aboutReportId ?? null, sourceCommandId: input.sourceCommandId, continuesWork: input.continueWork === true });
+      if (input.kind === "진행") this.setMemberStatus(member, input.title, input.nextAction);
+      if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "checkpoint", refId: saved.id, ...closure });
+      if (input.continueWork && taskId) {
+        const watch = this.watchReport({ ...saved, kind: "진행" }, true, input.correctsMessageId);
+        if (watch.trip) noticeTo = this.store.ensureTaskFailureNotice(taskId)?.memberId ?? null;
+        synchronizeRelatedTaskCompletion(this.store, taskId);
+      }
+      return saved;
+    };
+    if (internal) {
+      const checkpoint = this.store.transaction(saveProgress);
+      rt.posted = true;
+      if (noticeTo) await this.pump(noticeTo);
+      return checkpoint;
+    }
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => this.store.createMessage({
-      projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind,
+      projectId: member.projectId, memberId: member.id, who: member.name, kind: input.kind === "진행" ? "알림" : input.kind,
       title: rt.direct ? `(직접) ${input.title}` : input.title,
       body: [withOwnerLine(input.body, input.ownerAction), extra].filter(Boolean).join("\n\n"), decisionId: input.decisionId ?? null, fileId: files[0]?.id ?? null, taskId, aboutMessageId: input.aboutReportId ?? null,
     }), message => {
-      this.store.noteDelegationPost(member.id);
-      if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
+      // Older clients can attach a deliverable and record their next repair in a single post.
+      if (input.continueWork) saveProgress();
+      else if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
       this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null }, input.sourceCommandId);
       if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, artifact, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
         gate: gate?.gate ?? null, evidenceStatus: gate?.evidenceStatus ?? null, evidence: gate?.evidence, claims: gate?.claims ?? claims.map(c => ({ ...c, verified: false, via: null })) });
       if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
       // 반복 감시: 멈춘 뒤 같은 실패의 막힘은 총괄을 다시 깨우지 않는다. 처음 멈출 때 총괄에게 한 번 알린다.
-      const watch = this.watchReport(message, input.continueWork === true);
+      const watch = this.watchReport(message, false);
       if (watch.trip && taskId) noticeTo = this.store.ensureTaskFailureNotice(taskId)?.memberId ?? null;
       if (taskId && member.kind === "worker") synchronizeRelatedTaskCompletion(this.store, taskId);
       if (main && base && link && task) {
@@ -4747,7 +4767,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /**
    * 보고 글이 마감하는 의무. 완료·막힘·질문은 결과다. 알림은 확인한 원보고(reviewed)나 기다리는 자기 결재(waiting)를 밝힐 때만,
-   * 일반 진행은 보고 의무를 마감하지 않는다. 계속 수행을 명시한 진행은 실행 보고만 마감한다.
+   * status의 계속 수행은 해당 업무의 실행 근거를 기록한다. 같은 계약을 이어갈 수 있으면 다음 실행이 남은 조건을 처리한다.
    */
   private postClosure(member: Member, input: PostInput): { kind: "result" | "reviewed" | "waiting" | "continuing"; causeId: string | null } | null {
     if (input.continueWork) return { kind: "continuing", causeId: null };
@@ -4797,7 +4817,7 @@ export class Orchestrator implements OrchestratorApi {
     const recLabel = input.rec ? input.options?.find((o) => o.k === input.rec)?.label : undefined;
     const detail = withRecLine(input.detail, recLabel, input.recReason);
     const taskId = this.memberTask(member, input.taskId, [input.fileId ? this.store.getFile(input.fileId)?.taskId : null]);
-    const { value: decision, deliveries } = this.store.withDeliveryIntents(() => {
+    const decision = this.store.transaction(() => {
       const decision = this.store.createDecision({
         projectId: member.projectId,
         memberId: member.id,
@@ -4826,14 +4846,9 @@ export class Orchestrator implements OrchestratorApi {
       this.store.patchMember(member.id, { status: "waiting" });
       this.store.recordReportClosure({ memberId: member.id, kind: "question", refType: "decision", refId: decision.id });
       return decision;
-    }, decision => {
-      const conductor = member.kind === "worker" ? this.store.getConductor(member.projectId) : null;
-      return conductor ? [{ projectId: member.projectId, memberId: conductor.id, kind: "system",
-        text: formatSystem(`${josa(member.name, "이")} 대표에게 질문했습니다: ${normalizeSpace(input.title)} #${decision.id}`), wake: false, taskId: decision.taskId ?? null }] : [];
     });
     this.runtime(member.id).posted = true;
     this.notifyInbox(`${member.name}의 결재`, input.title);
-    await Promise.all(deliveries.map(d => this.pump(d.memberId)));
     if (member.origin === "manual") return { decision, blocking: true, text: `질문 #${decision.id} 등록됨. 답을 기다립니다` };
     return { decision, blocking: false, text: `질문 #${decision.id} 등록됨. 턴을 끝내세요. 답은 다음 입력으로 옵니다` };
   }
@@ -4908,11 +4923,6 @@ export class Orchestrator implements OrchestratorApi {
       await this.deliver({ projectId: decision.projectId, memberId: asker.id, kind: "system", text: formatSystem(`결재 #${decision.id} 가 닫혔습니다: ${why}. 질문 '${quotedInline(decision.title)}' 의 답은 오지 않습니다`), wake: false });
     }
     if (asker && asker.origin !== "manual") this.refreshWaiting(asker.id);
-    // 직원이 스스로 닫았으면 총괄의 판도 맞춘다.
-    const lead = this.store.getConductor(decision.projectId);
-    if (lead && lead.id !== member.id && lead.id !== asker?.id) {
-      await this.deliver({ projectId: decision.projectId, memberId: lead.id, kind: "system", text: formatSystem(`${josa(member.name, "이")} 결재 #${decision.id} 를 닫았습니다: ${why} (질문 '${quotedInline(decision.title)}')`), wake: false });
-    }
     return closed;
   }
 
@@ -4928,10 +4938,6 @@ export class Orchestrator implements OrchestratorApi {
     if (requester && requester.id !== member.id) {
       // 대표가 체크를 풀면 '아직 안 했음'이 이 글을 바로잡도록 할 일에 잇는다.
       await this.deliver({ projectId: todo.projectId, memberId: requester.id, kind: "system", text: formatSystem(`${josa(member.name, "이")} 대표의 할 일 #${todo.id} 를 정리했습니다(${label}): ${reason} (할 일 '${quotedInline(todo.title)}')`), wake: false, refType: "todo", refId: todo.id });
-    }
-    const lead = this.store.getConductor(todo.projectId);
-    if (lead && lead.id !== member.id && lead.id !== requester?.id) {
-      await this.deliver({ projectId: todo.projectId, memberId: lead.id, kind: "system", text: formatSystem(`${josa(member.name, "이")} 대표의 할 일 #${todo.id} 를 정리했습니다(${label}): ${reason} (할 일 '${quotedInline(todo.title)}')`), wake: false });
     }
     return closed;
   }
@@ -4949,8 +4955,8 @@ export class Orchestrator implements OrchestratorApi {
       const fresh = this.store.getMember(asker.id);
       if (fresh?.status === "idle" && !this.isBusy(fresh)) this.settle(fresh);
     }
-    const lead = this.store.getConductor(decision.projectId);
-    if (lead && lead.id !== asker?.id) await this.deliver({ projectId: decision.projectId, memberId: lead.id, kind: "system", text: formatSystem(note), wake: false });
+    const lead = !asker ? this.store.getConductor(decision.projectId) : null;
+    if (lead) await this.deliver({ projectId: decision.projectId, memberId: lead.id, kind: "system", text: formatSystem(note), wake: false });
     return this.store.requireDecision(reopened.id);
   }
 
@@ -4984,7 +4990,7 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** 보고 하나로 반복 감시를 옮긴다(같은 거래 안). 처음 멈추면 trip 을, 멈춘 뒤 같은 실패면 quiet 를 준다. */
-  private watchReport(message: Message, continuing: boolean): { quiet: boolean; trip: string | null } {
+  private watchReport(message: Pick<Message, "id" | "projectId" | "taskId" | "memberId" | "at" | "kind">, continuing: boolean, correction?: string | null): { quiet: boolean; trip: string | null } {
     if (!message.taskId || (!continuing && message.kind !== "막힘" && message.kind !== "완료")) return { quiet: false, trip: null };
     if (this.store.doneMark(message.taskId)) return { quiet: false, trip: null };
     const fact = this.store.reportFact(message.id);
@@ -4993,7 +4999,7 @@ export class Orchestrator implements OrchestratorApi {
     const counted = saved?.history.map(attempt => attempt.messageId) ?? [];
     if (this.store.hasCountedRepairInRun(message, continuing, counted)) return { quiet: false, trip: null };
     let prev = saved;
-    const correctsMessageId = this.store.getReportReferences(message.projectId, message.id)?.correctsMessageId ?? null;
+    const correctsMessageId = correction ?? this.store.getReportReferences(message.projectId, message.id)?.correctsMessageId ?? null;
     if (prev?.trippedAt && prev.same >= 3 && (fact.kind === "막힘" || fact.continuesWork) && fact.authorKind === "worker"
       && !correctsMessageId && !prev.history.some(h => h.messageId === fact.id)) {
       const resolvedAt = this.store.taskFailureRetryAt(message.taskId, prev.trippedAt, fact);
@@ -5245,7 +5251,7 @@ export class Orchestrator implements OrchestratorApi {
       }
       if (awaitingIntegrationReceipt(this.store, review)) throw new ApiError(409, "원격 main 통합 확인 후 검수 판정을 남겨 주세요");
       let followup: WorkItem | undefined;
-      let text: string;
+      let findingId: string | undefined;
       if (input.result === "confirmed") {
         const artifact = this.store.getReportHarness(report.id);
         if (review.evidence_reader_id !== member.id) throw new ApiError(409, "task_review_evidence에서 현재 계약과 검사, 해당 커밋의 변경분을 먼저 확인해 주세요");
@@ -5254,7 +5260,6 @@ export class Orchestrator implements OrchestratorApi {
         }
         confirmCompletionReview(this.store, task.id, member, evidence, confirmingCommit && task.branch
           ? { branch: task.branch, commit: confirmingCommit } : undefined);
-        text = `${member.name}가 '${task.title}'의 최신 완료 보고 #${review.report_id}를 독립 검수했습니다.`;
       } else if (input.result === "confirmed_with_repair" || review.main_commit || this.store.getEffectiveContract(task.id)?.main_authority ||
                  this.store.listStageMarks(task.id).some(mark => mark.stage === "merged" && mark.id > review.mark_id)) {
         const title = input.repairTitle?.trim();
@@ -5265,6 +5270,7 @@ export class Orchestrator implements OrchestratorApi {
         else {
           const issue = this.store.createMessage({ projectId: task.projectId, taskId: task.id, memberId: member.id,
             who: member.name, kind: "알림", title, body: evidence, aboutMessageId: report.id });
+          findingId = issue.id;
           followup = queueIndependentReviewRepair(this.store, task, report.id, issue.id, title, evidence);
         }
         confirmCompletionReview(this.store, task.id, member, evidence);
@@ -5273,29 +5279,31 @@ export class Orchestrator implements OrchestratorApi {
             .run(task.id, review.report_id);
           this.store.queueProgress([task.id]);
         }
-        text = `${member.name}가 '${task.title}'의 완료 보고 #${report.id}에서 결함을 확인하고 수정 업무에 연결했습니다.`;
       } else {
         const title = input.repairTitle?.trim();
         if (!title) throw new ApiError(400, "수정 업무 이름을 repair_title에 적어 주세요");
         const issue = this.store.createMessage({ projectId: task.projectId, taskId: task.id, memberId: member.id,
           who: member.name, kind: "알림", title, body: evidence, aboutMessageId: report.id });
+        findingId = issue.id;
         followup = queueIntegrationRepair(this.store, task, issue.id, title, evidence);
         requestCompletionChanges(this.store, task.id, evidence, member);
         this.store.db.query("UPDATE task_completion_reviews SET reviewer_id=? WHERE task_id=? AND report_id=?")
           .run(member.id, task.id, review.report_id);
-        text = `${member.name}가 '${task.title}'에서 수정할 부분을 확인했습니다. 문제 보고 #${issue.id}를 확인해 주세요.`;
       }
-      const assigned = followup?.taskId ? this.store.listTaskDeliveries(followup.taskId).find(d => d.kind === "instruction") : null;
+      const assigned = followup?.taskId ? this.store.listTaskDeliveries(followup.taskId).find(d => d.kind === "instruction" && d.status !== "failed") : null;
       const queuedForAuthor = !assigned && followup && prepareReviewedRepair(this.store, followup);
-      if (assigned) {
-        text += ` 수정 업무 #${followup!.taskId} '${followup!.title}'를 원 담당자에게 전달했습니다.`;
-        this.store.afterCommit(() => { void this.pump(assigned.memberId); });
-      } else if (queuedForAuthor && followup) {
-        text += ` 수정 업무 #${followup.taskId} '${followup.title}'를 원 담당자의 다음 업무로 등록했습니다.`;
-      } else if (followup) text += ` 예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`;
-      const lead = this.store.getConductor(task.projectId);
-      const notification = lead ? this.store.enqueue({ projectId: task.projectId, memberId: lead.id, kind: "system",
-        taskId: followup?.taskId ?? task.id, wake: !!followup && !assigned && !queuedForAuthor, text: formatSystem(text) }) : null;
+      if (assigned) this.store.afterCommit(() => { void this.pump(assigned.memberId); });
+      // The finding and its repair are already linked in the task ledger.
+      // Recovery must not infer a missing conductor delivery for this internal post.
+      if (findingId) {
+        const issue = this.store.requireMessage(findingId);
+        this.store.saveReportReferences(task.projectId, { sourceMessageId: findingId, authoredAt: issue.at, sequence: 0,
+          decisionIds: [], fileIds: [], correctsMessageId: null });
+        this.store.db.query("UPDATE report_references SET board_only=1 WHERE source_message_id=?").run(findingId);
+      }
+      const lead = followup && !assigned && !queuedForAuthor ? this.store.getConductor(task.projectId) : null;
+      const notification = lead && followup ? this.store.enqueue({ projectId: task.projectId, memberId: lead.id, kind: "system",
+        taskId: followup.taskId, wake: true, text: formatSystem(`${member.name}가 '${task.title}'에서 수정할 부분을 확인했습니다. ${findingId ? `문제 보고 #${findingId}를 확인해 주세요. ` : ""}예정 업무 #${followup.taskId} '${followup.title}'을 승인 범위에 맞는 직원에게 맡기세요.`) }) : null;
       return { status: input.result, followup, notification };
     });
     if (notification?.wake) void this.pump(notification.memberId);
@@ -5665,7 +5673,29 @@ export class Orchestrator implements OrchestratorApi {
     if (this.terminalMutations.has(memberId) || this.store.inputState(memberId).lease) { wait("manual_control"); return; }
     if (member.backend === "core" && member.statusObservation && member.statusObservation.ownership !== "verified" && !(member.status === "offline" && member.statusObservation.error?.code === "no_owned_terminal")) { wait("session"); return; }
     if (member.backend === "core" && this.store.listPendingExecutions().some(run => run.memberId === memberId && run.identity.sessionGeneration === this.store.memberRevisions(memberId).sessionGeneration) && !this.runtime(memberId).turn) { wait("session"); return; }
-    if (this.deliveryRecovery.fenced(memberId)) { wait("delivery_confirmation"); return; }
+    if (this.deliveryRecovery.fenced(memberId)) {
+      wait("delivery_confirmation");
+      if (member.kind !== "conductor" || this.switching || this.settingsWriting || this.archiving.has(project.id) || this.runtime(memberId).closing) return;
+      const lead = member;
+      const review = this.store.getBoardReview(project.id);
+      const boardRequest = (input: Delivery) => !!review && input.createdAt >= review.requestedAt &&
+        (!review.completedAt || review.completedAt < review.requestedAt) && isTidy(input);
+      const candidates = this.admittedInputs(memberId, this.store.listPending(memberId));
+      const relief = handoffConductorInputs(this.store, lead, candidates, boardRequest, (input, source, next) => {
+        if (!source.attachments.length) return input.text;
+        const oldPrefix = formatUserMessage(source.body, this.attachmentsFor(lead, source.attachments), source.id, !!source.targetMemberId)
+          .split("\n").slice(0, -1).join("\n") + "\n";
+        if (!input.text.startsWith(oldPrefix)) return null;
+        const newPrefix = formatUserMessage(source.body, this.attachmentsFor(next, source.attachments), source.id, !!source.targetMemberId)
+          .split("\n").slice(0, -1).join("\n") + "\n";
+        return newPrefix + input.text.slice(oldPrefix.length);
+      });
+      if (relief) {
+        this.runtime(memberId).again = true;
+        await this.pump(relief);
+      }
+      return;
+    }
     const rt = this.runtime(memberId);
     this.reconcileCoreCompact(member);
     if (this.coreCompactFenced(member)) { wait("compact"); return; }
@@ -6089,10 +6119,7 @@ export class Orchestrator implements OrchestratorApi {
     const review = dispatch.items.some(item => { const delivery = this.store.getDelivery(item.deliveryId); return delivery && isTidy(delivery); }) ? this.store.getBoardReview(member.projectId) : null;
     const run: ExecutionJournal = { runId: dispatch.dispatchId, memberId: member.id, projectId: member.projectId, identity: dispatch.identity, turn: null, deliveryIds: dispatch.items.map(item => item.deliveryId), phase: "starting", inputReceivedAt: null, startedAt: null, lastProgressAt: null, endedAt: null, result: null, reason: null, exitCode: null, interruptionNotifiedAt: null, reportRequestedAt: null, createdAt: at, updatedAt: at };
     if (review) run.reason = `board_review:${review.requestedRevision}:pending`;
-    this.store.transaction(() => {
-      this.store.saveExecutionJournal(run);
-      this.store.beginDelegationAck(run.runId, member.id, run.deliveryIds.map(id => this.store.requireDelivery(id)));
-    });
+    this.store.saveExecutionJournal(run);
     let result = await this.safeSend(send);
     if (result.ok && result.receipt && result.receipt.dispatchId !== dispatch.dispatchId) result = { ok: false, reason: "error", retryable: false, deliveryEffect: "unknown", detail: "다른 봉투의 수신 영수증입니다" };
     // The existing Runner.send success contract guarantees received input,
@@ -6727,7 +6754,6 @@ export class Orchestrator implements OrchestratorApi {
       const state = this.store.ensureContextState(member.id);
       this.store.saveContextState({ ...state, baseline: { ...state.baseline, completedTurn: e.turn ?? null } });
     }
-    this.store.finishDelegationAck(member.id);
     this.store.appendActivity(member.id, e.isError ? "error" : "turn_end", e.isError ? (e.errorText ?? "오류") : "턴 끝");
     if (member.subagents !== 0) this.store.patchMember(member.id, { subagents: 0 });
 
@@ -6747,7 +6773,11 @@ export class Orchestrator implements OrchestratorApi {
       // 판 정리만 받은 턴은 바뀐 게 없으면 아무것도 올리지 않기로 했다. 마지막 글은 활동에만 남긴다.
       const tidyOnly = tidied && !!turn?.deliveries?.every((d) => d.kind === "system");
       if (!member.finalReviewer && !posted && e.finalText.trim()) {
+        const inputs = turn?.deliveries?.filter(d => d.wake) ?? [];
+        const since = this.store.lastTurnStart(member.id);
         if (tidyOnly) this.store.appendActivity(member.id, "system", `판 정리: ${normalizeSpace(e.finalText).slice(0, 300)}`);
+        else if (inputs.length && since && !this.openReportDuties(member, since, this.reportDuties(inputs)).length)
+          this.store.appendActivity(member.id, "text", e.finalText);
         else await this.fallbackReport(member, e.finalText, direct, turn?.deliveries);
       }
     }
@@ -6909,6 +6939,9 @@ export class Orchestrator implements OrchestratorApi {
     if (awake.length <= max) return;
     const conductor = this.store.getConductor(projectId);
     if (!conductor) return;
+    if (this.store.db.query(`SELECT 1 FROM deliveries WHERE project_id=? AND member_id=? AND kind='system' AND wake=0
+      AND status IN ('queued','held','delivering') AND text LIKE '[시스템] 깨어 있는 직원이 %명으로 상한 %명을 넘었습니다.%' LIMIT 1`)
+      .get(projectId, conductor.id)) return;
     const candidates = awake
       .filter((m) => (m.status === "idle" || m.status === "waiting") && m.queuedCount === 0 && this.store.listOpenDecisionsByMember(m.id).length === 0)
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))

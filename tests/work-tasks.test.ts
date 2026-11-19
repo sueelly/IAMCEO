@@ -190,7 +190,9 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     const leadMiss = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다" });
     expect(leadMiss.isError).toBe(true);
     expect(leadMiss.text).toContain("work_set");
-    expect((await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다", task_id: a })).isError).toBeFalsy();
+    const received = await t.orch.handleAgentTool(t.lead, "post", { kind: "진행", title: "A 맡겼습니다", task_id: a });
+    expect(received.isError).toBeFalsy();
+    expect(t.store.getCheckpoint(/#(cp_\w+)/.exec(received.text)![1]!)?.taskId).toBe(a);
     const leadNull = await t.orch.handleAgentTool(t.lead, "post", { kind: "알림", title: "판 정리", task_id: null });
     expect(leadNull.isError).toBe(true);
     expect(leadNull.text).toContain("null 로 '전체'에 두지 않");
@@ -202,7 +204,8 @@ describe("작업 귀속: 칩 → 지시 → 보고", () => {
     expect((await t.orch.handleAgentTool(t.w, "file", { title: "A 결과", content: "# A", task_id: a })).isError).toBeFalsy();
 
     const titles = t.taskMessages(a).map((m) => m.title);
-    expect(titles).toEqual(expect.arrayContaining(["A 맡겼습니다", "A 끝", "A 합칠까요?"]));
+    expect(titles).toEqual(expect.arrayContaining(["A 끝", "A 합칠까요?"]));
+    expect(titles).not.toContain("A 맡겼습니다");
     expect(t.taskMessages(b)).toHaveLength(0);
     expect(t.store.listMessagePage(t.project.id).items.some((m) => m.title === "판 정리")).toBe(false);
 

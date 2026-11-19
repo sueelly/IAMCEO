@@ -104,7 +104,7 @@ describe("재현: 멈춘 턴을 성공으로 치고 보고 보완을 다시 시�
     await Bun.sleep(30);
     expect(f.deliveries().some(d => d.text.includes("보고 보완"))).toBe(false);
     const notice = f.deliveries(f.lead.id).find(d => d.text.includes("직접 멈췄습니다"));
-    expect(notice).toMatchObject({ wake: false });
+    expect(notice).toBeUndefined();
     expect(f.store.listMessages(f.project.id).some(m => m.kind === "시스템" && m.body.includes(`실행 ${run.runId} 중단 — 대표가 멈췄습니다`))).toBe(true);
     // 끊긴 일은 다시 보내지 않는다.
     expect(f.sentTo().filter(t => t.includes("긴 일"))).toHaveLength(1);

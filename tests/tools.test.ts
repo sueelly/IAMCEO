@@ -234,20 +234,26 @@ describe("공통 도구", () => {
     expect(store.listDecisions(project.id)).toHaveLength(0);
   });
 
-  test("post: 대화에 남고 직원 보고는 총괄을 깨우거나 쌓는다", async () => {
+  test("post: 진행은 내부 기록에 두고 검증한 완료와 자료는 게시한다", async () => {
     const { store, project, orch, lead, runner, call } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
-    const file = store.createFile({ projectId: project.id, title: "보고서" });
-    await call(w, "post", { kind: "진행", title: "반쯤" });
+    const taskId = defaultTaskId(store, project.id);
+    orch.saveTask(lead, { taskId, contract: { kind: "other", goal: "검토 자료를 전달한다", inputs: ["담당자의 보고서"],
+      outputs: ["검증한 보고서"], scope: "보고서 전달을 확인한다", constraints: [], exclusions: [],
+      acceptance: ["검토 자료가 첨부되어야 한다"], checks: ["real"] } });
+    const file = store.createFile({ projectId: project.id, taskId, title: "보고서" });
+    const progress = await call(w, "post", { task_id: taskId, kind: "진행", title: "반쯤" });
+    expect(progress.text).toContain("업무 기록");
     expect(runner.sent).toHaveLength(0);
-    expect(store.listPending(lead.id)).toHaveLength(1);
-    const r = await call(w, "post", { kind: "완료", title: "다 했다", body: "핵심", file_ids: [file.id] });
+    expect(store.listPending(lead.id)).toHaveLength(0);
+    const r = await call(w, "post", { task_id: taskId, kind: "완료", title: "다 했다", body: "핵심", file_ids: [file.id], contract_rev: 1,
+      checks: [{ name: "검토 자료 확인", kind: "real", result: "pass", evidence: "업로드한 보고서를 열어 확인했다", criterion: 1 }] });
     expect(r.isError).toBeUndefined();
     const messages = store.listMessages(project.id);
     expect(messages.at(-1)).toMatchObject({ kind: "완료", who: "철수", title: "다 했다", fileId: file.id });
     expect(runner.sent).toHaveLength(1);
     expect(runner.sent[0]!.text).toContain("[보고 철수] 완료: 다 했다");
-    expect(runner.sent[0]!.text).toContain("[보고 철수] 진행: 반쯤");
+    expect(runner.sent[0]!.text).not.toContain("반쯤");
     expect(await call(w, "post", { kind: "완료", title: "t", file_ids: ["f_없음"] })).toMatchObject({ isError: true });
   });
 
@@ -263,7 +269,11 @@ describe("공통 도구", () => {
   test("post: owner_action 은 본문 첫 줄 '● 대표 차례' 로 남고, 글 검사 경고는 결과에만 붙는다", async () => {
     const { store, project, orch, runner, call } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "철수", handle: "cs", role: "개발" });
-    const r = await call(w, "post", { kind: "완료", title: "버튼 색을 고쳤습니다", owner_action: "합칠지 정해 주세요 · 결재함 1건", body: "시험으로 확인했습니다." });
+    const taskId = defaultTaskId(store, project.id);
+    orch.saveTask(store.getConductor(project.id)!, { taskId, contract: { kind: "other", goal: "버튼 색 검증", scope: "버튼 표시",
+      inputs: ["대표가 요청한 버튼 색"], outputs: ["버튼 확인 결과"], constraints: [], exclusions: [], acceptance: ["버튼 색이 요청과 같다"], checks: ["real"] } });
+    const checked = { task_id: taskId, contract_rev: 1, checks: [{ name: "색 검증", kind: "real", result: "pass", evidence: "버튼의 색을 화면에서 확인", criterion: 1 }] };
+    const r = await call(w, "post", { ...checked, kind: "완료", title: "버튼 색을 고쳤습니다", owner_action: "합칠지 정해 주세요 · 결재함 1건", body: "시험으로 확인했습니다." });
     expect(r.isError).toBeUndefined();
     expect(r.text).toMatch(/^보고했습니다 #\S+$/);
     const message = store.listMessages(project.id).at(-1)!;
@@ -273,7 +283,7 @@ describe("공통 도구", () => {
     expect(runner.sent.some(s => s.text.includes("● 대표 차례: 합칠지 정해 주세요"))).toBe(true);
     expect(runner.sent.every(s => !s.text.includes("글 검사 경고"))).toBe(true);
 
-    const warned = await call(w, "post", { kind: "완료", title: "테스트를 머지했습니다", body: "**결과:**\n바뀐 곳은 server/roles.ts 입니다. 합칠지 정해 주세요." });
+    const warned = await call(w, "post", { ...checked, kind: "완료", title: "테스트를 머지했습니다", body: "**결과:**\n바뀐 곳은 server/roles.ts 입니다. 합칠지 정해 주세요." });
     expect(warned.isError).toBeUndefined();
     const lines = warned.text.split("\n");
     expect(lines[0]).toMatch(/^보고했습니다 #/);
@@ -637,20 +647,19 @@ describe("총괄 도구", () => {
     expect(store.listDeliveries(project.id).filter(d => d.memberId === w.id && d.kind === "instruction")).toHaveLength(2);
   });
 
-  test("대표 직접 지시와 결재 답 알림은 이미 전달했으며 결과를 기다리라고 안내", async () => {
+  test("대표의 직접 지시와 결재 답은 담당자만 받고 원본은 업무에서 조회한다", async () => {
     const { store, project, orch, lead } = await setup();
     const { member: w } = await orch.addMember(project.id, { name: "메뉴 가격표", handle: "menu" });
     const message = await orch.sendUserMessage(project.id, { text: "가격을 수정해 주세요", targetMemberId: w.id });
     const notices = () => store.listDeliveries(project.id).filter(d => d.memberId === lead.id && d.kind === "system");
-    // 대표 글은 업무 없이 보내 서버가 목적 문장으로 만든 업무(임시 이름)에 있다. 알림에도 그 업무가 붙는다.
-    expect(message.taskId).toBeTruthy();
     expect(store.requireTask(message.taskId!).title).toBe("가격을 수정");
-    expect(notices().find(d => d.text.includes(`#${message.id}`))).toMatchObject({ wake: false,
-      text: `[시스템] 대표가 메뉴 가격표에게 직접 지시했습니다 #${message.id}(작업 #${message.taskId} '가격을 수정'). 이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.` });
+    expect(notices().some(d => d.text.includes(message.id))).toBe(false);
+    expect(store.listDeliveries(project.id).filter(d => d.refId === message.id).map(d => d.memberId)).toEqual([w.id]);
     const { decision } = await orch.registerAsk(w, { title: "가격을 적용할까요?", options: [{ k: "y", label: "적용하세요" }], taskId: message.taskId });
     await orch.answerDecision(decision.id, { choice: "y" });
-    expect(notices().find(d => d.text.includes("결재에 답했습니다"))).toMatchObject({ wake: false });
-    expect(notices().find(d => d.text.includes("결재에 답했습니다"))!.text).toContain("이미 메뉴 가격표에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.");
+    expect(store.requireDecision(decision.id).choice).toBe("y");
+    expect(notices().some(d => d.text.includes(decision.id))).toBe(false);
+    expect(store.listDeliveries(project.id).filter(d => d.kind === "answer" && d.refId === decision.id).map(d => d.memberId)).toEqual([w.id]);
   });
 
   test("user_quote: 결재 답의 버튼 글은 맞아도 '문맥 확인 필요'이고 카드 제목·id 가 함께 간다", async () => {

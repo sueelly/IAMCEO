@@ -232,7 +232,7 @@ describe("턴 왕복", () => {
     await waitFor("본사 답", () => t.texts("hq").some((m) => m.body === "만들까요"));
   });
 
-  test("@직원 직접: [대표 직접] + 총괄에게 wake=false 사실 알림 → 보고에 (직접)", async () => {
+  test("직접 지시를 받은 직원의 지원 요청이 총괄에게 한 번 전달된다", async () => {
     const t = await setup();
     const lead = await conductor(t);
     const w = await worker(t);
@@ -240,11 +240,9 @@ describe("턴 왕복", () => {
     await waitFor("철수 턴", () => t.starts().some((c) => c.prompt.startsWith("[대표 직접]")));
     await waitFor("보고 받은 총괄 턴", () => t.starts().some((c) => c.prompt.includes("[보고 철수] (직접) 막힘: 지원필요")));
     const leadTurn = t.starts().find((c) => c.prompt.includes("[보고 철수]"))!;
-    // wake=false 알림이 깨우는 보고 앞에 묶인다.
-    expect(leadTurn.prompt.indexOf("[시스템] 대표가 철수에게 직접 지시했습니다")).toBeLessThan(leadTurn.prompt.indexOf("[보고 철수]"));
+    expect(leadTurn.prompt).not.toContain("[시스템] 대표가 철수에게 직접 지시했습니다");
     await t.idle(lead.id);
-    // 알림만으로 총괄을 깨우지 않았다: 총괄 턴은 보고 때문의 한 번뿐.
-    expect(t.starts().filter((c) => c.prompt.includes("대표가 철수에게")).length).toBe(1);
+    expect(t.starts().filter(c => c.prompt.includes("[보고 철수]"))).toHaveLength(1);
   });
 });
 
@@ -266,7 +264,8 @@ describe("턴 종료 처리", () => {
     const w = await worker(t);
     await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=하는중 @fake:postkind=진행 @fake:text=잠시" });
     await t.idle(w.id);
-    await waitFor("진행 기록", () => t.texts().find(m => m.memberId === w.id && m.kind === "진행"));
+    await waitFor("진행 기록", () => t.store.db.query("SELECT id FROM task_checkpoints WHERE member_id=? AND title=?").get(w.id, "하는중"));
+    expect(t.texts().filter(m => m.memberId === w.id && m.kind === "진행")).toHaveLength(0);
     await Bun.sleep(50);
     expect(t.starts().filter((c) => c.prompt.includes("[보고")).length).toBe(0);
     expect(t.store.listPending(lead.id)).toHaveLength(0);
@@ -569,8 +568,7 @@ describe("runnerEnabled=false 와 총괄 시작", () => {
     await t.orch.onProjectPatched(project, { runnerEnabled: true });
     await t.idle(w.id);
     expect(t.store.requireMessage(m.id).delivery).toBe("delivered");
-    // wake=false 알림은 보류에서 대기로 돌아와 다음 깨움을 기다린다.
-    expect(t.store.listPending(lead.id)[0]).toMatchObject({ status: "queued", wake: false });
+    expect(t.store.listPending(lead.id).some(d => d.text.includes(m.id))).toBe(false);
   });
 
   test("createProject: goal·startConductor", async () => {
@@ -709,16 +707,14 @@ describe("ask", () => {
     // ask 한 턴의 마지막 글은 보고로 치지 않는다.
     expect(t.texts().some((m) => m.body === "기다립니다")).toBe(false);
     expect(t.texts().some((m) => m.kind === "질문" && m.decisionId === decision.id)).toBe(true);
-    expect(t.store.listPending(lead.id).some((d) => d.text.includes("대표에게 질문했습니다") && !d.wake)).toBe(true);
+    expect(t.store.listPending(lead.id).some((d) => d.text.includes("대표에게 질문했습니다") && !d.wake)).toBe(false);
 
     const answered = await t.orch.answerDecision(decision.id, { choice: "a", note: "조심해서" });
     expect(answered.status).toBe("delivered");
     const turn = await waitFor("답 전달", () => t.starts().find((c) => c.prompt.includes("[대표 답(원문)")));
     expect(turn.prompt).toStartWith(`[대표 답(원문) '배포할까요'] "그렇게 하세요"(추천) 메모 "조심해서" #${decision.id} · 작업 #${decision.taskId}\n#iamceo_`);
-    // 총괄에게는 wake=false 알림.
-    // 총괄의 다른 턴에 묶여 이미 나갔을 수 있어 대기 목록이 아니라 전달 기록 전체를 본다.
     const notices = t.store.db.query<{ text: string; wake: number }, [string]>("SELECT text, wake FROM deliveries WHERE member_id = ?").all(lead.id);
-    expect(notices.some((d) => d.text.includes("결재에 답했습니다") && !d.wake)).toBe(true);
+    expect(notices.some((d) => d.text.includes("결재에 답했습니다") && !d.wake)).toBe(false);
     await expect(t.orch.answerDecision(decision.id, { choice: "b" })).rejects.toMatchObject({ status: 409 });
     await t.idle(w.id);
   });

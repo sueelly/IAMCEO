@@ -81,9 +81,10 @@ beforeAll(async () => {
   await settle();
   taskEmpty = orch.saveTask(search, { title: "문서 정리", branch: "docs/tidy" }).task;
   // 글이 없는 업무는 칩에서 빠지므로 업무마다 보고 하나를 남긴다
-  await orch.recordPost(pay, { kind: "진행", title: "환불 설계 시작", taskId: taskPay.id });
-  await orch.recordPost(search, { kind: "진행", title: "검색 색인 점검", taskId: taskSearch.id });
-  await orch.recordPost(search, { kind: "진행", title: "문서 정리 시작", taskId: taskEmpty.id });
+  // 기존 대화에 남은 진행 글도 업무별로 조회할 수 있다.
+  store.createMessage({ projectId: pay.projectId, memberId: pay.id, who: pay.name, kind: "진행", title: "환불 설계 시작", taskId: taskPay.id });
+  store.createMessage({ projectId: search.projectId, memberId: search.id, who: search.name, kind: "진행", title: "검색 색인 점검", taskId: taskSearch.id });
+  store.createMessage({ projectId: search.projectId, memberId: search.id, who: search.name, kind: "진행", title: "문서 정리 시작", taskId: taskEmpty.id });
   fRefundDoc = store.createFile({ projectId: project.id, title: "환불 설계서", who: pay.name, memberId: pay.id, summary: "부분 환불 포함", body: "# 환불 설계서\n\n부분 환불 규칙", kind: "document", taskId: taskPay.id });
   fSearch = store.createFile({ projectId: project.id, title: "검색 색인 보고", who: search.name, memberId: search.id, summary: "색인 3종 점검", body: "# 검색 색인 보고\n\n색인 점검 결과", kind: "document", taskId: taskSearch.id });
   fRefundFlow = store.createFile({ projectId: project.id, title: "환불 흐름 그림", who: pay.name, memberId: pay.id, summary: "요청부터 입금까지", kind: "artifact", html: "<main class=\"page\"><h1>환불 흐름</h1><p>요청 → 승인 → 입금</p></main>", taskId: taskPay.id });

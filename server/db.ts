@@ -1107,6 +1107,33 @@ export const MIGRATIONS: string[] = [
    CREATE INDEX owner_command_legacy_page ON owner_command_legacy_tasks(project_id,created_at DESC,task_id DESC);`,
   // Routine reports remain in the shared feed. Recovery must not invent a terminal delivery.
   `ALTER TABLE report_references ADD COLUMN board_only INTEGER NOT NULL DEFAULT 0 CHECK(board_only IN (0,1));`,
+  // Progress belongs to the task, separately from published results and their delivery queue.
+  `CREATE TABLE task_checkpoints (
+     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+     who TEXT NOT NULL, at TEXT NOT NULL, after_message_seq INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+     continues_work INTEGER NOT NULL, contract_task_id TEXT, contract_rev INTEGER, checks_json TEXT NOT NULL,
+     corrects_id TEXT, about_report_id TEXT
+   );
+   CREATE INDEX task_checkpoints_project_task ON task_checkpoints(project_id, task_id);
+   CREATE INDEX task_checkpoints_member ON task_checkpoints(member_id, at);
+   CREATE INDEX task_checkpoints_checks ON task_checkpoints(contract_task_id, at) WHERE checks_json <> '[]';`,
+  `CREATE TABLE conductor_intake (
+     lead_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+     relief_id TEXT NOT NULL UNIQUE REFERENCES members(id) ON DELETE CASCADE,
+     CHECK (lead_id <> relief_id)
+   );
+   CREATE TABLE conductor_intake_receipts (
+     delivery_id TEXT PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
+     project_id TEXT NOT NULL, lead_id TEXT NOT NULL, relief_id TEXT NOT NULL, relief_name TEXT NOT NULL,
+     source_message_id TEXT, assigned_at TEXT NOT NULL
+   );
+   CREATE INDEX conductor_intake_source ON conductor_intake_receipts(source_message_id) WHERE source_message_id IS NOT NULL;
+   CREATE TRIGGER retain_intake_recipient AFTER UPDATE OF delivery, delivery_note ON messages
+     WHEN NEW.mine=1 AND NEW.delivery IN ('queued','delivering','delivered') AND NEW.delivery_note IS NULL AND
+       EXISTS(SELECT 1 FROM conductor_intake_receipts WHERE source_message_id=NEW.id AND project_id=NEW.project_id)
+     BEGIN UPDATE messages SET delivery_note=(SELECT relief_name || ' 대행' FROM conductor_intake_receipts
+       WHERE source_message_id=NEW.id AND project_id=NEW.project_id LIMIT 1) WHERE id=NEW.id; END;`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

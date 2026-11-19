@@ -51,13 +51,19 @@ export function describeTaskContext(store: Store, task: Task, options: { sourceD
   let reportCount = 0;
   for (const fact of reports) {
     const message = store.getMessage(fact.id);
-    if (!message || message.projectId !== task.projectId || message.taskId !== task.id) continue;
+    const checkpoint = message ? null : store.getCheckpoint(fact.id);
+    const record = message ?? checkpoint;
+    if (!record || record.projectId !== task.projectId || record.taskId !== task.id) continue;
     reportCount++;
-    lines.push("", `최근 보고: ${message.who} · ${message.kind} · ${message.at}`, `보고 제목: ${message.title}`, quote(message.body), `출처: 보고 메시지 ID ${message.id}`);
-    const checks = store.getReportHarness(message.id)?.checks ?? [];
-    if (checks.length) {
-      lines.push("이 보고에 기록된 검사 결과:", ...checks.map(check => `- ${check.name}: ${check.result === "pass" ? "통과 보고" : check.result === "fail" ? "실패 보고" : "미실행"} — ${check.evidence}`));
+    if (message) {
+      lines.push("", `최근 보고: ${message.who} · ${message.kind} · ${message.at}`, `보고 제목: ${message.title}`, quote(message.body), `출처: 보고 메시지 ID ${message.id}`);
     } else {
+      lines.push("", `담당자가 이어서 수행할 작업: ${fact.who} · ${record.at}`, quote(record.title), quote(record.body), `출처: 내부 작업 기록 ID ${record.id}`);
+    }
+    const checks = checkpoint?.checks ?? store.getReportHarness(fact.id)?.checks ?? [];
+    if (checks.length) {
+      lines.push(checkpoint ? "작업 기록의 검사 결과:" : "이 보고에 기록된 검사 결과:", ...checks.map(check => `- ${check.name}: ${check.result === "pass" ? "통과 보고" : check.result === "fail" ? "실패 보고" : "미실행"} — ${check.evidence}`));
+    } else if (message) {
       lines.push("이 보고에 연결된 구조화된 검사 기록은 없습니다. 보고 본문만으로 검사 통과를 확정하지 않습니다.");
     }
   }

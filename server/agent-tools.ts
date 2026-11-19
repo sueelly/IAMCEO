@@ -250,7 +250,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     "저장된 실패 실행 검사를 최소 메타데이터로 진단합니다. 현재 재조회이며 원래 거절 당시의 관찰은 미확인입니다. 총괄은 같은 프로젝트, 직원은 자기 보고만 조회합니다. 원문·출력·경로·세션은 반환하지 않고 완료를 재제출하지 않습니다.",
     z.strictObject({
       task_id: z.string().regex(/^tk_[A-Za-z0-9_-]+$/).max(64).describe("실패 보고가 속한 업무 id"),
-      report_id: z.string().regex(/^msg_[A-Za-z0-9_-]+$/).max(64).describe("이미 저장된 진행/막힘 보고의 원본 id. 실패 검사에서 직원·계약·명령을 정합니다"),
+      report_id: z.string().regex(/^(msg|cp)_[A-Za-z0-9_-]+$/).max(64).describe("이미 저장된 진행/막힘 보고의 원본 id. 실패 검사에서 직원·계약·명령을 정합니다"),
       check_index: z.number().int().min(0).max(63).describe("그 보고 checks 안의 실패 실행 검사 번호(0부터 시작)"),
     }),
     (orch, member, a) => reply(JSON.stringify(orch.execDiagnose(member, a.task_id, a.report_id, a.check_index))),
@@ -378,8 +378,23 @@ const TOOLS: Record<ToolName, Tool<any>> = {
 
   status: tool(
     "팀 진행 상황에 업무명과 현재 행동 대상을 적는다. 며칠 뒤에도 무엇을 왜 하는지 이해할 수 있게 쓰고, 일이 바뀌면 갱신한다. 진행 중·확인 대기만 쓰지 않는다.",
-    z.strictObject({ now: oneLine(500).describe("어떤 업무의 무엇을 현재 확인·수정하는지 완전한 문장으로 쓴다"), next: oneLineOpt(500).optional().describe("남은 대상과 다음 행동의 주체·조건을 적는다") }),
-    (orch, member, a) => {
+    z.strictObject({
+      now: oneLine(500).describe("현재 확인하거나 수정하는 대상과 행동"),
+      next: oneLineOpt(500).optional().describe("남은 행동과 조건"),
+      continue_work: z.literal(true).optional().describe("같은 계약의 수정·재검증을 다음 실행에서 이어갈 때 사용한다"),
+      task_id: text.optional(), contract_rev: z.number().int().min(1).optional(), checks: z.array(checkSchema).max(30).optional(),
+    }).superRefine((a, ctx) => {
+      if (a.continue_work && (!a.task_id || !a.contract_rev))
+        ctx.addIssue({ code: "custom", message: "계속 수행에는 현재 업무와 확정된 계약 판이 필요합니다" });
+      if (!a.continue_work && (a.task_id || a.contract_rev || a.checks))
+        ctx.addIssue({ code: "custom", message: "업무와 검사 근거는 continue_work와 함께 기록합니다" });
+    }),
+    async (orch, member, a) => {
+      if (a.continue_work) {
+        const saved = await orch.recordPost(member, { kind: "진행", title: a.now, nextAction: a.next, body: a.next,
+          taskId: a.task_id, contractRev: a.contract_rev, checks: a.checks, continueWork: true });
+        return reply(withLint(`업무 기록을 갱신했습니다 #${saved.id}`, lintStatus({ now: a.now, next: a.next })));
+      }
       orch.setMemberStatus(member, a.now, a.next);
       return reply(withLint("적었습니다", lintStatus({ now: a.now, next: a.next })));
     },
@@ -426,7 +441,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
   ),
 
   post: tool(
-    "대화에 보고를 남긴다. 완료·막힘은 턴을 마치기 전에 꼭 올리고, 진행·알림은 필요할 때 올린다. 대표가 정할 것은 ask 로 올린다. 대표가 할 일은 owner_action 에 한 줄로 쓴다. report_id 만 주면 같은 프로젝트 보고의 원본·전체 자료·결재·작성 순서·정정 관계를 조회한다(게시하지 않는다).",
+    "검증한 완료·실제 막힘·산출물을 대표에게 알린다. 접수·착수·위임·중간 경과는 status에 기록한다. 기존 진행 호출은 내부 작업 기록을 갱신한다. 대표가 정할 것은 ask 로 올린다. 대표가 할 일은 owner_action 에 한 줄로 쓴다. report_id 만 주면 같은 프로젝트 보고의 원본·전체 자료·결재·작성 순서·정정 관계를 조회한다(게시하지 않는다).",
     z.strictObject({
       report_id: text.optional().describe("조회할 원본 보고 ID"),
       comparison: z.strictObject({ base: z.string().regex(fullCommit), file_id: text, path: z.string().max(1024).optional(),
@@ -438,18 +453,18 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       file_ids: z.array(z.string()).optional().describe("대표가 열어 확인할 결과물의 자료 id. file로 등록한 최신 목업·플로우차트·다이어그램과 관련 근거를 연결한다"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
       source_command_id: text.optional().describe("여러 대표 지시를 함께 받았을 때 이 보고가 답하는 대표 원문 메시지 ID"),
-      corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
+      corrects_message_id: text.optional().describe("정정할 자신의 이전 공개 보고 id 또는 같은 업무의 내부 진행 기록 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
       artifact_commit: z.string().regex(fullCommit).optional().describe("요청한 변경을 검증한 작업 브랜치 커밋 전체 SHA. 확정 계약의 main_authority가 있으면 원 담당자에게 통합 업무가 이어진다."),
       artifact_base: z.string().regex(fullCommit).optional().describe("통합 전 원격 main과 작업 커밋의 공통 조상 전체 SHA. 등록된 저장소의 Git 이력과 대조한다."),
       main_commit: z.string().regex(fullCommit).optional().describe(`등록한 통합 워크트리에서 git ls-remote origin refs/heads/main으로 확인한 SHA. 통합 전후 원격 조회와 그 사이에 '${integrationHeadCommand} && 검사 명령'으로 실행한 검사, main_base를 함께 제출한다.`),
       main_base: z.string().regex(fullCommit).optional().describe("통합 직전 원격 main의 전체 SHA"),
-      continue_work: z.boolean().optional().describe("직원이 지금 맡은 업무를 같은 계약 안에서 이어서 수정·검증할 때 진행 보고에 true로 적는다. contract_rev와 남은 조건, 다음 행동을 함께 남긴다."),
+      continue_work: z.boolean().optional().describe("같은 계약에서 이어서 수정·검증할 때 true로 내부 작업 상태와 검사 결과를 갱신한다. contract_rev와 남은 조건, 다음 행동을 함께 남긴다."),
       contract_rev: z.number().int().min(1).max(10_000).optional().describe("이 검사가 따른 계약 판 번호(받은 글의 '업무 계약 rN'). 계약이 있는 업무의 완료는 지금 판과 같아야 받는다"),
       claims: z.array(claimSchema).max(40).optional().describe("조사 결과의 주장. 조사 계약의 완료에 필요하다. 사실은 출처·원문 인용, 해석은 기댄 출처"),
       unverified: z.array(z.string().trim().min(1)).max(20).optional().describe("확인하지 못한 대상과 조건. 필요한 설명은 길어도 남긴다. 없으면 빈 배열"),
       review_needed: z.string().trim().min(1).optional().describe("독립 검토가 필요하면 확인할 변경과 수용 기준. 필요한 조건은 길어도 남긴다. 총괄이 기존 다른 직원에게 검토를 맡긴다. 자기 확인을 독립 검토라 쓰지 않는다"),
-      about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 새 결정 없이 받았다·판에 적었다·기다린다를 '알림'으로 남길 때 넣으면 그 보고의 확인이 끝난 것으로 기록된다"),
+      about_report_id: text.optional().describe("이 글이 확인한 다른 직원 보고의 원본 id(받은 글의 '보고 원본 #' 줄). 기존 호출에서 단순 수신 확인을 보내면 업무의 내부 기록에 저장된다"),
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }).superRefine((a, ctx) => {
       if (a.comparison && !a.report_id) ctx.addIssue({ code: "custom", message: "기존 패치 대조에는 조회할 report_id가 필요합니다" });
@@ -461,6 +476,13 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (a.report_id !== undefined) {
         if (member.finalReviewer && !mayReadReviewReport(orch.store, member, a.report_id))
           throw new ApiError(403, "이 검수자에게 배정한 완료 보고와 통합 보고만 조회할 수 있습니다");
+        if (a.report_id.startsWith("cp_")) {
+          const record = orch.store.getCheckpoint(a.report_id);
+          if (!record || record.projectId !== member.projectId || (member.kind === "worker" && record.memberId !== member.id))
+            throw new ApiError(404, "조회할 업무 진행 기록을 찾을 수 없습니다");
+          if (a.comparison) throw new ApiError(400, "패치 대조에는 완료 보고가 필요합니다");
+          return reply(JSON.stringify(publicHarness(record)));
+        }
         if (!orch.reportReferences) throw new ApiError(501, "보고 참조 조회를 지원하지 않습니다");
         const refs = orch.reportReferences(member.projectId, a.report_id);
         const source = orch.store.requireMessage(refs.sourceMessageId);
@@ -485,6 +507,8 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       if (member.finalReviewer) throw new ApiError(403, "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다");
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
       const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, sourceCommandId: a.source_command_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, artifactCommit: a.artifact_commit, artifactBase: a.artifact_base, mainCommit: a.main_commit, mainBase: a.main_base, continueWork: a.continue_work, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
+      if ("internal" in message) return reply(withLint(`업무 기록을 갱신했습니다 #${message.id}`,
+        lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),

@@ -176,13 +176,14 @@ describe("작업별 대화", () => {
     expect(wire).toContain(`작업 #${ta.id} '결제 연동' · 브랜치 'feat/pay' · 워크트리 '/repo/.wt/pay'`);
     expect(wire).toContain(`task_id "${ta.id}"`);
 
-    await t.call(a, "post", { kind: "진행", title: "환불 작업 시작", task_id: ta.id });
+    const started = await t.call(a, "post", { kind: "진행", title: "환불 작업 시작", task_id: ta.id });
+    expect(t.store.getCheckpoint(/#(cp_\w+)/.exec(started.text)![1]!)?.taskId).toBe(ta.id);
     const file = await t.call(a, "file", { title: "환불 설계", content: "# 설계", task_id: ta.id });
     const fileId = /#(f_[A-Za-z0-9]+)/.exec(file.text)![1]!;
     await t.call(a, "todo", { title: "결제사 키 넣기", task_id: ta.id });
     await t.call(a, "ask", { title: "부분 환불도 할까요", detail: "배경", options: [{ k: "y", label: "네" }, { k: "n", label: "아니오" }], task_id: ta.id });
     const reports = t.store.listMessages(t.project.id).filter((m) => m.memberId === a.id);
-    expect(reports.map((m) => [m.title, m.taskId])).toEqual([["(직접) 환불 작업 시작", ta.id], ["부분 환불도 할까요", ta.id]]);
+    expect(reports.map((m) => [m.title, m.taskId])).toEqual([["부분 환불도 할까요", ta.id]]);
     expect(t.store.getFile(fileId)!.taskId).toBe(ta.id);
     expect(t.store.listTodos(t.project.id).at(-1)!.taskId).toBe(ta.id);
     const decision = t.store.listOpenDecisionsByMember(a.id).at(-1)!;
@@ -190,8 +191,9 @@ describe("작업별 대화", () => {
 
     // 고정 출처: 작업이 붙은 자료·결재를 이어 주면 task_id 를 생략해도 그 작업
     await t.call(a, "post", { kind: "진행", title: "설계 자료 올림", file_ids: [fileId] });
-    await t.call(a, "post", { kind: "알림", title: "결재 올림", decision_id: decision.id });
-    expect(t.store.listMessages(t.project.id).filter((m) => /설계 자료 올림|결재 올림/.test(m.title)).map((m) => m.taskId)).toEqual([ta.id, ta.id]);
+    const waiting = await t.call(a, "post", { kind: "알림", title: "결재 올림", decision_id: decision.id });
+    expect(t.store.getCheckpoint(/#(cp_\w+)/.exec(waiting.text)![1]!)?.taskId).toBe(ta.id);
+    expect(t.store.listMessages(t.project.id).filter((m) => /설계 자료 올림|결재 올림/.test(m.title)).map((m) => m.taskId)).toEqual([ta.id]);
 
     // 대표 답은 작업 표지와 함께 그 직원에게 간다
     t.runner.end(a.id);
@@ -239,19 +241,19 @@ describe("작업별 대화", () => {
     await t.setCriteria(auto.id, "오늘 일정의 시간과 남은 업무를 정리한다");
     await t.completion(a, auto.id, "일정 정리", "오늘 일정의 시간과 남은 업무를 구분한 격리 결과 확인");
     // 직원이 작업을 밝히면 그것을 따른다(받은 글의 작업 줄)
-    await t.call(a, "post", { kind: "진행", title: "결제 쪽 추가 확인", task_id: ta.id });
+    await t.call(a, "post", { kind: "알림", title: "결제 테스트 결과 정정", task_id: ta.id });
 
     const by = (title: string) => t.store.listMessages(t.project.id).find((m) => m.title.endsWith(title))!.taskId;
     expect(by("결제 테스트 붙임")).toBe(ta.id);
     expect(by("검색 속도 개선")).toBe(tb.id);
     expect(by("일정 정리")).toBe(auto.id);
-    expect(by("결제 쪽 추가 확인")).toBe(ta.id);
+    expect(by("결제 테스트 결과 정정")).toBe(ta.id);
 
     // 작업별 페이지: 그 작업 글만. 전체는 작업 없는 글까지 모두
     const pageA = await t.api<MessagePage>("GET", `/api/projects/${t.project.id}/messages/page?scope=task&taskId=${ta.id}`);
     expect(pageA.status).toBe(200);
     expect(pageA.body.scope).toEqual({ kind: "task", taskId: ta.id });
-    expect(pageA.body.items.map((m) => m.body || m.title)).toEqual(["결제 테스트 붙여 주세요", "(직접) 결제 테스트 붙임", "(직접) 결제 쪽 추가 확인"]);
+    expect(pageA.body.items.map((m) => m.body || m.title)).toEqual(["결제 테스트 붙여 주세요", "(직접) 결제 테스트 붙임", "(직접) 결제 테스트 결과 정정"]);
     const pageB = await t.api<MessagePage>("GET", `/api/projects/${t.project.id}/messages/page?scope=task&taskId=${tb.id}`);
     expect(pageB.body.items.every((m) => m.taskId === tb.id)).toBe(true);
     expect(pageB.body.items).toHaveLength(2);
@@ -418,8 +420,8 @@ describe("같은 직원이 작업 둘을 받을 때: 출처가 증명하는 작�
     expect(t.store.listOpenDecisionsByMember(t.w.id).at(-1)!.taskId).toBe(t.A.id);
     expect(t.store.listTodos(t.project.id).at(-1)!.taskId).toBe(t.A.id);
     // 정상 B 결과
-    await t.call(t.w, "post", { kind: "진행", title: "정산 시작", task_id: t.B.id });
-    expect(t.titled("정산 시작")!.taskId).toBe(t.B.id);
+    await t.call(t.w, "post", { kind: "알림", title: "정산 금액 확인", task_id: t.B.id });
+    expect(t.titled("정산 금액 확인")!.taskId).toBe(t.B.id);
     expect(t.inTask(t.B.id).messages).toBe(beforeB.messages + 1);
   });
 

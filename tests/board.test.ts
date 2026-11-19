@@ -217,7 +217,7 @@ describe("ask_close", () => {
     expect((await t.call(t.lead, "ask_close", { id: "d_없음", kind: "obsolete", reason: "x" })).text).toContain("찾을 수 없습니다");
   });
 
-  test("직원은 자기가 올린 카드만 닫고, 그러면 총괄에게 알린다. 다른 프로젝트 카드는 못 닫는다", async () => {
+  test("직원은 자신이 올린 카드를 닫고 직접 처리한 결과는 결재함에 남긴다", async () => {
     const t = await setup();
     const a = await t.worker("철수", "cs");
     const b = await t.worker("영희", "yh");
@@ -228,7 +228,7 @@ describe("ask_close", () => {
     expect(await t.call(a, "board")).toMatchObject({ isError: true });
     expect((await t.call(a, "ask_close", { id: mine.id, kind: "obsolete", reason: "스스로 풀었음" })).isError).toBeUndefined();
     expect(t.store.requireDecision(mine.id)).toMatchObject({ status: "closed", closedBy: "철수" });
-    expect(t.pendingTexts(t.lead).some((p) => !p.wake && p.text.includes(`철수가 결재 #${mine.id} 를 닫았습니다: 스스로 풀었음`))).toBe(true);
+    expect(t.pendingTexts(t.lead).some((p) => !p.wake && p.text.includes(`철수가 결재 #${mine.id} 를 닫았습니다: 스스로 풀었음`))).toBe(false);
     const other = t.store.createProject({ name: "다른", cwd: t.home });
     const stranger = await t.orch.ensureConductor(other.id);
     expect(await t.call(stranger, "ask_close", { id: theirs.id, kind: "obsolete", reason: "x" })).toMatchObject({ isError: true });
@@ -266,6 +266,7 @@ describe("ask_close", () => {
     expect(String(res.body.reopenNote)).toContain("필요 없어 보임");
     expect(t.store.requireMember(w.id).status).toBe("waiting");
     expect(t.pendingTexts(w).some((p) => !p.wake && p.text.includes(`대표가 결재 #${d.id} 를 다시 열었습니다`))).toBe(true);
+    expect(t.pendingTexts(t.lead).some(p => p.text.includes(`대표가 결재 #${d.id} 를 다시 열었습니다`))).toBe(false);
     // 다시 연 카드는 평소처럼 답할 수 있고 답은 물은 직원에게 간다.
     await t.orch.answerDecision(d.id, { choice: "b" });
     expect(t.runner.sent.at(-1)).toMatchObject({ memberId: w.id });
@@ -316,7 +317,8 @@ describe("todo_close", () => {
     const [mine, theirs] = t.store.listTodos(t.project.id) as [Todo, Todo];
     expect(await t.call(a, "todo_close", { id: theirs.id, outcome: "dropped", reason: "x" })).toMatchObject({ isError: true, text: "직원은 자기가 부탁한 할 일만 정리할 수 있습니다" });
     expect((await t.call(a, "todo_close", { id: mine.id, outcome: "done", reason: "대표가 해 줬다고 말함" })).isError).toBeUndefined();
-    expect(t.pendingTexts(t.lead).some((p) => !p.wake && p.text.includes("철수가 대표의 할 일"))).toBe(true);
+    expect(t.pendingTexts(t.lead).some((p) => !p.wake && p.text.includes("철수가 대표의 할 일"))).toBe(false);
+    expect(t.store.requireTodo(mine.id)).toMatchObject({ done: true, closedBy: a.name });
     await t.orch.setTodoDone(mine.id, false);
     expect(t.store.requireTodo(mine.id)).toMatchObject({ done: false, outcome: null, closeReason: null, closedBy: null });
     await t.orch.setTodoDone(mine.id, true);

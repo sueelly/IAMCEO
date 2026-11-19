@@ -29,7 +29,7 @@ test.each([
   const result = await f.tool(f.worker, name, { ...args, ...(name === "task" ? {} : { task_id: task.id }) });
   expect(result.isError).not.toBe(true);
   const stored = name === "task" ? f.store.listTasks(f.project.id).find(t => t.title === args.title)?.title
-    : name === "post" ? f.store.listMessages(f.project.id).find(m => m.title === args.title)?.title
+    : name === "post" ? f.store.getCheckpoint(/#(cp_\w+)/.exec(result.text)![1]!)?.title
     : name === "ask" ? f.store.listDecisions(f.project.id).find(d => d.title === args.title)?.title
     : f.store.listFiles(f.project.id).find(d => d.title === args.title)?.title;
   expect(stored).toBe(args.title);

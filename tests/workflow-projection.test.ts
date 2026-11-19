@@ -76,7 +76,7 @@ test("a newer unresolved report survives a board completion record", () => {
   f.store.upsertWork({ ...board, sec: "done" });
   f.store.db.query("UPDATE work SET done_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(board.id);
   f.store.createMessage({ projectId: f.project.id, taskId: `tk_${board.id}`, memberId: f.worker.id, who: f.worker.name, kind: "막힘", title: "남은 확인", body: "검증이 끝나지 않았습니다" });
-  expect(f.store.projectWorkflow(f.project.id).nodes[0]).toMatchObject({ memberId: f.worker.id, historical: false, state: "review", label: "팀 확인 대기" });
+  expect(f.store.projectWorkflow(f.project.id).nodes[0]).toMatchObject({ memberId: f.worker.id, historical: false, state: "review", label: "미확인 항목" });
 });
 
 test("a manually completed linked board row cannot hide its unfinished modern task", () => {
@@ -134,7 +134,7 @@ test.each([
 test("an active stage without a matched employee is not reduced to assignment pending", () => {
   const f = fixture(), t = task(f, "담당 재확인이 필요한 막힘");
   const progress = { ...f.store.taskProgress(t.id), stage: "fix" as const, next: "기존 담당의 보완과 재검사가 남았습니다" };
-  expect(buildWorkflow([{ ...t, progress }], [f.worker], [], []).nodes[0]).toMatchObject({ memberId: null, state: "blocked", label: "고칠 것", reason: progress.next });
+  expect(buildWorkflow([{ ...t, progress }], [f.worker], [], []).nodes[0]).toMatchObject({ memberId: null, state: "blocked", label: "검사 실패", reason: progress.next });
 });
 
 test("a verified coordinator continuation appears on its actual recipient even without an earlier owner input to the coordinator", () => {
@@ -309,7 +309,7 @@ test("진행판의 업무 보류는 종료된 과거 지시보다 먼저 실제 
 
 test("반복 감시와 한 번의 막힘을 서로 다른 팀 처리로 표시한다", () => {
   const f = fixture(), t = task(f, "자동 처리 예외");
-  for (const [stage, state, label] of [["check", "blocked", "재시도 조정"], ["confirm", "review", "팀 확인 대기"]] as const) {
+  for (const [stage, state, label] of [["check", "blocked", "진전 없음"], ["confirm", "review", "미확인 항목"]] as const) {
     const progress = { ...f.store.taskProgress(t.id), stage, next: "담당 팀에서 원인을 확인합니다" };
     expect(buildWorkflow([{ ...t, progress }], [], [], []).nodes[0]).toMatchObject({ state, label, ownerActionRequired: false });
   }

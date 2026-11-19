@@ -73,7 +73,7 @@ import type { RunnerTerminalIdentity } from "./runner/types.ts";
 import type { Bus } from "./bus.ts";
 import { newId, nowIso } from "./db.ts";
 import { datedTitle, ownerTaskTitle, taskTitleFrom } from "./task-names.ts";
-import { deriveProgress, isDone, watchNotice, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
+import { canFollowBlockedReport, deriveProgress, isDone, watchNotice, type MarkFact, type ProgressFacts, type ReportFact, type WatchFact } from "./task-progress.ts";
 import { bindingContract, missingExecutionContractFields, requiredChecks, type ContractAuthorKind, type ContractInput, type HarnessFinding, type HarnessGate, type ReportCheck, type ReportCheckInput, type TaskContract } from "./harness.ts";
 import type { CheckEvidence, ClaimResult } from "./harness-evidence.ts";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOWS, exactSource } from "./runner/context.ts";
@@ -845,7 +845,7 @@ export interface ReportClosure {
   /** 기록 순간 그 직원의 열린 실행(없으면 null). 판정은 실행 시작 이후의 근거 시각으로 한다. */
   runId: string | null;
   kind: ReportClosureKind;
-  refType: "message" | "decision" | "delivery";
+  refType: "message" | "decision" | "delivery" | "checkpoint";
   refId: string;
   /** reviewed: 확인한 직원 보고 원본 id · waiting: 기다리는 결재 id */
   causeId: string | null;
@@ -882,6 +882,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   private readonly deliveryWaits = new Map<string, NonNullable<Member["deliveryWait"]>>();
   private runnerHealth = new Map<Backend, RunnerHealth>();
   private lastConnections = new Map<string, string>();
+  private readonly hasTaskCheckpoints: boolean;
   private readonly fileBodies = new Map<string, { body: string; bytes: number }>();
   private fileBodyBytes = 0;
   private deliveryRead: { projectId: string; rows: Row[]; byId: Map<string, Row>; recoveries: Map<string, Row> } | null = null;
@@ -909,6 +910,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     private readonly recorder?: DomainRecorder,
     options: { readOnly?: boolean } = {},
   ) {
+    this.hasTaskCheckpoints = !!db.query("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_checkpoints'").get();
     this.sqlTransaction = db.transaction.bind(db);
     // 기존 import의 store.db.transaction도 같은 commit 큐를 사용한다.
     // 원래 DB 객체/다른 저장소는 변조하지 않고 이 Store의 호환 facade만 제공한다.
@@ -1388,7 +1390,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 프로젝트의 총괄(본사는 root). */
   getConductor(projectId: string): Member | null {
-    const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.kind IN ('root','conductor') ORDER BY m.created_at LIMIT 1`, projectId);
+    const r = this.row(`${MEMBER_SELECT} WHERE m.project_id = ? AND m.kind IN ('root','conductor') ORDER BY m.created_at, m.rowid LIMIT 1`, projectId);
     return r ? this.memberWithWait(r) : null;
   }
 
@@ -2367,7 +2369,17 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     };
     const filter = only ? ` AND task_id IN (${[...only].map(() => "?").join(",")})` : "";
     const ids = only ? [...only] : [];
-    const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind,
+    const checkpoints = this.hasTaskCheckpoints ? `UNION ALL
+      SELECT cp.id, cp.after_message_seq AS seq, cp.rowid AS sub_seq, cp.at, '진행', cp.member_id, cp.who, cp.task_id, mem.kind, cp.title,
+        cp.continues_work,
+        (SELECT group_concat(j.value->>'name', char(31)) FROM json_each(cp.checks_json) j WHERE j.value->>'result'='fail'),
+        (SELECT group_concat(j.value->>'name', char(31)) FROM json_each(cp.checks_json) j WHERE j.value->>'result'='not_run'),
+        (SELECT group_concat(COALESCE(CAST(j.value->>'criterion' AS TEXT),(j.value->>'kind')||':'||(j.value->>'name')), char(31))
+          FROM json_each(cp.checks_json) j WHERE j.value->>'result'='pass' AND j.value->>'kind'<>'unverified'),
+        (SELECT COUNT(*) FROM json_each(cp.checks_json) j WHERE NOT(j.value->>'kind'='unverified' AND j.value->>'result'='pass'))
+      FROM task_checkpoints cp JOIN members mem ON mem.id=cp.member_id
+      WHERE cp.project_id=? AND cp.task_id IS NOT NULL AND cp.continues_work=1${filter.replaceAll("task_id","cp.task_id")}` : "";
+    const reportRows = this.rows(`SELECT m.id, m.rowid AS seq, 0 AS sub_seq, m.at, m.kind, m.member_id, m.who, m.task_id, mem.kind AS author_kind, m.title,
         CASE WHEN m.kind = '진행' THEN EXISTS(SELECT 1 FROM report_closures rc WHERE rc.member_id = m.member_id
           AND rc.at >= m.at AND rc.ref_id = m.id AND rc.ref_type = 'message' AND rc.kind = 'continuing') ELSE 0 END AS continues_work,
         (SELECT group_concat(c.name, char(31)) FROM report_checks c WHERE c.message_id = m.id AND c.result = 'fail') AS failed,
@@ -2377,7 +2389,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         (SELECT COUNT(*) FROM report_checks c WHERE c.message_id = m.id AND NOT (c.kind = 'unverified' AND c.result = 'pass')) AS checks
       FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
       WHERE m.project_id = ? AND m.mine = 0 AND m.task_id IS NOT NULL AND m.kind IN ('완료','막힘','진행','알림','질문')${filter.replaceAll("task_id", "m.task_id")}
-      ORDER BY m.rowid`, projectId, ...ids);
+      ${checkpoints}
+      ORDER BY seq, sub_seq`, projectId, ...ids, ...(this.hasTaskCheckpoints ? [projectId, ...ids] : []));
     // 지금 계약 판의 통과 완료(서버 판정). 계약이 묶이지 않은 업무는 완료 보고가 곧 작성자 납품이다.
     const passed = new Map<string, Set<string> | null>();
     const parents = new Map<string, string | null>();
@@ -2440,7 +2453,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (!f) continue;
       const split = (v: unknown) => (typeof v === "string" && v ? v.split("\u001f") : []);
       const set = r.kind === "완료" ? passedFor(r.task_id) : null;
-      f.reports.push({ id: r.id, seq: r.seq, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null,
+      f.reports.push({ id: r.id, seq: f.reports.length + 1, at: r.at, kind: r.kind, memberId: r.member_id, who: r.who, authorKind: r.author_kind ?? null, title: r.title,
         ...(r.continues_work ? { continuesWork: true, passingChecks: split(r.passing_checks) } : {}),
         failed: split(r.failed), notRun: split(r.not_run), checks: r.checks as number, passed: r.kind === "완료" && (set ? set.has(r.id) : true) } satisfies ReportFact);
     }
@@ -2481,12 +2494,63 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const f = of(r.task_id);
       if (f) f.finalReview = { status: r.status, reportId: r.report_id, contractRev: r.contract_rev, at: r.reviewed_at ?? r.completed_at };
     }
+    const blocked = new Map<string, ReportFact>();
+    for (const [id, facts] of out) {
+      const last = facts.reports.findLast(r => r.kind === "완료" || r.kind === "막힘" || r.continuesWork);
+      if (last?.kind === "막힘" && !isDone(facts.marks)) blocked.set(id, last);
+    }
+    if (blocked.size) {
+      // Inspect the newest instruction, including cancelled and uncertain ones.
+      // Looking up only delivered rows would revive a superseded assignment.
+      const sources = this.rows(`SELECT d.id, d.task_id, d.member_id, m.name, d.created_at, d.delivered_at
+        FROM tasks t JOIN deliveries d ON d.id=(SELECT s.id FROM deliveries s WHERE s.task_id=t.id AND s.project_id=t.project_id
+          AND s.kind IN ('instruction','user_message') AND s.wake=1 ORDER BY s.rowid DESC LIMIT 1)
+        JOIN members m ON m.id=d.member_id LEFT JOIN delivery_recovery r ON r.delivery_id=d.id
+        WHERE t.project_id=? AND t.id IN (${[...blocked.keys()].map(() => "?").join(",")}) AND t.origin<>'server'
+        AND m.kind='worker' AND d.status='delivered' AND d.delivered_at IS NOT NULL
+        AND COALESCE(r.phase,'none') IN ('none','resolved') AND COALESCE(r.reason,'') NOT IN ('duplicate_draft','not_received')`,
+        projectId, ...blocked.keys());
+      for (const source of sources) {
+        const facts = out.get(source.task_id)!;
+        if (!canFollowBlockedReport(facts, blocked.get(source.task_id)!, source.member_id, source.created_at)) continue;
+        const contract = this.getEffectiveContract(source.task_id);
+        if (bindingContract(contract) && !missingExecutionContractFields(contract).length) facts.workerFollowup = {
+          memberId: source.member_id, who: source.name, sourceId: source.id, receivedAt: source.delivered_at,
+        };
+      }
+    }
     return out;
+  }
+
+  getCheckpoint(id: string) {
+    if (!this.hasTaskCheckpoints) return null;
+    const r = this.row("SELECT * FROM task_checkpoints WHERE id=?", id);
+    return r ? { id, internal: true as const, memberId: r.member_id as string, projectId: r.project_id as string,
+      taskId: r.task_id as string | null, title: r.title as string, body: r.body as string, at: r.at as string,
+      contractTaskId: r.contract_task_id as string | null, contractRev: r.contract_rev as number | null,
+      continuesWork: !!r.continues_work, checks: json<ReportCheckInput[]>(r.checks_json) } : null;
+  }
+
+  saveCheckpoint(member: Member, taskId: string | null, input: { title: string; body: string; continuesWork: boolean;
+    checks: ReportCheckInput[]; contractTaskId: string | null; contractRev: number | null; correctsId: string | null; aboutReportId: string | null; sourceCommandId?: string | null }) {
+    const id = newId("cp_"), at = nowIso();
+    this.run(`INSERT INTO task_checkpoints(id,project_id,task_id,member_id,who,at,after_message_seq,title,body,
+      continues_work,contract_task_id,contract_rev,checks_json,corrects_id,about_report_id)
+      VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(rowid),0) FROM messages),?,?,?,?,?,?,?,?)`,
+      id, member.projectId, taskId, member.id, member.name, at, cleanText(input.title), cleanText(input.body),
+      input.continuesWork ? 1 : 0, input.contractTaskId, input.contractRev, JSON.stringify(input.checks), input.correctsId, input.aboutReportId);
+    captureOwnerCommandEvidence(this, member.id, "checkpoint", id, input.correctsId ?? input.aboutReportId,
+      input.sourceCommandId ? { id: input.sourceCommandId } : undefined);
+    if (taskId && input.continuesWork) {
+      this.run("INSERT OR IGNORE INTO completion_changes(task_id) VALUES(?)", taskId);
+      this.queueProgress([taskId]);
+    }
+    return { id, projectId: member.projectId, memberId: member.id, taskId, at, internal: true as const };
   }
 
   /** 보고 한 건의 단계 근거(검사 결과·지금 계약 판정). 반복 감시가 쓴다. */
   reportFact(messageId: string): ReportFact | null {
-    const m = this.getMessage(messageId);
+    const m = this.getMessage(messageId) ?? this.getCheckpoint(messageId);
     if (!m?.taskId) return null;
     return this.taskProgressFacts(m.projectId, new Set([m.taskId])).get(m.taskId)?.reports.find((r) => r.id === messageId) ?? null;
   }
@@ -3015,6 +3079,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       const task = this.requireTask(taskId);
       if (task.mergedInto === into || taskId === into) return;
       this.taskRef(task.projectId, into);
+      if (this.hasTaskCheckpoints) {
+        this.run("UPDATE owner_command_evidence SET task_id=? WHERE ref_type='checkpoint' AND ref_id IN (SELECT id FROM task_checkpoints WHERE task_id=?)", into, taskId);
+        this.run("UPDATE task_checkpoints SET task_id=? WHERE task_id=?", into, taskId);
+      }
       this.run("UPDATE tasks SET merged_into = ?, updated_at = ? WHERE id = ?", into, nowIso(), taskId);
       this.run("INSERT INTO task_links (id, project_id, ref_type, ref_id, from_task_id, to_task_id, basis, note, actor, created_at) VALUES (?, ?, 'task', ?, ?, ?, 'merged', NULL, ?, ?)",
         newId("tl_"), task.projectId, taskId, taskId, into, actor, nowIso());
@@ -3058,6 +3126,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   deleteTaskIfEmpty(taskId: string): boolean {
     return this.transaction(() => {
       if (!this.getTask(taskId)) return false;
+      if (this.hasTaskCheckpoints && this.row("SELECT 1 FROM task_checkpoints WHERE task_id=? LIMIT 1", taskId)) return false;
       for (const table of ["messages", "decisions", "files", "todos", "deliveries", "memory_captures", "memory_searches"]) {
         if (this.row(`SELECT 1 FROM ${table} WHERE task_id = ? LIMIT 1`, taskId)) return false;
       }
@@ -3080,7 +3149,8 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
    */
   taskOtherRecords(taskId: string, keepIds: string[], keepAuthor?: string | null): number {
     const keep = new Set(keepIds);
-    let n = 0;
+    let n = this.hasTaskCheckpoints ? Number(this.row(`SELECT COUNT(*) AS count FROM task_checkpoints
+      WHERE task_id=? AND (member_id IS NOT ? OR continues_work=1)`, taskId, keepAuthor ?? null)?.count ?? 0) : 0;
     for (const r of this.rows("SELECT id, member_id FROM messages WHERE task_id = ?", taskId)) if (!keep.has(r.id) && !(keepAuthor && r.member_id === keepAuthor)) n++;
     for (const table of ["decisions", "files", "todos"]) n += this.rows(`SELECT id FROM ${table} WHERE task_id = ?`, taskId).filter(r => !keep.has(r.id)).length;
     return n;
@@ -3482,6 +3552,37 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     if (member) this.emit({ type: "member", member });
   }
 
+  conductorIntakeId(leadId: string): string | null {
+    return this.row("SELECT relief_id FROM conductor_intake WHERE lead_id=?", leadId)?.relief_id ?? null;
+  }
+
+  matchesConductorHandoff(input: Delivery, originalRecipient: string): boolean {
+    return !!this.row(`SELECT 1 FROM conductor_intake_receipts h JOIN deliveries d ON d.id=h.delivery_id
+      WHERE h.delivery_id=? AND h.project_id=? AND h.source_message_id=? AND h.lead_id=? AND h.relief_id=?
+        AND d.member_id=h.relief_id AND d.ref_type='message' AND d.ref_id=h.source_message_id AND d.kind='user_message'`,
+      input.id, input.projectId, input.refId ?? "", originalRecipient, input.memberId);
+  }
+
+  /** Move the original only before any terminal attempt. An owner message keeps its source and original addressee. */
+  handoffConductorInput(input: Delivery, reliefId: string, text: string): boolean {
+    if (!this.db.inTransaction) throw new Error("Conductor handoff requires the intake transaction");
+    const changed = this.db.query(`UPDATE deliveries SET member_id=?,text=? WHERE id=? AND member_id=? AND kind=? AND kind IN ('user_message','system','report')
+      AND status='queued' AND attempts=0 AND ref_type IS ? AND ref_id IS ?
+      AND EXISTS(SELECT 1 FROM conductor_intake WHERE lead_id=deliveries.member_id AND relief_id=?)
+      AND NOT EXISTS(SELECT 1 FROM delivery_dispatch_items i WHERE i.delivery_id=deliveries.id)
+      AND NOT EXISTS(SELECT 1 FROM delivery_recovery r WHERE r.delivery_id=deliveries.id AND r.phase<>'none')
+      AND NOT EXISTS(SELECT 1 FROM deliveries other WHERE other.ref_type='message' AND other.ref_id=deliveries.ref_id
+        AND other.id<>deliveries.id AND other.kind=deliveries.kind)`).run(reliefId,text,input.id, input.memberId, input.kind, input.refType ?? null, input.refId ?? null, reliefId);
+    if (!changed.changes) return false;
+    const sourceMessageId = input.kind === "user_message" ? input.refId : null;
+    this.db.query(`INSERT INTO conductor_intake_receipts(delivery_id,project_id,lead_id,relief_id,relief_name,source_message_id,assigned_at)
+      VALUES(?,?,?,?,?,?,?)`).run(input.id, input.projectId, input.memberId, reliefId, this.requireMember(reliefId).name, sourceMessageId ?? null, nowIso());
+    if (sourceMessageId) this.setMessageDelivery(sourceMessageId, "queued");
+    this.emitMember(input.memberId);
+    this.emitMember(reliefId);
+    return true;
+  }
+
   /** The board scheduler has validated the untouched input and its new scope under
    * its immediate transaction. Preserve the original audit; notify both inboxes. */
   moveBoardClaim(input: Delivery, memberId: string, messageId: string, text: string): Delivery {
@@ -3608,6 +3709,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
         nowIso(),
         id,
       );
+      if (status === "delivered" && before.status !== status && before.kind === "instruction" && before.taskId) {
+        const source = this.taskSourceRef(before.taskId);
+        if (source?.startsWith("main-repair:") || source?.startsWith("independent-review-repair:")) retirePassiveReports(this, before.taskId);
+      }
       this.emitMember(before.memberId);
       return this.requireDelivery(id);
     });
@@ -3625,56 +3730,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.setDeliveryStatus(id, "failed", { lastError: error });
   }
 
-  /** 전달 봉투를 턴 키로 사용한다. 대표가 깨운 턴만 배정 확인 대상이다. */
-  beginDelegationAck(runId: string, memberId: string, deliveries: Delivery[]): void {
-    if (this.requireMember(memberId).kind === "worker") return;
-    const sourceIds = deliveries.filter(d => d.wake && (d.kind === "user_message" || d.kind === "answer"))
-      .map(d => d.refId ?? d.id).sort();
-    const sources = JSON.stringify(sourceIds);
-    const posted = this.row("SELECT 1 FROM delegation_ack_turns WHERE member_id = ? AND source_ids = ? AND posted = 1 LIMIT 1", memberId, sources) ? 1 : 0;
-    this.run("INSERT OR IGNORE INTO delegation_ack_turns (run_id, member_id, source_ids, posted) VALUES (?, ?, ?, ?)", runId, memberId, sources, posted);
-  }
-
-  /** 지시 outbox와 같은 트랜잭션에서 호출한다. 도구 응답 유실에도 배정 사실이 남는다. */
-  noteDelegation(memberId: string, delivery: Delivery, queued: boolean, selection?: CommandSelection): void {
-    // 맡긴 직원의 보고 의무는 위임으로 마감한다(지시 전달과 같은 트랜잭션).
+  /** 배정한 업무의 실행 근거. 전달과 같은 트랜잭션에서 기존 명령과 연결한다. */
+  noteDelegation(memberId: string, delivery: Delivery, _queued: boolean, selection?: CommandSelection): void {
     this.recordReportClosure({ memberId, kind: "delegated", refType: "delivery", refId: delivery.id }, selection);
-    const turn = this.row("SELECT * FROM delegation_ack_turns WHERE member_id = ? AND ended = 0 ORDER BY rowid DESC LIMIT 1", memberId);
-    if (!turn || JSON.parse(turn.source_ids).length === 0) return;
-    const assignments: { deliveryId: string; memberId: string; name: string; summary: string; queued: boolean }[] = JSON.parse(turn.assignments);
-    if (assignments.some(a => a.deliveryId === delivery.id)) return;
-    const target = this.requireMember(delivery.memberId);
-    const first = delivery.text.split("\n").find(line => line.startsWith("할 일: "))?.slice(5) ?? "";
-    const summary = Array.from(cleanText(first).replace(/\s+/g, " ").trim()).slice(0, 60).join("");
-    assignments.push({ deliveryId: delivery.id, memberId: target.id, name: target.name, summary, queued });
-    this.run("UPDATE delegation_ack_turns SET assignments = ? WHERE run_id = ?", JSON.stringify(assignments), turn.run_id);
-  }
-
-  /** ask·post 조회·자동 마지막 글은 post가 아니다. 실제 게시와 원자적으로 기록한다. */
-  noteDelegationPost(memberId: string): void {
-    this.run("UPDATE delegation_ack_turns SET posted = 1 WHERE member_id = ? AND ended = 0", memberId);
-  }
-
-  finishDelegationAck(memberId: string, runId?: string): void {
-    this.transaction(() => {
-      const turns = runId
-        ? this.rows("SELECT * FROM delegation_ack_turns WHERE member_id = ? AND run_id = ? AND ended = 0", memberId, runId)
-        : this.rows("SELECT * FROM delegation_ack_turns WHERE member_id = ? AND ended = 0", memberId);
-      for (const turn of turns) {
-        this.run("UPDATE delegation_ack_turns SET ended = 1 WHERE run_id = ?", turn.run_id);
-        const sources: string[] = JSON.parse(turn.source_ids);
-        if (turn.posted || !sources.length) continue;
-        const assignments: { deliveryId: string; memberId: string; name: string; summary: string; queued: boolean }[] = JSON.parse(turn.assignments);
-        // 확정 기동 실패로 취소된 신규 직원의 outbox는 배정으로 알리지 않는다.
-        const retained = assignments.filter(a => this.getDelivery(a.deliveryId));
-        // 같은 직원에게 여러 번 보냈으면 마지막 지시를 한 줄로 보여 준다.
-        for (const assignment of new Map(retained.map(a => [a.memberId, a])).values()) {
-          const key = createHash("sha256").update(JSON.stringify([memberId, sources, assignment.memberId])).digest("hex").slice(0, 32);
-          this.createMessage({ id: `msg_delegation_ack_${key}`, projectId: this.requireMember(memberId).projectId,
-            who: "시스템", kind: "시스템", body: `총괄이 ${assignment.name}에게 맡겼습니다: ${assignment.summary}${assignment.queued ? " (앞 일 끝나면 시작)" : ""}` });
-        }
-      }
-    });
   }
 
   // ---- 활동 ----
@@ -3723,8 +3781,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** since 이후에 그 직원이 쓴 글이 있는가(이번 턴에 이미 보고했는가). */
-  hasMessageBySince(memberId: string, since: string): boolean {
-    return this.row("SELECT 1 FROM messages WHERE member_id = ? AND at >= ? LIMIT 1", memberId, since) !== null;
+  hasPostSince(memberId: string, since: string): boolean {
+    return !!this.row("SELECT 1 FROM messages WHERE member_id=? AND at>=? LIMIT 1", memberId, since) ||
+      (this.hasTaskCheckpoints && !!this.row("SELECT 1 FROM task_checkpoints WHERE member_id=? AND at>=? LIMIT 1", memberId, since));
   }
 
   /** 대표가 이 프로젝트에서 보낸 글에 그 첨부가 붙어 있는가. 다른 프로젝트의 첨부를 지시로 끌어오지 못하게 한다. */
@@ -4228,6 +4287,14 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       if (before && (before.phase === "ended" || before.phase === "interrupted") && stableJson(before) !== stableJson(entry)) throw new ApiError(409, "이미 끝난 실행입니다");
       this.run(`INSERT INTO execution_journal (run_id, member_id, project_id, generation, terminal_identity_json, turn, delivery_ids_json, phase, input_received_at, started_at, last_progress_at, ended_at, result, reason, exit_code, interruption_notified_at, report_requested_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id) DO UPDATE SET terminal_identity_json = excluded.terminal_identity_json, turn = excluded.turn, delivery_ids_json = excluded.delivery_ids_json, phase = excluded.phase, input_received_at = excluded.input_received_at, started_at = excluded.started_at, last_progress_at = excluded.last_progress_at, ended_at = excluded.ended_at, result = excluded.result, reason = excluded.reason, exit_code = excluded.exit_code, updated_at = excluded.updated_at`, entry.runId, entry.memberId, entry.projectId, entry.identity.sessionGeneration, JSON.stringify(entry.identity), entry.turn, JSON.stringify(entry.deliveryIds), entry.phase, entry.inputReceivedAt, entry.startedAt, entry.lastProgressAt, entry.endedAt, entry.result, entry.reason, entry.exitCode, entry.interruptionNotifiedAt, entry.reportRequestedAt, entry.createdAt, entry.updatedAt);
+      if (entry.phase === "ended" && entry.result === "success" && before?.phase !== "ended") {
+        const work = this.db.query<{ taskId: string }, [string, string]>(`SELECT DISTINCT h.task_id AS taskId FROM
+          json_each(?) input JOIN deliveries d ON d.id=input.value AND d.kind='user_message' AND d.status='delivered'
+          JOIN messages m ON m.task_id=d.task_id AND m.member_id=d.member_id AND m.kind='막힘'
+          JOIN report_harness h ON h.message_id=m.id AND h.task_id=m.task_id AND h.member_id=m.member_id AND h.run_id=?`)
+          .all(JSON.stringify(entry.deliveryIds), entry.runId);
+        for (const { taskId } of work) retirePassiveReports(this, taskId);
+      }
     });
   }
 
@@ -4481,7 +4548,16 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
 
   /** 그 업무의 가장 최근 검사 보고(누가 올렸든). 재개·다음 직원의 지시에 '지난 검사'로 싣는다. */
   latestTaskChecks(taskId: string): ReportCheck[] {
-    const h = this.row("SELECT h.*, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE (h.task_id = ? OR h.contract_task_id = ?) AND EXISTS (SELECT 1 FROM report_checks c WHERE c.message_id = h.message_id) ORDER BY h.at DESC, h.rowid DESC LIMIT 1", taskId, taskId);
+    const h = this.row("SELECT h.*, m.rowid AS message_seq, m.who AS who FROM report_harness h JOIN messages m ON m.id = h.message_id WHERE (h.task_id = ? OR h.contract_task_id = ?) AND EXISTS (SELECT 1 FROM report_checks c WHERE c.message_id = h.message_id) ORDER BY h.at DESC, h.rowid DESC LIMIT 1", taskId, taskId);
+    const checkpoint = this.hasTaskCheckpoints && this.row(`SELECT cp.*, rc.run_id FROM task_checkpoints cp LEFT JOIN report_closures rc
+      ON rc.member_id=cp.member_id AND rc.ref_type='checkpoint' AND rc.ref_id=cp.id AND rc.kind='continuing'
+      WHERE (cp.task_id=? OR cp.contract_task_id=?) AND cp.checks_json<>'[]'
+      ORDER BY cp.after_message_seq DESC, cp.rowid DESC LIMIT 1`, taskId, taskId);
+    if (checkpoint && (!h || checkpoint.after_message_seq >= h.message_seq)) {
+      return json<ReportCheckInput[]>(checkpoint.checks_json).map(check => ({ ...check, messageId: checkpoint.id,
+        taskId: checkpoint.task_id, memberId: checkpoint.member_id, who: checkpoint.who, runId: checkpoint.run_id ?? null,
+        contractTaskId: checkpoint.contract_task_id, contractRev: checkpoint.contract_rev, at: checkpoint.at }));
+    }
     return h ? this.rows("SELECT * FROM report_checks WHERE message_id = ? ORDER BY idx", h.message_id as string).map(r => toCheck(r, h)) : [];
   }
 
@@ -4498,12 +4574,12 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       .map((r) => ({ memberId: r.member_id, projectId: r.project_id, runId: r.run_id, kind: r.kind, refType: r.ref_type, refId: r.ref_id, causeId: r.cause_id, at: r.at }));
   }
 
-  hasCountedRepairInRun(message: Message, continuing: boolean, counted: string[]): boolean {
+  hasCountedRepairInRun(message: Pick<Message, "id" | "at" | "kind" | "memberId">, continuing: boolean, counted: string[]): boolean {
     if (!counted.length || (!continuing && message.kind !== "막힘")) return false;
     return !!this.row(`SELECT 1 FROM report_closures current
       JOIN report_closures earlier ON earlier.member_id = current.member_id AND earlier.run_id = current.run_id AND earlier.id < current.id
       WHERE current.member_id = ? AND current.at >= ? AND current.ref_id = ?
-        AND current.ref_type = 'message' AND earlier.ref_type = 'message' AND (? OR earlier.kind = 'continuing')
+        AND current.ref_type IN ('message','checkpoint') AND earlier.ref_type IN ('message','checkpoint') AND (? OR earlier.kind = 'continuing')
         AND earlier.ref_id IN (${counted.map(() => "?").join(",")}) LIMIT 1`, message.memberId, message.at, message.id, continuing ? 1 : 0, ...counted);
   }
 

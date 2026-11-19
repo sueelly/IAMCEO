@@ -34,7 +34,7 @@ function deliveryLabel(m: Message): { text: string; tone: "muted" | "ok" | "warn
     case "held":
       return { text: `보류${reason}`, tone: "warn" };
     case "delivered":
-      return { text: "받음", tone: "ok" };
+      return { text: `받음${reason}`, tone: "ok" };
     case "failed":
       return { text: `실패${reason}`, tone: "danger" };
     case null:

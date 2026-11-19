@@ -254,7 +254,7 @@ describe("팀 목록과 대화의 연결", () => {
     const m = f.store.requireMember(f.worker2.id);
     expect(m.queuedCount).toBe(1);
     expect(m.heldCount).toBe(1);
-    expect(progressOf(f, task)).toMatchObject({ stage: "held", cause: "unknown", owner: "총괄" });
+    expect(progressOf(f, task)).toMatchObject({ stage: "held", cause: "unknown", owner: null });
     expect(progressOf(f, task)!.next).toContain("자동으로 다시 보내지 않습니다");
     f.orch.checkTaskWatches();
     expect(f.runner.to(f.worker2).some((t) => t.includes("보호된 옛 입력"))).toBe(false);

@@ -1466,7 +1466,7 @@ describe("W5 전달 통합", () => {
     expect(dispatches[0]!.markers[0]!.marker).not.toBe(dispatches[1]!.markers[0]!.marker);
   });
 
-  test.each(["message", "answer", "report", "ask"] as const)("%s 원본과 outbox 실패는 함께 rollback하며 입력·방송은 없다", async kind => {
+  test.each(["message", "answer", "report"] as const)("%s 원본과 outbox 실패는 함께 rollback하며 입력·방송은 없다", async kind => {
     const t = await setup();
     const lead = await t.orch.ensureConductor(t.project.id);
     const worker = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
@@ -1481,8 +1481,7 @@ describe("W5 전달 통합", () => {
     t.store.enqueue = () => { throw new Error("주입 outbox 실패"); };
     const action = kind === "message" ? () => t.orch.sendUserMessage(t.project.id, { id: "atomic-message", text: "원자 지시", targetMemberId: worker.id }) :
       kind === "answer" ? () => t.orch.answerDecision(decision.id, { choice: "a" }) :
-      kind === "report" ? () => t.orch.recordPost(worker, { ...verified, kind: "완료", title: "원자 보고", taskId }) :
-      () => t.orch.registerAsk(worker, { title: "원자 질문", taskId });
+      () => t.orch.recordPost(worker, { ...verified, kind: "완료", title: "원자 보고", taskId });
     try { await expect(action()).rejects.toThrow("주입 outbox 실패"); }
     finally { t.store.enqueue = enqueue; }
     expect(t.store.listMessages(t.project.id)).toHaveLength(before);
@@ -1492,6 +1491,36 @@ describe("W5 전달 통합", () => {
     expect(t.runner.sent).toHaveLength(0);
     expect(events).toHaveLength(0);
     expect(t.store.listPending(lead.id)).toHaveLength(0);
+  });
+
+  test("질문 저장이 실패하면 결재·직원 상태·방송이 함께 되돌아가고, 재시도는 총괄 사본 없이 접수된다", async () => {
+    const t = await setup();
+    const lead = await t.orch.ensureConductor(t.project.id);
+    const worker = (await t.orch.addMember(t.project.id, { name: "철수", handle: "cs" })).member;
+    const taskId = defaultTaskId(t.store, t.project.id);
+    const asks = () => t.store.listDecisions(t.project.id).map(d => d.id);
+    const messages = () => t.store.listMessages(t.project.id).map(m => m.id);
+    const previousAsks = asks(), previousMessages = messages(), previousStatus = t.store.requireMember(worker.id).status;
+    const events: string[] = [];
+    t.bus.subscribe(event => events.push(event.type));
+    t.store.db.exec(`CREATE TEMP TRIGGER fail_question_record BEFORE INSERT ON messages WHEN NEW.kind='질문'
+      BEGIN SELECT RAISE(ABORT, '주입 질문 저장 실패'); END`);
+    const ask = () => t.orch.registerAsk(worker, { title: "원자 질문", taskId });
+    try { await expect(ask()).rejects.toThrow("주입 질문 저장 실패"); }
+    finally { t.store.db.exec("DROP TRIGGER fail_question_record"); }
+    expect(asks()).toEqual(previousAsks);
+    expect(messages()).toEqual(previousMessages);
+    expect(t.store.requireMember(worker.id).status).toBe(previousStatus);
+    expect(events).toHaveLength(0);
+    expect(t.runner.sent).toHaveLength(0);
+    expect(t.store.listPending(lead.id)).toHaveLength(0);
+
+    const { decision } = await ask();
+    expect(decision.status).toBe("open");
+    expect(t.store.listMessages(t.project.id).filter(m => m.decisionId === decision.id).map(m => m.kind)).toEqual(["질문"]);
+    expect(t.store.requireMember(worker.id).status).toBe("waiting");
+    expect(t.store.listDeliveries(t.project.id)).toHaveLength(0);
+    expect(t.runner.sent).toHaveLength(0);
   });
 
   test("봉투 일부만 수신되면 나머지와 urgent는 fence, 다른 직원은 계속 진행한다", async () => {

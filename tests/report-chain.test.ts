@@ -87,7 +87,9 @@ function fixture() {
 
 test("재현 조건: 보고 보완과 조용한 안내가 한 실행에 섞여도 보완을 다시 만들지 않는다", async () => {
   const f = fixture();
-  const { run: first } = await f.wakeLeadWithReport();
+  await f.orch.sendUserMessage(f.project.id, { taskId: f.taskId, text: "영수증을 알려 주세요" });
+  await until("총괄 수신", () => !!f.pendingRun(f.lead)?.inputReceivedAt);
+  const first = f.pendingRun(f.lead)!;
   await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다" });
   // 실행 중에 쌓인 조용한 안내(대표가 직원에게 직접 지시했다는 사실 등)는 다음 깨움에 묶여 간다.
   f.store.enqueue({ projectId: f.project.id, memberId: f.lead.id, kind: "system", text: "[시스템] 대표가 철수에게 직접 지시했습니다", wake: false });
@@ -121,10 +123,9 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
   await until("새 지시의 보완", () => f.supplements(f.worker).length === 2);
   expect(f.store.getReportFollowup(second.runId)?.deliveryId).toBe(f.supplements(f.worker)[1]!.id);
   expect(f.store.getReportFollowup(first.runId)?.settledKind).toBe("unconfirmed");
-  // 직원의 보고 미확인은 총괄에게 조용히 한 번 알린다(총괄을 깨우지 않는다).
+  // 보고 미확인은 해당 직원의 실행 기록에만 남는다.
   const notices = f.store.listDeliveries().filter(d => d.memberId === f.lead.id && d.text.includes("보고 미확인"));
-  expect(notices).toHaveLength(1);
-  expect(notices[0]!.wake).toBe(false);
+  expect(notices).toHaveLength(0);
   // 두 번째 보완 실행이 완료를 올리면 두 원인 모두 더 깨우지 않는다.
   await until("두 번째 보완 실행", () => !!f.pendingRun(f.worker) && f.pendingRun(f.worker)!.runId !== second.runId);
   await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "두 일 모두 끝", ...completion });
@@ -134,19 +135,17 @@ test("보완 실행에 실제 새 지시가 함께 오면 그 지시의 보고 �
   expect(f.store.getReportFollowup(second.runId)?.settledKind).toBe("closed");
 });
 
-test("원보고를 밝힌 알림은 그 보고 확인을 마감한다. 다른 보고를 밝히거나 진행이면 마감하지 않는다", async () => {
-  for (const variant of ["about", "other", "progress", "none"] as const) {
-    const f = fixture();
-    const earlier = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "알림", title: "예전 보고" });
-    const { report } = await f.wakeLeadWithReport();
-    if (variant === "about") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다", aboutReportId: report.id });
-    if (variant === "other") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다", aboutReportId: earlier.id });
-    if (variant === "progress") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "진행", title: "확인하는 중", aboutReportId: report.id });
-    if (variant === "none") await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다" });
+test("총괄의 단순 수신과 확인은 공개 게시나 보고 보완 의무를 만들지 않는다", async () => {
+  for (const acknowledge of [false, true]) {
+    const f = fixture(), { report } = await f.wakeLeadWithReport();
+    if (acknowledge) {
+      const receipt = await f.orch.recordPost(f.lead, { taskId: f.taskId, kind: "알림", title: "판에 적었습니다", aboutReportId: report.id });
+      expect(f.store.getMessage(receipt.id)).toBeNull();
+      expect(f.store.listMessagesAbout(f.project.id, report.id)).toHaveLength(0);
+    }
     f.runner.end(f.lead);
-    await Bun.sleep(30);
-    expect([variant, f.supplements(f.lead).length]).toEqual([variant, variant === "about" ? 0 : 1]);
-    if (variant !== "about") expect(f.supplements(f.lead)[0]!.text).toContain(`about_report_id(#${report.id})`);
+    await until("총괄 실행 종료", () => !f.pendingRun(f.lead));
+    expect(f.supplements(f.lead)).toHaveLength(0);
   }
 });
 
@@ -163,11 +162,11 @@ test("about_report_id 는 이 프로젝트 다른 직원 보고만 받는다", a
   const report = await f.orch.recordPost(f.worker, { taskId: f.taskId, kind: "완료", title: "직원 보고", ...completion });
   const ok = await f.orch.handleAgentTool(f.lead, "post", { task_id: f.taskId, kind: "알림", title: "확인", about_report_id: report.id });
   expect(ok.isError).toBeUndefined();
-  const confirmation = f.store.getMessage(/#(msg_[A-Za-z0-9_]+)/.exec(ok.text)![1]!)!;
-  expect(confirmation.aboutMessageId).toBe(report.id);
-  // 원보고를 조회하면 확인 글이 함께 온다(원보고와 총괄 확인을 한 결과로 읽는다).
+  const receipt = f.store.getCheckpoint(/#(cp_[A-Za-z0-9_]+)/.exec(ok.text)![1]!);
+  expect(receipt?.taskId).toBe(f.taskId);
   const lookup = JSON.parse((await f.orch.handleAgentTool(f.lead, "post", { report_id: report.id })).text);
-  expect(lookup.confirmations).toEqual([{ id: confirmation.id, who: f.lead.name, kind: "알림", title: "확인", at: confirmation.at }]);
+  expect(lookup.confirmations).toEqual([]);
+
 });
 
 test("기다리는 자기 결재를 밝힌 알림은 마감하고, 남의 결재나 닫힌 결재는 마감하지 않는다", async () => {
@@ -193,7 +192,7 @@ test("실행이 끝날 때 결과가 안 돌아온 보고 도구가 있으면 �
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const original = f.orch.recordPost.bind(f.orch);
-    (f.orch as unknown as { recordPost: typeof original }).recordPost = async (member, input) => { await gate; return original(member, input); };
+    (f.orch as unknown as { recordPost: (...args: Parameters<typeof original>) => ReturnType<typeof original> }).recordPost = async (member, input) => { await gate; return original(member, input); };
     const pending = f.orch.handleAgentTool(f.worker, "post", { task_id: f.taskId, kind, title: "늦게 도착한 보고", ...(kind === "완료" ? { contract_rev: completion.contractRev, checks: completion.checks } : {}) });
     f.runner.end(f.worker);
     await Bun.sleep(30);
@@ -223,7 +222,7 @@ test("재시작해도 같은 원인 실행의 보완·보고 미확인은 한 �
   expect(f.supplements(f.worker)).toHaveLength(1);
   expect(f.store.getReportFollowup(first.runId)?.settledKind).toBe("unconfirmed");
   expect(f.store.listActivity(f.worker.id).filter(a => a.text.includes("보고 미확인"))).toHaveLength(1);
-  expect(f.store.listDeliveries().filter(d => d.memberId === f.lead.id && d.text.includes("보고 미확인"))).toHaveLength(1);
+  expect(f.store.listDeliveries().filter(d => d.memberId === f.lead.id && d.text.includes("보고 미확인"))).toHaveLength(0);
 });
 
 test("질문·위임은 마감 근거로 남고, 결재가 바로 닫혀도 보완을 만들지 않는다", async () => {
@@ -243,7 +242,7 @@ test("a normal owner command and real worker post are linked to the same receive
   const command = await f.orch.sendUserMessage(f.project.id, { text: "현재 기준으로 실행 결과를 정리해주세요",
     intent: "execute", targetMemberId: f.worker.id, taskId: f.taskId });
   await until("직원 수신", () => !!f.pendingRun(f.worker)?.inputReceivedAt);
-  const posted = await f.orch.recordPost(f.worker, { kind: "진행", taskId: f.taskId, title: "담당자가 실행 결과를 답했습니다" });
+  const posted = await f.orch.recordPost(f.worker, { kind: "알림", taskId: f.taskId, title: "실행 결과는 3건입니다" });
   const item = ownerCommandItem(f.store, f.project.id, command.id);
   expect(item.result?.messageId).toBe(posted.id);
   expect(item.taskId).toBe(f.taskId);
@@ -262,7 +261,10 @@ test("a mixed native turn posts to one received command and independently delega
   for (const m of messages.slice(0,2)) f.store.enqueue({projectId:f.project.id,memberId:f.lead.id,kind:"user_message",refType:"message",refId:m.id,taskId:f.taskId,text:m.body});
   await f.orch.pump(f.lead.id);
   await until("두 대표 명령의 총괄 수신", () => f.pendingRun(f.lead)?.deliveryIds.length === 2 && !!f.pendingRun(f.lead)?.inputReceivedAt);
-  const base = { kind: "진행" as const, title: "담당 배정 내용을 확인했습니다", taskId: f.taskId };
+  const base = { kind: "알림" as const, title: "로그에서 배포 결과를 확인했습니다", taskId: f.taskId };
+  await expect(f.orch.recordPost(f.lead,{...base,kind:"진행",sourceCommandId:messages[2]!.id})).rejects.toThrow();
+  await f.orch.recordPost(f.lead,{...base,kind:"진행",sourceCommandId:messages[0]!.id});
+  expect(ownerCommandItem(f.store,f.project.id,messages[0]!.id).result).toBeNull();
   await expect(f.orch.recordPost(f.lead,{...base,sourceCommandId:messages[2]!.id})).rejects.toThrow();
   const first = await f.orch.recordPost(f.lead,{...base,sourceCommandId:messages[0]!.id});
   expect(ownerCommandItem(f.store,f.project.id,messages[0]!.id).result?.messageId).toBe(first.id);
