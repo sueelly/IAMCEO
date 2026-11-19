@@ -159,6 +159,24 @@ afterAll(async () => {
 
 const auth = { Authorization: `Bearer ${CODE}` };
 
+test("owner commands require authentication, paginate with project-scoped cursors and respect archive boundaries", async () => {
+  const p = store.createProject({ name: "명령 API", cwd }), other = store.createProject({ name: "다른 명령 API", cwd });
+  const url = `/api/projects/${p.id}/owner-commands`;
+  const messages = ["먼저", "나중"].map(body => store.createMessage({ projectId: p.id, mine: true, kind: "나", body }));
+  messages.forEach(m => store.registerOwnerCommand(m.id));
+  expect((await fetch(base + url)).status).toBe(401);
+  const page = await json<{items:{id:string}[];nextCursor:string}>(api(url + "?limit=1"));
+  expect(page.items.map(row => row.id)).toEqual([messages[1]!.id]);
+  expect((await api(url + "?cursor=" + page.nextCursor)).status).toBe(200);
+  expect((await api(`/api/projects/${other.id}/owner-commands?cursor=${page.nextCursor}`)).status).toBe(400);
+  expect((await api(`/api/projects/${other.id}/owner-commands/${messages[1]!.id}`)).status).toBe(404);
+  expect((await api(url + "?limit=0")).status).toBe(400);
+  expect((await api(url + "?limit=51")).status).toBe(400);
+  expect((await api(url + "?unknown=1")).status).toBe(400);
+  store.patchProject(p.id,{archived:true,runnerEnabled:false});
+  expect((await api(url)).status).toBe(404);
+});
+
 test("file pages require auth, omit bodies, and single-file reads preserve content", async () => {
   const p = store.createProject({ name: "자료 페이지 HTTP", cwd });
   const f = store.createFile({ projectId: p.id, title: "본문", kind: "document", body: "detail-canary".repeat(1000) });

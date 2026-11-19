@@ -8,7 +8,8 @@ export type IsolatedRuntime = ReturnType<typeof createIsolatedRuntime>;
 
 export function createIsolatedRuntime() {
   // Short, canonical Unix socket paths also work on Darwin (104-byte sockaddr_un).
-  const dir = realpathSync(mkdtempSync("/private/tmp/iq-"));
+  const root = process.env.IAMCEO_TEST_RUN_ROOT || "/private/tmp";
+  const dir = realpathSync(mkdtempSync(join(root, "iq-")));
   const paths = Object.freeze({
     home: join(dir, "home"), iamceoHome: join(dir, "iamceo"), work: join(dir, "work"),
     claudeHome: join(dir, "claude"), codexHome: join(dir, "codex"), contextHome: join(dir, "context"),

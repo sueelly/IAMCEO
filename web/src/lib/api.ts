@@ -39,6 +39,7 @@ import type {
 } from "@shared/types";
 import type { DeliveryNoticePage, DeliveryRecoveryRequest, DeliveryRecoveryResult } from "@shared/types";
 import type { MemberConfigWriteResult, ServerCapabilities, SettingsWriteResult, TodoWriteResult } from "@shared/operations";
+import type { OwnerCommandPage } from "@shared/owner-commands";
 import type { WorkflowAssignmentPreview, WorkflowAssignmentRequest, WorkflowAssignmentResult } from "@shared/workflow";
 
 const CODE_KEY = "iamceo.accessCode";
@@ -182,6 +183,11 @@ export const api = {
   /** <img>·<video> 가 쓸 첨부 쿠키를 받는다. 화면을 그리기 전에 부른다. */
   filesSession: (signal?: AbortSignal) => request<void>("POST", "/api/files-session", undefined, WRITE_TIMEOUT_MS, { signal }),
 
+  ownerCommands: (projectId: string, cursor: string | null, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: "5" });
+    if (cursor) query.set("cursor", cursor);
+    return get<OwnerCommandPage>(`/api/projects/${seg(projectId)}/owner-commands?${query}`, signal);
+  },
   projectState: (id: string, signal?: AbortSignal) => get<ProjectState>(`/api/projects/${seg(id)}/state`, signal),
   archivedProjects: () => get<Project[]>("/api/projects/archived"),
   createProject: (req: CreateProjectReq) => slowPost<Project>("/api/projects", req),

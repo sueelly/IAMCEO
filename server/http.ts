@@ -1,3 +1,6 @@
+import { ownerCommandItem, ownerCommandPage } from "./owner-commands.ts";
+import { contractSchema } from "./contract-schema.ts";
+import { canAnswerOwnerStatus } from "../shared/owner-status-query.ts";
 import { MainPolicyRequest } from "./project-main-policy.ts";
 import { registerProjectMainPolicy, revokeProjectMainPolicy } from "./task-main-followup.ts";
 import { configuredSecretRoots } from "./secret-paths.ts";
@@ -244,6 +247,9 @@ const TerminalControlSchema = z.strictObject({
   if (value.action === "key" && !value.key) ctx.addIssue({ code: "custom", message: "key가 필요합니다" });
 });
 const SendMessageSchema = z.object({
+  intent: z.literal("execute").optional(),
+  recipientRole: nonEmpty.max(200).optional(),
+  contract: contractSchema.optional(),
   id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
   text: z.string(),
   targetMemberId: z.string().nullable().optional(),
@@ -783,6 +789,14 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       const state = store.projectState(id!);
       return Response.json(ctx.delivery ? { ...state, deliveryNotices: ctx.delivery.notices(id!) } : state);
     }),
+    route("GET", "/api/projects/:id/owner-commands", (_req, url, [id]) => {
+      strictQuery(url, ["cursor", "limit"]);
+      return Response.json(ownerCommandPage(store, id!, strictLimit(url.searchParams.get("limit"), 20, 50), url.searchParams.get("cursor") ?? undefined));
+    }),
+    route("GET", "/api/projects/:id/owner-commands/:item", (_req, url, [id,item]) => {
+      strictQuery(url, []);
+      return Response.json(ownerCommandItem(store, id!, item!));
+    }),
     route("GET", "/api/projects/:id/messages", (req, url, params) => {
       // Legacy read-only lookups also serve archived history; state/page use the archive boundary.
       store.requireProject(params[0]!);
@@ -850,7 +864,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       return Response.json(await orch.startConductor(id!));
     }),
     route("POST", "/api/projects/:id/messages", async (req, _url, [id]) => {
-      store.requireProject(id!);
+      const project = store.requireProject(id!);
       const body = await parseBody(req, SendMessageSchema);
       if (body.id) {
         const existing = store.getMessage(body.id);
@@ -870,7 +884,7 @@ function apiRoutes(ctx: ServerContext, urls: () => string[], pairing: Pairing, r
       }
       if (body.taskId && store.getTask(body.taskId)?.projectId !== id) throw new ApiError(400, "이 프로젝트의 작업이 아닙니다");
       if (body.taskId && body.newTaskTitle?.trim()) throw new ApiError(400, "고른 업무(taskId)와 새 업무 이름(newTaskTitle)은 함께 보내지 않습니다");
-      await requireReachable(id!, body.targetMemberId ?? null);
+      if (project.archived || !canAnswerOwnerStatus(body, project.isHq)) await requireReachable(id!, body.targetMemberId ?? null);
       for (const attachmentId of body.attachmentIds ?? []) {
         if (!store.getAttachment(attachmentId)) throw new ApiError(400, `없는 첨부입니다: ${attachmentId}`);
       }

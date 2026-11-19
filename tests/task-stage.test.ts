@@ -186,8 +186,9 @@ describe("반복 감시", () => {
     expect(conductorSystem(f)[0]!.text).toContain("같은 실패 3번");
     expect(conductorSystem(f)[0]!.text).toContain("저장 시험");
     const quiet = await blocked(f, task, [check("regression", "fail", "저장 시험")]);
-    const wake = f.store.db.query<{ wake: number }, [string, string]>("SELECT wake FROM deliveries WHERE member_id = ? AND ref_id = ?").get(f.lead.id, quiet)!.wake;
-    expect(wake).toBe(0);
+    expect(f.store.requireMessage(quiet).kind).toBe("막힘");
+    expect(f.store.listPending(f.lead.id).filter(d => d.refId === quiet)).toHaveLength(0);
+    expect(f.store.listReportsMissingDeliveries(f.project.id).some(message => message.id === quiet)).toBe(false);
     expect(conductorSystem(f)).toHaveLength(1);
     const refused = await f.tool(f.lead, "team_assign", { member: "철수", text: "같은 방법으로 다시", task_id: task });
     expect(refused.isError).toBe(true);

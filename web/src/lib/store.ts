@@ -637,7 +637,7 @@ function syncRoute(): void {
 
 /** 낙관적으로 먼저 보이고 서버 응답·이벤트로 바꾼다. 실패하면 delivery='failed'. id 가 멱등 키라 재시도해도 안전하다. */
 export async function sendMessage(
-  req: { text: string; targetMemberId?: string | null; attachmentIds?: string[]; id?: string; taskId?: string | null },
+  req: SendMessageReq,
   extra: { targetName?: string | null; attachments?: Attachment[]; onRejected?: (e: ApiError) => boolean } = {},
 ): Promise<Message | null> {
   const credentialGeneration = getCredentialGeneration();
@@ -645,7 +645,7 @@ export async function sendMessage(
   if (!p) return null;
   const projectId = p.project.id;
   const id = req.id ?? newId();
-  const body: SendMessageReq = { id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [], ...(req.taskId ? { taskId: req.taskId } : {}) };
+  const body: SendMessageReq = { ...req, id, text: req.text, targetMemberId: req.targetMemberId ?? null, attachmentIds: req.attachmentIds ?? [], ...(req.taskId ? { taskId: req.taskId } : {}) };
   const draft: Message = {
     id,
     projectId,

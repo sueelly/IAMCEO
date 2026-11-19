@@ -822,7 +822,17 @@ export interface PatchMemberReq { cli?: CliProvider; modelOverride?: string | nu
  * taskId: 보낸 순간 고른 업무. newTaskTitle: 새 업무 이름(taskId 와 함께 쓰지 않는다).
  * 둘 다 없으면 서버가 글 첫 줄로 이름 붙인 새 업무를 만든다(본사는 업무를 쓰지 않는다). 같은 id 로 다시 보내면 업무를 새로 만들지 않는다.
  */
-export interface SendMessageReq { id?: string; text: string; targetMemberId?: string | null; attachmentIds?: string[]; taskId?: string | null; newTaskTitle?: string | null }
+export interface SendMessageReq {
+  id?: string;
+  text: string;
+  targetMemberId?: string | null;
+  attachmentIds?: string[];
+  taskId?: string | null;
+  newTaskTitle?: string | null;
+  intent?: "execute";
+  contract?: import("./task-contract.ts").ContractInput;
+  recipientRole?: string;
+}
 /** POST /api/members/:id/stop 의 조건('멈추고 이어서'는 글을 먼저 대기열에 고정한 뒤 이것을 부른다). 화면에서 본 실행 id·세션 세대와 지금이 다르면 멈추지 않는다(다른 턴을 끊지 않는다). */
 export interface StopReq { expectRunId?: string | null; expectGeneration?: number | null }
 /**

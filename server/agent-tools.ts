@@ -1,3 +1,5 @@
+import { contractSchema } from "./contract-schema.ts";
+import { captureOwnerCommandEvidence } from "./owner-commands.ts";
 import { mayReadReviewReport } from "./review-routing.ts";
 import { integrationHeadCommand } from "./integration-evidence.ts";
 import { fullCommit, queueIntegrationRepair, queueReviewedIntegration } from "./task-main-followup.ts";
@@ -59,22 +61,6 @@ const memberRef = text.describe("핸들 또는 화면 이름");
 const userQuote = z.string().optional().describe("대표가 한 말 중 이 일에 해당하는 부분을 글자 그대로. 서버가 대조해 '서버 확인' 또는 '미확인'을 붙인다");
 /** 첫 지시(first_instruction)의 업무. team_assign 의 task_id 와 같은 규칙이다. 첫 지시가 없으면 쓰지 않는다. */
 const firstTaskId = z.string().trim().min(1).max(64).nullable().optional().describe("첫 지시가 속한 업무 id. 대표 글에 '작업 #' 줄이 있으면 그 업무, 업무가 없는 새 일이면 task 도구로 만든 업무 id. 빼거나 null 이면 인용한 대표 글·결재의 업무이고, 없으면 거절된다(첫 지시가 없으면 쓰지 않는다)");
-
-/** 업무 시작 계약. 업무에 붙고, 다시 주면 새 판이 된다. */
-const contractSchema = z.strictObject({
-  main_authority: text.max(1200).optional().describe("이 저장소의 main 통합·일반 푸시를 이미 승인한 대표 원문 또는 프로젝트 규칙의 출처와 적용 범위. 해당 승인이 있는 코딩 업무에서 기록한다. 작업 브랜치까지만 승인된 경우 생략한다."),
-  kind: z.enum(["coding", "research", "other"]).describe("coding 코딩 · research 조사 · other 그 밖"),
-  goal: z.string().trim().min(1).max(600).describe("원하는 결과 한두 문장"),
-  acceptance: z.array(z.string().trim().min(1).max(400)).min(1).max(12).describe("통과·실패로 판단할 합격 기준. 번호가 붙고, 완료 보고의 검사가 이 번호(criterion)를 가리켜야 한다"),
-  scope: z.string().trim().max(600).optional().describe("자율로 해도 되는 범위"),
-  inputs: z.array(z.string().trim().min(1).max(600)).min(1).max(12).optional().describe("실행에 사용할 입력·원문·자료·전제. 새 실행 전에 명시한다"),
-  outputs: z.array(z.string().trim().min(1).max(600)).min(1).max(12).optional().describe("완료 후 전달할 산출물과 위치·형식. 새 실행 전에 명시한다"),
-  constraints: z.array(z.string().trim().min(1).max(600)).max(12).optional().describe("실행 중 지킬 제한조건. 없으면 빈 배열로 명시한다"),
-  exclusions: z.array(z.string().trim().min(1).max(600)).max(12).optional().describe("이번 업무에서 제외한 범위. 없으면 빈 배열로 명시한다"),
-  forbidden: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("하지 말 것"),
-  evidence: z.array(z.string().trim().min(1).max(300)).max(12).optional().describe("완료 보고에 남길 증거"),
-  checks: z.array(z.enum(CHECK_KINDS)).max(8).optional().describe("필수 검사 종류. 비우면 coding: behavior·typecheck·regression·real, research: source·fact·unverified, other: 없음"),
-}).describe("업무 시작 계약. 새 실행 전 goal·inputs·outputs·scope·constraints·acceptance·exclusions를 명시한다. 미정 계약은 저장할 수 있지만 총괄이 보완하기 전에는 새 실행을 맡기지 않는다. 완료 보고는 필수 검사와 합격 기준별 통과 검사가 있어야 받는다");
 
 const claimSchema = z.strictObject({
   text: z.string().trim().min(1).describe("주장과 그 조건을 적는다. 필요한 설명은 길어도 그대로 남긴다"),
@@ -451,6 +437,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       owner_action: oneLineOpt().optional().describe("대표가 어떤 업무의 무엇을 어디에서 판단해야 하는지 쓴다. 예: IAMCEO 로그인 수정의 운영 배포 여부를 결재함에서 정해 주세요. 서버가 본문 맨 위에 '● 대표 차례' 줄로 쓴다. 할 일이 없으면 비운다"),
       file_ids: z.array(z.string()).optional().describe("대표가 열어 확인할 결과물의 자료 id. file로 등록한 최신 목업·플로우차트·다이어그램과 관련 근거를 연결한다"),
       decision_id: z.string().optional().describe("이어 줄 결재 id"),
+      source_command_id: text.optional().describe("여러 대표 지시를 함께 받았을 때 이 보고가 답하는 대표 원문 메시지 ID"),
       corrects_message_id: text.optional().describe("정정할 자신의 이전 보고 원본 메시지 id"),
       checks: z.array(checkSchema).max(30).optional().describe("실제로 돌린 검사. 계약이 있는 업무의 완료는 필수 검사 종류마다 통과, 실패·실행 안 함 0건, 합격 기준마다 그 번호를 단 통과 검사가 있어야 받는다"),
       artifact_commit: z.string().regex(fullCommit).optional().describe("요청한 변경을 검증한 작업 브랜치 커밋 전체 SHA. 확정 계약의 main_authority가 있으면 원 담당자에게 통합 업무가 이어진다."),
@@ -467,7 +454,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
     }).superRefine((a, ctx) => {
       if (a.comparison && !a.report_id) ctx.addIssue({ code: "custom", message: "기존 패치 대조에는 조회할 report_id가 필요합니다" });
       if (a.report_id !== undefined) {
-        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.about_report_id, a.task_id, a.checks, a.artifact_commit, a.artifact_base, a.main_commit, a.main_base, a.continue_work, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
+        if ([a.kind, a.title, a.body, a.owner_action, a.file_ids, a.decision_id, a.corrects_message_id, a.source_command_id, a.about_report_id, a.task_id, a.checks, a.artifact_commit, a.artifact_base, a.main_commit, a.main_base, a.continue_work, a.contract_rev, a.claims, a.unverified, a.review_needed].some(v => v !== undefined)) ctx.addIssue({ code: "custom", message: "report_id 조회와 보고 게시 인자는 함께 줄 수 없습니다" });
       } else if (a.kind === undefined || a.title === undefined) ctx.addIssue({ code: "custom", message: "보고 게시에는 kind와 title이 필요합니다" });
     }),
     async (orch, member, a) => {
@@ -497,7 +484,7 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       }
       if (member.finalReviewer) throw new ApiError(403, "최종 검수 직원은 보고를 조회하거나 task_review로 검수 결과를 남깁니다");
       if (a.kind === undefined || a.title === undefined) throw new ApiError(400, "보고 게시에는 kind와 title이 필요합니다");
-      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, artifactCommit: a.artifact_commit, artifactBase: a.artifact_base, mainCommit: a.main_commit, mainBase: a.main_base, continueWork: a.continue_work, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
+      const message = await orch.recordPost(member, { kind: a.kind, title: a.title, body: a.body, ownerAction: a.owner_action || undefined, fileIds: a.file_ids, decisionId: a.decision_id, correctsMessageId: a.corrects_message_id, sourceCommandId: a.source_command_id, aboutReportId: a.about_report_id, taskId: a.task_id, checks: a.checks, artifactCommit: a.artifact_commit, artifactBase: a.artifact_base, mainCommit: a.main_commit, mainBase: a.main_base, continueWork: a.continue_work, contractRev: a.contract_rev ?? null, claims: a.claims, unverified: a.unverified, reviewNeeded: a.review_needed });
       return reply(withLint(`보고했습니다 #${message.id}`, lintPost({ title: a.title, body: a.body, ownerAction: a.owner_action })));
     },
   ),
@@ -579,7 +566,11 @@ const TOOLS: Record<ToolName, Tool<any>> = {
       task_id: z.string().trim().min(1).max(64).nullable().optional().describe("이 글이 속한 업무 id(tk_...). 받은 글의 '작업 #' 줄을 따른다. 모든 글은 업무에 붙는다: 그 줄이 없는 새 일이면 task 도구로 새 업무를 만들어 그 id 를 넣는다. 빼거나 null 이면 이어 준 결재·자료에 업무가 있을 때만 그 업무이고, 아니면 거절된다(서버는 업무를 짐작하지 않는다)"),
     }),
     (orch, member, a) => {
-      const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail, taskId: orch.memberTask(member, a.task_id) });
+      const todo = orch.store.transaction(() => {
+        const todo = orch.store.createTodo({ projectId: member.projectId, memberId: member.id, who: member.name, title: a.title, detail: a.detail, taskId: orch.memberTask(member, a.task_id) });
+        captureOwnerCommandEvidence(orch.store, member.id, "todo", todo.id);
+        return todo;
+      });
       orch.notifyInbox(`${member.name}의 부탁`, a.title);
       return reply(`내 할 일에 올렸습니다 #${todo.id}`);
     },

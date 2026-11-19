@@ -2,6 +2,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBrowserCore } from "./fixtures/core-browser-harness";
 import { Database } from "bun:sqlite";
+import { Store } from "../server/store.ts";
+import { Bus } from "../server/bus.ts";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -86,6 +88,11 @@ const home = async (ctx: BrowserContext, id: string): Promise<Page> => {
   await page.locator(".hm").waitFor();
   return page;
 };
+async function openDetails(page: Page) {
+  const details = page.locator(".hm-project-detail");
+  await details.waitFor();
+  if (await details.getAttribute("open") === null) await details.locator("summary").click();
+}
 const until = async (label: string, cond: () => Promise<boolean>, ms = 8000) => {
   const end = Date.now() + ms;
   while (!(await cond())) {
@@ -113,7 +120,7 @@ async function fullProject() {
   await tool(a!.token, "todo", { title: "로고 원본 파일 보내기", detail: "시안에 넣을 **로고**가 필요합니다.\n\n- SVG 면 좋습니다\n- 없으면 PNG" });
   await tool(b!.token, "todo", { title: "결제 시험 계정 만들어 주기", detail: "카드사 시험 계정이 있어야 결제 흐름을 돌릴 수 있습니다." });
   await tool(c!.token, "todo", { title: "상세 없는 일" });
-  for (let i = 1; i <= 6; i++) await tool(a!.token, "post", { kind: i === 6 ? "완료" : "진행", title: `보고 ${i}번`, body: `보고 ${i} 내용` });
+  for (let i = 1; i <= 6; i++) await tool(a!.token, "post", { kind: "진행", title: `보고 ${i}번`, body: `보고 ${i} 내용` });
   for (let i = 1; i <= 4; i++) {
     await tool(b!.token, "file", { title: `자료 ${i}번`, summary: "요약", content: `# 자료 ${i}` });
     await Bun.sleep(5);
@@ -121,6 +128,8 @@ async function fullProject() {
   addWork(p.id, "doing", ["결제 시안"]);
   addWork(p.id, "next", ["일1", "일2", "일3", "일4", "일5", "일6"]);
   for (const [m, s] of [[a, "working"], [b, "working"], [c, "working"], [f, "working"], [d, "blocked"], [e, "waiting"]] as const) setStatus(m!.member.id, s);
+  const observation = {source:"manual", observedAt:new Date().toISOString(), freshness:"fresh", ownership:"verified", consecutiveFailures:0, error:null};
+  sql(db => db.run("UPDATE members SET blocked_reason='permission', status_observation_json=? WHERE id=?", [JSON.stringify(observation),d!.member.id]));
   return { p, a: a!, b: b!, c: c!, d: d!, e: e!, f: f! };
 }
 let full: Awaited<ReturnType<typeof fullProject>>;
@@ -310,9 +319,14 @@ describe("칸", () => {
 
   test("팀: 0 인 칩은 숨고 일하는 직원은 3명까지, 눌러서 상세로", async () => {
     const page = await home(desktop, full.p.id);
+    await openDetails(page);
     const card = page.getByRole("region", { name: "팀", exact: true });
-    const chips = (await card.locator(".hm-chip").allTextContents()).map((t) => t.replace(/\s+/g, " ").trim());
-    expect(chips.map((c) => c.replace(/^(일하는 중|내 답 기다림|승인 창 앞)/, "").trim())).toEqual(["일함 4", "내 답 기다림 1", "승인 창 앞 1"]);
+    const chips = await card.locator(".hm-chip").evaluateAll(els => els.map(el => [el.getAttribute("data-status"), Number(el.querySelector("b")?.textContent)]));
+    const members = (await state(full.p.id)).members;
+    const counts = new Map<string,number>();
+    for (const member of members) counts.set(member.status,(counts.get(member.status) ?? 0) + 1);
+    expect(Object.fromEntries(chips)).toEqual(Object.fromEntries(counts));
+    expect(counts.get("working")).toBe(4);
     expect(await card.locator(".hm-row__title").allTextContents()).toEqual(["민수", "지영", "철수"]);
     await card.getByText("결제 페이지 시안을 그리는 중").waitFor();
     await card.getByRole("link", { name: /지영/ }).click();
@@ -322,6 +336,7 @@ describe("칸", () => {
 
   test("AI가 곧 할 일·최근 보고·최근 자료: 개수 제한과 이어짐", async () => {
     const page = await home(desktop, full.p.id);
+    await openDetails(page);
     const work = page.getByRole("region", { name: "AI가 곧 할 일" });
     await work.getByText("결제 시안").waitFor();
     expect(await work.locator(".hm-work__list").nth(1).locator("li").count()).toBe(5);
@@ -334,7 +349,9 @@ describe("칸", () => {
     await page.goBack();
     await page.locator(".hm").waitFor();
 
+    await openDetails(page);
     const files = page.getByRole("region", { name: "최근 자료" });
+    await files.waitFor();
     expect(await files.locator(".hm-row__title").allTextContents()).toEqual(["자료 4번", "자료 3번", "자료 2번"]);
     await files.getByRole("link", { name: /자료 3번/ }).click();
     await until("자료로", async () => /\/files\/f_/.test(page.url()));
@@ -353,6 +370,7 @@ describe("칸", () => {
       for (let i = 2; i < 8; i++) add(i, i % 2 ? "답변" : "알림", `메아리 ${i}`);
     });
     const page = await home(desktop, p.id);
+    await openDetails(page);
     const titles = await page.getByRole("region", { name: "최근 보고" }).locator(".hm-row__title").allTextContents();
     expect(titles).toEqual(["메아리 7", "메아리 6", "메아리 5", "메아리 4", "비교표 완료"]);
     await page.close();
@@ -362,13 +380,13 @@ describe("칸", () => {
     const p = await newProject("빈 프로젝트");
     await api("PATCH", `/api/projects/${p.id}`, { runnerEnabled: false });
     const page = await home(desktop, p.id);
-    expect(await page.locator(".hm-card").count()).toBe(0);
+    expect(await page.locator(".hm-card:visible").count()).toBe(0);
     await page.locator(".hm-clear").waitFor();
     const gate = page.locator(".hm > .gate");
     await gate.getByText(/AI가 아직 연결되지 않았습니다. 총괄을 시작하거나/).waitFor();
     expect(await page.locator(".hm > *").first().evaluate((el) => el.classList.contains("gate"))).toBe(true);
     expect(await page.locator(".shell__bottom .gate").isVisible()).toBe(false);
-    expect(await page.getByRole("textbox", { name: "입력칸" }).count()).toBe(0);
+    expect(await page.getByRole("textbox", { name: "입력칸" }).getAttribute("placeholder")).toBe("진행 상황 질문");
     await page.screenshot({ path: join(SHOTS, "empty-desk.png") });
     await gate.getByRole("link").click();
     await until("팀으로", async () => page.url().endsWith("/team"));
@@ -376,9 +394,9 @@ describe("칸", () => {
   }, 15_000);
 
   test("본사: 팀 칸 대신 본사 AI 상세 줄", async () => {
-    await api("POST", "/api/projects/hq/messages", { id: crypto.randomUUID(), text: "@fake:delay=300 안녕" });
-    await until("본사 AI", async () => (await state("hq")).members.length > 0);
+    sql(db => new Store(db,new Bus()).createMember({projectId:"hq", handle:"root", kind:"root", origin:"runner", name:"본사 AI", status:"idle", cwd:PROJECT_DIR}));
     const page = await home(desktop, "hq");
+    await openDetails(page);
     const card = page.getByRole("region", { name: "본사 AI" });
     await card.getByRole("link").click();
     await page.locator("dialog[open]").getByText("활동").first().waitFor();

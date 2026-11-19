@@ -236,9 +236,9 @@ describe("턴 왕복", () => {
     const t = await setup();
     const lead = await conductor(t);
     const w = await worker(t);
-    await t.orch.sendUserMessage(t.project.id, { text: "직접 해 @fake:post=했습니다", targetMemberId: w.id });
+    await t.orch.sendUserMessage(t.project.id, { text: "직접 확인해 @fake:post=지원필요 @fake:postkind=막힘", targetMemberId: w.id });
     await waitFor("철수 턴", () => t.starts().some((c) => c.prompt.startsWith("[대표 직접]")));
-    await waitFor("보고 받은 총괄 턴", () => t.starts().some((c) => c.prompt.includes("[보고 철수] (직접) 완료: 했습니다")));
+    await waitFor("보고 받은 총괄 턴", () => t.starts().some((c) => c.prompt.includes("[보고 철수] (직접) 막힘: 지원필요")));
     const leadTurn = t.starts().find((c) => c.prompt.includes("[보고 철수]"))!;
     // wake=false 알림이 깨우는 보고 앞에 묶인다.
     expect(leadTurn.prompt.indexOf("[시스템] 대표가 철수에게 직접 지시했습니다")).toBeLessThan(leadTurn.prompt.indexOf("[보고 철수]"));
@@ -249,27 +249,27 @@ describe("턴 왕복", () => {
 });
 
 describe("턴 종료 처리", () => {
-  test("post 한 직원은 대화에 그 글만, 총괄에게 wake=true 보고", async () => {
+  test("직원이 막힘을 post하면 업무에 보고 한 건을 남기고 총괄에게 조정을 요청한다", async () => {
     const t = await setup();
     await conductor(t);
     const w = await worker(t);
-    await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=끝냄 @fake:text=턴마지막글" });
-    await waitFor("총괄에게 보고", () => t.starts().some((c) => c.prompt.startsWith("[보고 철수] 완료: 끝냄")));
+    await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=조정필요 @fake:postkind=막힘 @fake:text=턴마지막글" });
+    await waitFor("총괄에게 보고", () => t.starts().some((c) => c.prompt.startsWith("[보고 철수] 막힘: 조정필요")));
     const texts = t.texts();
-    expect(texts.some((m) => m.title === "끝냄" && m.kind === "완료" && m.memberId === w.id)).toBe(true);
+    expect(texts.some((m) => m.title === "조정필요" && m.kind === "막힘" && m.memberId === w.id)).toBe(true);
     expect(texts.some((m) => m.body === "턴마지막글")).toBe(false);
   });
 
-  test("진행·알림 post 는 총괄을 깨우지 않고 쌓아 둔다", async () => {
+  test("일반 진행 post 는 업무 기록에 남고 총괄의 입력 대기열을 차지하지 않는다", async () => {
     const t = await setup();
     const lead = await conductor(t);
     const w = await worker(t);
     await t.orch.assign(t.project.id, w.handle, { taskId: defaultTaskId(t.store, t.project.id), text: "@fake:post=하는중 @fake:postkind=진행 @fake:text=잠시" });
     await t.idle(w.id);
-    await waitFor("대기열", () => t.member(lead.id).queuedCount === 1 && t.store.listPending(lead.id)[0]);
+    await waitFor("진행 기록", () => t.texts().find(m => m.memberId === w.id && m.kind === "진행"));
     await Bun.sleep(50);
     expect(t.starts().filter((c) => c.prompt.includes("[보고")).length).toBe(0);
-    expect(t.store.listPending(lead.id)[0]!.wake).toBe(false);
+    expect(t.store.listPending(lead.id)).toHaveLength(0);
   });
 
   test("post 안 부른 직원: (자동) 표시로 대화에 남기고 총괄에게 보고", async () => {

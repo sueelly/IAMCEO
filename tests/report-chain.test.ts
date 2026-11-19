@@ -1,3 +1,4 @@
+import { ownerCommandItem } from "../server/owner-commands.ts";
 // 보고 보완 연쇄(2026-11-12 KST 22:24~22:26 총괄 실행 5건이 차례로 보완을 다시 만든 일)와 마감 근거.
 // 격리 데이터·가짜 core 실행기로 본다. 실제 직원·대표 화면·운영 DB 에는 아무것도 보내지 않는다.
 import { afterEach, expect, test } from "bun:test";
@@ -235,4 +236,41 @@ test("질문·위임은 마감 근거로 남고, 결재가 바로 닫혀도 보�
   await Bun.sleep(30);
   expect(f.supplements(f.lead)).toHaveLength(0);
   expect(f.store.listReportClosures(f.lead.id, "").map(c => c.kind)).toContain("question");
+});
+
+test("a normal owner command and real worker post are linked to the same received input", async () => {
+  const f = fixture();
+  const command = await f.orch.sendUserMessage(f.project.id, { text: "현재 기준으로 실행 결과를 정리해주세요",
+    intent: "execute", targetMemberId: f.worker.id, taskId: f.taskId });
+  await until("직원 수신", () => !!f.pendingRun(f.worker)?.inputReceivedAt);
+  const posted = await f.orch.recordPost(f.worker, { kind: "진행", taskId: f.taskId, title: "담당자가 실행 결과를 답했습니다" });
+  const item = ownerCommandItem(f.store, f.project.id, command.id);
+  expect(item.result?.messageId).toBe(posted.id);
+  expect(item.taskId).toBe(f.taskId);
+});
+
+test("a mixed native turn posts to one received command and independently delegates the other by verified quote", async () => {
+  const f = fixture();
+  f.store.saveTaskContract(f.taskId, { kind: "other", goal: "결과를 확인한다", inputs: ["대표 지시"], outputs: ["담당자 보고"],
+    scope: "격리된 예제", constraints: [], exclusions: [], acceptance: ["검사 자료를 확인한다"], checks: [] },
+    { author: "Fixture owner", authorMemberId: null, authorKind: "owner" });
+  const messages = ["배포 로그를 대조해서 실행 결과를 알려주세요", "검수자에게 검사 자료를 맡겨주세요", "다른 입력"].map(body => {
+    const message = f.store.createMessage({ projectId: f.project.id, mine: true, kind: "나", body, taskId: f.taskId });
+    f.store.registerOwnerCommand(message.id);
+    return message;
+  });
+  for (const m of messages.slice(0,2)) f.store.enqueue({projectId:f.project.id,memberId:f.lead.id,kind:"user_message",refType:"message",refId:m.id,taskId:f.taskId,text:m.body});
+  await f.orch.pump(f.lead.id);
+  await until("두 대표 명령의 총괄 수신", () => f.pendingRun(f.lead)?.deliveryIds.length === 2 && !!f.pendingRun(f.lead)?.inputReceivedAt);
+  const base = { kind: "진행" as const, title: "담당 배정 내용을 확인했습니다", taskId: f.taskId };
+  await expect(f.orch.recordPost(f.lead,{...base,sourceCommandId:messages[2]!.id})).rejects.toThrow();
+  const first = await f.orch.recordPost(f.lead,{...base,sourceCommandId:messages[0]!.id});
+  expect(ownerCommandItem(f.store,f.project.id,messages[0]!.id).result?.messageId).toBe(first.id);
+  expect(ownerCommandItem(f.store,f.project.id,messages[1]!.id).result).toBeNull();
+  await f.orch.assign(f.project.id,f.worker.handle,{text:"해당 검사 자료를 확인해 주세요",taskId:f.taskId,userQuote:messages[1]!.body},f.lead);
+  await until("인용한 명령에서 파생된 직원 실행", () => !!f.pendingRun(f.worker)?.inputReceivedAt);
+  const second = await f.orch.recordPost(f.worker,{...base,title:"검사 자료를 확인했습니다"});
+  expect(ownerCommandItem(f.store,f.project.id,messages[1]!.id).result?.messageId).toBe(second.id);
+  expect(ownerCommandItem(f.store,f.project.id,messages[0]!.id).result?.messageId).toBe(first.id);
+  await expect(f.orch.recordPost(f.worker,{...base,sourceCommandId:messages[0]!.id,correctsMessageId:second.id})).rejects.toThrow();
 });

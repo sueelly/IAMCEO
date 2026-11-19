@@ -2,6 +2,8 @@
 // 데스크톱은 두 칸(내 일 / 팀·AI 일), 그보다 좁으면 한 줄로 쌓는다.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Decision, FileDoc, Member, MemberStatus, Message, MessageKind, Project, ProjectState, Todo, WorkItem } from "@shared/types";
+import { WORKFLOW_OBSERVATION_MAX_AGE_MS } from "@shared/workflow";
+import OwnerCommands from "../components/OwnerCommands";
 import ConnectGate, { useGate } from "../components/ConnectGate";
 import { Badge, MQ_DESKTOP, Markdown, StatusDot, Time, useMediaQuery } from "../components/ui";
 import { Glass, GlassButton } from "../glass";
@@ -13,6 +15,7 @@ import { readWriteContext, useWriteContext } from "../lib/review-context";
 import "../styles/home.css";
 
 const TOP_DECISIONS = 3;
+const TOP_TODOS = 3;
 const TOP_WORKING = 3;
 const TOP_WORK = 5;
 const TOP_REPORTS = 5;
@@ -29,7 +32,7 @@ const ECHO_KINDS: ReadonlySet<MessageKind> = new Set<MessageKind>(["알림", "�
 const CHIPS: readonly { status: MemberStatus; label: string }[] = [
   { status: "working", label: "일함" },
   { status: "waiting", label: "내 답 기다림" },
-  { status: "blocked", label: "승인 창 앞" },
+  { status: "blocked", label: "입력 대기" },
   { status: "error", label: "오류" },
   { status: "idle", label: "대기" },
   { status: "asleep", label: "잠듦" },
@@ -153,6 +156,7 @@ function TodoCard({ todos }: { todos: Todo[] }) {
   // 방금 체크해 아직 제자리에 있는 줄
   const [settling, setSettling] = useState<ReadonlySet<string>>(() => new Set());
   const [showDone, setShowDone] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   // 줄은 체크하는 사이 목록을 옮겨 다시 그려질 수 있어 오류는 판에 둔다.
   const [error, setError] = useState<string | null>(null);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -215,6 +219,7 @@ function TodoCard({ todos }: { todos: Todo[] }) {
   const route = useRoute();
   const target = sorted.find(todo => todo.id === route.sub && todo.projectId === route.projectId);
   const targetId = target?.id ?? null;
+  const visible = showAll ? live : live.filter((todo, index) => index < TOP_TODOS || todo.id === targetId);
   const targetFolded = !!target?.done && !settling.has(target.id) && !showDone;
   const visitedTarget = useRef<string | null>(null);
   useEffect(() => {
@@ -238,11 +243,16 @@ function TodoCard({ todos }: { todos: Todo[] }) {
     <Card title="내가 할 일" count={openCount}>
       {live.length > 0 ? (
         <ul className="hm-todos">
-          {live.map((t) => (
+          {visible.map((t) => (
             <TodoRow key={t.id} todo={t} onToggled={onToggled} onError={setError} />
           ))}
         </ul>
       ) : null}
+      {live.length > TOP_TODOS && (showAll || visible.length < live.length) && (
+        <button type="button" className="hm-more-btn" aria-expanded={showAll} onClick={() => setShowAll(v => !v)}>
+          {showAll ? "할 일 접기" : `할 일 ${live.length - visible.length}건 더 보기`}
+        </button>
+      )}
       {error ? (
         <p className="hm-error" role="alert">
           {error}
@@ -269,18 +279,39 @@ function TodoCard({ todos }: { todos: Todo[] }) {
 
 // ---- 결재 대기 ----
 
-function DecisionsCard({ projectId, decisions, blocked }: { projectId: string; decisions: Decision[]; blocked: Member[] }) {
+function memberRequests(state: ProjectState) {
+  const requests = new Map<string, string>();
+  for (const node of state.workflow?.nodes ?? []) {
+    if (!node.ownerActionRequired) continue;
+    for (const action of [node.action, ...(node.additionalOwnerActions ?? [])]) {
+      if (action?.tab === "team" && action.sub) {
+        requests.set(action.sub, node.action === action ? node.label : "직원 입력 확인");
+      }
+    }
+  }
+  for (const member of state.members) {
+    const observed = member.statusObservation;
+    if (member.status !== "blocked" || !member.blockedReason || member.blockedReason === "status_unknown" ||
+      observed?.freshness !== "fresh" || observed.ownership !== "verified" ||
+      !(Date.now() - Date.parse(observed.observedAt ?? "") < WORKFLOW_OBSERVATION_MAX_AGE_MS)) continue;
+    requests.set(member.id, member.blockedReason === "permission" ? "승인 창 앞" : member.blockedReason === "selection" ? "선택 대기" : "설정 확인");
+  }
+  return state.members.flatMap(member => requests.has(member.id) ? [{member, label:requests.get(member.id)!}] : []);
+}
+
+function DecisionsCard({ projectId, decisions, blocked }: { projectId: string; decisions: Decision[]; blocked: ReturnType<typeof memberRequests> }) {
+  const [showAll, setShowAll] = useState(false);
   if (decisions.length + blocked.length === 0) return null;
   const rest = decisions.length - TOP_DECISIONS;
   return (
     <Card title="결재 대기" count={decisions.length + blocked.length} more={{ href: routeHash({ projectId, tab: "inbox" }), label: "결재함" }}>
       <ul className="hm-rows">
-        {blocked.map((m) => (
+        {(showAll ? blocked : blocked.slice(0, TOP_DECISIONS)).map(({member:m, label}) => (
           <li key={m.id}>
             <a className="hm-row" href={routeHash({ projectId, tab: "team", sub: m.id })}>
               <span className="hm-row__main">
                 <span className="hm-row__title">{m.name}</span>
-                <StatusDot status={m.status} label className="hm-row__status" />
+                <span className="hm-row__sub">{label}</span>
               </span>
             </a>
           </li>
@@ -296,6 +327,9 @@ function DecisionsCard({ projectId, decisions, blocked }: { projectId: string; d
           </li>
         ))}
       </ul>
+      {blocked.length > TOP_DECISIONS && <button className="hm-more-btn" type="button" aria-expanded={showAll} onClick={() => setShowAll(v => !v)}>
+        {showAll ? "직원 요청 접기" : `직원 요청 ${blocked.length - TOP_DECISIONS}건 더 보기`}
+      </button>}
       {rest > 0 ? <p className="hm-rest">외 {rest}건은 결재함에 있습니다</p> : null}
     </Card>
   );
@@ -504,7 +538,7 @@ function HomeBody({ state }: { state: ProjectState }) {
   const projectId = state.project.id;
   // 결재함과 같이 최신이 위(같은 ms 면 나중에 올라온 것이 위).
   const decisions = state.decisions.filter((d) => d.status === "open").reverse().sort((a, b) => byCreated(b, a));
-  const blocked = state.members.filter((m) => m.status === "blocked");
+  const blocked = memberRequests(state);
   const nothingToDo = !state.todos.some((t) => !t.done) && decisions.length === 0 && blocked.length === 0;
   const working = state.members.some((m) => m.status === "working");
 
@@ -518,43 +552,24 @@ function HomeBody({ state }: { state: ProjectState }) {
   return (
     <div className="hm">
       <ConnectGate />
-      <TidyBar project={state.project} />
-      {state.project.now ? <NowCard now={state.project.now} at={state.project.nowAt} /> : null}
-      {nothingToDo ? (
-        <p className="hm-clear">
-          <b>지금 하실 일이 없습니다.</b> {working ? "AI가 일하는 중입니다." : "새 일이 생기면 여기에 나타납니다."}
-        </p>
-      ) : null}
-      {wide ? (
-        <div className="hm-cols">
-          <div className="hm-col">
-            {todoCard}
-            {decisionsCard}
-            {reportsCard}
-          </div>
-          <div className="hm-col">
-            {teamCard}
-            {workCard}
-            {filesCard}
-          </div>
-        </div>
-      ) : (
-        <div className="hm-col">
-          {todoCard}
-          {decisionsCard}
-          {teamCard}
-          {workCard}
-          {reportsCard}
-          {filesCard}
-        </div>
-      )}
+      <div className="hm-owner-actions" data-open={!nothingToDo || undefined}>{todoCard}{decisionsCard}</div>
+      {!state.project.isHq && <OwnerCommands state={state} />}
+      {nothingToDo ? <p className="hm-clear">지금 하실 일이 없습니다.{working ? " 팀이 일하고 있습니다." : ""}</p> : null}
+      <details className="hm-project-detail">
+        <summary>프로젝트 상세</summary>
+        <TidyBar project={state.project} />
+        {state.project.now ? <NowCard now={state.project.now} at={state.project.nowAt} /> : null}
+        {wide ? <div className="hm-cols"><div className="hm-col">{teamCard}{workCard}</div><div className="hm-col">{reportsCard}{filesCard}</div></div>
+          : <div className="hm-col">{teamCard}{workCard}{reportsCard}{filesCard}</div>}
+      </details>
     </div>
   );
 }
 
 export default function Home() {
   const state = useProject();
-  if (!state) return null;
+  const route = useRoute();
+  if (state?.project.id !== route.projectId) return null;
   // 프로젝트를 옮기면 펼침·제자리 줄을 잇지 않는다.
   return <HomeBody key={state.project.id} state={state} />;
 }

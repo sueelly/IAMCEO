@@ -18,7 +18,7 @@ function directContract(store: Store, taskId: string): TaskContract | null {
   return contract?.taskId === taskId && bindingContract(contract) && !missingExecutionContractFields(contract).length ? contract : null;
 }
 
-function standardWorker(member: Member): boolean {
+export function standardWorker(member: Member): boolean {
   return member.kind === "worker" && !member.finalReviewer && !member.standbyReviewer && member.origin === "runner" &&
     (member.cli !== "codex" || member.codexSpeed !== "fast" && member.appliedCodexSpeed !== "fast");
 }

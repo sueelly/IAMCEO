@@ -2,27 +2,9 @@
 // 완료 판정은 보고에 적은 검사로 한다. 실행 검사(behavior·typecheck·regression)의 통과는 harness-evidence 가 제공자 실행 기록과 대조한다.
 // 그 밖의 종류(real·source·fact·other)는 작성자 보고다. 조사의 사실 주장은 claims 로 원문과 대조한다.
 
-export type ContractKind = "coding" | "research" | "other";
-export const CHECK_KINDS = ["behavior", "typecheck", "regression", "real", "source", "fact", "unverified", "other"] as const;
-export type CheckKind = (typeof CHECK_KINDS)[number];
+import type { CheckKind, ContractInput, ContractKind } from "../shared/task-contract.ts";
+export { CHECK_KINDS, type CheckKind, type ContractInput, type ContractKind } from "../shared/task-contract.ts";
 export type CheckResult = "pass" | "fail" | "not_run";
-
-export interface ContractInput {
-  kind: ContractKind;
-  main_authority?: string;
-  goal: string;
-  acceptance: string[];
-  scope?: string | null;
-  /** 누락은 미정이다. 빈 constraints/exclusions 배열은 명시적으로 해당 없음이다. */
-  inputs?: string[] | null;
-  outputs?: string[] | null;
-  constraints?: string[] | null;
-  exclusions?: string[] | null;
-  forbidden?: string[];
-  evidence?: string[];
-  /** 비우면 종류별 기본 필수 검사. 빈 배열을 주면 필수 검사 없이 합격 기준만 본다. */
-  checks?: CheckKind[];
-}
 
 export interface TaskContract {
   /** Derived from owner-registered project scope; never copy to another task as a direct grant. */

@@ -1,13 +1,14 @@
 // 모든 화면 아래 입력칸. Enter 전송 · Shift+Enter 줄바꿈(터치 기기는 소프트 키보드에 Shift 가 없어 Enter 가 줄바꿈, 보내기 버튼으로 전송) · 첨부(버튼·붙여넣기·드래그) · @직원 지정.
 // 글·대상·첨부는 프로젝트별로 틀 밖과 localStorage 에 둔다: 프로젝트를 오가거나 틀이 다시 그려져도, 새로고침·앱 재시작 뒤에도 쓰던 글이 남아야 한다.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from "react";
+import { canAnswerOwnerStatus } from "@shared/owner-status-query";
 import type { Member, MemberStatus, StopReq, Task } from "@shared/types";
 import { GlassButton, Glass } from "../glass";
 import { api, errorText, fileUrl, getCredentialGeneration } from "../lib/api";
 import ConnectGate, { isGateRejection, useGate } from "./ConnectGate";
 import { getState, newId, refresh, routeHash, useProject, useRoute } from "../lib/store";
-import type { Draft } from "../lib/submissions";
-import { chooseTask, submissions, useSubmissionDraft } from "../lib/submission-client";
+import type { Draft, SubmissionManager } from "../lib/submissions";
+import { chooseTask, commandSubmissions, submissions, useSubmissionDraft } from "../lib/submission-client";
 import { StatusDot } from "./ui";
 import { chipTasks, filterTasks, findSlash, taskActivity } from "../lib/tasks";
 import { formatRelative } from "../lib/time";
@@ -22,27 +23,25 @@ const HOVER_OPEN_MS = 1000;
 const HOVER_CLOSE_MS = 300;
 const STOP_NOTICE_MS = 15000;
 
-const patchDraft = (projectId: string, patch: (draft: Draft) => Draft) => submissions.patchDraft(projectId, patch);
-
-function attachFiles(projectId: string, files: File[]): void {
+function attachFiles(manager: SubmissionManager, projectId: string, files: File[]): void {
   for (const file of files) {
     const name = file.name || "첨부";
-    const ticket = submissions.beginUpload(projectId, { key: newId(), name });
+    const ticket = manager.beginUpload(projectId, { key: newId(), name });
     if (file.size > MAX_UPLOAD_BYTES) {
-      submissions.finishUpload(ticket, null, "파일은 50MB 까지 올릴 수 있습니다");
+      manager.finishUpload(ticket, null, "파일은 50MB 까지 올릴 수 있습니다");
       continue;
     }
     api.upload(file, name, { project: projectId, target: ticket.targetId }).then(
-      (attachment) => submissions.finishUpload(ticket, attachment),
+      (attachment) => manager.finishUpload(ticket, attachment),
       (e) => {
         // 연결 때문에 막힌 첨부는 칩을 실패로 남기지 않고 어디에 막혔는지만 알린다.
         if (isGateRejection(e)) {
-          if (submissions.refuseUpload(ticket, e.message)) void refresh();
+          if (manager.refuseUpload(ticket, e.message)) void refresh();
           return;
         }
         // A failed upload remains visible. Selecting the file again is required
         // because browsers cannot restore a File after a page reload.
-        submissions.finishUpload(ticket, null, errorText(e));
+        manager.finishUpload(ticket, null, errorText(e));
       },
     );
   }
@@ -95,7 +94,7 @@ function findMention(text: string, caret: number): { start: number; query: strin
   return m ? { start: caret - m[2]!.length - 1, query: m[2]!.toLowerCase() } : null;
 }
 
-const useWindowFileDrag = (projectId: string, enabled: boolean): boolean => {
+const useWindowFileDrag = (manager: SubmissionManager, projectId: string, enabled: boolean): boolean => {
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
     setDragging(false);
@@ -114,7 +113,7 @@ const useWindowFileDrag = (projectId: string, enabled: boolean): boolean => {
       setDragging(false);
       if (!hasFiles(e)) return;
       e.preventDefault();
-      attachFiles(projectId, [...(e.dataTransfer?.files ?? [])]);
+      attachFiles(manager, projectId, [...(e.dataTransfer?.files ?? [])]);
     };
     window.addEventListener("dragover", over);
     window.addEventListener("dragleave", leave);
@@ -124,7 +123,7 @@ const useWindowFileDrag = (projectId: string, enabled: boolean): boolean => {
       window.removeEventListener("dragleave", leave);
       window.removeEventListener("drop", drop);
     };
-  }, [projectId, enabled]);
+  }, [manager, projectId, enabled]);
   return dragging;
 };
 
@@ -133,9 +132,13 @@ export default function Composer() {
   const state = useProject();
   const projectId = route.projectId;
   const project = state?.project.id === projectId ? state : null;
-  const { draft, attempts } = useSubmissionDraft(projectId);
+  const commandMode = route.tab === "home" && !project?.project.isHq && projectId !== "hq";
+  const manager = commandMode ? commandSubmissions : submissions;
+  const { draft, attempts } = useSubmissionDraft(projectId, manager);
+  const patchDraft = (id: string, patch: (draft: Draft) => Draft) => manager.patchDraft(id, patch);
   const gate = useGate();
-  const dragging = useWindowFileDrag(projectId, gate.ok);
+  const statusOnly = commandMode && (gate.kind === "runner_off" || gate.kind === "backend_down");
+  const dragging = useWindowFileDrag(manager, projectId, gate.ok);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -175,7 +178,7 @@ export default function Composer() {
   const [stopResult, setStopResult] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
 
   // 게이트가 열리면 칸이 새로 그려진다. 값이 그대로여도 높이를 다시 잰다.
-  useAutoGrow(inputRef, gate.ok ? draft.text : "");
+  useAutoGrow(inputRef, gate.ok || statusOnly ? draft.text : "");
 
   useEffect(() => {
     if (!notice) return;
@@ -194,7 +197,7 @@ export default function Composer() {
     setNotice(null);
     setDismissedAt(null);
     setStopResult(null);
-  }, [projectId]);
+  }, [manager, projectId]);
 
   useEffect(() => {
     if (!opened) return;
@@ -209,14 +212,16 @@ export default function Composer() {
   const members = project?.members ?? [];
   const lead = members.find((m) => m.kind === "root" || m.kind === "conductor") ?? null;
   const workers = members.filter((m) => m.kind === "worker");
-  const target = workers.find((m) => m.id === draft.targetId) ?? null;
+  const target = (commandMode ? members : workers).find((m) => m.id === draft.targetId) ?? null;
   const allTasks = project?.tasks ?? [];
   const task = draft.taskId ? allTasks.find((t) => t.id === draft.taskId) ?? null : null;
   // 업무 칩은 받는 사람과 상관없이 늘 같은 목록이다. 업무 이름만 보이고 맡은 직원은 붙이지 않는다(업무에는 여러 직원이 붙는다).
-  const shownTasks = chipTasks(allTasks, project?.messages ?? [], task?.id ?? null);
+  const shownTasks = commandMode ? allTasks.filter(t => !t.mergedInto || t.id === task?.id) : chipTasks(allTasks, project?.messages ?? [], task?.id ?? null);
+  const staleSelection = commandMode && ((!!draft.targetId && !target) || (!!draft.taskId && !task));
   const leadName = lead?.name ?? (isHq ? "본사 AI" : "총괄");
   const entries: MenuEntry[] = [
-    { id: null, name: leadName, handle: null, role: "기본", status: lead?.status ?? null },
+    { id: null, name: commandMode ? "자동 배정" : leadName, handle: null, role: "기본", status: commandMode ? null : lead?.status ?? null },
+    ...(commandMode && lead ? [{ id: lead.id, name: lead.name, handle: lead.handle, role: "총괄", status: lead.status }] : []),
     ...workers.map((m) => ({ id: m.id, name: m.name, handle: m.handle, role: m.role, status: m.status })),
   ];
 
@@ -254,7 +259,7 @@ export default function Composer() {
   };
 
   // 업무만 바꾼다. '전체'로 돌아와도 받는 사람은 그대로다(대화 글의 업무 이름과 같은 규칙).
-  const pickTask = (next: Task | null) => chooseTask(projectId, next);
+  const pickTask = (next: Task | null) => chooseTask(projectId, next, manager);
   /** 목록에서 업무를 고른다. '/'로 열었으면 친 '/글'을 지운다. */
   const pickTaskEntry = (entry: TaskEntry) => {
     setOpened(null);
@@ -326,9 +331,10 @@ export default function Composer() {
   const failedUpload = draft.uploads.some((u) => u.failed);
   const ready = draft.uploads.flatMap((u) => (u.attachment ? [u.attachment] : []));
   const text = draft.text.trim();
-  const canSend = !!project && !uploading && !failedUpload && (text.length > 0 || ready.length > 0);
+  const allowed = gate.ok || (statusOnly && canAnswerOwnerStatus({intent:"execute", text, targetMemberId:draft.targetId, attachmentIds:ready.map(a => a.id)}, isHq));
+  const canSend = !staleSelection && allowed && !!project && !uploading && !failedUpload && (text.length > 0 || ready.length > 0);
   // 지금 글이 갈 사람. 그 사람이 일하는 중이면 입력칸 위에 멈춤 줄을 보인다.
-  const recipient: Member | null = target ?? lead;
+  const recipient: Member | null = target ?? (commandMode ? null : lead);
 
   /** 멈춤 요청. 결과(멈춤 확인·멈출 턴 없음·실행이 바뀜·실패)를 그대로 보인다. 결과를 모르면 다시 보내지 않고 상태를 보라고 한다. */
   const stopRun = async (m: Member, req: StopReq, followUp: boolean) => {
@@ -357,23 +363,26 @@ export default function Composer() {
     const body = typed?.rest ?? text;
     const session = getCredentialGeneration();
     // 누른 순간에 본 실행. 글이 늦게 닿아 그 턴이 끝났으면 서버가 새 턴을 끊지 않는다.
-    const receiver = to ?? lead;
+    const receiver = to ?? (commandMode ? null : lead);
     const stopWith = opts.stop && canStop(receiver) && !stopping ? { member: receiver, req: stopExpectation(receiver) } : null;
-    const result = submissions.submit(
+    const result = manager.submit(
       projectId,
       draft,
-      { text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id), taskId: task?.id ?? null },
-      { targetName: to?.name ?? leadName, attachments: ready },
+      { ...(commandMode && !opts.stop ? { intent: "execute" as const } : {}), text: body, targetMemberId: to?.id ?? null, attachmentIds: ready.map((a) => a.id), taskId: task?.id ?? null },
+      { targetName: to?.name ?? (commandMode ? null : leadName), attachments: ready },
     );
     // submit persists synchronously before clearing the input. A storage failure
     // leaves the draft intact and blocks the network request.
-    if (submissions.snapshot(projectId).draft.error) return;
+    if (manager.snapshot(projectId).draft.error) return;
     setCaret(0);
     setNotice(null);
     inputRef.current?.focus();
     const saved = await result;
-    if (!saved || getCredentialGeneration() !== session || getState().route.projectId !== projectId) return;
+    const activeRoute = getState().route;
+    if (!saved || getCredentialGeneration() !== session || activeRoute.projectId !== projectId) return;
     if (stopWith) await stopRun(stopWith.member, stopWith.req, true);
+    else if (activeRoute.tab !== route.tab) return;
+    else if (commandMode && !to) setNotice("명령을 접수했습니다");
     else setNotice(`${to?.name ?? leadName}에게 보냈습니다${canStop(receiver) ? " · 지금 턴이 끝나면 전달됩니다" : ""}`);
   };
 
@@ -388,18 +397,18 @@ export default function Composer() {
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...e.clipboardData.files];
-    if (files.length === 0) return;
+    if (!gate.ok || files.length === 0) return;
     // 표 앱은 글과 그림을 함께 복사한다. 글을 막으면 표 내용이 사라진다. 파인더는 파일 이름을 글로 함께 주므로 그것만 거른다.
     const typed = e.clipboardData.getData("text/plain").trim();
     const onlyNames = typed.split(/[\r\n]+/).every((line) => files.some((f) => f.name === line.trim()));
     if (!typed || onlyNames) e.preventDefault();
-    attachFiles(projectId, files);
+    attachFiles(manager, projectId, files);
   };
 
-  const placeholder = task ? `'${task.title}' 업무로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
-  const showThreadLink = notice !== null && route.tab !== "thread";
+  const placeholder = statusOnly ? "진행 상황 질문" : commandMode && !target ? (task ? `${task.title}에 이어서 지시` : "새 명령 입력") : task ? `'${task.title}' 업무로 ${target?.name ?? leadName}에게` : target ? `${target.name}에게 직접 지시` : isHq ? "본사 AI에게 — 새 프로젝트 만들기 등" : "지시나 질문";
+  const showThreadLink = notice !== null && route.tab !== "thread" && !commandMode;
 
-  if (!gate.ok) {
+  if (!gate.ok && !statusOnly) {
     const kept = draft.text.trim().length > 0 || draft.uploads.length > 0 || attempts.length > 0;
     return (
       <div ref={rootRef} className="cmp">
@@ -436,8 +445,8 @@ export default function Composer() {
                 onClick={() => pickTaskEntry(entry)}
               >
                 <span className="cmp-menu__main">
-                  <span className="cmp-menu__name">{t ? t.title : "전체"}</span>
-                  <span className="cmp-menu__sub">{t ? [last ? `최근 글 ${formatRelative(last)}` : "글 없음", t.branch].filter(Boolean).join(" · ") : "업무를 고르지 않고 모든 글"}</span>
+                  <span className="cmp-menu__name">{t ? t.title : commandMode ? "새 명령" : "전체"}</span>
+                  <span className="cmp-menu__sub">{t ? [last ? `최근 글 ${formatRelative(last)}` : "글 없음", t.branch].filter(Boolean).join(" · ") : commandMode ? "" : "업무를 고르지 않고 모든 글"}</span>
                 </span>
                 {(t ? task?.id === t.id : !task) ? <span className="cmp-menu__on">고름</span> : null}
               </li>
@@ -480,7 +489,7 @@ export default function Composer() {
             type="button"
             className="cmp-chip cmp-chip--target"
             data-direct={target ? "" : undefined}
-            aria-label={`보낼 대상: ${target?.name ?? leadName}. 눌러서 바꾸기`}
+            aria-label={`보낼 대상: ${target?.name ?? (commandMode ? "자동 배정" : leadName)}. 눌러서 바꾸기`}
             aria-haspopup="listbox"
             aria-expanded={chipMenu}
             aria-controls={chipMenu ? "cmp-menu" : undefined}
@@ -495,12 +504,19 @@ export default function Composer() {
             onPointerLeave={hoverLeave}
             onKeyDown={(e) => void menuKey(e)}
           >
-            <span className="cmp-chip__label">{target ? `@${target.name}` : isHq ? "본사 AI" : "총괄"}</span>
+            <span className="cmp-chip__label">{target ? `@${target.name}` : commandMode ? "자동 배정" : isHq ? "본사 AI" : "총괄"}</span>
             <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
               <path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          {shownTasks.length > 0 || task ? (
+          {commandMode && shownTasks.length > 0 ? (
+            <button type="button" className="cmp-task cmp-command-task" aria-label={task ? `선택 업무: ${task.title}` : "기존 업무 선택"}
+              aria-haspopup="listbox" aria-expanded={taskMenu}
+              onClick={() => { setOpened(taskMenu ? null : {kind:"task",via:"click"}); setActive(0); }}
+              onKeyDown={menuKey}>
+              {task?.title ?? "업무 선택"}
+            </button>
+          ) : shownTasks.length > 0 || task ? (
             <div className="cmp-taskbar" onPointerEnter={hoverEnter("task")} onPointerLeave={hoverLeave}>
               <div ref={tasksRef} className="cmp-tasks" role="group" aria-label="업무 고르기">
                 <button type="button" className="cmp-task" aria-pressed={!task} onClick={() => pickTask(null)}>
@@ -580,7 +596,7 @@ export default function Composer() {
             </span>
           ) : null}
         </div>
-        {canStop(recipient) || stopResult ? (
+        {gate.ok && (canStop(recipient) || stopResult) ? (
           <div className="cmp-stop" role="group" aria-label="지금 실행 멈추기">
             {canStop(recipient) ? (
               <>
@@ -605,6 +621,9 @@ export default function Composer() {
             ) : null}
           </div>
         ) : null}
+        {staleSelection && <p className="cmp__error" role="alert">
+          이전에 선택한 업무나 담당자를 찾을 수 없습니다. <button type="button" onClick={() => patchDraft(projectId,d => ({...d,targetId:null,taskId:null}))}>선택 해제</button>
+        </p>}
         {draft.error ? (
           <p className="cmp__error" role="alert">
             {draft.error}
@@ -614,12 +633,12 @@ export default function Composer() {
           <div key={attempt.id} className="cmp__error" role="status">
             <span>{attempt.targetName ?? "원래 대상"}에게{attempt.payload.taskId ? ` · 작업 '${allTasks.find((t) => t.id === attempt.payload.taskId)?.title ?? attempt.payload.taskId}'` : ""} · {attempt.payload.text ? `${attempt.payload.text.slice(0, 60)}${attempt.payload.text.length > 60 ? "…" : ""}` : "첨부 메시지"}</span>
             <p>{attempt.status === "checking" ? "전송 결과 확인 중…" : attempt.error ?? "전송 결과를 확인하지 못했습니다"}</p>
-            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void submissions.reconcile(projectId)}>다시 확인</GlassButton>
-            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking" || !project} onClick={() => void submissions.retry(projectId, attempt.id)}>같은 내용 재시도</GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking"} onClick={() => void manager.reconcile(projectId)}>다시 확인</GlassButton>
+            <GlassButton variant="ghost" size="s" disabled={attempt.status === "checking" || !project || (!gate.ok && !(statusOnly && canAnswerOwnerStatus(attempt.payload, isHq)))} onClick={() => void manager.retry(projectId, attempt.id)}>같은 내용 재시도</GlassButton>
           </div>
         ))}
         <div className="cmp__row">
-          <GlassButton variant="ghost" size="m" className="cmp__icon" ariaLabel="첨부" title="첨부" onClick={() => fileRef.current?.click()}>
+          <GlassButton variant="ghost" size="m" className="cmp__icon" ariaLabel="첨부" title="첨부" disabled={!gate.ok} onClick={() => fileRef.current?.click()}>
             <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
               <path
                 d="M16.5 9.2l-6.6 6.6a3.9 3.9 0 01-5.5-5.5l7-7a2.6 2.6 0 013.7 3.7l-6.9 7a1.3 1.3 0 01-1.9-1.9l6.3-6.3"
@@ -637,7 +656,7 @@ export default function Composer() {
             multiple
             hidden
             onChange={(e) => {
-              attachFiles(projectId, [...(e.target.files ?? [])]);
+              attachFiles(manager, projectId, [...(e.target.files ?? [])]);
               e.target.value = ""; // 같은 파일을 다시 고를 수 있게
             }}
           />

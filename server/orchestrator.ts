@@ -1,3 +1,8 @@
+import { captureOwnerCommandEvidence } from "./owner-commands.ts";
+import { ownerCommandAllowsDelivery, ownerRequestsExecution, referencedOwnerTask, resolveOwnerCommandWorker } from "./owner-command-routing.ts";
+import { canAnswerOwnerStatus } from "../shared/owner-status-query.ts";
+import { answerOwnerStatus } from "./owner-status-command.ts";
+import { readOwnerContract } from "./owner-text-contract.ts";
 import { claimReadyBoardWork, sharedWorkAllowsDelivery } from "./shared-work-queue.ts";
 import { assignedReviewMember } from "./review-routing.ts";
 import { providerIssueKind } from "../shared/execution-issues.ts";
@@ -90,7 +95,7 @@ import { TaskContinuationCoordinator, taskScopeForDeliveryIds } from "./task-con
 import { ordinaryInputAdmitted } from "./queue-admission.ts";
 import { orderAssignments, relatedWork } from "./workflow.ts";
 import { taskStageLabel } from "../shared/task-stage.ts";
-import { withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
+import { parseOwnerLine, withOwnerLine, withRecLine } from "../shared/owner-lines.ts";
 import { CoreError, coreRpc, type CoreHello, type CoreTerminal } from "./runner/core-client.ts";
 import { CoreSupervisor } from "./core-supervisor.ts";
 import type { DecisionFollowUp, DeliveryDispatch, ReportReferences, LifecycleJournal } from "./service-contracts.ts";
@@ -466,6 +471,7 @@ export interface PostInput {
   fileIds?: string[];
   decisionId?: string | null;
   correctsMessageId?: string | null;
+  sourceCommandId?: string | null;
   /** 이 글이 확인한 다른 직원의 보고 원본 id. '알림'이면 그 보고를 받은 입력의 보고 의무를 마감한다. */
   aboutReportId?: string | null;
   /** 대표가 할 일 한 줄. 서버가 본문 첫 줄에 '● 대표 차례: …'로 쓴다(shared/owner-lines.ts). */
@@ -2650,14 +2656,36 @@ export class Orchestrator implements OrchestratorApi {
     // 합쳐진 업무를 골랐으면(오래 열어 둔 화면) 합쳐진 곳으로 보낸다.
     const picked = chosen ? this.store.resolveTask(chosen) : null;
     const messageId = req.id ?? newId("msg_");
-    let recipient = target ?? this.store.getConductor(projectId);
+    const prior = this.store.getMessage(messageId);
+    if (prior) {
+      if (prior.projectId !== projectId) throw new ApiError(409, "다른 프로젝트에서 사용된 메시지 ID입니다");
+      return prior;
+    }
+    const automatic = req.intent === "execute" && !project.isHq && !target;
+    const statusQuery = canAnswerOwnerStatus(req, project.isHq);
+    const execution = automatic && !statusQuery && ownerRequestsExecution(req.text);
+    const referenced = execution && !picked && !named ? referencedOwnerTask(this.store, projectId, req.text) : null;
+    const selected = picked ?? (referenced === "ambiguous" ? null : referenced);
+    const provided = req.intent === "execute" && !project.isHq ? req.contract ??
+      (execution && !selected ? readOwnerContract(req.text) : undefined) : undefined;
+    const terms = provided ? cleanContract(provided) : null;
+    let recipient: Member | null = target;
     let booting: Promise<void> | null = null;
     const { value: message, deliveries } = this.store.withDeliveryIntents(() => {
-      // 같은 id 로 다시 보낸 글은 처음 붙은 업무 그대로다(업무를 새로 만들지 않는다).
-      const existing = this.store.getMessage(messageId);
-      const taskId = existing ? existing.taskId ?? null : picked?.id ?? this.ownerMessageTask(project, messageId, req.text, named, attachments.length > 0, target);
+      const taskId = statusQuery ? picked?.id ?? null : selected?.id ?? this.ownerMessageTask(project, messageId, req.text, named, attachments.length > 0, target);
+      if (terms && taskId) this.store.saveTaskContract(taskId, terms, {
+        author: "대표", authorMemberId: null, authorKind: "owner", sourceMessageId: messageId,
+      });
+      const routed = execution && referenced !== "ambiguous" && taskId ? resolveOwnerCommandWorker(this.store, this.store.requireTask(taskId), !selected, req.recipientRole) : null;
+      const addressed = target ?? routed;
       const message = this.store.createMessage({ id: messageId, projectId, mine: true, who: "나", kind: "나", body: req.text,
-        targetMemberId: target?.id ?? null, targetName: target?.name ?? null, attachments, delivery: "queued", taskId });
+        targetMemberId: addressed?.id ?? null, targetName: addressed?.name ?? null, attachments, delivery: "queued", taskId });
+      if (req.intent === "execute" && !project.isHq) this.store.registerOwnerCommand(message.id, routed?.id);
+      if (statusQuery) {
+        answerOwnerStatus(this.store, message, picked?.id ?? null);
+        return this.store.requireMessage(message.id);
+      }
+      recipient = addressed ?? this.store.getConductor(projectId);
       if (!recipient && project.runnerEnabled) {
         const spawn = this.beginConductor(project);
         recipient = spawn.member;
@@ -2666,12 +2694,19 @@ export class Orchestrator implements OrchestratorApi {
       if (!recipient) return this.store.setMessageDelivery(message.id, "held", HOLD_NOTES.runner_disabled);
       return message;
     }, message => {
-      if (!recipient) return [];
+      if (!recipient || statusQuery) return [];
+      const original = formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id,
+        !!message.targetMemberId, this.taskLineFor(projectId, message.taskId));
+      const planning = execution && !message.targetMemberId && recipient.kind === "conductor";
+      const role = req.recipientRole?.trim();
+      const text = planning ? [original, "[시스템] 이 명령의 실행 담당과 계약을 확인하세요.",
+        ...(role ? [`대표가 요청한 담당 역할: '${quotedInline(role)}'.`] : []),
+        "task_trace에서 기존 배정·보류·최신 계약을 확인하세요. 미정인 범위와 완료 조건은 원문 근거로 구체화하고, 담당과 기준이 확정된 뒤 한 번 배정하세요.",
+      ].join("\n") : original;
       const intents: NewDelivery[] = [{ projectId, memberId: recipient.id, kind: "user_message",
-        text: formatUserMessage(message.body, this.attachmentsFor(recipient, attachments), message.id, !!target, this.taskLineFor(projectId, message.taskId)), refType: "message", refId: message.id }];
+        text, refType: "message", refId: message.id }];
       const conductor = this.store.getConductor(projectId);
       const task = message.taskId ? this.store.getTask(message.taskId) : null;
-      // 직접 지시 알림도 그 글의 업무에 붙인다(총괄이 같은 업무 칩에서 판을 맞추게).
       if (target && conductor && conductor.id !== target.id) intents.push({ projectId, memberId: conductor.id, kind: "system",
         text: formatSystem(`대표가 ${target.name}에게 직접 지시했습니다 #${message.id}${task ? `(작업 #${task.id} '${task.title}')` : ""}. 이미 ${target.name}에게 전달했습니다. 같은 일을 다시 시키지 말고, 결과 보고를 기다려 판만 맞추세요.`), wake: false, taskId: task?.id ?? null });
       return intents;
@@ -3852,7 +3887,10 @@ export class Orchestrator implements OrchestratorApi {
         urgent: input.urgent,
         taskId: task?.id ?? null,
       });
-      if (assignedBy) this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent);
+      if (assignedBy) {
+        const cited = quote?.verified && quote.source ? { id: quote.source.id, matchesQuote: (body: string) => ownerQuoteMatches(body, quote.text) } : undefined;
+        this.store.noteDelegation(assignedBy.id, delivery, busy && !input.urgent, cited);
+      }
       if (ownerParallel !== undefined && ownerParallel !== target.parallel) this.store.patchMember(target.id, { parallel: ownerParallel });
       return delivery;
     });
@@ -3871,10 +3909,7 @@ export class Orchestrator implements OrchestratorApi {
     const quote = normalizeSpace(rawQuote).replace(/^["'“”‘’](.*)["'“”‘’]$/, "$1").trim();
     if (!quote) return null;
     // "네" 같은 짧은 인용은 다른 글의 일부로 우연히 맞는다. 글 전체가 같아야 한다.
-    const matches = (source: string): boolean => {
-      const text = normalizeSpace(source);
-      return quote.length < SHORT_QUOTE ? text === quote : includesWhole(text, quote);
-    };
+    const matches = (body: string) => ownerQuoteMatches(body,quote);
     for (const d of this.store.listAllDoneDecisions(projectId)) {
       const option = d.options.find((o) => o.k === d.choice);
       // 버튼 글은 대표가 보고 누른 그대로만 친다. 설명·버튼 글의 일부는 직원이 쓴 글이라 대표의 말이 아니다.
@@ -4593,7 +4628,7 @@ export class Orchestrator implements OrchestratorApi {
     }), message => {
       this.store.noteDelegationPost(member.id);
       if (closure) this.store.recordReportClosure({ memberId: member.id, refType: "message", refId: message.id, ...closure });
-      this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null });
+      this.store.saveReportReferences(member.projectId, { sourceMessageId: message.id, fileIds: files.map(file => file.id), decisionIds: input.decisionId ? [input.decisionId] : [], authoredAt: message.at, sequence: this.store.boardRevision(member.projectId), correctsMessageId: input.correctsMessageId ?? null }, input.sourceCommandId);
       if (checks.length || input.reviewNeeded || contract || gate || claims.length) this.store.recordReportChecks(message, member, checks, { contractTaskId: contract?.taskId ?? null, contractRev: recordRev, artifact, reviewNeeded: input.reviewNeeded ? cleanText(input.reviewNeeded).trim() || null : null,
         gate: gate?.gate ?? null, evidenceStatus: gate?.evidenceStatus ?? null, evidence: gate?.evidence, claims: gate?.claims ?? claims.map(c => ({ ...c, verified: false, via: null })) });
       if (gate?.evidenceStatus === "unsupported") this.store.recordHarnessFinding({ projectId: member.projectId, taskId, memberId: member.id, kind: "evidence_unsupported", detail: `${member.name}(${member.cli})의 완료 검사를 실행 기록과 대조하지 못했습니다(이 제공자의 기록 형식을 지원하지 않음). 작성자 보고로만 받았습니다`, refType: "message", refId: message.id });
@@ -4607,7 +4642,14 @@ export class Orchestrator implements OrchestratorApi {
         this.markTaskStage(member, { taskId: link.source, stage: "merged",
           evidence: `원격 main ${main} · 작업 커밋 ${link.commit} 포함 · 통합 보고 #${message.id}`, integrationReport: message.id, mainCommit: main });
       }
-      return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake: this.reportWakesConductor(message) && !watch.quiet, refType: "message", refId: message.id }] : [];
+      const routine = (message.kind === "진행" || message.kind === "알림") && !input.correctsMessageId &&
+        !input.aboutReportId && !input.reviewNeeded && !input.decisionId && !files.length && !parseOwnerLine(message.body);
+      const wake = this.reportWakesConductor(message);
+      if (member.kind === "worker" && (routine || message.kind === "완료" && !wake || watch.quiet)) {
+        this.store.db.query("UPDATE report_references SET board_only=1 WHERE source_message_id=?").run(message.id);
+        return [];
+      }
+      return conductor && conductor.id !== member.id ? [{ projectId: member.projectId, memberId: conductor.id, kind: "report", text: this.reportText(message), wake, refType: "message", refId: message.id }] : [];
     });
     rt.posted = true;
     if (taskId && member.kind === "worker" && this.store.doneMark(taskId)) {
@@ -5332,6 +5374,7 @@ export class Orchestrator implements OrchestratorApi {
       }
       const reopened = input.stage === "reopen" ? requestCompletionChanges(this.store, task.id, evidence, member) : null;
       const mark = reopened ?? this.store.addStageMark({ projectId: task.projectId, taskId: task.id, stage: input.stage, evidence, memberId: member.id, who: member.name });
+      if (input.stage === "applied") captureOwnerCommandEvidence(this.store, member.id, "stage", String(mark.id));
       const followup = integration ? queueBranchCleanup(this.store, task, integration, mark.id, input.mainCommit!) : undefined;
       if (input.stage === "reopen") {
         const w = this.store.getTaskWatch(task.id);
@@ -5553,7 +5596,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!this.taskContinuations.canDispatch(d) || !completionReviewAllowsDelivery(this.store, d, member)) return false;
       if (!this.instructionCriteriaAllow(d)) return false;
       const taskId = this.store.deliveryTaskId(d.id);
-      if (!sharedWorkAllowsDelivery(this.store, d) || !integrationTaskAllowsInput(this.store, taskId)) return false;
+      if (!ownerCommandAllowsDelivery(this.store, d) || !sharedWorkAllowsDelivery(this.store, d) || !integrationTaskAllowsInput(this.store, taskId)) return false;
       if (!worker || !taskId) return true;
       // Independent order permission never resolves an intervention or owner decision.
       if (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId)) return false;
@@ -6343,7 +6386,7 @@ export class Orchestrator implements OrchestratorApi {
       // contract may have changed while the runner was inspecting the terminal.
       if (!this.taskContinuations.canDispatch(delivery, false) || !completionReviewAllowsDelivery(this.store, delivery, member)) return false;
       const taskId = this.store.deliveryTaskId(delivery.id);
-      if (!sharedWorkAllowsDelivery(this.store, delivery) || !integrationTaskAllowsInput(this.store, taskId)) return false;
+      if (!ownerCommandAllowsDelivery(this.store, delivery) || !sharedWorkAllowsDelivery(this.store, delivery) || !integrationTaskAllowsInput(this.store, taskId)) return false;
       if (member.kind === "worker" && taskId && (this.store.pendingTaskFailureDecision(taskId) || this.store.pendingTaskIntervention(taskId))) return false;
       if (member.kind === "worker" && taskId && (independentIds.has(delivery.id) || sequence.blocked(taskId, delivery))
         && !independentDeliveryAuthorized(this.store, delivery, { inFlightDispatchId })) return false;
@@ -7033,6 +7076,12 @@ export class Orchestrator implements OrchestratorApi {
  * 인용이 낱말 경계에 맞게 들어 있는가. '삭제는 하지 마'에서 '삭제'만 잘라 오면 조사에서 끊겨 맞지 않는다.
  * 공백·문장 부호에서 시작하고 끝나야 한다.
  */
+function ownerQuoteMatches(body: string, rawQuote: string): boolean {
+  const quote = normalizeSpace(rawQuote).replace(/^["'“”‘’](.*)["'“”‘’]$/, "$1").trim();
+  const source = normalizeSpace(body);
+  return quote.length < SHORT_QUOTE ? source === quote : includesWhole(source,quote);
+}
+
 function includesWhole(text: string, quote: string): boolean {
   const boundary = /[\s.,!?;:…·"'“”‘’()[\]{}<>~\-—–/]/;
   for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote, at + 1)) {

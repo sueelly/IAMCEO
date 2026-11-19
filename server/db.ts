@@ -1087,6 +1087,26 @@ export const MIGRATIONS: string[] = [
   // v58: some v57 releases were counted as retained when a SQLite trigger enqueued completion work.
   `ALTER TABLE legacy_task_timer_stops ADD COLUMN v57_recheck TEXT CHECK(v57_recheck IN ('pending','verified','unchanged'));
    UPDATE legacy_task_timer_stops SET v57_recheck='pending' WHERE outcome='retained';`,
+  // Old rows retain only their task association. New commands record exact origin at intake.
+  `CREATE TABLE owner_commands (
+     message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     created_at TEXT NOT NULL, routed_worker_id TEXT, routed_task_id TEXT
+   );
+   CREATE INDEX owner_report_corrections ON report_references(project_id,corrects_message_id) WHERE corrects_message_id IS NOT NULL;
+   CREATE INDEX owner_commands_page ON owner_commands(project_id,created_at DESC,message_id DESC);
+   CREATE TABLE owner_command_evidence (
+     ref_type TEXT NOT NULL, ref_id TEXT NOT NULL, command_id TEXT NOT NULL REFERENCES owner_commands(message_id) ON DELETE CASCADE,
+     task_id TEXT, run_id TEXT, PRIMARY KEY(ref_type,ref_id)
+   );
+   CREATE INDEX owner_command_evidence_command ON owner_command_evidence(command_id,ref_type,ref_id);
+   CREATE TABLE owner_command_legacy_tasks (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TEXT NOT NULL
+   );
+   INSERT INTO owner_command_legacy_tasks SELECT t.id,t.project_id,MAX(m.at) FROM tasks t
+     JOIN messages m ON m.project_id=t.project_id AND m.task_id=t.id WHERE t.merged_into IS NULL GROUP BY t.id;
+   CREATE INDEX owner_command_legacy_page ON owner_command_legacy_tasks(project_id,created_at DESC,task_id DESC);`,
+  // Routine reports remain in the shared feed. Recovery must not invent a terminal delivery.
+  `ALTER TABLE report_references ADD COLUMN board_only INTEGER NOT NULL DEFAULT 0 CHECK(board_only IN (0,1));`,
 ];
 
 export function openDb(path: string, options: { migrationBackup?: boolean } = {}): Database {

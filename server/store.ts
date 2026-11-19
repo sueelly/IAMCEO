@@ -1,3 +1,5 @@
+import { retirePassiveReports } from "./passive-report-deliveries.ts";
+import { captureOwnerCommandEvidence, linkOwnerReportFollowup, type CommandSelection } from "./owner-commands.ts";
 import { reconcileLegacyTimerStops } from "./legacy-timer-stops.ts";
 import { projectMainContract, projectMainPolicyPrefix } from "./project-main-policy.ts";
 import { describeTaskContext } from "./task-context.ts";
@@ -925,6 +927,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
       this.ensureHq();
       this.backfillWorkTasks();
       reconcileLegacyTimerStops(this);
+      retirePassiveReports(this);
     }
   }
 
@@ -3244,6 +3247,20 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return new Date(ms).toISOString();
   }
 
+  registerOwnerCommand(messageId: string, routedWorkerId: string | null = null): void {
+    const message = this.requireMessage(messageId);
+    if (!message.mine || message.kind !== "나" || (routedWorkerId && (routedWorkerId !== message.targetMemberId ||
+        this.requireMember(routedWorkerId).projectId !== message.projectId))) throw new ApiError(400, "대표 명령 원본과 수신자가 일치해야 합니다");
+    this.run("INSERT OR IGNORE INTO owner_commands(message_id,project_id,created_at,routed_worker_id,routed_task_id) VALUES(?,?,?,?,?)", message.id, message.projectId, message.at, routedWorkerId, routedWorkerId ? message.taskId ?? null : null);
+  }
+
+  recordOwnerCommandAnswer(commandId: string, responseId: string): void {
+    const answer = this.requireMessage(responseId);
+    if (answer.mine || answer.memberId || answer.kind !== "답변" || answer.aboutMessageId !== commandId ||
+        !this.row("SELECT 1 FROM owner_commands WHERE message_id=? AND project_id=?", commandId, answer.projectId)) throw new ApiError(400, "명령 원본과 현황 답변이 일치하지 않습니다");
+    this.run("INSERT OR IGNORE INTO owner_command_evidence(ref_type,ref_id,command_id) VALUES('message',?,?)", responseId, commandId);
+  }
+
   /** 멱등: 같은 id 가 이미 있으면 새로 쓰지 않고 그 글을 돌려준다. */
   createMessage(input: NewMessage): Message {
     return this.transaction(() => {
@@ -3619,9 +3636,9 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   /** 지시 outbox와 같은 트랜잭션에서 호출한다. 도구 응답 유실에도 배정 사실이 남는다. */
-  noteDelegation(memberId: string, delivery: Delivery, queued: boolean): void {
+  noteDelegation(memberId: string, delivery: Delivery, queued: boolean, selection?: CommandSelection): void {
     // 맡긴 직원의 보고 의무는 위임으로 마감한다(지시 전달과 같은 트랜잭션).
-    this.recordReportClosure({ memberId, kind: "delegated", refType: "delivery", refId: delivery.id });
+    this.recordReportClosure({ memberId, kind: "delegated", refType: "delivery", refId: delivery.id }, selection);
     const turn = this.row("SELECT * FROM delegation_ack_turns WHERE member_id = ? AND ended = 0 ORDER BY rowid DESC LIMIT 1", memberId);
     if (!turn || JSON.parse(turn.source_ids).length === 0) return;
     const assignments: { deliveryId: string; memberId: string; name: string; summary: string; queued: boolean }[] = JSON.parse(turn.assignments);
@@ -3778,6 +3795,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     return this.rows(`SELECT m.* FROM messages m WHERE m.mine = 0 AND m.member_id IS NOT NULL AND m.kind IN ('완료','진행','막힘','알림')
       AND m.rowid > COALESCE((SELECT legacy_max_rowid FROM report_delivery_tracking WHERE id = 1), 0)
       ${projectId === undefined ? "" : "AND m.project_id = ?"}
+      AND NOT EXISTS (SELECT 1 FROM report_references r WHERE r.source_message_id=m.id AND r.board_only=1)
       AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.ref_type = 'message' AND d.ref_id = m.id AND d.kind = 'report')
       ORDER BY m.at COLLATE BINARY, m.id COLLATE BINARY`, ...(projectId === undefined ? [] : [projectId])).map(toMessage);
   }
@@ -4468,9 +4486,10 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   // ---- 보고 마감·보고 보완 ----
-  recordReportClosure(input: { memberId: string; kind: ReportClosureKind; refType: ReportClosure["refType"]; refId: string; causeId?: string | null }): void {
+  recordReportClosure(input: { memberId: string; kind: ReportClosureKind; refType: ReportClosure["refType"]; refId: string; causeId?: string | null }, selection?: CommandSelection): void {
     const member = this.requireMember(input.memberId);
     const run = this.row("SELECT run_id FROM execution_journal WHERE member_id = ? AND phase NOT IN ('ended','interrupted') ORDER BY created_at DESC, rowid DESC LIMIT 1", member.id);
+    if (input.refType === "decision" || input.refType === "delivery") captureOwnerCommandEvidence(this, member.id, input.refType, input.refId, null, selection);
     this.run("INSERT INTO report_closures (member_id, project_id, run_id, kind, ref_type, ref_id, cause_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", member.id, member.projectId, run?.run_id ?? null, input.kind, input.refType, input.refId, input.causeId ?? null, nowIso());
   }
 
@@ -4489,6 +4508,7 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
   }
 
   recordReportFollowup(rootRunId: string, memberId: string, projectId: string, deliveryId: string): void {
+    linkOwnerReportFollowup(this, rootRunId, memberId, projectId, deliveryId);
     this.run("INSERT INTO report_followups (root_run_id, member_id, project_id, delivery_id, requested_at) VALUES (?, ?, ?, ?, ?)", rootRunId, memberId, projectId, deliveryId, nowIso());
   }
 
@@ -4592,16 +4612,19 @@ export class Store implements MessageReadStore, ProjectPatchStore, RunnerRecover
     });
   }
 
-  saveReportReferences(projectId: string, refs: ReportReferences): void {
+  saveReportReferences(projectId: string, refs: ReportReferences, sourceCommandId?: string | null): void {
     this.transaction(() => {
       if (this.requireMessage(refs.sourceMessageId).projectId !== projectId || (refs.correctsMessageId && this.requireMessage(refs.correctsMessageId).projectId !== projectId)) throw new ApiError(400, "다른 프로젝트의 메시지입니다");
       for (const id of refs.fileIds) if (this.getFile(id)?.projectId !== projectId) throw new ApiError(400, "자료의 프로젝트가 다릅니다");
       for (const id of refs.decisionIds) if (this.requireDecision(id).projectId !== projectId) throw new ApiError(400, "결재의 프로젝트가 다릅니다");
       const before = this.getReportReferences(projectId, refs.sourceMessageId);
       if (before) {
+        if (sourceCommandId && !this.row("SELECT 1 FROM owner_command_evidence WHERE ref_type='message' AND ref_id=? AND command_id=?", refs.sourceMessageId,sourceCommandId)) throw new ApiError(409, "이미 접수한 보고의 대표 명령 원본이 다릅니다");
         if (stableJson(before) !== stableJson(refs)) throw new ApiError(409, "이미 기록된 보고 출처가 다릅니다");
         return;
       }
+      const report = this.requireMessage(refs.sourceMessageId);
+      if (!report.mine && report.memberId) captureOwnerCommandEvidence(this, report.memberId, "message", report.id, refs.correctsMessageId ?? report.aboutMessageId, sourceCommandId ? { id: sourceCommandId } : undefined);
       this.run("INSERT INTO report_references (source_message_id, project_id, file_ids_json, decision_ids_json, authored_at, sequence, corrects_message_id) VALUES (?, ?, ?, ?, ?, ?, ?)", refs.sourceMessageId, projectId, JSON.stringify(refs.fileIds), JSON.stringify(refs.decisionIds), refs.authoredAt, refs.sequence, refs.correctsMessageId);
     });
   }

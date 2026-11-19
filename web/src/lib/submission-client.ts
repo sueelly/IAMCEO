@@ -16,9 +16,10 @@ const storage: Storage = {
 };
 const managers = new Set<SubmissionManager>();
 const directManagers = new Map<string, SubmissionManager>();
-function createManager(member?: Pick<Member, "id" | "kind" | "name">): SubmissionManager {
+function createManager(member?: Pick<Member, "id" | "kind" | "name">, commandDraft = false): SubmissionManager {
   const manager = new SubmissionManager({
     storage,
+    commandDraft,
     host: location.origin,
     direct: member ? { memberId: member.id, targetMemberId: member.kind === "worker" ? member.id : null, targetName: member.name } : undefined,
     session: getCredentialGeneration,
@@ -53,6 +54,7 @@ function createManager(member?: Pick<Member, "id" | "kind" | "name">): Submissio
   return manager;
 }
 export const submissions = createManager();
+export const commandSubmissions = createManager(undefined, true);
 export function memberSubmissions(member: Pick<Member, "id" | "projectId" | "kind" | "name">): SubmissionManager {
   const key = JSON.stringify([member.projectId, member.id]);
   let manager = directManagers.get(key);

@@ -4,7 +4,7 @@ export interface Upload { key: string; name: string; attachment: Attachment | nu
 /** taskId: 대화에서 고른 작업(없으면 전체). 보낼 때 그 순간의 값이 글에 고정된다. */
 export interface Draft { text: string; targetId: string | null; uploads: Upload[]; error: string | null; taskId?: string | null }
 /** 보낸 순간의 요청. taskId 는 옛 기기에 남은 시도에는 없다(= 전체). */
-export type SendPayload = Required<Omit<SendMessageReq, "taskId" | "newTaskTitle">> & { taskId?: string | null; newTaskTitle?: string | null };
+export type SendPayload = SendMessageReq & Required<Pick<SendMessageReq, "id" | "text" | "targetMemberId" | "attachmentIds">>;
 export interface MessageAttempt {
   readonly id: string;
   readonly projectId: string;
@@ -22,6 +22,7 @@ interface Options {
   storage: Storage;
   host: string;
   /** Storage scope only. Requests always retain their actual project ID. */
+  commandDraft?: boolean;
   direct?: { memberId: string; targetMemberId: string | null; targetName: string };
   session: () => string | number | null;
   newId: () => string;
@@ -62,7 +63,7 @@ export class SubmissionManager {
 
   constructor(private readonly options: Options) {
     this.prefix = `iamceo.draft.host.${encodeURIComponent(options.host)}.`;
-    this.scope = options.direct ? `direct:${encodeURIComponent(options.direct.memberId)}:` : "";
+    this.scope = options.direct ? `direct:${encodeURIComponent(options.direct.memberId)}:` : options.commandDraft ? "command:" : "";
   }
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
 
@@ -73,7 +74,7 @@ export class SubmissionManager {
     try {
       const scoped = this.options.storage.getItem(this.key(projectId));
       const legacyKey = this.options.direct ? `iamceo.draft.direct.${this.options.direct.memberId}` : `iamceo.draft.${projectId}`;
-      const raw = scoped ?? this.options.storage.getItem(legacyKey);
+      const raw = scoped ?? (this.options.commandDraft ? null : this.options.storage.getItem(legacyKey));
       const saved = raw ? JSON.parse(raw) : null;
       const source = scoped ? saved?.draft : saved;
       const uploads = Array.isArray(source?.uploads) ? source.uploads.filter(validUpload).map((u: Upload) => ({ ...u, failed: !u.attachment || u.failed })) : [];

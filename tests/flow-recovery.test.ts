@@ -256,3 +256,54 @@ test("a live Codex core terminal is eligible for scheduled tidy without inventin
   await until(() => f.runner.sent.length === 1);
   expect(f.store.requireMember(lead.id).sessionId).toBeNull();
 });
+
+test("대표 단순 현황 조회는 실행기 없이 DB에서 답하고 중복 요청과 복구 뒤에도 다시 보내지 않는다", async () => {
+  const f = fixture();
+  f.member("conductor");
+  f.store.patchProject(f.project.id, { runnerEnabled: false });
+  const options = { id: "msg_status_test", text: "지금 다 끝났어?", intent: "execute" as const };
+  const before = f.store.listTasks(f.project.id).length;
+  const first = await f.orch.sendUserMessage(f.project.id, options);
+  await f.orch.sendUserMessage(f.project.id, options);
+  await f.orch.recover();
+  expect(first).toMatchObject({ delivery: "delivered", taskId: null });
+  expect(f.store.listTasks(f.project.id)).toHaveLength(before);
+  const answers = f.store.listMessages(f.project.id).filter(m => m.aboutMessageId === first.id);
+  expect(answers).toHaveLength(1);
+  expect(answers[0]).toMatchObject({ kind: "답변", memberId: null });
+  expect(answers[0]!.body).toContain("등록된 업무가 없습니다");
+  expect(f.store.listDeliveries().filter(d => d.refId === first.id)).toHaveLength(0);
+  expect(f.runner.sent).toHaveLength(0);
+});
+
+test("일상적인 진행 보고는 업무에 남고 복구 후에도 총괄 터미널로 복사되지 않는다", async () => {
+  const f = fixture(); const lead = f.member("conductor"), worker = f.member();
+  f.store.patchProject(f.project.id, { runnerEnabled: false });
+  const taskId = defaultTaskId(f.store, f.project.id);
+  const progress = await f.orch.recordPost(worker, { taskId, kind: "진행", title: "검증 중", body: "등록된 범위의 검사 중입니다" });
+  expect(f.store.requireMessage(progress.id).taskId).toBe(taskId);
+  expect(f.store.listReportsMissingDeliveries(f.project.id).map(m => m.id)).not.toContain(progress.id);
+  expect(f.store.listPending(lead.id).filter(d => d.refId === progress.id)).toHaveLength(0);
+  const correction = await f.orch.recordPost(worker, { taskId, kind: "알림", title: "앞선 결과 정정", correctsMessageId: progress.id });
+  expect(f.store.listPending(lead.id).filter(d => d.refId === correction.id)).toHaveLength(1);
+});
+
+test("업그레이드는 확실히 미전송인 일반 보고 사본만 종료하고 원본·시도 기록·직원 지시는 보존한다", async () => {
+  const f = fixture(), lead = f.member("conductor"), worker = f.member();
+  f.store.patchProject(f.project.id, { runnerEnabled: false });
+  const taskId = defaultTaskId(f.store, f.project.id);
+  const old = async (title: string) => {
+    const msg = await f.orch.recordPost(worker, { taskId, kind: "진행", title });
+    f.store.db.query("UPDATE report_references SET board_only=0 WHERE source_message_id=?").run(msg.id);
+    return f.store.enqueue({ projectId: f.project.id, memberId: lead.id, kind: "report", refType: "message", refId: msg.id, text: title, wake: false, taskId });
+  };
+  const safe = await old("진행 기록"), attempted = await old("이전 전송 시도");
+  f.store.setDeliveryStatus(attempted.id, "queued", { attempt: true });
+  const command = f.store.enqueue({projectId:f.project.id, memberId:lead.id,kind:"system",text:"직접 알림", wake:false});
+  new Store(f.db, f.bus);
+  expect(f.store.requireDelivery(safe.id)).toMatchObject({ status:"failed", attempts:0, deliveredAt:null });
+  expect(f.store.getDeliveryRecovery(safe.id)?.phase).toBe("stopped");
+  expect(f.store.requireMessage(safe.refId!).title).toBe("진행 기록");
+  expect(f.store.requireDelivery(attempted.id)).toMatchObject({ status:"queued", attempts:1 });
+  expect(f.store.requireDelivery(command.id).status).toBe("queued");
+});
