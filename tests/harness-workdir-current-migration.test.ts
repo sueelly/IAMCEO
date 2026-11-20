@@ -34,11 +34,15 @@ function seed(db: Database, version: number) {
   }
   if (version >= 45) db.query("UPDATE members SET codex_speed='fast' WHERE id='m'").run();
   if (version >= 41) db.query("UPDATE members SET execution_issue_json=? WHERE id='m'").run(JSON.stringify({kind: 'quota', detail: 'synthetic fixture', at}));
+  if (version >= 42) {
+    db.query("INSERT INTO memory_archive_sources(project_id,source_type,source_id,fingerprint,version,updated_at) VALUES('p','task','t','synthetic-source-fingerprint',2,?)").run(at);
+    db.query("INSERT INTO memory_feedback_exposures(id,project_id,member_id,task_id,scope,experience_id,source_task_id,summary,first_seen_at,outcome,reason,status,attempts,next_at,assessed_at,updated_at) VALUES('synthetic-feedback','p','m','t','t','exp-synthetic','source-task','합성 평가',?,'helped','합성 근거','pending',2,?,?,?)").run(at, at, at, at);
+  }
 }
 
 function snapshot(db: Database) {
   const names = new Set(["projects", "members", "tasks", "deliveries", "decisions", "report_checks",
-    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'task_%' OR name='workflow_assignment_receipts')").all().map(r => r.name)]);
+    ...db.query<{ name: string }, []>("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'task_%' OR name GLOB 'memory_*' OR name='workflow_assignment_receipts')").all().map(r => r.name)]);
   return [...names].sort().map(table => {
     const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(r => r.name);
     return { table, columns, rows: db.query(`SELECT ${columns.join(",")} FROM ${table} ORDER BY rowid`).all() };
